@@ -1,0 +1,148 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    # Core correctness
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+
+    # Code quality
+    - gocritic
+    - revive
+    - misspell
+    - unconvert
+    - unparam
+    - prealloc
+
+    # Bug prevention
+    - bodyclose
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - gosec
+    - errname
+    - errorlint
+
+    # Architecture boundaries
+    - depguard
+
+    # Style
+    - nolintlint
+    - whitespace
+    - predeclared
+
+  settings:
+    depguard:
+      rules:
+        # Raw datastore drivers are an adapter-only concern. Anything outside
+        # adapters/ (plus the test kit's container harness and the migration
+        # stream, which needs the grove pg executor) must go through fabriq
+        # ports instead.
+        drivers-only-in-adapters:
+          list-mode: lax
+          files:
+            - "!**/adapters/**"
+            - "!**/fabriqtest/**"
+            - "!**/migrations/**"
+          deny:
+            - pkg: github.com/xraph/grove/drivers
+              desc: grove drivers may only be imported under fabriq/adapters
+            - pkg: github.com/redis/go-redis
+              desc: go-redis may only be imported under fabriq/adapters
+            - pkg: github.com/elastic/go-elasticsearch
+              desc: the elasticsearch client may only be imported under fabriq/adapters
+            - pkg: github.com/FalkorDB/falkordb-go
+              desc: the FalkorDB client may only be imported under fabriq/adapters
+            - pkg: github.com/jackc/pgx
+              desc: pgx is only allowed where grove genuinely cannot express something, under adapters (document in docs/decisions/)
+        # core/ is the extractable kernel: no TWINOS knowledge, no app
+        # framework, no driver packages of any kind.
+        core-purity:
+          files:
+            - "**/core/**"
+          deny:
+            - pkg: github.com/xraph/fabriq/domain
+              desc: core must contain zero TWINOS-specific knowledge
+            - pkg: github.com/xraph/fabriq/adapters
+              desc: core defines ports; adapters implement them, never the reverse
+            - pkg: github.com/xraph/forge
+              desc: core is framework-free; forge wiring lives in cmd/ and the facade
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+          arguments: [checkPrivateReceivers]
+        - name: if-return
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: unreachable-code
+
+    gosec:
+      excludes:
+        - G104
+        - G304
+
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      exclude-functions:
+        - (io.Closer).Close
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [gosec, errcheck, gocritic, noctx]
+      - path: fabriqtest/
+        linters: [gosec, errcheck]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/xraph/fabriq
+
+output:
+  sort-order:
+    - linter
+    - file
