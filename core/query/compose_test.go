@@ -67,7 +67,7 @@ func (r *stubRelational) List(context.Context, string, query.ListQuery, any) err
 }
 func (r *stubRelational) Query(context.Context, any, string, ...any) error { return nil }
 
-func (r *stubRelational) GetMany(_ context.Context, entity string, ids []string, into any) error {
+func (r *stubRelational) GetMany(_ context.Context, _ string, ids []string, into any) error {
 	r.calls++
 	r.lastIDs = ids
 	dest, ok := into.(*[]*qAsset)

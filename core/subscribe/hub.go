@@ -60,7 +60,7 @@ func NewHub(opts ...HubOption) *Hub {
 // Subscribe attaches a buffered subscriber to a channel. The returned
 // cancel function detaches and closes the subscriber channel; cancelling
 // the context does the same.
-func (h *Hub) Subscribe(ctx context.Context, channel string, buffer int) (<-chan query.Delta, func(), error) {
+func (h *Hub) Subscribe(ctx context.Context, channel string, buffer int) (deltas <-chan query.Delta, cancel func(), err error) {
 	if buffer <= 0 {
 		buffer = 64
 	}
@@ -80,7 +80,7 @@ func (h *Hub) Subscribe(ctx context.Context, channel string, buffer int) (<-chan
 	cs.subs[id] = ch
 
 	var once sync.Once
-	cancel := func() {
+	cancel = func() {
 		once.Do(func() {
 			h.mu.Lock()
 			defer h.mu.Unlock()
@@ -97,10 +97,8 @@ func (h *Hub) Subscribe(ctx context.Context, channel string, buffer int) (<-chan
 	}
 	if ctx != nil && ctx.Done() != nil {
 		go func() {
-			select {
-			case <-ctx.Done():
-				cancel()
-			}
+			<-ctx.Done()
+			cancel()
 		}()
 	}
 	return ch, cancel, nil

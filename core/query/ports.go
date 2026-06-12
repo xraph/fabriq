@@ -117,7 +117,7 @@ type TSQuerier interface {
 
 // Point is one telemetry sample.
 type Point struct {
-	Key     string    // series key within the tenant, e.g. tag id
+	Key     string // series key within the tenant, e.g. tag id
 	At      time.Time
 	Value   float64
 	Quality int

@@ -111,6 +111,7 @@ linters:
       excludes:
         - G104
         - G304
+        - G117 # config structs legitimately carry credential fields
 
     errcheck:
       check-type-assertions: true

@@ -62,14 +62,13 @@ func ChannelsForEnvelope(reg *registry.Registry, env event.Envelope) ([]string, 
 	}
 	channels := make([]string, 0, len(ent.Spec.Subscribe))
 	for _, s := range ent.Spec.Subscribe {
-		switch {
-		case s == registry.ByID:
+		switch s {
+		case registry.ByID:
 			channels = append(channels, registry.ChannelName(env.TenantID, s, env.AggID))
-		case s == registry.ByTenant:
+		case registry.ByTenant:
 			channels = append(channels, registry.ChannelName(env.TenantID, s, env.TenantID))
 		default:
-			id, _ := payload[s.Field].(string)
-			if id != "" {
+			if id, ok := payload[s.Field].(string); ok && id != "" {
 				channels = append(channels, registry.ChannelName(env.TenantID, s, id))
 			}
 		}

@@ -133,7 +133,10 @@ func stringProp(props map[string]any, key string) string {
 	if !ok || v == nil {
 		return ""
 	}
-	s, _ := v.(string)
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
 	return s
 }
 
