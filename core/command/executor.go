@@ -1,0 +1,122 @@
+package command
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/core/tenant"
+)
+
+// Executor implements Exec/ExecBatch over a Store.
+type Executor struct {
+	reg         *registry.Registry
+	store       Store
+	now         func() time.Time
+	traceparent func(context.Context) string
+}
+
+// ExecutorOption customizes an Executor.
+type ExecutorOption func(*Executor)
+
+// WithClock overrides the envelope timestamp source (tests).
+func WithClock(now func() time.Time) ExecutorOption {
+	return func(x *Executor) { x.now = now }
+}
+
+// WithTraceparent supplies the W3C traceparent extractor used to stamp
+// envelopes; internal/otel provides the production implementation.
+func WithTraceparent(fn func(context.Context) string) ExecutorOption {
+	return func(x *Executor) { x.traceparent = fn }
+}
+
+// NewExecutor wires the command plane.
+func NewExecutor(reg *registry.Registry, store Store, opts ...ExecutorOption) (*Executor, error) {
+	if reg == nil || store == nil {
+		return nil, fmt.Errorf("fabriq: executor needs a registry and a store")
+	}
+	x := &Executor{
+		reg:         reg,
+		store:       store,
+		now:         time.Now,
+		traceparent: func(context.Context) string { return "" },
+	}
+	for _, opt := range opts {
+		opt(x)
+	}
+	return x, nil
+}
+
+// Exec runs one command in its own transaction.
+func (x *Executor) Exec(ctx context.Context, cmd Command) (Result, error) {
+	results, err := x.ExecBatch(ctx, []Command{cmd})
+	if err != nil {
+		return Result{}, err
+	}
+	return results[0], nil
+}
+
+// ExecBatch runs N commands in ONE transaction: ordered, all-or-nothing.
+func (x *Executor) ExecBatch(ctx context.Context, cmds []Command) ([]Result, error) {
+	if _, err := tenant.Require(ctx); err != nil {
+		return nil, err
+	}
+	if len(cmds) == 0 {
+		return []Result{}, nil
+	}
+
+	// Validate everything we can before opening a transaction.
+	prepared := make([]*preparedCommand, len(cmds))
+	for i, cmd := range cmds {
+		p, err := x.prepare(ctx, cmd)
+		if err != nil {
+			return nil, fmt.Errorf("command %d (%s %s): %w", i, cmd.Op.Verb(), cmd.Entity, err)
+		}
+		prepared[i] = p
+	}
+
+	results := make([]Result, len(cmds))
+	err := x.store.InTenantTx(ctx, func(ctx context.Context, tx Tx) error {
+		for i, p := range prepared {
+			res, err := x.apply(ctx, tx, p)
+			if err != nil {
+				return err
+			}
+			results[i] = res
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// apply runs one prepared command inside the transaction: version check,
+// row write, exactly one outbox envelope.
+func (x *Executor) apply(ctx context.Context, tx Tx, p *preparedCommand) (Result, error) {
+	current, err := tx.CurrentVersion(ctx, p.entity, p.aggID)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := checkVersion(p, current); err != nil {
+		return Result{}, err
+	}
+	next := current + 1
+
+	vals := p.stampedValues(next)
+	if err := tx.ApplyChange(ctx, p.entity, p.cmd.Op, p.aggID, next, vals); err != nil {
+		return Result{}, err
+	}
+
+	env, err := newEnvelope(p, next, vals, x.now(), x.traceparent(ctx))
+	if err != nil {
+		return Result{}, err
+	}
+	if err := tx.AppendOutbox(ctx, env); err != nil {
+		return Result{}, err
+	}
+
+	return Result{AggID: p.aggID, Version: next, EventID: env.ID}, nil
+}
