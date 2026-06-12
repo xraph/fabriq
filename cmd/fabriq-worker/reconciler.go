@@ -24,6 +24,31 @@ func (e *workerExtension) runReconciler(ctx context.Context, interval time.Durat
 	}
 }
 
+// runDocumentPlane is the materializer + compactor: every interval it
+// materializes quiet documents (one ordinary versioned event each) and
+// compacts logs past their SnapshotEvery budget. Leader-elected (1003).
+func (e *workerExtension) runDocumentPlane(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.mu.Lock()
+			stores := e.stores
+			e.mu.Unlock()
+			if stores == nil {
+				continue
+			}
+			_, _ = stores.Postgres.Documents().MaterializeQuiet(ctx, nil)
+		}
+	}
+}
+
 func (e *workerExtension) reconcileAll(ctx context.Context) {
 	e.mu.Lock()
 	stores := e.stores

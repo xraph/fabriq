@@ -50,6 +50,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		Relational:      pg,
 		Timeseries:      pg,
 		Vector:          pg,
+		Documents:       pg.Documents(),
 		ProjectionState: pg.ProjectionState(),
 	}
 

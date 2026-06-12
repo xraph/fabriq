@@ -1,9 +1,6 @@
 # CRDT Document Plane — Design (Phase 7)
 
-Status: **scaffold** — the `document.Store` port, the `crdt_updates` /
-`crdt_snapshots` migrations (0007), the `KindDocument` / `CRDTSpec` registry
-seam and the hub's non-conflating path exist today; sync transport,
-materialization and compaction are deferred to phase 7.
+Status: **implemented** (2026-06-12): the Postgres document store (adapters/postgres/document.go) folds the append-only update log through grove's MergeField engine; Sync exchanges seq-based vectors (snapshot + tail after compaction); quiet-window materialization emits ONE ordinary <entity>.updated event (version++) through the outbox with post-merge validation flagging; compaction is storage-only. Doc ids are "<entity>/<ulid>" — the registry binds the relational shape. Remaining: the live WS/SSE sync endpoint riding Hub.PublishRaw (the seam exists; clients can poll Sync today), and grove crdt-js client wiring.
 
 ## What this plane is for
 

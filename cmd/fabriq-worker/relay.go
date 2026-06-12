@@ -18,8 +18,9 @@ import (
 // Advisory lock keys per singleton role. Stable across versions; never
 // reuse a key for a different role.
 const (
-	lockKeyRelay      = int64(1001)
-	lockKeyReconciler = int64(1002) // phase 6
+	lockKeyRelay         = int64(1001)
+	lockKeyReconciler    = int64(1002)
+	lockKeyDocumentPlane = int64(1003)
 )
 
 // workerExtension is a forge.Extension + RunnableExtension supervising the
@@ -145,6 +146,17 @@ func (e *workerExtension) Run(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		_ = elector.Run(runCtx, relay.Run)
+	}()
+
+	// Document plane: quiet-window materializer + compactor (leader 1003).
+	docElector := postgres.NewElector(stores.Postgres, lockKeyDocumentPlane)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = docElector.Run(runCtx, func(leadCtx context.Context) error {
+			e.runDocumentPlane(leadCtx, time.Second)
+			return leadCtx.Err()
+		})
 	}()
 
 	// Scheduled reconciler: leader-elected, one scanner across replicas.
