@@ -79,6 +79,39 @@ func (b *Binding) ValuesByColumn(model any) (map[string]any, error) {
 	return out, nil
 }
 
+// Populate sets the model's fields from column-keyed values (the reverse
+// of ValuesByColumn). Numeric JSON widening (float64 -> int64 etc.) is
+// converted; incompatible types error.
+func (b *Binding) Populate(model any, vals map[string]any) error {
+	v := reflect.ValueOf(model)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return fmt.Errorf("fabriq: Populate target must be a non-nil pointer, got %T", model)
+	}
+	v = v.Elem()
+	if v.Type() != b.modelType {
+		return fmt.Errorf("fabriq: Populate target %s does not match binding for table %s (want %s)",
+			v.Type(), b.Table, b.modelType)
+	}
+	for col, f := range b.fields {
+		raw, ok := vals[col]
+		if !ok || raw == nil {
+			continue
+		}
+		fv := v.FieldByIndex(f.GoIndex)
+		rv := reflect.ValueOf(raw)
+		switch {
+		case rv.Type() == fv.Type():
+			fv.Set(rv)
+		case rv.Type().ConvertibleTo(fv.Type()):
+			fv.Set(rv.Convert(fv.Type()))
+		default:
+			return fmt.Errorf("fabriq: column %q value %T not assignable to field %s %s",
+				col, raw, f.GoName, fv.Type())
+		}
+	}
+	return nil
+}
+
 // bind compiles the spec's grove model into a Binding and enforces the
 // structural-column contract.
 func bind(spec EntitySpec) (*Binding, error) {
