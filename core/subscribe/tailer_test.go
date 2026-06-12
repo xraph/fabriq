@@ -70,7 +70,7 @@ func TestHub_TailerStartsOnFirstSubscriberAndStopsOnLast(t *testing.T) {
 	}
 
 	// Pump starts once for the channel.
-	waitFor(t, time.Second, func() bool { s, _ := ft.counts(); return s == 1 })
+	waitFor(t, func() bool { s, _ := ft.counts(); return s == 1 })
 
 	// Deltas delivered by the tailer reach subscribers through conflation.
 	if !ft.deliver("changes:acme:id:A1", delta("asset", "A1", 1)) {
@@ -93,7 +93,7 @@ func TestHub_TailerStartsOnFirstSubscriberAndStopsOnLast(t *testing.T) {
 	}
 	// ...and stops when the last one leaves.
 	cancel2()
-	waitFor(t, time.Second, func() bool { _, st := ft.counts(); return st == 1 })
+	waitFor(t, func() bool { _, st := ft.counts(); return st == 1 })
 }
 
 func TestHub_TailerRestartsForNewSubscriber(t *testing.T) {
@@ -106,19 +106,19 @@ func TestHub_TailerRestartsForNewSubscriber(t *testing.T) {
 		t.Fatal(err)
 	}
 	cancel()
-	waitFor(t, time.Second, func() bool { _, st := ft.counts(); return st == 1 })
+	waitFor(t, func() bool { _, st := ft.counts(); return st == 1 })
 
 	_, cancel2, err := h.Subscribe(context.Background(), "c", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cancel2()
-	waitFor(t, time.Second, func() bool { s, _ := ft.counts(); return s == 2 })
+	waitFor(t, func() bool { s, _ := ft.counts(); return s == 2 })
 }
 
-func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
+func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
