@@ -50,6 +50,7 @@ func main() {
 	ext := newWorkerExtension(reg, fabriq.Config{
 		Postgres: fabriq.PostgresConfig{DSN: dsn},
 		Redis:    fabriq.RedisConfig{Addr: redisAddr},
+		FalkorDB: fabriq.FalkorDBConfig{Addr: os.Getenv("FABRIQ_FALKORDB_ADDR")},
 	})
 	if err := app.RegisterExtension(ext); err != nil {
 		log.Fatalf("fabriq-worker: register extension: %v", err)

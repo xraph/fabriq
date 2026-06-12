@@ -147,7 +147,7 @@ func (a *Adapter) DropTarget(ctx context.Context, target string) error {
 }
 
 // run executes one GRAPH.* command and decodes header + rows.
-func (a *Adapter) run(ctx context.Context, cmd, graph, cypher string, params map[string]any) ([]string, [][]any, error) {
+func (a *Adapter) run(ctx context.Context, cmd, graph, cypher string, params map[string]any) (cols []string, rows [][]any, err error) {
 	prefix, err := cypherParams(params)
 	if err != nil {
 		return nil, nil, err
@@ -162,7 +162,7 @@ func (a *Adapter) run(ctx context.Context, cmd, graph, cypher string, params map
 		return nil, nil, nil
 	}
 	header, _ := top[0].([]any)
-	cols := make([]string, 0, len(header))
+	cols = make([]string, 0, len(header))
 	for _, h := range header {
 		switch v := h.(type) {
 		case string:
@@ -177,7 +177,7 @@ func (a *Adapter) run(ctx context.Context, cmd, graph, cypher string, params map
 		}
 	}
 	rawRows, _ := top[1].([]any)
-	rows := make([][]any, 0, len(rawRows))
+	rows = make([][]any, 0, len(rawRows))
 	for _, rr := range rawRows {
 		cells, ok := rr.([]any)
 		if !ok {

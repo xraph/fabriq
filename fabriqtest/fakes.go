@@ -406,7 +406,16 @@ func (g *FakeGraph) TraverseAndHydrate(ctx context.Context, cypher string, param
 }
 
 // ApplyMutations implements the projection write path with version gating.
-func (g *FakeGraph) ApplyMutations(_ context.Context, target string, muts []projection.Mutation) error {
+// target "" resolves to the tenant's live graph (tenant from ctx), the
+// same contract real sinks implement.
+func (g *FakeGraph) ApplyMutations(ctx context.Context, target string, muts []projection.Mutation) error {
+	if target == "" {
+		tid, err := tenant.Require(ctx)
+		if err != nil {
+			return err
+		}
+		target = registry.GraphName(tid)
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	mg, ok := g.graphs[target]
@@ -734,13 +743,15 @@ func stateKey(tenantID, proj, aggregate, aggID string) string {
 	return tenantID + "|" + proj + "|" + aggregate + "|" + aggID
 }
 
-// SetApplied records that a projection has applied an aggregate version.
-func (f *FakeProjectionState) SetApplied(tenantID, proj, aggregate, aggID string, version int64) {
+// SetApplied records that a projection has applied an aggregate version
+// (implements projection.AppliedRecorder; the watermark never regresses).
+func (f *FakeProjectionState) SetApplied(_ context.Context, tenantID, proj, aggregate, aggID string, version int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if version > f.applied[stateKey(tenantID, proj, aggregate, aggID)] {
 		f.applied[stateKey(tenantID, proj, aggregate, aggID)] = version
 	}
+	return nil
 }
 
 // AppliedVersion implements projection.StateReader.

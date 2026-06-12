@@ -182,7 +182,7 @@ func TestFabriq_WaitForProjection(t *testing.T) {
 	// Projection catches up after 20ms.
 	go func() {
 		time.Sleep(20 * time.Millisecond)
-		w.Projections.SetApplied("acme", "graph", "site", "S1", 3)
+		_ = w.Projections.SetApplied(context.Background(), "acme", "graph", "site", "S1", 3)
 	}()
 	if err := f.WaitForProjection(ctx, "graph", "site", "S1", 3); err != nil {
 		t.Fatalf("WaitForProjection: %v", err)

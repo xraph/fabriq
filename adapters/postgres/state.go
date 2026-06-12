@@ -59,6 +59,26 @@ func (r *StateRepo) Get(ctx context.Context, tenantID, proj string) (projection.
 	return s, nil
 }
 
+// Tenants lists every tenant that has ever emitted an event (worker-plane
+// discovery for rebuild --all-tenants and the reconciler; the outbox has
+// no RLS, so this sees across tenants by design).
+func (r *StateRepo) Tenants(ctx context.Context) ([]string, error) {
+	rows, err := r.pg.Query(ctx, `SELECT DISTINCT tenant_id FROM fabriq_outbox ORDER BY tenant_id`)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: list tenants: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // Upsert implements projection.StateRepo.
 func (r *StateRepo) Upsert(ctx context.Context, s projection.State) error {
 	_, err := r.pg.Exec(ctx, `INSERT INTO fabriq_projection_state

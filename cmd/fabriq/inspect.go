@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/xraph/forge/cli"
 
+	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/domain"
@@ -79,13 +81,118 @@ func inspectCommand() cli.Command {
 }
 
 func rebuildCommand() cli.Command {
-	cmd := cli.NewCommand("rebuild", "Blue-green projection rebuild for a tenant", func(_ cli.CommandContext) error {
-		return cliError("rebuild is not implemented yet (phase 4: graph projection + blue-green rebuild)")
+	cmd := cli.NewCommand("rebuild", "Blue-green projection rebuild for a tenant", func(ctx cli.CommandContext) error {
+		dsn, ok := dsnFromContext(ctx)
+		if !ok {
+			return errMissingDSN
+		}
+		proj := ctx.String("projection")
+		if proj != "graph" {
+			return cliError("--projection must be graph (search rebuild lands with phase 5 wiring)")
+		}
+		falkorAddr := ctx.String("falkordb")
+		if falkorAddr == "" {
+			falkorAddr = os.Getenv("FABRIQ_FALKORDB_ADDR")
+		}
+		if falkorAddr == "" {
+			return cliError("--falkordb (or FABRIQ_FALKORDB_ADDR) is required for graph rebuilds")
+		}
+
+		r := registry.New()
+		if err := domain.RegisterAll(r); err != nil {
+			return err
+		}
+		_, stores, err := fabriq.Open(ctx.Context(), r, fabriq.Config{
+			Postgres: fabriq.PostgresConfig{DSN: dsn},
+			FalkorDB: fabriq.FalkorDBConfig{Addr: falkorAddr},
+		})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = stores.Close() }()
+
+		rebuilder, err := stores.GraphRebuilder(r)
+		if err != nil {
+			return err
+		}
+
+		tenants := []string{ctx.String("tenant")}
+		if ctx.Bool("all-tenants") {
+			tenants, err = stores.Postgres.ProjectionState().Tenants(ctx.Context())
+			if err != nil {
+				return err
+			}
+		} else if tenants[0] == "" {
+			return cliError("--tenant is required (or pass --all-tenants)")
+		}
+
+		for _, tenantID := range tenants {
+			oldTarget, newTarget, err := rebuilder.Rebuild(ctx.Context(), tenantID)
+			if err != nil {
+				return err
+			}
+			ctx.Success(fmt.Sprintf("tenant %s: built %s (was %q), status=soaking", tenantID, newTarget, oldTarget))
+			if ctx.Bool("drop-old") {
+				if oldTarget == "" {
+					oldTarget = "tenant_" + tenantID // the unversioned initial live graph
+				}
+				if err := rebuilder.Finalize(ctx.Context(), tenantID, oldTarget); err != nil {
+					return err
+				}
+				ctx.Success(fmt.Sprintf("tenant %s: dropped %s, status=live", tenantID, oldTarget))
+			} else {
+				ctx.Info(fmt.Sprintf("soak, then: fabriq rebuild finalize --tenant %s --old %s", tenantID, oldTarget))
+			}
+		}
+		return nil
 	})
 	cmd.AddFlag(cli.NewStringFlag("dsn", "", "Postgres DSN (or FABRIQ_POSTGRES_DSN)", ""))
+	cmd.AddFlag(cli.NewStringFlag("falkordb", "", "FalkorDB address (or FABRIQ_FALKORDB_ADDR)", ""))
 	cmd.AddFlag(cli.NewStringFlag("tenant", "t", "tenant id", ""))
-	cmd.AddFlag(cli.NewStringFlag("projection", "p", "graph|search", ""))
+	cmd.AddFlag(cli.NewStringFlag("projection", "p", "graph|search", "graph"))
 	cmd.AddFlag(cli.NewBoolFlag("all-tenants", "", "rebuild every tenant", false))
+	cmd.AddFlag(cli.NewBoolFlag("drop-old", "", "drop the old target immediately instead of soaking", false))
+
+	finalize := cli.NewCommand("finalize", "End the soak: drop the old target, mark live", func(ctx cli.CommandContext) error {
+		dsn, ok := dsnFromContext(ctx)
+		if !ok {
+			return errMissingDSN
+		}
+		falkorAddr := ctx.String("falkordb")
+		if falkorAddr == "" {
+			falkorAddr = os.Getenv("FABRIQ_FALKORDB_ADDR")
+		}
+		tenantID := ctx.String("tenant")
+		if tenantID == "" || falkorAddr == "" {
+			return cliError("--tenant and --falkordb are required")
+		}
+		r := registry.New()
+		if err := domain.RegisterAll(r); err != nil {
+			return err
+		}
+		_, stores, err := fabriq.Open(ctx.Context(), r, fabriq.Config{
+			Postgres: fabriq.PostgresConfig{DSN: dsn},
+			FalkorDB: fabriq.FalkorDBConfig{Addr: falkorAddr},
+		})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = stores.Close() }()
+		rebuilder, err := stores.GraphRebuilder(r)
+		if err != nil {
+			return err
+		}
+		if err := rebuilder.Finalize(ctx.Context(), tenantID, ctx.String("old")); err != nil {
+			return err
+		}
+		ctx.Success("finalized: status=live")
+		return nil
+	})
+	finalize.AddFlag(cli.NewStringFlag("dsn", "", "Postgres DSN (or FABRIQ_POSTGRES_DSN)", ""))
+	finalize.AddFlag(cli.NewStringFlag("falkordb", "", "FalkorDB address (or FABRIQ_FALKORDB_ADDR)", ""))
+	finalize.AddFlag(cli.NewStringFlag("tenant", "t", "tenant id", ""))
+	finalize.AddFlag(cli.NewStringFlag("old", "", "old target to drop", ""))
+	_ = cmd.AddSubcommand(finalize)
 	return cmd
 }
 
