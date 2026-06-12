@@ -91,9 +91,12 @@ only by auth middleware from validated claims.
 - Binaries: `fabriq` CLI (`migrate`, `rebuild` incl. `finalize`,
   `reconcile`, `inspect`), `fabriq-worker`, `api-example`.
 
-**Deferred by design (phase 7):** the CRDT document plane implementation
-(sync transport, materialization, compaction) — the seam (ports,
-migrations, `Hub.PublishRaw`, `core/document/DESIGN.md`) is in place.
+- **CRDT document plane** (phase 7): append-only update log folded
+  through grove's merge engine, seq-vector Sync, compaction, and
+  quiet-window materialization emitting ONE ordinary versioned event —
+  CRDT docs are normal entities downstream (integration-tested end to
+  end, including post-merge validation flagging). Remaining: the live
+  sync transport endpoint (Hub.PublishRaw seam in place).
 
 ## Development
 

@@ -1,11 +1,16 @@
 package domain
 
-import "github.com/xraph/fabriq/core/registry"
+import (
+	"time"
+
+	"github.com/xraph/fabriq/core/registry"
+)
 
 // RegisterAll registers the TWINOS domain pack. Call it once at startup;
 // follow with reg.Validate() (fabriq.New does both).
 func RegisterAll(reg *registry.Registry) error {
-	specs := []registry.EntitySpec{
+	specs := make([]registry.EntitySpec, 0, 4)
+	specs = append(specs, []registry.EntitySpec{
 		{
 			Name:      "site",
 			Kind:      registry.KindAggregate,
@@ -37,7 +42,18 @@ func RegisterAll(reg *registry.Registry) error {
 			Search:    registry.SearchSpec{Index: "tags", Fields: []string{"name", "unit"}},
 			Subscribe: []registry.Scope{registry.ByID, registry.ByField("asset", "asset_id"), registry.ByTenant},
 		},
-	}
+	}...)
+	specs = append(specs, registry.EntitySpec{
+		Name:  "page",
+		Kind:  registry.KindDocument,
+		Model: (*Page)(nil),
+		CRDT: &registry.CRDTSpec{
+			Engine:        "grove-crdt",
+			SnapshotEvery: 64,
+			QuietWindow:   2 * time.Second,
+		},
+		Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},
+	})
 	for _, spec := range specs {
 		if err := reg.Register(spec); err != nil {
 			return err
