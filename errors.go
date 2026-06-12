@@ -1,17 +1,15 @@
 package fabriq
 
 import (
-	"errors"
-	"fmt"
-
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/tenant"
 )
 
 // Sentinel errors form fabriq's typed taxonomy. Callers branch with
 // errors.Is; rich variants (VersionConflictError, NotFoundError) carry
-// detail and still match their sentinel. Sentinels needed inside core
-// packages are defined there (root imports core, never the reverse) and
-// aliased here so call sites can uniformly use fabriq.ErrX.
+// detail and still match their sentinel. The canonical values live in core
+// packages (root imports core, never the reverse) and are aliased here so
+// application code uniformly writes fabriq.ErrX.
 var (
 	// ErrNoTenant is returned for any fabric call whose context was not
 	// stamped with a tenant by auth middleware.
@@ -24,46 +22,23 @@ var (
 
 	// ErrNotFound is returned when an aggregate or row does not exist
 	// within the calling tenant's scope.
-	ErrNotFound = errors.New("fabriq: not found")
+	ErrNotFound = fabriqerr.ErrNotFound
 
 	// ErrVersionConflict is returned when a command's expected version
 	// does not match the stored aggregate version.
-	ErrVersionConflict = errors.New("fabriq: version conflict")
+	ErrVersionConflict = fabriqerr.ErrVersionConflict
 
 	// ErrProjectionLag is returned by WaitForProjection when the deadline
 	// expires before the projection catches up to the requested version.
-	ErrProjectionLag = errors.New("fabriq: projection lagging")
+	ErrProjectionLag = fabriqerr.ErrProjectionLag
 
 	// ErrStoreNotConfigured is returned by capability ports whose backing
 	// store was not configured on Open (e.g. Graph() without FalkorDB).
-	ErrStoreNotConfigured = errors.New("fabriq: store not configured")
+	ErrStoreNotConfigured = fabriqerr.ErrStoreNotConfigured
 )
 
 // VersionConflictError reports an optimistic-concurrency failure.
-type VersionConflictError struct {
-	Aggregate string
-	AggID     string
-	Expected  int64
-	Actual    int64
-}
-
-func (e *VersionConflictError) Error() string {
-	return fmt.Sprintf("fabriq: version conflict on %s/%s: expected %d, actual %d",
-		e.Aggregate, e.AggID, e.Expected, e.Actual)
-}
-
-// Is makes errors.Is(err, ErrVersionConflict) match.
-func (e *VersionConflictError) Is(target error) bool { return target == ErrVersionConflict }
+type VersionConflictError = fabriqerr.VersionConflictError
 
 // NotFoundError reports a missing aggregate within the tenant's scope.
-type NotFoundError struct {
-	Entity string
-	ID     string
-}
-
-func (e *NotFoundError) Error() string {
-	return fmt.Sprintf("fabriq: %s %q not found", e.Entity, e.ID)
-}
-
-// Is makes errors.Is(err, ErrNotFound) match.
-func (e *NotFoundError) Is(target error) bool { return target == ErrNotFound }
+type NotFoundError = fabriqerr.NotFoundError
