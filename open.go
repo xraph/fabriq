@@ -50,13 +50,13 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 	allOpts := append(cfg.Options(), opts...)
 
 	if cfg.Redis.Addr != "" {
-		rd, err := redis.Open(ctx, redis.Config{
+		rd, rerr := redis.Open(ctx, redis.Config{
 			Addr: cfg.Redis.Addr, DB: cfg.Redis.DB,
 			Username: cfg.Redis.Username, Password: cfg.Redis.Password,
 		}, redis.WithChannelMaxLen(cfg.Subscriptions.StreamMaxLen))
-		if err != nil {
+		if rerr != nil {
 			_ = pg.Close()
-			return nil, nil, err
+			return nil, nil, rerr
 		}
 		stores.Redis = rd
 		allOpts = append(allOpts, withTailer(rd))
