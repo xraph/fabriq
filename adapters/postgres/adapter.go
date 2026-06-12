@@ -38,7 +38,6 @@ import (
 type Adapter struct {
 	gdb      *grove.DB
 	pg       *pgdriver.PgDB
-	dsn      string
 	reg      *registry.Registry
 	backstop *tenantBackstop
 	state    *StateRepo
@@ -91,7 +90,7 @@ func Open(ctx context.Context, dsn string, reg *registry.Registry, opts ...Optio
 	backstop := newTenantBackstop(reg, cfg.guardedTables)
 	gdb.Hooks().AddHook(backstop)
 
-	a := &Adapter{gdb: gdb, pg: pg, dsn: dsn, reg: reg, backstop: backstop}
+	a := &Adapter{gdb: gdb, pg: pg, reg: reg, backstop: backstop}
 	a.state = &StateRepo{pg: pg}
 	return a, nil
 }

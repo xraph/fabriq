@@ -23,7 +23,6 @@ import (
 // Elector) — multiple relays are safe (SKIP LOCKED) but waste publishes.
 type Relay struct {
 	pg           *pgdriver.PgDB
-	dsn          string
 	reg          *registry.Registry
 	pub          event.Publisher
 	batch        int
@@ -62,7 +61,6 @@ func WithRelayOnPublish(fn func(n int)) RelayOption {
 func NewRelay(a *Adapter, reg *registry.Registry, pub event.Publisher, opts ...RelayOption) *Relay {
 	r := &Relay{
 		pg:           a.pg,
-		dsn:          a.dsn,
 		reg:          reg,
 		pub:          pub,
 		batch:        128,
@@ -77,9 +75,7 @@ func NewRelay(a *Adapter, reg *registry.Registry, pub event.Publisher, opts ...R
 // Run drains until ctx ends.
 func (r *Relay) Run(ctx context.Context) error {
 	wake := make(chan struct{}, 1)
-	if r.dsn != "" {
-		go notifyLoop(ctx, r.dsn, "fabriq_outbox", wake)
-	}
+	go notifyLoop(ctx, r.pg, "fabriq_outbox", wake)
 
 	ticker := time.NewTicker(r.pollInterval)
 	defer ticker.Stop()
