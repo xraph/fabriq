@@ -39,6 +39,7 @@ type Fabriq struct {
 	hub      *subscribe.Hub
 	gate     *subscribe.Gate
 	settings settings
+	stores   *Stores // set by Open; nil when assembled from explicit ports
 }
 
 var _ query.Fabric = (*Fabriq)(nil)
@@ -70,11 +71,15 @@ func New(reg *registry.Registry, ports Ports, opts ...Option) (*Fabriq, error) {
 		return nil, err
 	}
 
+	hubOpts := []subscribe.HubOption{subscribe.WithConflationWindow(s.conflationWindow)}
+	if s.tailer != nil {
+		hubOpts = append(hubOpts, subscribe.WithTailer(s.tailer))
+	}
 	return &Fabriq{
 		reg:      reg,
 		exec:     exec,
 		ports:    ports,
-		hub:      subscribe.NewHub(subscribe.WithConflationWindow(s.conflationWindow)),
+		hub:      subscribe.NewHub(hubOpts...),
 		gate:     subscribe.NewGate(reg, s.authz),
 		settings: s,
 	}, nil
@@ -88,11 +93,32 @@ func (f *Fabriq) Registry() *registry.Registry { return f.reg }
 // subscribes through Subscribe, never directly.
 func (f *Fabriq) Hub() *subscribe.Hub { return f.hub }
 
-// Close drains and stops the subscription hub.
+// Close drains the subscription hub and, when this Fabriq was built by
+// Open, closes the underlying stores.
 func (f *Fabriq) Close() error {
 	f.hub.Flush()
 	f.hub.Close()
+	if f.stores != nil {
+		return f.stores.Close()
+	}
 	return nil
+}
+
+// CatchUp reads the deltas a reconnecting client missed on a scope's
+// channel since afterID (its SSE Last-Event-ID), through the same authz
+// gate as Subscribe. An empty slice with no error means the client is
+// current; channels are short (MAXLEN~), so callers must treat a full
+// page as "refetch instead". Delivery overlap with a live Subscribe is
+// possible — consumers dedupe by StreamID.
+func (f *Fabriq) CatchUp(ctx context.Context, scope query.SubscribeScope, afterID string, limit int) ([]query.Delta, error) {
+	if f.settings.tailer == nil {
+		return nil, fmt.Errorf("fabriq: catch-up: %w", ErrStoreNotConfigured)
+	}
+	channel, err := f.gate.Resolve(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	return f.settings.tailer.ReadRange(ctx, channel, afterID, limit)
 }
 
 // Exec implements query.Fabric.
