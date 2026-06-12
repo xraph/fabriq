@@ -20,7 +20,8 @@ var migration0007CRDTUpdates = &migrate.Migration{
 	Version: "202606120007",
 	Comment: "CRDT document plane: append-only update log + snapshots",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
-		stmts := []string{
+		stmts := make([]string, 0, 10)
+		stmts = append(stmts,
 			`CREATE TABLE IF NOT EXISTS fabriq_crdt_updates (
 				doc_id      TEXT NOT NULL,
 				seq         BIGINT GENERATED ALWAYS AS IDENTITY,
@@ -36,7 +37,7 @@ var migration0007CRDTUpdates = &migrate.Migration{
 				last_seq  BIGINT NOT NULL,
 				at        TIMESTAMPTZ NOT NULL DEFAULT now()
 			)`,
-		}
+		)
 		for _, table := range []string{"fabriq_crdt_updates", "fabriq_crdt_snapshots"} {
 			stmts = append(stmts,
 				`ALTER TABLE `+table+` ENABLE ROW LEVEL SECURITY`,
