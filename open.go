@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xraph/fabriq/adapters/elastic"
 	"github.com/xraph/fabriq/adapters/falkordb"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
@@ -79,6 +80,18 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		ports.Graph = fk
 	}
 
+	if len(cfg.Elasticsearch.Addrs) > 0 {
+		es, eerr := elastic.Open(ctx, elastic.Config{
+			Addrs: cfg.Elasticsearch.Addrs, Username: cfg.Elasticsearch.Username, Password: cfg.Elasticsearch.Password,
+		}, reg, elastic.WithModelVersionResolver(liveSearchModelVersion(pg.ProjectionState())))
+		if eerr != nil {
+			_ = stores.Close()
+			return nil, nil, eerr
+		}
+		stores.Elastic = es
+		ports.Search = es
+	}
+
 	f, err := New(reg, ports, allOpts...)
 	if err != nil {
 		_ = stores.Close()
@@ -94,6 +107,7 @@ type Stores struct {
 	Postgres *postgres.Adapter
 	Redis    *redis.Adapter
 	Falkor   *falkordb.Adapter
+	Elastic  *elastic.Adapter
 }
 
 // Close releases every opened adapter.
@@ -162,6 +176,87 @@ func (s *Stores) GraphRebuilder(reg *registry.Registry) (*projection.Rebuilder, 
 		Snapshot:   s.Postgres,
 		TargetName: registry.GraphNameVersioned,
 	}, nil
+}
+
+// SearchEngine assembles the search projection consumer: Redis consumer
+// group -> registry-derived applier -> Elasticsearch sink with external
+// version gating. Run one per worker replica.
+func (s *Stores) SearchEngine(reg *registry.Registry, upcasters *event.UpcasterChain) (*projection.Engine, error) {
+	if s.Redis == nil || s.Elastic == nil || s.Postgres == nil {
+		return nil, fmt.Errorf("fabriq: search engine needs postgres, redis and elasticsearch configured")
+	}
+	repo := s.Postgres.ProjectionState()
+	return &projection.Engine{
+		Projection: "search",
+		Group:      "proj:search",
+		Source:     s.Redis,
+		Sink:       s.Elastic,
+		Applier:    projection.SearchApplier(reg),
+		Upcasters:  upcasters,
+		State:      repo,
+		TargetsFor: func(ctx context.Context, tenantID string) ([]string, error) {
+			st, err := repo.Get(ctx, tenantID, "search")
+			if err != nil {
+				return nil, err
+			}
+			if st.Status == "building" {
+				return []string{"", elastic.SearchTargetName(tenantID, st.ModelVersion+1)}, nil
+			}
+			return []string{""}, nil
+		},
+	}, nil
+}
+
+// SearchRebuilder assembles the blue-green rebuilder for the search
+// projection; the alias swap rides the flip (OnFlip).
+func (s *Stores) SearchRebuilder(reg *registry.Registry) (*projection.Rebuilder, error) {
+	if s.Elastic == nil || s.Postgres == nil {
+		return nil, fmt.Errorf("fabriq: search rebuilder needs postgres and elasticsearch configured")
+	}
+	return &projection.Rebuilder{
+		Projection: "search",
+		State:      s.Postgres.ProjectionState(),
+		Sink:       s.Elastic,
+		Applier:    projection.SearchApplier(reg),
+		Snapshot:   s.Postgres,
+		TargetName: elastic.SearchTargetName,
+		OnFlip:     s.Elastic.FlipAliases,
+	}, nil
+}
+
+// liveSearchModelVersion resolves the live search model version through
+// projection_state, with a small TTL cache (same pattern as the graph
+// resolver).
+func liveSearchModelVersion(repo *postgres.StateRepo) elastic.ModelVersionResolver {
+	type entry struct {
+		version int
+		exp     time.Time
+	}
+	var mu sync.Mutex
+	cache := map[string]entry{}
+	const ttl = 2 * time.Second
+
+	return func(ctx context.Context, tenantID string) (int, error) {
+		mu.Lock()
+		if e, ok := cache[tenantID]; ok && time.Now().Before(e.exp) {
+			mu.Unlock()
+			return e.version, nil
+		}
+		mu.Unlock()
+
+		st, err := repo.Get(ctx, tenantID, "search")
+		if err != nil {
+			return 0, err
+		}
+		v := st.ModelVersion
+		if v < 1 {
+			v = 1
+		}
+		mu.Lock()
+		cache[tenantID] = entry{version: v, exp: time.Now().Add(ttl)}
+		mu.Unlock()
+		return v, nil
+	}
 }
 
 // liveGraphResolver resolves a tenant's live graph through

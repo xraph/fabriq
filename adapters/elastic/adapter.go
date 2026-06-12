@@ -1,52 +1,102 @@
-// Package elastic is fabriq's search adapter (PHASE 5 — SCAFFOLD).
+// Package elastic is fabriq's search adapter on go-elasticsearch.
 //
-// PLANNED SHAPE (see also index.go and mutate.go):
-//
-//   - adapter.go: SearchQuerier on go-elasticsearch/v8 (the client dep is
-//     added when the implementation lands, keeping the scaffold light).
-//     Search(q) runs a multi_match over the entity's declared fields
-//     against the tenant's ALIAS (registry.SearchIndexAlias).
-//   - mutate.go: DocIndex/DocDeindex -> _bulk ops with external_gte
-//     versioning (the Version field gates idempotency engine-side).
-//   - index.go: versioned indexes (registry.SearchIndexVersioned) behind
-//     atomic alias swaps — rebuilds create assets_v{N+1}, reindex FROM
-//     POSTGRES (never from the old index), then swap the alias in one
-//     _aliases call and drop the old index after soak.
-//
-// Until then every method returns ErrStoreNotConfigured-shaped errors so
-// misconfiguration is loud, and the facade's Search() port stays typed.
+// Tenancy and blue-green routing live in index naming, derived solely
+// from core/registry: reads hit the per-tenant ALIAS
+// (fabriq_{tenant}_{base}), writes hit the versioned index behind it
+// (fabriq_{tenant}_{base}_v{N}); rebuilds build _v{N+1} and swap the
+// alias atomically. Idempotency is engine-side: every bulk op carries the
+// aggregate version with version_type=external_gte, so stale replays are
+// version conflicts (treated as success).
 package elastic
 
 import (
 	"context"
 	"fmt"
+	"io"
+	"strings"
+	"sync"
 
-	"github.com/xraph/fabriq/core/fabriqerr"
-	"github.com/xraph/fabriq/core/projection"
+	elasticsearch "github.com/elastic/go-elasticsearch/v9"
+
 	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/registry"
 )
 
-// Adapter implements query.SearchQuerier (phase 5).
-type Adapter struct{}
+// Config locates the Elasticsearch cluster.
+type Config struct {
+	Addrs    []string
+	Username string
+	Password string
+}
+
+// ModelVersionResolver reports the live search model version for a tenant
+// (projection_state-backed in production; defaults to 1).
+type ModelVersionResolver func(ctx context.Context, tenantID string) (int, error)
+
+// Adapter implements query.SearchQuerier.
+type Adapter struct {
+	es           *elasticsearch.Client
+	reg          *registry.Registry
+	modelVersion ModelVersionResolver
+
+	mu      sync.Mutex
+	ensured map[string]struct{} // index names already created
+	aliased map[string]struct{} // aliases already pointed
+}
 
 var _ query.SearchQuerier = (*Adapter)(nil)
 
-func errPending(op string) error {
-	return fmt.Errorf("fabriq: elasticsearch %s not implemented yet (phase 5): %w", op, fabriqerr.ErrStoreNotConfigured)
+// Option customizes the adapter.
+type Option func(*Adapter)
+
+// WithModelVersionResolver wires the projection_state-backed live version.
+func WithModelVersionResolver(fn ModelVersionResolver) Option {
+	return func(a *Adapter) {
+		if fn != nil {
+			a.modelVersion = fn
+		}
+	}
 }
 
-// Search implements query.SearchQuerier.
-//
-// TODO(phase 5): multi_match over declared fields, tenant alias routing,
-// hits into *[]map[string]any.
-func (a *Adapter) Search(context.Context, query.SearchQuery, any) error {
-	return errPending("Search")
+// Open dials Elasticsearch and pings it.
+func Open(_ context.Context, cfg Config, reg *registry.Registry, opts ...Option) (*Adapter, error) {
+	client, err := elasticsearch.NewClient(elasticsearch.Config{
+		Addresses: cfg.Addrs,
+		Username:  cfg.Username,
+		Password:  cfg.Password,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: elasticsearch client: %w", err)
+	}
+	res, err := client.Info()
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: elasticsearch ping: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return nil, fmt.Errorf("fabriq: elasticsearch ping: %s", res.String())
+	}
+	a := &Adapter{
+		es:           client,
+		reg:          reg,
+		modelVersion: func(context.Context, string) (int, error) { return 1, nil },
+		ensured:      map[string]struct{}{},
+		aliased:      map[string]struct{}{},
+	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a, nil
 }
 
-// ApplyMutations implements query.SearchQuerier.
-//
-// TODO(phase 5): translate to _bulk index/delete with external_gte
-// version gating; one bulk request per consumed batch.
-func (a *Adapter) ApplyMutations(context.Context, string, []projection.Mutation) error {
-	return errPending("ApplyMutations")
+// drainAndClose consumes a response body so the connection is reusable.
+func drainAndClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, body)
+	_ = body.Close()
+}
+
+func isVersionConflict(item map[string]any) bool {
+	errObj, _ := item["error"].(map[string]any)
+	t, _ := errObj["type"].(string)
+	return strings.Contains(t, "version_conflict")
 }

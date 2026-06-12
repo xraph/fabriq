@@ -41,6 +41,10 @@ type Rebuilder struct {
 	Snapshot   Snapshotter
 	// TargetName derives the versioned build target (registry naming).
 	TargetName func(tenantID string, modelVersion int) string
+	// OnFlip runs right after the state pointer flips — the seam for
+	// engine-side cutovers that must accompany it (Elasticsearch swaps
+	// the tenant aliases here, atomically, in one _aliases call).
+	OnFlip func(ctx context.Context, tenantID string, oldModelVersion, newModelVersion int) error
 }
 
 // Rebuild builds and flips; it returns the old and new target names (the
@@ -98,11 +102,17 @@ func (r *Rebuilder) Rebuild(ctx context.Context, tenantID string) (oldTarget, ne
 	}
 
 	// Flip the pointer: readers follow projection_state atomically.
+	oldModel := buildVersion - 1
 	st.ModelVersion = buildVersion
 	st.TargetName = newTarget
 	st.Status = "soaking"
 	if err := r.State.Upsert(ctx, st); err != nil {
 		return "", "", err
+	}
+	if r.OnFlip != nil {
+		if err := r.OnFlip(ctx, tenantID, oldModel, buildVersion); err != nil {
+			return "", "", fmt.Errorf("fabriq: flip cutover %s/%s: %w", tenantID, r.Projection, err)
+		}
 	}
 	return oldTarget, newTarget, nil
 }

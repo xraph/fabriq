@@ -216,7 +216,7 @@ func TestSearchApplier_DeleteDeindexes(t *testing.T) {
 		t.Fatalf("got %d mutations, want 1", len(muts))
 	}
 	de, ok := muts[0].(projection.DocDeindex)
-	if !ok || de.Index != "assets" || de.ID != "A1" {
+	if !ok || de.Index != "assets" || de.ID != "A1" || de.Version != 7 {
 		t.Fatalf("muts[0] = %#v, want DocDeindex{assets,A1}", muts[0])
 	}
 }

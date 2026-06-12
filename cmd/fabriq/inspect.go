@@ -9,6 +9,7 @@ import (
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/adapters/postgres"
+	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/domain"
 )
@@ -87,31 +88,47 @@ func rebuildCommand() cli.Command {
 			return errMissingDSN
 		}
 		proj := ctx.String("projection")
-		if proj != "graph" {
-			return cliError("--projection must be graph (search rebuild lands with phase 5 wiring)")
+		if proj != "graph" && proj != "search" {
+			return cliError("--projection must be graph or search")
 		}
-		falkorAddr := ctx.String("falkordb")
-		if falkorAddr == "" {
-			falkorAddr = os.Getenv("FABRIQ_FALKORDB_ADDR")
-		}
-		if falkorAddr == "" {
-			return cliError("--falkordb (or FABRIQ_FALKORDB_ADDR) is required for graph rebuilds")
+		cfg := fabriq.Config{Postgres: fabriq.PostgresConfig{DSN: dsn}}
+		switch proj {
+		case "graph":
+			addr := ctx.String("falkordb")
+			if addr == "" {
+				addr = os.Getenv("FABRIQ_FALKORDB_ADDR")
+			}
+			if addr == "" {
+				return cliError("--falkordb (or FABRIQ_FALKORDB_ADDR) is required for graph rebuilds")
+			}
+			cfg.FalkorDB.Addr = addr
+		case "search":
+			addrs := ctx.String("elasticsearch")
+			if addrs == "" {
+				addrs = os.Getenv("FABRIQ_ELASTICSEARCH_ADDRS")
+			}
+			if addrs == "" {
+				return cliError("--elasticsearch (or FABRIQ_ELASTICSEARCH_ADDRS) is required for search rebuilds")
+			}
+			cfg.Elasticsearch.Addrs = strings.Split(addrs, ",")
 		}
 
 		r := registry.New()
 		if err := domain.RegisterAll(r); err != nil {
 			return err
 		}
-		_, stores, err := fabriq.Open(ctx.Context(), r, fabriq.Config{
-			Postgres: fabriq.PostgresConfig{DSN: dsn},
-			FalkorDB: fabriq.FalkorDBConfig{Addr: falkorAddr},
-		})
+		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = stores.Close() }()
 
-		rebuilder, err := stores.GraphRebuilder(r)
+		var rebuilder *projection.Rebuilder
+		if proj == "graph" {
+			rebuilder, err = stores.GraphRebuilder(r)
+		} else {
+			rebuilder, err = stores.SearchRebuilder(r)
+		}
 		if err != nil {
 			return err
 		}
@@ -134,7 +151,11 @@ func rebuildCommand() cli.Command {
 			ctx.Success(fmt.Sprintf("tenant %s: built %s (was %q), status=soaking", tenantID, newTarget, oldTarget))
 			if ctx.Bool("drop-old") {
 				if oldTarget == "" {
-					oldTarget = "tenant_" + tenantID // the unversioned initial live graph
+					if proj == "graph" {
+						oldTarget = "tenant_" + tenantID // the unversioned initial live graph
+					} else {
+						oldTarget = "v1" // the initial live search model
+					}
 				}
 				if err := rebuilder.Finalize(ctx.Context(), tenantID, oldTarget); err != nil {
 					return err
@@ -148,6 +169,7 @@ func rebuildCommand() cli.Command {
 	})
 	cmd.AddFlag(cli.NewStringFlag("dsn", "", "Postgres DSN (or FABRIQ_POSTGRES_DSN)", ""))
 	cmd.AddFlag(cli.NewStringFlag("falkordb", "", "FalkorDB address (or FABRIQ_FALKORDB_ADDR)", ""))
+	cmd.AddFlag(cli.NewStringFlag("elasticsearch", "", "Elasticsearch addrs, comma-separated (or FABRIQ_ELASTICSEARCH_ADDRS)", ""))
 	cmd.AddFlag(cli.NewStringFlag("tenant", "t", "tenant id", ""))
 	cmd.AddFlag(cli.NewStringFlag("projection", "p", "graph|search", "graph"))
 	cmd.AddFlag(cli.NewBoolFlag("all-tenants", "", "rebuild every tenant", false))

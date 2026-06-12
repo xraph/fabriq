@@ -58,10 +58,13 @@ type DocIndex struct {
 	Version int64
 }
 
-// DocDeindex removes a document from the search projection.
+// DocDeindex removes a document from the search projection. Version
+// carries the originating event version so engines can gate stale replays
+// (external_gte semantics in Elasticsearch).
 type DocDeindex struct {
-	Index string
-	ID    string
+	Index   string
+	ID      string
+	Version int64
 }
 
 func (NodeUpsert) isMutation() {}
