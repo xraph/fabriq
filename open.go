@@ -3,9 +3,14 @@ package fabriq
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
+	"github.com/xraph/fabriq/adapters/falkordb"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
+	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/subscribe"
 )
@@ -62,6 +67,18 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		allOpts = append(allOpts, withTailer(rd))
 	}
 
+	if cfg.FalkorDB.Addr != "" {
+		fk, ferr := falkordb.Open(ctx, falkordb.Config{
+			Addr: cfg.FalkorDB.Addr, Username: cfg.FalkorDB.Username, Password: cfg.FalkorDB.Password,
+		}, reg, pg, falkordb.WithLiveTargetResolver(liveGraphResolver(pg.ProjectionState())))
+		if ferr != nil {
+			_ = stores.Close()
+			return nil, nil, ferr
+		}
+		stores.Falkor = fk
+		ports.Graph = fk
+	}
+
 	f, err := New(reg, ports, allOpts...)
 	if err != nil {
 		_ = stores.Close()
@@ -76,13 +93,19 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 type Stores struct {
 	Postgres *postgres.Adapter
 	Redis    *redis.Adapter
+	Falkor   *falkordb.Adapter
 }
 
 // Close releases every opened adapter.
 func (s *Stores) Close() error {
 	var firstErr error
+	if s.Falkor != nil {
+		if err := s.Falkor.Close(); err != nil {
+			firstErr = err
+		}
+	}
 	if s.Redis != nil {
-		if err := s.Redis.Close(); err != nil {
+		if err := s.Redis.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -92,6 +115,88 @@ func (s *Stores) Close() error {
 		}
 	}
 	return firstErr
+}
+
+// GraphEngine assembles the graph projection consumer over the opened
+// stores: Redis consumer group -> registry-derived applier -> FalkorDB
+// sink, with projection_state bookkeeping and rebuild-aware dual targets.
+// Run one per worker replica (consumer groups scale without election).
+func (s *Stores) GraphEngine(reg *registry.Registry, upcasters *event.UpcasterChain) (*projection.Engine, error) {
+	if s.Redis == nil || s.Falkor == nil || s.Postgres == nil {
+		return nil, fmt.Errorf("fabriq: graph engine needs postgres, redis and falkordb configured")
+	}
+	repo := s.Postgres.ProjectionState()
+	return &projection.Engine{
+		Projection: "graph",
+		Group:      "proj:graph",
+		Source:     s.Redis,
+		Sink:       s.Falkor,
+		Applier:    projection.GraphApplier(reg),
+		Upcasters:  upcasters,
+		State:      repo,
+		TargetsFor: func(ctx context.Context, tenantID string) ([]string, error) {
+			st, err := repo.Get(ctx, tenantID, "graph")
+			if err != nil {
+				return nil, err
+			}
+			if st.Status == "building" {
+				// Live catch-up: feed the building target alongside live.
+				return []string{"", registry.GraphNameVersioned(tenantID, st.ModelVersion+1)}, nil
+			}
+			return []string{""}, nil
+		},
+	}, nil
+}
+
+// GraphRebuilder assembles the blue-green rebuilder for the graph
+// projection (used by `fabriq rebuild` and tests).
+func (s *Stores) GraphRebuilder(reg *registry.Registry) (*projection.Rebuilder, error) {
+	if s.Falkor == nil || s.Postgres == nil {
+		return nil, fmt.Errorf("fabriq: graph rebuilder needs postgres and falkordb configured")
+	}
+	return &projection.Rebuilder{
+		Projection: "graph",
+		State:      s.Postgres.ProjectionState(),
+		Sink:       s.Falkor,
+		Applier:    projection.GraphApplier(reg),
+		Snapshot:   s.Postgres,
+		TargetName: registry.GraphNameVersioned,
+	}, nil
+}
+
+// liveGraphResolver resolves a tenant's live graph through
+// projection_state (blue-green pointer), with a small TTL cache so graph
+// reads don't pay a Postgres round-trip each.
+func liveGraphResolver(repo *postgres.StateRepo) falkordb.TargetResolver {
+	type entry struct {
+		name string
+		exp  time.Time
+	}
+	var mu sync.Mutex
+	cache := map[string]entry{}
+	const ttl = 2 * time.Second
+
+	return func(ctx context.Context, tenantID string) (string, error) {
+		mu.Lock()
+		if e, ok := cache[tenantID]; ok && time.Now().Before(e.exp) {
+			mu.Unlock()
+			return e.name, nil
+		}
+		mu.Unlock()
+
+		st, err := repo.Get(ctx, tenantID, "graph")
+		if err != nil {
+			return "", err
+		}
+		name := st.TargetName
+		if name == "" {
+			name = registry.GraphName(tenantID)
+		}
+		mu.Lock()
+		cache[tenantID] = entry{name: name, exp: time.Now().Add(ttl)}
+		mu.Unlock()
+		return name, nil
+	}
 }
 
 // guardedTables lists tenant tables outside RLS that the raw-SQL guard

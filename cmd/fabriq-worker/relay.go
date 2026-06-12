@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -106,12 +107,44 @@ func (e *workerExtension) Run(ctx context.Context) error {
 
 	relay := postgres.NewRelay(stores.Postgres, e.reg, stores.Redis)
 	elector := postgres.NewElector(stores.Postgres, lockKeyRelay)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		defer close(done)
+		defer wg.Done()
 		_ = elector.Run(runCtx, relay.Run)
+	}()
+
+	// Projection consumers scale by replica count — no election needed.
+	consumer := consumerName()
+	if stores.Falkor != nil {
+		engine, err := stores.GraphEngine(e.reg, nil)
+		if err != nil {
+			cancel()
+			return err
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = engine.Run(runCtx, consumer)
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(done)
 	}()
 	_ = ctx
 	return nil
+}
+
+// consumerName identifies this replica within the consumer groups.
+func consumerName() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "fabriq-worker"
+	}
+	return fmt.Sprintf("%s-%d", host, os.Getpid())
 }
 
 // Shutdown implements forge.RunnableExtension: SIGTERM drain.
