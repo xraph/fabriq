@@ -22,22 +22,32 @@
 
 ## Why the backstop denies instead of asserting predicates
 
-Two grove facts shape this (verified against grove v1.5.2 source):
+**Updated 2026-06-12 (grove commit a01144a):** the three grove gaps this
+section originally worked around are now fixed upstream:
 
-- `grove.Open` does **not** attach its hook engine to the driver; the
-  adapter calls `PgDB.SetHooks` explicitly.
-- `PgTx.txDB()` builds the per-query `PgDB` **without the hooks field**,
-  so in-transaction queries bypass hooks entirely.
+- `grove.Open` propagates its hook engine to `SetHooks`-capable drivers.
+- `PgTx.txDB()` carries the hook engine, so hooks fire inside
+  transactions, with the new `QueryContext.InTransaction` flag marking
+  the path.
+- `QueryContext.Conditions` is populated (best effort) for
+  select/update/delete.
 
-Since fabriq's own paths all run through stamped transactions (where RLS
-is the enforcement), the only surface grove hooks can see is the pool
-path — and in this architecture *any* pool-path access to a tenant table
-is a bug. Denying outright is both stronger and simpler than predicate
-inspection (which the hook context couldn't support anyway: pgdriver does
-not populate `Conditions` for selects).
+The backstop's policy with fixed grove:
 
-Suggested upstream grove improvements (not required by fabriq):
-propagate hooks into `txDB()`, populate `QueryContext.Conditions`.
+- **Transaction path** (`InTransaction == true`): allow. fabriq stamped
+  the tenant with `SET LOCAL` and RLS enforces isolation in the database
+  — a stronger guarantee than any predicate inspection. The hook now
+  *observes* this path (it used to be invisible), which keeps the trip
+  counter honest.
+- **Pool path**: deny with `ErrTenantHookTripped` + metric. In this
+  architecture any pool-path access to a tenant table is a bug — denying
+  outright remains stronger and simpler than predicate-sniffing, though
+  `Conditions` now makes predicate assertions possible for hooks that
+  want them (e.g. twinos privacy hooks).
+
+Until grove cuts a release containing a01144a, fabriq's go.mod carries
+`replace` directives to the local grove checkout (the same co-development
+pattern twinos uses). Drop them on the next grove tag.
 
 ## The one RLS exception
 
