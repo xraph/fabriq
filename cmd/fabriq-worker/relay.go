@@ -129,6 +129,18 @@ func (e *workerExtension) Run(ctx context.Context) error {
 			_ = engine.Run(runCtx, consumer)
 		}()
 	}
+	if stores.Elastic != nil {
+		engine, err := stores.SearchEngine(e.reg, nil)
+		if err != nil {
+			cancel()
+			return err
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = engine.Run(runCtx, consumer)
+		}()
+	}
 
 	go func() {
 		wg.Wait()

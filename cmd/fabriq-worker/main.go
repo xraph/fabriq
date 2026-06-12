@@ -17,6 +17,7 @@ package main
 import (
 	"log"
 	"os"
+	"strings"
 
 	"github.com/xraph/forge"
 
@@ -47,11 +48,15 @@ func main() {
 		HTTPAddress: addr,
 	})
 
-	ext := newWorkerExtension(reg, fabriq.Config{
+	cfg := fabriq.Config{
 		Postgres: fabriq.PostgresConfig{DSN: dsn},
 		Redis:    fabriq.RedisConfig{Addr: redisAddr},
 		FalkorDB: fabriq.FalkorDBConfig{Addr: os.Getenv("FABRIQ_FALKORDB_ADDR")},
-	})
+	}
+	if es := os.Getenv("FABRIQ_ELASTICSEARCH_ADDRS"); es != "" {
+		cfg.Elasticsearch.Addrs = strings.Split(es, ",")
+	}
+	ext := newWorkerExtension(reg, cfg)
 	if err := app.RegisterExtension(ext); err != nil {
 		log.Fatalf("fabriq-worker: register extension: %v", err)
 	}

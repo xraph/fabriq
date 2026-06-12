@@ -88,7 +88,7 @@ func SearchApplier(reg *registry.Registry) Applier {
 		verb := eventVerb(env.Type)
 
 		if verb == registry.VerbDeleted {
-			return []Mutation{DocDeindex{Index: ent.Spec.Search.Index, ID: env.AggID}}, nil
+			return []Mutation{DocDeindex{Index: ent.Spec.Search.Index, ID: env.AggID, Version: env.Version}}, nil
 		}
 		if verb != registry.VerbCreated && verb != registry.VerbUpdated {
 			return nil, nil
