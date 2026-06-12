@@ -145,3 +145,10 @@ type VectorQuery struct {
 	Embedding []float32
 	K         int
 }
+
+// VectorMatch is one nearest-neighbour hit, best first.
+type VectorMatch struct {
+	ID    string
+	Score float64 // cosine similarity, higher is closer
+	Meta  map[string]any
+}
