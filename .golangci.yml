@@ -135,6 +135,11 @@ linters:
         linters: [gosec, errcheck, gocritic, noctx]
       - path: fabriqtest/
         linters: [gosec, errcheck]
+      # internal/metrics is the spec'd package layout; it never collides in
+      # practice (internal import path, no dot-imports allowed).
+      - path: internal/metrics/
+        text: "avoid package names that conflict"
+        linters: [revive]
 
 formatters:
   enable:
