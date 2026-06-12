@@ -67,6 +67,8 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		}
 		stores.Redis = rd
 		allOpts = append(allOpts, withTailer(rd))
+		// With a transport available, document updates fan out live.
+		ports.Documents = &syncingDocStore{DocStore: pg.Documents(), pub: rd, reg: reg}
 	}
 
 	if cfg.FalkorDB.Addr != "" {

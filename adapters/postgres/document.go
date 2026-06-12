@@ -56,37 +56,46 @@ func (d *DocStore) splitDocID(docID string) (*registry.Entity, error) {
 // ApplyUpdate implements document.Store: append one update to the log and
 // touch the doc's activity timestamp (the quiet-window clock).
 func (d *DocStore) ApplyUpdate(ctx context.Context, docID string, update []byte) error {
+	_, err := d.ApplyUpdateWithSeq(ctx, docID, update)
+	return err
+}
+
+// ApplyUpdateWithSeq is ApplyUpdate returning the assigned log seq — the
+// live fan-out decorator stamps it on the published sync frame so clients
+// can detect gaps and fall back to Sync.
+func (d *DocStore) ApplyUpdateWithSeq(ctx context.Context, docID string, update []byte) (int64, error) {
 	ent, err := d.splitDocID(docID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var changes []crdt.ChangeRecord
 	if uerr := json.Unmarshal(update, &changes); uerr != nil || len(changes) == 0 {
-		return fmt.Errorf("fabriq: update for %s is not a non-empty []ChangeRecord: %w", docID, uerr)
+		return 0, fmt.Errorf("fabriq: update for %s is not a non-empty []ChangeRecord: %w", docID, uerr)
 	}
 	tid, err := tenant.Require(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+	var seq int64
+	err = d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		var seqs []updateRow
-		if err := tx.NewRaw(
+		if insErr := tx.NewRaw(
 			`INSERT INTO fabriq_crdt_updates (doc_id, tenant_id, update_data) VALUES ($1, $2, $3) RETURNING seq, update_data`,
-			docID, tid, update).Scan(ctx, &seqs); err != nil {
-			return err
+			docID, tid, update).Scan(ctx, &seqs); insErr != nil {
+			return insErr
 		}
-		seq := int64(0)
 		if len(seqs) == 1 {
 			seq = seqs[0].Seq
 		}
 		// The bookkeeping row carries the high-water mark so the
 		// worker-plane materializer never has to peek into the RLS'd log.
-		_, err := tx.NewRaw(`INSERT INTO fabriq_crdt_docs (doc_id, tenant_id, entity, last_seq)
+		_, upErr := tx.NewRaw(`INSERT INTO fabriq_crdt_docs (doc_id, tenant_id, entity, last_seq)
 			VALUES ($1, $2, $3, $4)
 			ON CONFLICT (doc_id) DO UPDATE SET updated_at = now(), last_seq = GREATEST(fabriq_crdt_docs.last_seq, EXCLUDED.last_seq)`,
 			docID, tid, ent.Spec.Name, seq).Exec(ctx)
-		return err
+		return upErr
 	})
+	return seq, err
 }
 
 type updateRow struct {

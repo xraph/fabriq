@@ -338,7 +338,8 @@ func TestLastEventID(t *testing.T) {
 
 // --- helpers ---------------------------------------------------------------
 
-func receiveN(t *testing.T, ch <-chan query.Delta, n int, timeout time.Duration) []query.Delta {
+func receiveN(t *testing.T, ch <-chan query.Delta, n int, _ time.Duration) []query.Delta {
+	const timeout = time.Second
 	t.Helper()
 	out := make([]query.Delta, 0, n)
 	deadline := time.After(timeout)

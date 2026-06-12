@@ -32,6 +32,9 @@ type channelState struct {
 	nextSub    int
 	conf       *conflator
 	pumpCancel context.CancelFunc
+	// raw channels bypass conflation entirely: every frame, in order —
+	// the document-sync contract. Mode is fixed by the first subscriber.
+	raw bool
 }
 
 // HubOption configures a Hub.
@@ -59,10 +62,22 @@ func NewHub(opts ...HubOption) *Hub {
 	return h
 }
 
-// Subscribe attaches a buffered subscriber to a channel. The returned
-// cancel function detaches and closes the subscriber channel; cancelling
-// the context does the same.
+// Subscribe attaches a buffered subscriber to a conflated delta channel.
+// The returned cancel function detaches and closes the subscriber
+// channel; cancelling the context does the same.
 func (h *Hub) Subscribe(ctx context.Context, channel string, buffer int) (deltas <-chan query.Delta, cancel func(), err error) {
+	return h.subscribe(ctx, channel, buffer, false)
+}
+
+// SubscribeRaw attaches to a RAW channel: every frame is delivered
+// immediately and in order, with no conflation and no coalescing — the
+// document-sync sub-protocol's contract. A channel's mode is fixed by its
+// first subscriber; mixing modes on one channel is an error.
+func (h *Hub) SubscribeRaw(ctx context.Context, channel string, buffer int) (frames <-chan query.Delta, cancel func(), err error) {
+	return h.subscribe(ctx, channel, buffer, true)
+}
+
+func (h *Hub) subscribe(ctx context.Context, channel string, buffer int, raw bool) (deltas <-chan query.Delta, cancel func(), err error) {
 	if buffer <= 0 {
 		buffer = 64
 	}
@@ -72,8 +87,12 @@ func (h *Hub) Subscribe(ctx context.Context, channel string, buffer int) (deltas
 		return nil, nil, fmt.Errorf("fabriq: hub is closed")
 	}
 	cs, ok := h.channels[channel]
+	if ok && cs.raw != raw {
+		return nil, nil, fmt.Errorf("fabriq: channel %q is %s; one delivery mode per channel",
+			channel, modeName(cs.raw))
+	}
 	if !ok {
-		cs = &channelState{subs: make(map[int]chan query.Delta), conf: newConflator(h.window)}
+		cs = &channelState{subs: make(map[int]chan query.Delta), conf: newConflator(h.window), raw: raw}
 		h.channels[channel] = cs
 		if h.tailer != nil {
 			pumpCtx, pumpCancel := context.WithCancel(context.Background())
@@ -123,8 +142,10 @@ func (h *Hub) Subscribe(ctx context.Context, channel string, buffer int) (deltas
 	return ch, cancel, nil
 }
 
-// Publish offers a delta to a channel's conflation buffer; survivors are
-// fanned out when the window elapses.
+// Publish offers a delta to a channel. Conflated channels buffer it (LWW
+// per aggregate, window flush); raw channels deliver immediately in
+// order. The pump calls this for every transport entry, so the channel's
+// mode decides the semantics.
 func (h *Hub) Publish(channel string, d query.Delta) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -135,9 +156,20 @@ func (h *Hub) Publish(channel string, d query.Delta) {
 	if !ok {
 		return // nobody listening; deltas live on in Redis for catch-up
 	}
+	if cs.raw {
+		deliverLocked(cs, []query.Delta{d})
+		return
+	}
 	if cs.conf.offer(d) {
 		cs.conf.timer = time.AfterFunc(h.window, func() { h.flush(channel) })
 	}
+}
+
+func modeName(raw bool) string {
+	if raw {
+		return "raw"
+	}
+	return "conflated"
 }
 
 // PublishRaw bypasses conflation: ordered, complete delivery for protocols
