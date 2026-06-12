@@ -9,13 +9,13 @@
 //     query carries an explicit tenant predicate where applicable.
 //  2. In the database: RLS policies (FORCE) key on that setting, so even
 //     raw SQL through the escape hatch cannot cross tenants.
-//  3. Backstop: a grove pre-query hook DENIES any pool-path access to a
-//     tenant table — in this architecture such access is always a bug —
-//     returning ErrTenantHookTripped and counting the trip.
-//
-// (grove's PgTx builders bypass the hook engine, which is why the hook
-// guards the pool path while RLS guards the transaction path — see
-// docs/decisions/0002-tenancy-layers.md.)
+//  3. Backstop: a grove pre-query/pre-mutation hook observes every query
+//     on both paths (grove >= a01144a fires hooks inside transactions
+//     too). It allows the stamped transaction path — RLS is the guard
+//     there — and DENIES any pool-path access to a tenant table, which
+//     in this architecture is always a bug, returning
+//     ErrTenantHookTripped and counting the trip. See
+//     docs/decisions/0002-tenancy-layers.md.
 package postgres
 
 import (
@@ -86,10 +86,10 @@ func Open(ctx context.Context, dsn string, reg *registry.Registry, opts ...Optio
 		return nil, err
 	}
 
+	// grove.Open propagates its hook engine to the driver (grove >=
+	// a01144a); registering on gdb.Hooks() is all that's needed.
 	backstop := newTenantBackstop(reg, cfg.guardedTables)
-	engine := gdb.Hooks()
-	engine.AddHook(backstop)
-	pg.SetHooks(engine) // grove.Open does NOT propagate; explicit by design
+	gdb.Hooks().AddHook(backstop)
 
 	a := &Adapter{gdb: gdb, pg: pg, dsn: dsn, reg: reg, backstop: backstop}
 	a.state = &StateRepo{pg: pg}

@@ -23,7 +23,7 @@
 
 - `pgdriver.New().Open(ctx, dsn, opts...)` → `grove.Open(pgdb)`; `db.Driver().(*pgdriver.PgDB)` recovers the typed driver.
 - **Transactions:** `PgDB.BeginTxQuery(ctx, *driver.TxOptions) (*PgTx, error)`; `PgTx` exposes `NewSelect/NewInsert/NewUpdate/NewDelete/NewRaw` + `Commit/Rollback`. Raw SQL inside tx: `PgTx.NewRaw("SET LOCAL app.tenant_id = ...")`.
-- **Hooks:** `PgDB.SetHooks(*hook.Engine)` must be called explicitly (grove.Open does NOT propagate). `hook.PreQueryHook.BeforeQuery(ctx, *hook.QueryContext) (*hook.HookResult, error)`; Deny aborts. **`PgTx.txDB()` drops the hooks field → in-tx queries bypass hooks. Therefore: hook backstop guards the pool path; the tx path is guarded by `SET LOCAL app.tenant_id` + RLS (ADR-0002).**
+- **Hooks:** `hook.PreQueryHook.BeforeQuery(ctx, *hook.QueryContext) (*hook.HookResult, error)`; Deny aborts. ~~grove.Open does NOT propagate; PgTx drops hooks~~ **FIXED upstream (grove a01144a, 2026-06-12): Open propagates to SetHooks-capable drivers, PgTx carries hooks, `QueryContext.InTransaction` marks the path, `Conditions` populated.** Backstop policy: allow in-tx (RLS guards), deny pool-path (ADR-0002).
 - **Migrations:** `migrate.NewGroup(name, opts...)`, `group.MustRegister(&migrate.Migration{Name, Version, Up, Down})`, `MigrateFunc = func(ctx, migrate.Executor) error`; executor for pg via `import _ ".../pgdriver/pgmigrate"` then `migrate.NewExecutorFor(pgDB)`; `migrate.NewOrchestrator(exec, groups...)` → `Migrate/Rollback/Status`; built-in lock table (`AcquireLock`).
 - **Forge app:** `forge.New(opts...)`; `app.Router().GET/POST/SSE(path, handler, opts...)`; handler `func(ctx forge.Context) error`; `ctx.WriteSSE(event, data)`; health endpoints `/_/health`, `/_/livez`, `/_/readyz`, metrics `/_/metrics`; `RunnableExtension{Run(ctx), Shutdown(ctx)}` for background loops.
 - **Forge CLI:** `cli.New(cli.Config{Name, Version, Description})`, `cli.NewCommand(name, desc, func(ctx cli.CommandContext) error)`, `cmd.AddFlag(cli.NewStringFlag(...))`, `c.AddCommand(cmd)`, `c.Run(os.Args)`.
@@ -294,7 +294,7 @@ E2E integration test: PG+Redis containers, worker relay in-process, HTTP server:
 
 ## ADR index (docs/decisions/)
 - 0001: fabriq is a standalone Forge-ecosystem repo, module `github.com/xraph/fabriq`; twinos consumes it.
-- 0002: tenant enforcement layering — structural stamping + RLS (`SET LOCAL`) primary in tx path; grove hook backstop on pool path (grove PgTx drops hooks; upstream fix suggested, not required).
+- 0002: tenant enforcement layering — structural stamping + RLS (`SET LOCAL`) primary in tx path; grove hook backstop denies pool path. Grove hook gaps FIXED upstream (a01144a): hooks fire in tx with InTransaction flag; backstop allows that path explicitly.
 - 0003: go-redis/v9 directly in adapters/redis (grove kv stream API insufficient: no MAXLEN/XAUTOCLAIM); fenced by depguard.
 - 0004: lease-table leadership instead of session advisory locks (pooled connections can't hold session locks safely).
 - 0005: SSE bridge is stdlib-only in core/subscribe (forge `WriteSSE` lacks `id:`/Last-Event-ID control); forge apps mount it as a raw handler.

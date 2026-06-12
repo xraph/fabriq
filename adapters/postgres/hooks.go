@@ -66,6 +66,13 @@ func (b *tenantBackstop) deny(qc *hook.QueryContext) (*hook.HookResult, error) {
 	if qc == nil || !b.isTenantTable(qc.Table) {
 		return nil, nil
 	}
+	// Transaction path: fabriq stamped the tenant with SET LOCAL and RLS
+	// enforces isolation in the database — the hook observes, RLS guards.
+	// (grove >= a01144a fires hooks inside transactions and marks the
+	// path; before that fix, tx queries bypassed hooks entirely.)
+	if qc.InTransaction {
+		return nil, nil
+	}
 	b.trips.Add(1)
 	return &hook.HookResult{
 		Decision: hook.Deny,
