@@ -28,6 +28,10 @@ func (s *server) routes(r forge.Router) {
 	_ = api.GET("/assets", s.listAssets)
 	// SSE uses a raw stdlib handler: the bridge needs the Flusher.
 	_ = api.GET("/subscribe", s.subscribe)
+	// Document plane: fetch-then-subscribe for collaborative docs.
+	_ = api.POST("/docs/update", s.docUpdate)
+	_ = api.POST("/docs/sync", s.docSync)
+	_ = api.GET("/docs/subscribe", s.docSubscribe)
 }
 
 // tenantCtx authenticates the request and returns a tenant-stamped

@@ -26,6 +26,12 @@ func ChannelName(tenantID string, scope Scope, id string) string {
 	return fmt.Sprintf("changes:%s:%s:%s", tenantID, scope.Name, id)
 }
 
+// DocChannelName derives the RAW document-sync channel for one document:
+// doc:{tenant}:{docID}. Frames on it are never conflated.
+func DocChannelName(tenantID, docID string) string {
+	return fmt.Sprintf("doc:%s:%s", tenantID, docID)
+}
+
 // GraphName derives the per-tenant graph name (FalkorDB key).
 func GraphName(tenantID string) string {
 	return "tenant_" + tenantID

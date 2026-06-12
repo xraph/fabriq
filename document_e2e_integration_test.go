@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"testing"
 	"time"
@@ -221,4 +222,79 @@ func TestE2E_DocumentPlane(t *testing.T) {
 		t.Fatalf("doc not flagged: %v %v", flagged, err)
 	}
 
+}
+
+// TestE2E_DocumentLiveSync proves the live transport: updates fan out on
+// the document's RAW channel — every frame, in order, no conflation —
+// while the durable log keeps serving Sync for catch-up.
+func TestE2E_DocumentLiveSync(t *testing.T) {
+	f, _, _ := docE2E(t)
+	ctx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	docID := "page/" + event.NewID()
+
+	// Two collaborators attach before any edits.
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	clientA, err := f.SubscribeDocument(subCtx, docID)
+	if err != nil {
+		t.Fatalf("SubscribeDocument: %v", err)
+	}
+	clientB, err := f.SubscribeDocument(subCtx, docID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // pump attach
+
+	// A burst of edits: conflation would collapse these; the raw path
+	// must deliver every frame, in order.
+	for i := 1; i <= 5; i++ {
+		if err := f.Document().ApplyUpdate(ctx, docID,
+			lwwUpdate(t, docID, "body", fmt.Sprintf("rev %d", i), int64(100+i), "client-a")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for name, ch := range map[string]<-chan query.Delta{"A": clientA, "B": clientB} {
+		var seqs []int64
+		deadline := time.After(10 * time.Second)
+		for len(seqs) < 5 {
+			select {
+			case frame := <-ch:
+				if frame.Type != "page.sync" || frame.AggID != docID {
+					t.Fatalf("client %s got %+v", name, frame)
+				}
+				var changes []crdt.ChangeRecord
+				if err := json.Unmarshal(frame.Payload, &changes); err != nil || len(changes) != 1 {
+					t.Fatalf("client %s frame payload is not the update blob: %v", name, err)
+				}
+				seqs = append(seqs, frame.Version)
+			case <-deadline:
+				t.Fatalf("client %s received %d/5 frames (conflation must not apply)", name, len(seqs))
+			}
+		}
+		for i := 1; i < len(seqs); i++ {
+			if seqs[i] <= seqs[i-1] {
+				t.Fatalf("client %s frames out of order: %v", name, seqs)
+			}
+		}
+	}
+
+	// Cross-tenant subscribers see nothing (channel is tenant-derived).
+	rival, _ := tenant.WithTenant(context.Background(), "rival")
+	rivalCh, err := f.SubscribeDocument(rival, docID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if err := f.Document().ApplyUpdate(ctx, docID, lwwUpdate(t, docID, "title", "X", 500, "client-a")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case frame := <-rivalCh:
+		t.Fatalf("rival tenant received a sync frame: %+v", frame)
+	case <-time.After(2 * time.Second):
+	}
 }

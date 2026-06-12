@@ -54,6 +54,26 @@ func (a *Adapter) Publish(ctx context.Context, env event.Envelope, channels []st
 	return eventsAdd.Val(), nil
 }
 
+// PublishToChannel XADDs one envelope to a SINGLE channel stream — the
+// document-sync fan-out: sync frames never touch the main event stream
+// (projections must not see them).
+func (a *Adapter) PublishToChannel(ctx context.Context, channel string, env event.Envelope) (string, error) {
+	raw, err := event.Encode(env)
+	if err != nil {
+		return "", err
+	}
+	id, err := a.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: channel,
+		MaxLen: a.chanMaxLen,
+		Approx: true,
+		Values: map[string]any{envField: raw},
+	}).Result()
+	if err != nil {
+		return "", fmt.Errorf("fabriq: publish to %s: %w", channel, err)
+	}
+	return id, nil
+}
+
 // Tail implements subscribe.Tailer: blocking XREAD on one change channel,
 // delivering every entry after fromID until ctx ends.
 func (a *Adapter) Tail(ctx context.Context, channel, fromID string, deliver func(query.Delta)) error {
