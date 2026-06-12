@@ -35,6 +35,22 @@ func (b *Binding) HasColumn(col string) bool {
 	return ok
 }
 
+// Required returns the non-structural columns that must be provided on
+// create/update: NOT NULL, no default, not auto-generated.
+func (b *Binding) Required() []string {
+	var out []string
+	for _, col := range b.Columns {
+		if col == ColumnID || col == ColumnTenant || col == ColumnVersion {
+			continue
+		}
+		f := b.fields[col]
+		if f.Options.NotNull && f.Options.Default == "" && !f.Options.AutoIncrement {
+			out = append(out, col)
+		}
+	}
+	return out
+}
+
 // ModelType returns the bound struct type (not pointer).
 func (b *Binding) ModelType() reflect.Type { return b.modelType }
 
