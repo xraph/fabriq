@@ -16,8 +16,10 @@ import (
 // Container images for the integration harness. timescaledb-ha bundles
 // TimescaleDB and pgvector, matching the production datastore contract.
 const (
-	PostgresImage = "timescale/timescaledb-ha:pg16-all"
-	RedisImage    = "redis:7-alpine"
+	PostgresImage      = "timescale/timescaledb-ha:pg16-all"
+	RedisImage         = "redis:7-alpine"
+	FalkorDBImage      = "falkordb/falkordb:latest"
+	ElasticsearchImage = "elasticsearch:9.4.1"
 )
 
 // StartPostgres launches a Postgres+Timescale+pgvector container and
@@ -93,6 +95,72 @@ func CreateAppRole(t testing.TB, superDSN string) string {
 	}
 	u.User = url.UserPassword("fabriq_app", "fabriq_app")
 	return u.String()
+}
+
+// StartFalkorDB launches a FalkorDB container and returns its address
+// (host:port). The container terminates with the test.
+func StartFalkorDB(t testing.TB) string {
+	t.Helper()
+	ctx := context.Background()
+
+	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        FalkorDBImage,
+			ExposedPorts: []string{"6379/tcp"},
+			WaitingFor:   wait.ForListeningPort("6379/tcp").WithStartupTimeout(2 * time.Minute),
+		},
+		Started: true,
+	})
+	if err != nil {
+		t.Fatalf("fabriqtest: start falkordb container: %v", err)
+	}
+	t.Cleanup(func() {
+		if termErr := testcontainers.TerminateContainer(c); termErr != nil {
+			t.Logf("fabriqtest: terminate falkordb: %v", termErr)
+		}
+	})
+
+	ep, err := c.Endpoint(ctx, "")
+	if err != nil {
+		t.Fatalf("fabriqtest: falkordb endpoint: %v", err)
+	}
+	return ep
+}
+
+// StartElasticsearch launches a single-node Elasticsearch container
+// (security off, HTTP only) and returns its base URL. The container
+// terminates with the test.
+func StartElasticsearch(t testing.TB) string {
+	t.Helper()
+	ctx := context.Background()
+
+	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        ElasticsearchImage,
+			ExposedPorts: []string{"9200/tcp"},
+			Env: map[string]string{
+				"discovery.type":         "single-node",
+				"xpack.security.enabled": "false",
+				"ES_JAVA_OPTS":           "-Xms512m -Xmx512m",
+			},
+			WaitingFor: wait.ForHTTP("/").WithPort("9200/tcp").WithStartupTimeout(3 * time.Minute),
+		},
+		Started: true,
+	})
+	if err != nil {
+		t.Fatalf("fabriqtest: start elasticsearch container: %v", err)
+	}
+	t.Cleanup(func() {
+		if termErr := testcontainers.TerminateContainer(c); termErr != nil {
+			t.Logf("fabriqtest: terminate elasticsearch: %v", termErr)
+		}
+	})
+
+	ep, err := c.Endpoint(ctx, "")
+	if err != nil {
+		t.Fatalf("fabriqtest: elasticsearch endpoint: %v", err)
+	}
+	return "http://" + ep
 }
 
 // StartRedis launches a Redis container and returns its address
