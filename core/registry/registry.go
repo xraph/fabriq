@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 )
@@ -18,11 +19,15 @@ type Entity struct {
 type Registry struct {
 	mu       sync.RWMutex
 	entities map[string]*Entity
+	byModel  map[reflect.Type]*Entity
 }
 
 // New returns an empty registry.
 func New() *Registry {
-	return &Registry{entities: make(map[string]*Entity)}
+	return &Registry{
+		entities: make(map[string]*Entity),
+		byModel:  make(map[reflect.Type]*Entity),
+	}
 }
 
 // Register compiles and validates a spec. Cross-entity references (edge
@@ -73,8 +78,22 @@ func (r *Registry) Register(spec EntitySpec) error {
 	if _, dup := r.entities[spec.Name]; dup {
 		return fmt.Errorf("fabriq: entity %q registered twice", spec.Name)
 	}
-	r.entities[spec.Name] = &Entity{Spec: spec, Binding: binding}
+	if prev, dup := r.byModel[binding.ModelType()]; dup {
+		return fmt.Errorf("fabriq: model type %s already bound to entity %q", binding.ModelType(), prev.Spec.Name)
+	}
+	ent := &Entity{Spec: spec, Binding: binding}
+	r.entities[spec.Name] = ent
+	r.byModel[binding.ModelType()] = ent
 	return nil
+}
+
+// GetByModelType returns the entity bound to the given model struct type;
+// it powers hydration-target inference in TraverseAndHydrate.
+func (r *Registry) GetByModelType(t reflect.Type) (*Entity, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.byModel[t]
+	return e, ok
 }
 
 // MustRegister is Register that panics; for static wiring in domain packs.
