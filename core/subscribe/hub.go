@@ -23,13 +23,15 @@ type Hub struct {
 	mu       sync.Mutex
 	window   time.Duration
 	channels map[string]*channelState
+	tailer   Tailer
 	closed   bool
 }
 
 type channelState struct {
-	subs    map[int]chan query.Delta
-	nextSub int
-	conf    *conflator
+	subs       map[int]chan query.Delta
+	nextSub    int
+	conf       *conflator
+	pumpCancel context.CancelFunc
 }
 
 // HubOption configures a Hub.
@@ -73,6 +75,17 @@ func (h *Hub) Subscribe(ctx context.Context, channel string, buffer int) (deltas
 	if !ok {
 		cs = &channelState{subs: make(map[int]chan query.Delta), conf: newConflator(h.window)}
 		h.channels[channel] = cs
+		if h.tailer != nil {
+			pumpCtx, pumpCancel := context.WithCancel(context.Background())
+			cs.pumpCancel = pumpCancel
+			go func() {
+				// Errors end the pump; subscribers fall back to the
+				// refetch contract on silence.
+				_ = h.tailer.Tail(pumpCtx, channel, "$", func(d query.Delta) {
+					h.Publish(channel, d)
+				})
+			}()
+		}
 	}
 	id := cs.nextSub
 	cs.nextSub++
@@ -89,8 +102,14 @@ func (h *Hub) Subscribe(ctx context.Context, channel string, buffer int) (deltas
 					delete(cur.subs, id)
 					close(sub)
 				}
-				if len(cur.subs) == 0 && cur.conf.depth() == 0 {
-					delete(h.channels, channel)
+				if len(cur.subs) == 0 {
+					if cur.pumpCancel != nil {
+						cur.pumpCancel()
+						cur.pumpCancel = nil
+					}
+					if cur.conf.depth() == 0 {
+						delete(h.channels, channel)
+					}
 				}
 			}
 		})
@@ -171,6 +190,9 @@ func (h *Hub) Close() {
 	for name, cs := range h.channels {
 		if cs.conf.timer != nil {
 			cs.conf.timer.Stop()
+		}
+		if cs.pumpCancel != nil {
+			cs.pumpCancel()
 		}
 		for id, sub := range cs.subs {
 			delete(cs.subs, id)
