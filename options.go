@@ -15,6 +15,7 @@ type settings struct {
 	waitPollInterval time.Duration
 	streamMaxLen     int64
 	authz            subscribe.AuthzFunc
+	tailer           subscribe.Tailer
 	executorOptions  []command.ExecutorOption
 }
 
