@@ -44,19 +44,19 @@ func (a *Adapter) ApplyMutations(ctx context.Context, target string, muts []proj
 		switch mut := m.(type) {
 		case projection.DocIndex:
 			index := registry.SearchIndexVersioned(tenantID, mut.Index, version)
-			if err := a.ensureIndex(ctx, index); err != nil {
-				return err
+			if ensErr := a.ensureIndex(ctx, index); ensErr != nil {
+				return ensErr
 			}
 			if live {
-				if err := a.ensureAlias(ctx, registry.SearchIndexAlias(tenantID, mut.Index), index); err != nil {
-					return err
+				if aliasErr := a.ensureAlias(ctx, registry.SearchIndexAlias(tenantID, mut.Index), index); aliasErr != nil {
+					return aliasErr
 				}
 			}
 			meta := fmt.Sprintf(`{"index":{"_index":%q,"_id":%q,"version":%d,"version_type":"external_gte"}}`,
 				index, mut.ID, mut.Version)
-			doc, err := json.Marshal(mut.Doc)
-			if err != nil {
-				return err
+			doc, mErr := json.Marshal(mut.Doc)
+			if mErr != nil {
+				return mErr
 			}
 			body.WriteString(meta)
 			body.WriteByte('\n')

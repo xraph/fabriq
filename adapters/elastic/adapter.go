@@ -60,11 +60,11 @@ func WithModelVersionResolver(fn ModelVersionResolver) Option {
 
 // Open dials Elasticsearch and pings it.
 func Open(_ context.Context, cfg Config, reg *registry.Registry, opts ...Option) (*Adapter, error) {
-	client, err := elasticsearch.NewClient(elasticsearch.Config{
-		Addresses: cfg.Addrs,
-		Username:  cfg.Username,
-		Password:  cfg.Password,
-	})
+	esOpts := []elasticsearch.Option{elasticsearch.WithAddresses(cfg.Addrs...)}
+	if cfg.Username != "" {
+		esOpts = append(esOpts, elasticsearch.WithBasicAuth(cfg.Username, cfg.Password))
+	}
+	client, err := elasticsearch.New(esOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("fabriq: elasticsearch client: %w", err)
 	}
