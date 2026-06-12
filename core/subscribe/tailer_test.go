@@ -22,7 +22,7 @@ func newFakeTailer() *fakeTailer {
 	return &fakeTailer{active: map[string]func(query.Delta){}}
 }
 
-func (f *fakeTailer) Tail(ctx context.Context, channel, fromID string, deliver func(query.Delta)) error {
+func (f *fakeTailer) Tail(ctx context.Context, channel, _ string, deliver func(query.Delta)) error {
 	f.mu.Lock()
 	f.active[channel] = deliver
 	f.started++
