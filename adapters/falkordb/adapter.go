@@ -1,23 +1,19 @@
-// Package falkordb is fabriq's graph adapter (PHASE 4 — SCAFFOLD).
+// Package falkordb is fabriq's graph adapter. FalkorDB speaks RESP, so it
+// rides go-redis (GRAPH.QUERY / GRAPH.RO_QUERY); the Cypher dialect lives
+// exclusively in mutate.go and stays inside the openCypher common subset
+// gated by adapters/graphtest — the engine-swap contract.
 //
-// FalkorDB speaks RESP, so the adapter rides go-redis (GRAPH.QUERY /
-// GRAPH.RO_QUERY); the Cypher dialect lives exclusively in mutate.go and
-// is restricted to the openCypher common subset gated by
-// adapters/graphtest.
-//
-// IMPLEMENTED NOW (pure, unit-tested): mutation -> Cypher translation with
-// version gating, identifier validation, tenant -> graph routing.
-//
-// REMAINING FOR PHASE 4 (see TODOs): result-set decoding for Query (the
-// FalkorDB reply is a nested array of header+rows), TraverseAndHydrate
-// wiring through query.TraverseAndHydrate, ApplyMutations execution, the
-// graphtest conformance run against a falkordb/falkordb container, the
-// projection consumer wiring, and blue-green rebuild GRAPH.COPY/DELETE.
+// Tenancy: reads resolve the tenant's LIVE graph through the injected
+// resolver (fabriq.Open wires one over projection_state, so blue-green
+// rebuilds flip readers atomically); projection writes receive an
+// explicit target ("" = live). Graph names only ever come from
+// core/registry derivations.
 package falkordb
 
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 
@@ -34,62 +30,199 @@ type Config struct {
 	Password string
 }
 
+// TargetResolver maps a tenant onto its live graph name.
+type TargetResolver func(ctx context.Context, tenantID string) (string, error)
+
 // Adapter implements query.GraphQuerier against FalkorDB.
 type Adapter struct {
-	client *redis.Client
-	reg    *registry.Registry
-	rel    query.RelationalQuerier // hydration source for TraverseAndHydrate
+	client     *redis.Client
+	reg        *registry.Registry
+	rel        query.RelationalQuerier // hydration source for TraverseAndHydrate
+	liveTarget TargetResolver
 }
 
 var _ query.GraphQuerier = (*Adapter)(nil)
 
+// Option customizes the adapter.
+type Option func(*Adapter)
+
+// WithLiveTargetResolver overrides live-graph resolution (production wires
+// a projection_state-backed resolver; the default derives tenant_{id}).
+func WithLiveTargetResolver(fn TargetResolver) Option {
+	return func(a *Adapter) {
+		if fn != nil {
+			a.liveTarget = fn
+		}
+	}
+}
+
 // Open dials FalkorDB.
-func Open(ctx context.Context, cfg Config, reg *registry.Registry, rel query.RelationalQuerier) (*Adapter, error) {
+func Open(ctx context.Context, cfg Config, reg *registry.Registry, rel query.RelationalQuerier, opts ...Option) (*Adapter, error) {
 	client := redis.NewClient(&redis.Options{Addr: cfg.Addr, Username: cfg.Username, Password: cfg.Password})
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("fabriq: falkordb ping: %w", err)
 	}
-	return &Adapter{client: client, reg: reg, rel: rel}, nil
+	a := &Adapter{
+		client: client,
+		reg:    reg,
+		rel:    rel,
+		liveTarget: func(_ context.Context, tenantID string) (string, error) {
+			return registry.GraphName(tenantID), nil
+		},
+	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a, nil
 }
 
 // Close releases the client.
 func (a *Adapter) Close() error { return a.client.Close() }
 
-// Query implements query.GraphQuerier.
-//
-// TODO(phase 4): execute GRAPH.RO_QUERY against graphForTenant(ctx tenant)
-// and decode the FalkorDB result set (header + typed rows) into *[]string
-// for single-column traversals and struct slices for multi-column rows.
+// Query implements query.GraphQuerier: a read-only openCypher query
+// against the tenant's live graph. into may be *[]string (single-column
+// traversals) or *[]map[string]any (column-keyed rows).
 func (a *Adapter) Query(ctx context.Context, cypher string, params map[string]any, into any) error {
-	if _, err := tenant.Require(ctx); err != nil {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
 		return err
 	}
-	_ = cypher
-	_ = params
-	_ = into
-	return fmt.Errorf("fabriq: falkordb Query not implemented yet (phase 4)")
+	graph, err := a.liveTarget(ctx, tid)
+	if err != nil {
+		return err
+	}
+	cols, rows, err := a.run(ctx, "GRAPH.RO_QUERY", graph, cypher, params)
+	if err != nil {
+		return err
+	}
+	return scanRows(cols, rows, into)
 }
 
-// TraverseAndHydrate implements query.GraphQuerier.
-//
-// TODO(phase 4): delegate to query.TraverseAndHydrate(ctx, a.reg, a,
-// a.rel, ...) once Query decodes id traversals.
+// TraverseAndHydrate implements query.GraphQuerier: traversal returns ids,
+// hydration is ONE batched relational query. Never N+1.
 func (a *Adapter) TraverseAndHydrate(ctx context.Context, cypher string, params map[string]any, into any) error {
+	if a.rel == nil {
+		return fmt.Errorf("fabriq: TraverseAndHydrate needs a relational querier")
+	}
 	return query.TraverseAndHydrate(ctx, a.reg, a, a.rel, cypher, params, into)
 }
 
-// ApplyMutations implements query.GraphQuerier.
-//
-// TODO(phase 4): run cypherFor(m) per mutation via GRAPH.QUERY against the
-// target graph, batched per event, with the projection consumer acking
-// only after all mutations of an event applied.
-func (a *Adapter) ApplyMutations(_ context.Context, target string, muts []projection.Mutation) error {
-	for _, m := range muts {
-		if _, _, err := cypherFor(m); err != nil {
+// ApplyMutations implements the projection write path: engine-neutral
+// mutations onto an explicit target graph ("" = the tenant's live graph,
+// resolved from the event's tenant on ctx). Version gating in the dialect
+// makes replays idempotent.
+func (a *Adapter) ApplyMutations(ctx context.Context, target string, muts []projection.Mutation) error {
+	if target == "" {
+		tid, err := tenant.Require(ctx)
+		if err != nil {
 			return err
 		}
+		live, err := a.liveTarget(ctx, tid)
+		if err != nil {
+			return err
+		}
+		target = live
 	}
-	_ = target
-	return fmt.Errorf("fabriq: falkordb ApplyMutations not implemented yet (phase 4)")
+	for _, m := range muts {
+		cy, params, err := cypherFor(m)
+		if err != nil {
+			return err
+		}
+		if _, _, err := a.run(ctx, "GRAPH.QUERY", target, cy, params); err != nil {
+			return fmt.Errorf("fabriq: apply %T to %s: %w", m, target, err)
+		}
+	}
+	return nil
+}
+
+// DropTarget removes a graph (rebuild old-target cleanup). Dropping a
+// graph that never received a write is a no-op.
+func (a *Adapter) DropTarget(ctx context.Context, target string) error {
+	err := a.client.Do(ctx, "GRAPH.DELETE", target).Err()
+	if err == nil || strings.Contains(err.Error(), "empty key") {
+		return nil
+	}
+	return fmt.Errorf("fabriq: drop graph %s: %w", target, err)
+}
+
+// run executes one GRAPH.* command and decodes header + rows.
+func (a *Adapter) run(ctx context.Context, cmd, graph, cypher string, params map[string]any) ([]string, [][]any, error) {
+	prefix, err := cypherParams(params)
+	if err != nil {
+		return nil, nil, err
+	}
+	res, err := a.client.Do(ctx, cmd, graph, prefix+cypher).Result()
+	if err != nil {
+		return nil, nil, fmt.Errorf("fabriq: %s %s: %w", cmd, graph, err)
+	}
+	top, ok := res.([]any)
+	if !ok || len(top) < 3 {
+		// Write-only result sets ([stats]) have no rows.
+		return nil, nil, nil
+	}
+	header, _ := top[0].([]any)
+	cols := make([]string, 0, len(header))
+	for _, h := range header {
+		switch v := h.(type) {
+		case string:
+			cols = append(cols, v)
+		case []any:
+			// Compact-mode header entry: [type, name].
+			if len(v) > 0 {
+				if name, ok := v[len(v)-1].(string); ok {
+					cols = append(cols, name)
+				}
+			}
+		}
+	}
+	rawRows, _ := top[1].([]any)
+	rows := make([][]any, 0, len(rawRows))
+	for _, rr := range rawRows {
+		cells, ok := rr.([]any)
+		if !ok {
+			continue
+		}
+		rows = append(rows, cells)
+	}
+	return cols, rows, nil
+}
+
+// scanRows maps decoded rows into the supported targets.
+func scanRows(cols []string, rows [][]any, into any) error {
+	switch dest := into.(type) {
+	case *[]string:
+		if len(rows) > 0 && len(cols) != 1 {
+			return fmt.Errorf("fabriq: scanning %d columns into *[]string; single-column traversals only", len(cols))
+		}
+		for _, row := range rows {
+			if len(row) == 0 || row[0] == nil {
+				continue
+			}
+			*dest = append(*dest, cellString(row[0]))
+		}
+		return nil
+	case *[]map[string]any:
+		for _, row := range rows {
+			m := make(map[string]any, len(cols))
+			for i, col := range cols {
+				if i < len(row) {
+					m[col] = row[i]
+				}
+			}
+			*dest = append(*dest, m)
+		}
+		return nil
+	default:
+		return fmt.Errorf("fabriq: graph queries scan into *[]string or *[]map[string]any, got %T", into)
+	}
+}
+
+func cellString(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }

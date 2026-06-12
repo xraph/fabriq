@@ -38,11 +38,14 @@ type NodeDelete struct {
 }
 
 // EdgeDelete removes one outgoing relationship of the given type from a
-// node, regardless of target.
+// node, regardless of target. Version carries the originating event's
+// version so adapters can gate stale replays (an old EdgeDelete must not
+// remove an edge a newer event created).
 type EdgeDelete struct {
 	Rel       string
 	FromLabel string
 	FromID    string
+	Version   int64
 }
 
 // DocIndex indexes a document into the search projection. Index is the

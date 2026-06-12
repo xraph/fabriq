@@ -60,7 +60,7 @@ func GraphApplier(reg *registry.Registry) Applier {
 			}
 			fk := stringProp(props, edge.Field)
 			if fk == "" {
-				muts = append(muts, EdgeDelete{Rel: edge.Rel, FromLabel: ent.Spec.GraphNode, FromID: env.AggID})
+				muts = append(muts, EdgeDelete{Rel: edge.Rel, FromLabel: ent.Spec.GraphNode, FromID: env.AggID, Version: env.Version})
 				continue
 			}
 			muts = append(muts, EdgeUpsert{

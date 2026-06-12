@@ -132,6 +132,9 @@ func TestGraphApplier_UpdateClearingFKDeletesEdge(t *testing.T) {
 			if d.Rel != "CHILD_OF" || d.FromID != "A1" {
 				t.Fatalf("unexpected EdgeDelete: %+v", d)
 			}
+			if d.Version != 7 {
+				t.Fatalf("EdgeDelete must carry the event version for replay gating, got %d", d.Version)
+			}
 			sawDelete = true
 		}
 	}
