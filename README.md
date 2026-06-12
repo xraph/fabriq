@@ -37,14 +37,59 @@ Binaries:
 - `cmd/fabriq-worker` — outbox relay, projection consumers, reconciler (forge app).
 - `cmd/api-example` — demo API: commands, queries, SSE fetch-then-subscribe (forge app).
 
+## Quick start
+
+```go
+reg := registry.New()
+_ = domain.RegisterAll(reg) // or your own entity pack
+
+f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
+    Postgres: fabriq.PostgresConfig{DSN: dsn},
+    Redis:    fabriq.RedisConfig{Addr: redisAddr},
+})
+
+// Writes: the only path, one versioned event per command.
+res, err := f.Exec(tenantCtx, command.Command{
+    Entity: "asset", Op: command.OpCreate,
+    Payload: &domain.Asset{Name: "Pump 7", SiteID: siteID},
+})
+
+// Reads: capability ports.
+var a domain.Asset
+err = f.Relational().Get(tenantCtx, "asset", res.AggID, &a)
+
+// Live deltas: server-resolved channel, conflated, resumable.
+deltas, err := f.Subscribe(tenantCtx, query.SubscribeScope{Entity: "asset", Scope: "site", ID: siteID})
+```
+
+Every call requires a tenant-stamped context (`tenant.WithTenant`), set
+only by auth middleware from validated claims.
+
+## Status
+
+- **Implemented & integration-tested:** registry, command plane +
+  transactional outbox, Postgres adapter (grove, RLS as non-superuser,
+  Timescale bulk telemetry, pgvector), migrations + conformance test,
+  Redis streams (relay fan-out, consumer groups, tailer), leader-elected
+  outbox relay (LISTEN/NOTIFY wake), subscription hub (conflation, SSE,
+  Last-Event-ID resume), `fabriq` CLI, `fabriq-worker`, `api-example`.
+- **Scaffolded (phases 4–7):** FalkorDB execution (dialect translator is
+  done + unit-tested; `adapters/graphtest` conformance suite ready),
+  Elasticsearch adapter, projection engine/blue-green rebuild/reconciler,
+  CRDT document plane (`core/document/DESIGN.md`).
+
 ## Development
 
 ```bash
 make test              # unit tests (no Docker)
-make test-integration  # testcontainers: PG+Timescale, Redis, FalkorDB, ES
+make test-integration  # testcontainers: PG+Timescale+pgvector, Redis
 make bench             # benchmarks
 make lint              # incl. depguard architecture boundaries
 ```
+
+Decisions live in [docs/decisions](docs/decisions); runbooks in
+[docs/OPERATIONS.md](docs/OPERATIONS.md); schema discipline in
+[docs/MIGRATIONS.md](docs/MIGRATIONS.md).
 
 Built on the Forge ecosystem: [grove](https://github.com/xraph/grove) (storage),
 [forge](https://github.com/xraph/forge) (apps + CLI).
