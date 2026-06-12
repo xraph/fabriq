@@ -1,0 +1,62 @@
+// Package tenant carries the tenant identity on context.Context and is the
+// single structural enforcement point for fabriq's tenancy invariant.
+//
+// Only auth middleware stamps tenants (from validated claims — never from
+// forwarded headers). Every fabriq entry point calls Require and fails with
+// ErrNoTenant on an unstamped context. Tenant IDs are validated at stamp
+// time so that every name derived from them (graph names, index names,
+// stream keys, cache prefixes) is safe by construction.
+package tenant
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"regexp"
+)
+
+// ErrNoTenant is the canonical "unstamped context" error. The root fabriq
+// package aliases it as fabriq.ErrNoTenant.
+var ErrNoTenant = errors.New("fabriq: no tenant in context")
+
+// ErrTenantHookTripped is returned by the relational backstop hook when a
+// query reaches an engine without a tenant predicate. Aliased at root.
+var ErrTenantHookTripped = errors.New("fabriq: tenant guard tripped")
+
+type ctxKey struct{}
+
+// idPattern keeps tenant IDs safe for every derived name: Redis stream keys
+// (no ':'), ES indexes (no '/', no uppercase requirement enforced upstream),
+// FalkorDB graph names, and SQL string settings.
+var idPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
+// Valid reports whether id is a well-formed tenant identifier.
+func Valid(id string) bool { return idPattern.MatchString(id) }
+
+// WithTenant returns a context stamped with the tenant id, or an error if
+// the id is not a well-formed tenant identifier.
+func WithTenant(ctx context.Context, id string) (context.Context, error) {
+	if !Valid(id) {
+		return nil, fmt.Errorf("fabriq: invalid tenant id %q (want %s)", id, idPattern)
+	}
+	return context.WithValue(ctx, ctxKey{}, id), nil
+}
+
+// MustWithTenant is WithTenant for wiring code with static ids; it panics on
+// invalid input.
+func MustWithTenant(ctx context.Context, id string) context.Context {
+	out, err := WithTenant(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
+
+// FromContext returns the tenant stamped on ctx, or ErrNoTenant.
+func FromContext(ctx context.Context) (string, error) {
+	id, ok := ctx.Value(ctxKey{}).(string)
+	if !ok || id == "" {
+		return "", ErrNoTenant
+	}
+	return id, nil
+}

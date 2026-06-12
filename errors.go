@@ -3,15 +3,24 @@ package fabriq
 import (
 	"errors"
 	"fmt"
+
+	"github.com/xraph/fabriq/core/tenant"
 )
 
 // Sentinel errors form fabriq's typed taxonomy. Callers branch with
 // errors.Is; rich variants (VersionConflictError, NotFoundError) carry
-// detail and still match their sentinel.
+// detail and still match their sentinel. Sentinels needed inside core
+// packages are defined there (root imports core, never the reverse) and
+// aliased here so call sites can uniformly use fabriq.ErrX.
 var (
 	// ErrNoTenant is returned for any fabric call whose context was not
 	// stamped with a tenant by auth middleware.
-	ErrNoTenant = errors.New("fabriq: no tenant in context")
+	ErrNoTenant = tenant.ErrNoTenant
+
+	// ErrTenantHookTripped is returned when the grove pre-query backstop
+	// detects a relational query without a tenant predicate. It firing
+	// means a bug in fabriq itself: the structural stamping was bypassed.
+	ErrTenantHookTripped = tenant.ErrTenantHookTripped
 
 	// ErrNotFound is returned when an aggregate or row does not exist
 	// within the calling tenant's scope.
@@ -24,11 +33,6 @@ var (
 	// ErrProjectionLag is returned by WaitForProjection when the deadline
 	// expires before the projection catches up to the requested version.
 	ErrProjectionLag = errors.New("fabriq: projection lagging")
-
-	// ErrTenantHookTripped is returned when the grove pre-query backstop
-	// detects a relational query without a tenant predicate. It firing
-	// means a bug in fabriq itself: the structural stamping was bypassed.
-	ErrTenantHookTripped = errors.New("fabriq: tenant guard tripped")
 
 	// ErrStoreNotConfigured is returned by capability ports whose backing
 	// store was not configured on Open (e.g. Graph() without FalkorDB).
