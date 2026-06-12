@@ -12,6 +12,7 @@ import (
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/internal/metrics"
 )
 
 // Advisory lock keys per singleton role. Stable across versions; never
@@ -25,18 +26,27 @@ const (
 // background runners. Projection consumers (phase 4/5) will join Run with
 // their consumer groups; they scale by replica count and need no election.
 type workerExtension struct {
-	reg *registry.Registry
-	cfg fabriq.Config
+	reg               *registry.Registry
+	cfg               fabriq.Config
+	reconcileInterval time.Duration
 
-	mu     sync.Mutex
-	fab    *fabriq.Fabriq
-	stores *fabriq.Stores
-	cancel context.CancelFunc
-	done   chan struct{}
+	mu      sync.Mutex
+	fab     *fabriq.Fabriq
+	stores  *fabriq.Stores
+	metrics *metrics.Metrics
+	app     forge.App
+	cancel  context.CancelFunc
+	done    chan struct{}
 }
 
 func newWorkerExtension(reg *registry.Registry, cfg fabriq.Config) *workerExtension {
-	return &workerExtension{reg: reg, cfg: cfg}
+	interval := 5 * time.Minute
+	if raw := os.Getenv("FABRIQ_RECONCILE_INTERVAL"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil {
+			interval = d // "0" disables
+		}
+	}
+	return &workerExtension{reg: reg, cfg: cfg, reconcileInterval: interval}
 }
 
 // Name implements forge.Extension.
@@ -54,7 +64,12 @@ func (e *workerExtension) Description() string {
 func (e *workerExtension) Dependencies() []string { return nil }
 
 // Register implements forge.Extension.
-func (e *workerExtension) Register(forge.App) error { return nil }
+func (e *workerExtension) Register(app forge.App) error {
+	e.mu.Lock()
+	e.app = app
+	e.mu.Unlock()
+	return nil
+}
 
 // Start implements forge.Extension: open the stores.
 func (e *workerExtension) Start(ctx context.Context) error {
@@ -105,7 +120,24 @@ func (e *workerExtension) Run(ctx context.Context) error {
 	e.cancel, e.done = cancel, done
 	e.mu.Unlock()
 
-	relay := postgres.NewRelay(stores.Postgres, e.reg, stores.Redis)
+	// Observability: /metrics + gauge pollers.
+	e.mu.Lock()
+	app := e.app
+	e.mu.Unlock()
+	var relayOpts []postgres.RelayOption
+	if app != nil {
+		if m, err := wireObservability(app, stores); err == nil {
+			e.mu.Lock()
+			e.metrics = m
+			e.mu.Unlock()
+			relayOpts = append(relayOpts, postgres.WithRelayOnPublish(func(n int) {
+				m.RelayPublished.Add(float64(n))
+			}))
+			go pollGauges(runCtx, stores, m, 15*time.Second)
+		}
+	}
+
+	relay := postgres.NewRelay(stores.Postgres, e.reg, stores.Redis, relayOpts...)
 	elector := postgres.NewElector(stores.Postgres, lockKeyRelay)
 
 	var wg sync.WaitGroup
@@ -114,6 +146,19 @@ func (e *workerExtension) Run(ctx context.Context) error {
 		defer wg.Done()
 		_ = elector.Run(runCtx, relay.Run)
 	}()
+
+	// Scheduled reconciler: leader-elected, one scanner across replicas.
+	if e.reconcileInterval > 0 && (stores.Falkor != nil || stores.Elastic != nil) {
+		reconElector := postgres.NewElector(stores.Postgres, lockKeyReconciler)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = reconElector.Run(runCtx, func(leadCtx context.Context) error {
+				e.runReconciler(leadCtx, e.reconcileInterval)
+				return leadCtx.Err()
+			})
+		}()
+	}
 
 	// Projection consumers scale by replica count — no election needed.
 	consumer := consumerName()

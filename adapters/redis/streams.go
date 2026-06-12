@@ -114,6 +114,24 @@ func (a *Adapter) ReadRange(ctx context.Context, channel, afterID string, limit 
 	return out, nil
 }
 
+// GroupLag reports how many event-stream entries a consumer group has not
+// yet processed (Redis 7 XINFO GROUPS lag + pending).
+func (a *Adapter) GroupLag(ctx context.Context, group string) (int64, error) {
+	groups, err := a.client.XInfoGroups(ctx, registry.StreamKey()).Result()
+	if err != nil {
+		if strings.Contains(err.Error(), "no such key") {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("fabriq: group lag: %w", err)
+	}
+	for _, g := range groups {
+		if g.Name == group {
+			return g.Lag + g.Pending, nil
+		}
+	}
+	return 0, nil
+}
+
 // EnsureGroup creates a projection consumer group on the event stream
 // (idempotent), starting from the beginning so a new projection replays
 // what the stream still holds.

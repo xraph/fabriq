@@ -6,6 +6,7 @@ import (
 
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/subscribe"
+	"github.com/xraph/fabriq/internal/otel"
 )
 
 // settings collects everything Options tune.
@@ -25,6 +26,11 @@ func defaultSettings() settings {
 		subscribeBuffer:  64,
 		waitPollInterval: 25 * time.Millisecond,
 		streamMaxLen:     500,
+		// One trace spans command -> outbox -> relay -> projection apply:
+		// the executor stamps the active W3C traceparent by default.
+		executorOptions: []command.ExecutorOption{
+			command.WithTraceparent(otel.TraceparentFromContext),
+		},
 	}
 }
 
