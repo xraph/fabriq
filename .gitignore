@@ -1,0 +1,8 @@
+bin/
+coverage.out
+coverage.html
+*.test
+.DS_Store
+.idea/
+.vscode/
+config.local.yaml
