@@ -66,7 +66,7 @@ func (x *Executor) prepare(ctx context.Context, cmd Command) (*preparedCommand, 
 	}
 	// Tenant forgery check: a payload may leave tenant_id empty (it will be
 	// stamped) but must never carry a different tenant.
-	if v, _ := vals[registry.ColumnTenant].(string); v != "" && v != tenantID {
+	if v, ok := vals[registry.ColumnTenant].(string); ok && v != "" && v != tenantID {
 		return nil, fmt.Errorf("fabriq: payload tenant_id %q does not match context tenant %q", v, tenantID)
 	}
 	if err := validateRequired(ent, vals); err != nil {

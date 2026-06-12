@@ -268,7 +268,7 @@ func TestHub_ContextCancelUnsubscribes(t *testing.T) {
 // --- authz gate -----------------------------------------------------------
 
 func TestGate_DeniesBeforeChannelResolution(t *testing.T) {
-	gate := subscribe.NewGate(subRegistry(t), func(ctx context.Context, req query.SubscribeScope) error {
+	gate := subscribe.NewGate(subRegistry(t), func(_ context.Context, req query.SubscribeScope) error {
 		if req.Entity == "asset" && req.Scope == "tenant" {
 			return errors.New("viewer may not watch the whole tenant")
 		}

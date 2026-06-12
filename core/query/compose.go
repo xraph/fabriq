@@ -16,8 +16,8 @@ import (
 //
 // Adapters implement GraphQuerier.TraverseAndHydrate by delegating here.
 func TraverseAndHydrate(ctx context.Context, reg *registry.Registry, g GraphQuerier, rel RelationalQuerier,
-	cypher string, params map[string]any, into any) error {
-
+	cypher string, params map[string]any, into any,
+) error {
 	ent, err := entityForSlice(reg, into)
 	if err != nil {
 		return err

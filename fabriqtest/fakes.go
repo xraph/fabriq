@@ -33,14 +33,15 @@ var ErrFakeNotFound = fabriqerr.ErrNotFound
 // executed against Store is immediately visible through Rel, and graph /
 // search fakes can hydrate from the same rows.
 type World struct {
-	Registry *registry.Registry
-	Store    *FakeStore
-	Rel      *FakeRelational
-	Graph    *FakeGraph
-	Search   *FakeSearch
-	TS       *FakeTS
-	Vector   *FakeVector
-	Docs     *FakeDocumentStore
+	Registry    *registry.Registry
+	Store       *FakeStore
+	Rel         *FakeRelational
+	Graph       *FakeGraph
+	Search      *FakeSearch
+	TS          *FakeTS
+	Vector      *FakeVector
+	Docs        *FakeDocumentStore
+	Projections *FakeProjectionState
 }
 
 // NewWorld builds the linked fake set for a registry.
@@ -48,14 +49,15 @@ func NewWorld(reg *registry.Registry) *World {
 	db := &memdb{rows: map[string]map[string]map[string]memRow{}}
 	rel := &FakeRelational{reg: reg, db: db}
 	return &World{
-		Registry: reg,
-		Store:    &FakeStore{db: db},
-		Rel:      rel,
-		Graph:    NewFakeGraph(reg, rel),
-		Search:   NewFakeSearch(reg),
-		TS:       &FakeTS{data: map[string]map[string]map[string][]query.Point{}},
-		Vector:   &FakeVector{data: map[string]map[string]map[string]vecEntry{}},
-		Docs:     &FakeDocumentStore{},
+		Registry:    reg,
+		Store:       &FakeStore{db: db},
+		Rel:         rel,
+		Graph:       NewFakeGraph(reg, rel),
+		Search:      NewFakeSearch(reg),
+		TS:          &FakeTS{data: map[string]map[string]map[string][]query.Point{}},
+		Vector:      &FakeVector{data: map[string]map[string]map[string]vecEntry{}},
+		Docs:        &FakeDocumentStore{},
+		Projections: &FakeProjectionState{applied: map[string]int64{}},
 	}
 }
 
@@ -718,6 +720,36 @@ func cosine(a, b []float32) float64 {
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
+// --- FakeProjectionState (projection.StateReader) ------------------------------------
+
+// FakeProjectionState tracks applied versions per aggregate for
+// WaitForProjection tests; projection consumers (or tests) advance it with
+// SetApplied.
+type FakeProjectionState struct {
+	mu      sync.RWMutex
+	applied map[string]int64 // tenant|projection|aggregate|aggID -> version
+}
+
+func stateKey(tenantID, proj, aggregate, aggID string) string {
+	return tenantID + "|" + proj + "|" + aggregate + "|" + aggID
+}
+
+// SetApplied records that a projection has applied an aggregate version.
+func (f *FakeProjectionState) SetApplied(tenantID, proj, aggregate, aggID string, version int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if version > f.applied[stateKey(tenantID, proj, aggregate, aggID)] {
+		f.applied[stateKey(tenantID, proj, aggregate, aggID)] = version
+	}
+}
+
+// AppliedVersion implements projection.StateReader.
+func (f *FakeProjectionState) AppliedVersion(_ context.Context, tenantID, proj, aggregate, aggID string) (int64, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.applied[stateKey(tenantID, proj, aggregate, aggID)], nil
+}
+
 // --- FakeDocumentStore (document.Store) ----------------------------------------------
 
 // FakeDocumentStore is the deferred document plane: every method states
@@ -729,7 +761,9 @@ func (FakeDocumentStore) errDeferred() error {
 }
 
 // ApplyUpdate implements document.Store (deferred).
-func (f *FakeDocumentStore) ApplyUpdate(context.Context, string, []byte) error { return f.errDeferred() }
+func (f *FakeDocumentStore) ApplyUpdate(context.Context, string, []byte) error {
+	return f.errDeferred()
+}
 
 // Sync implements document.Store (deferred).
 func (f *FakeDocumentStore) Sync(context.Context, string, []byte) ([]byte, error) {

@@ -100,14 +100,14 @@ func (x *Executor) apply(ctx context.Context, tx Tx, p *preparedCommand) (Result
 	if err != nil {
 		return Result{}, err
 	}
-	if err := checkVersion(p, current); err != nil {
-		return Result{}, err
+	if vErr := checkVersion(p, current); vErr != nil {
+		return Result{}, vErr
 	}
 	next := current + 1
 
 	vals := p.stampedValues(next)
-	if err := tx.ApplyChange(ctx, p.entity, p.cmd.Op, p.aggID, next, vals); err != nil {
-		return Result{}, err
+	if aErr := tx.ApplyChange(ctx, p.entity, p.cmd.Op, p.aggID, next, vals); aErr != nil {
+		return Result{}, aErr
 	}
 
 	env, err := newEnvelope(p, next, vals, x.now(), x.traceparent(ctx))

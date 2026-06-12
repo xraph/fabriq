@@ -109,7 +109,10 @@ func TestRegister_Failures(t *testing.T) {
 		{"scope field not a column", func(s *registry.EntitySpec) {
 			s.Subscribe = []registry.Scope{registry.ByField("x", "nope")}
 		}, "nope"},
-		{"graph node without label", func(s *registry.EntitySpec) { s.GraphNode = "" ; s.Edges = []registry.EdgeSpec{{Field: "name", Rel: "R", Target: "site"}} }, "GraphNode"},
+		{"graph node without label", func(s *registry.EntitySpec) {
+			s.GraphNode = ""
+			s.Edges = []registry.EdgeSpec{{Field: "name", Rel: "R", Target: "site"}}
+		}, "GraphNode"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

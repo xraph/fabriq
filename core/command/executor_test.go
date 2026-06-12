@@ -51,11 +51,11 @@ func cmdRegistry(t testing.TB) *registry.Registry {
 // fakeStore is a transactional in-memory command.Store: changes stage into
 // a copy and only merge on commit, so batch atomicity is real.
 type fakeStore struct {
-	versions map[string]int64            // "entity/id" -> version
-	rows     map[string]map[string]any   // "entity/id" -> column values
+	versions map[string]int64          // "entity/id" -> version
+	rows     map[string]map[string]any // "entity/id" -> column values
 	outbox   []event.Envelope
 	failOn   func(env event.Envelope) error // injected outbox failure
-	tenants  map[string]string             // "entity/id" -> tenant that owns it
+	tenants  map[string]string              // "entity/id" -> tenant that owns it
 }
 
 func newFakeStore() *fakeStore {
