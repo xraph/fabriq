@@ -42,7 +42,7 @@ func (t *storeTx) CurrentVersion(ctx context.Context, ent *registry.Entity, aggI
 }
 
 // ApplyChange writes the aggregate row from the stamped column values.
-func (t *storeTx) ApplyChange(ctx context.Context, ent *registry.Entity, op command.Op, aggID string, version int64, vals map[string]any) error {
+func (t *storeTx) ApplyChange(ctx context.Context, ent *registry.Entity, op command.Op, aggID string, _ int64, vals map[string]any) error {
 	switch op {
 	case command.OpDelete:
 		sql := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, quoteIdent(ent.Binding.Table))

@@ -115,7 +115,9 @@ linters:
 
     errcheck:
       check-type-assertions: true
-      check-blank: true
+      # An explicit `_ =` is a deliberate, reviewable discard (defer
+      # rollback, best-effort close); forcing handling there breeds noise.
+      check-blank: false
       exclude-functions:
         - (io.Closer).Close
 

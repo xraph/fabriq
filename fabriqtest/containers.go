@@ -40,8 +40,8 @@ func StartPostgres(t testing.TB) string {
 		t.Fatalf("fabriqtest: start postgres container: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := testcontainers.TerminateContainer(pg); err != nil {
-			t.Logf("fabriqtest: terminate postgres: %v", err)
+		if termErr := testcontainers.TerminateContainer(pg); termErr != nil {
+			t.Logf("fabriqtest: terminate postgres: %v", termErr)
 		}
 	})
 
@@ -106,8 +106,8 @@ func StartRedis(t testing.TB) string {
 		t.Fatalf("fabriqtest: start redis container: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := testcontainers.TerminateContainer(r); err != nil {
-			t.Logf("fabriqtest: terminate redis: %v", err)
+		if termErr := testcontainers.TerminateContainer(r); termErr != nil {
+			t.Logf("fabriqtest: terminate redis: %v", termErr)
 		}
 	})
 
