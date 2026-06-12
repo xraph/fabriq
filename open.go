@@ -224,6 +224,38 @@ func (s *Stores) SearchRebuilder(reg *registry.Registry) (*projection.Rebuilder,
 	}, nil
 }
 
+// GraphReconciler assembles drift detection + repair for the graph
+// projection.
+func (s *Stores) GraphReconciler(reg *registry.Registry) (*projection.Reconciler, error) {
+	if s.Falkor == nil || s.Postgres == nil {
+		return nil, fmt.Errorf("fabriq: graph reconciler needs postgres and falkordb configured")
+	}
+	return &projection.Reconciler{
+		Projection: "graph",
+		Registry:   reg,
+		Include:    func(ent *registry.Entity) bool { return ent.Spec.GraphNode != "" },
+		Truth:      s.Postgres.AggregateVersions,
+		Projected:  s.Falkor.AggregateVersions,
+		Repair:     s.Postgres.Repair,
+	}, nil
+}
+
+// SearchReconciler assembles drift detection + repair for the search
+// projection.
+func (s *Stores) SearchReconciler(reg *registry.Registry) (*projection.Reconciler, error) {
+	if s.Elastic == nil || s.Postgres == nil {
+		return nil, fmt.Errorf("fabriq: search reconciler needs postgres and elasticsearch configured")
+	}
+	return &projection.Reconciler{
+		Projection: "search",
+		Registry:   reg,
+		Include:    func(ent *registry.Entity) bool { return ent.Spec.Search.Index != "" },
+		Truth:      s.Postgres.AggregateVersions,
+		Projected:  s.Elastic.AggregateVersions,
+		Repair:     s.Postgres.Repair,
+	}, nil
+}
+
 // liveSearchModelVersion resolves the live search model version through
 // projection_state, with a small TTL cache (same pattern as the graph
 // resolver).

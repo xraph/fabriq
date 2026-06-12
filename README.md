@@ -67,22 +67,39 @@ only by auth middleware from validated claims.
 
 ## Status
 
-- **Implemented & integration-tested:** registry, command plane +
-  transactional outbox, Postgres adapter (grove, RLS as non-superuser,
-  Timescale bulk telemetry, pgvector), migrations + conformance test,
-  Redis streams (relay fan-out, consumer groups, tailer), leader-elected
-  outbox relay (LISTEN/NOTIFY wake), subscription hub (conflation, SSE,
-  Last-Event-ID resume), `fabriq` CLI, `fabriq-worker`, `api-example`.
-- **Scaffolded (phases 4–7):** FalkorDB execution (dialect translator is
-  done + unit-tested; `adapters/graphtest` conformance suite ready),
-  Elasticsearch adapter, projection engine/blue-green rebuild/reconciler,
-  CRDT document plane (`core/document/DESIGN.md`).
+**Implemented & integration-tested (phases 1–6):**
+
+- Registry, command plane + transactional outbox, optimistic concurrency,
+  atomic batches; Postgres adapter on grove (RLS verified as
+  non-superuser, Timescale bulk telemetry, pgvector HNSW), migrations +
+  registry-conformance test.
+- Redis streams fan-out: leader-elected outbox relay (LISTEN/NOTIFY
+  wake), consumer groups with XAUTOCLAIM recovery, subscription hub
+  (conflation, SSE, Last-Event-ID resume).
+- **Graph projection** on FalkorDB: openCypher dialect (conformance suite
+  in `adapters/graphtest` — the engine-swap gate, green on a real
+  FalkorDB), projection engine, `TraverseAndHydrate` (one batched
+  hydration), blue-green rebuild verified to produce an identical graph.
+- **Search projection** on Elasticsearch: bulk writes with `external_gte`
+  version gating, multi_match over declared fields, lazy per-tenant
+  index+alias provisioning, atomic alias-swap rebuild.
+- **Reconciler**: per-aggregate drift detection (missing/stale/zombie)
+  between Postgres and each projection, repair through the ordinary
+  outbox (never direct engine writes) — integration-tested healing.
+- Observability: W3C traceparent stamped on every envelope by default,
+  Prometheus metrics + pollers in `fabriq-worker` (`/metrics`).
+- Binaries: `fabriq` CLI (`migrate`, `rebuild` incl. `finalize`,
+  `reconcile`, `inspect`), `fabriq-worker`, `api-example`.
+
+**Deferred by design (phase 7):** the CRDT document plane implementation
+(sync transport, materialization, compaction) — the seam (ports,
+migrations, `Hub.PublishRaw`, `core/document/DESIGN.md`) is in place.
 
 ## Development
 
 ```bash
 make test              # unit tests (no Docker)
-make test-integration  # testcontainers: PG+Timescale+pgvector, Redis
+make test-integration  # testcontainers: PG+Timescale+pgvector, Redis, FalkorDB, Elasticsearch
 make bench             # benchmarks
 make lint              # incl. depguard architecture boundaries
 ```

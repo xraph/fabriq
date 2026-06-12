@@ -12,6 +12,8 @@ import (
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/projection"
+	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/domain"
@@ -79,6 +81,15 @@ func TestE2E_GraphProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The spec's full flow includes the subscription delta: attach first.
+	subCtx, cancelSub := context.WithCancel(ctx)
+	defer cancelSub()
+	deltas, err := f.Subscribe(subCtx, query.SubscribeScope{Entity: "asset", Scope: "tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // pump attach
+
 	site, err := f.Exec(ctx, command.Command{Entity: "site", Op: command.OpCreate,
 		Payload: &domain.Site{Name: "Plant A", Code: "PA"}})
 	if err != nil {
@@ -143,6 +154,91 @@ func TestE2E_GraphProjection(t *testing.T) {
 	if len(children) != 1 || children[0] != valve.AggID {
 		t.Fatalf("CHILD_OF = %v", children)
 	}
+
+	// ...and the subscription delta arrived through the same event flow:
+	// command -> outbox -> relay -> stream -> hub -> subscriber.
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case d := <-deltas:
+			if d.Aggregate == "asset" && d.AggID == pump.AggID {
+				return // full spec flow proven in one test
+			}
+		case <-deadline:
+			t.Fatal("subscription delta never arrived")
+		}
+	}
+}
+
+// TestE2E_ReconcilerHealsDrift corrupts the graph directly (a deleted
+// node and a planted zombie) and proves the reconciler heals both through
+// the ordinary pipeline — republished events for the missing aggregate,
+// a synthetic delete for the zombie. Reconciliation never writes the
+// engine directly.
+func TestE2E_ReconcilerHealsDrift(t *testing.T) {
+	f, stores, reg := graphE2E(t)
+	ctx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	asset, err := f.Exec(ctx, command.Command{Entity: "asset", Op: command.OpCreate,
+		Payload: &domain.Asset{Name: "Pump 9", Kind: "pump"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := f.WaitForProjection(waitCtx, "graph", "asset", asset.AggID, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Corruption 1: the projected node vanishes (operator mishap).
+	if err := stores.Falkor.ApplyMutations(ctx, "", []projection.Mutation{
+		projection.NodeDelete{Label: "Asset", ID: asset.AggID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Corruption 2: a zombie node with no Postgres row.
+	if err := stores.Falkor.ApplyMutations(ctx, "", []projection.Mutation{
+		projection.NodeUpsert{Label: "Asset", ID: "GHOST", Props: map[string]any{"id": "GHOST", "version": int64(4)}, Version: 4},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := stores.GraphReconciler(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifts, err := rec.Reconcile(context.Background(), "acme", true)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(drifts) != 2 {
+		t.Fatalf("drifts = %+v, want missing asset + zombie", drifts)
+	}
+
+	// The pipeline heals: the asset returns, the ghost dies.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		var ids []string
+		if err := f.Graph().Query(ctx, `MATCH (a:Asset) RETURN a.id ORDER BY a.id`, nil, &ids); err != nil {
+			t.Fatal(err)
+		}
+		if len(ids) == 1 && ids[0] == asset.AggID {
+			// Re-run detects clean state.
+			clean, err := rec.Reconcile(context.Background(), "acme", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(clean) != 0 {
+				t.Fatalf("still drifted after heal: %+v", clean)
+			}
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatal("reconciler did not heal the graph in time")
 }
 
 // TestE2E_RebuildProducesIdenticalGraph is the spec's rebuild guarantee:

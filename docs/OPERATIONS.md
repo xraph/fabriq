@@ -31,16 +31,20 @@ unreachable.
 4. If a projection fell off the stream's MAXLEN horizon: rebuild from
    Postgres (below) — that is always safe and always possible.
 
-## Rebuild (blue-green, phase 4)
+## Rebuild (blue-green)
 
-`fabriq rebuild --tenant T --projection graph|search`
+`fabriq rebuild --tenant T --projection graph|search [--drop-old]`
 
-Builds `tenant_T_v{N+1}` (or the versioned index) from a Postgres
-snapshot watermark, catches up live events, flips the pointer in
-`fabriq_projection_state` (ES: atomic alias swap), soaks, then drops the
-old target. Reads keep working throughout — they follow the
-pointer/alias. Reindex source is ALWAYS Postgres, never the old
-projection.
+Marks `fabriq_projection_state` status=building (the live engine starts
+dual-applying immediately), replays the Postgres snapshot into
+`tenant_T_v{N+1}` (graph) or the `_v{N+1}` indexes (search), then flips:
+model_version++, target pointer moves, ES aliases swap atomically in one
+`_aliases` call. Readers follow the pointer/alias (graph reads re-resolve
+within the 2s resolver TTL). After the soak window run
+`fabriq rebuild finalize --tenant T --old <target>` to drop the old
+target — or pass `--drop-old` to skip the soak. Reindex source is ALWAYS
+Postgres, never the old projection; the e2e suite proves the rebuilt
+graph is identical to the event-built one.
 
 ## Tenant hook trips (`fabriq_tenant_hook_trips_total`)
 
@@ -65,10 +69,23 @@ heartbeats every 15s. If clients see batched events, a proxy is buffering:
 check nginx (`proxy_buffering off` honored via the header), ALB idle
 timeout > heartbeat interval.
 
-## Reconciler (phase 6)
+## Reconciler
 
-`fabriq reconcile --tenant T [--repair]` compares counts + max versions
-between Postgres and each projection and (with `--repair`) re-emits
-synthetic events for drifted aggregates through the normal pipeline. The
-scheduled job runs leader-elected (lock 1002); alert on its drift gauge
-rather than trusting silence.
+`fabriq reconcile --tenant T [--repair] [--falkordb ...] [--elasticsearch ...]`
+
+Compares per-aggregate versions between Postgres and each projection:
+
+- **missing/stale** (projection behind the row): repairs by upserting the
+  aggregate's latest event into the outbox with `published_at = NULL` —
+  the relay republishes, version-gated consumers converge.
+- **zombie** (projected but no row): emits a synthetic
+  `<entity>.deleted` one version past what the projection holds.
+- A projection AHEAD of the truth scan is not drift (events land between
+  the two reads).
+
+Reconciliation never writes an engine directly. In `fabriq-worker` it
+runs leader-elected (lock 1002) every `FABRIQ_RECONCILE_INTERVAL`
+(default 5m, `0` disables), across every tenant seen in the outbox.
+Caveat: the ES projection scan is capped at 10k docs per entity per
+tenant; beyond that, scroll support is needed before trusting zombie
+detection there.

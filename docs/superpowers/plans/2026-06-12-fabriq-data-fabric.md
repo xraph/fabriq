@@ -1,11 +1,13 @@
 # Fabriq Data Fabric Implementation Plan
 
-> **STATUS (2026-06-12): Phases 0–3 fully implemented, tested and
-> integration-verified (E2E: command → outbox → relay → stream → hub →
-> SSE delta with Last-Event-ID resume). Phases 4–7 scaffolded per spec
-> (interfaces, dialect translator with unit tests, conformance suite,
-> contracts as code comments, TODO tests) — awaiting direction review.
-> Deviations and discoveries recorded in docs/decisions/0001–0006.**
+> **STATUS (2026-06-12, second pass): Phases 0–6 fully implemented and
+> integration-verified — graph projection (FalkorDB, conformance-gated),
+> search projection (Elasticsearch, alias-swap rebuild), blue-green
+> rebuild proven to produce an identical graph, reconciler healing
+> missing/stale/zombie drift through the outbox, observability wired
+> (traceparent by default, Prometheus in the worker). Phase 7 (CRDT
+> plane implementation) remains deferred BY SPEC — seam in place.
+> Deviations and discoveries in docs/decisions/0001–0006.**
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

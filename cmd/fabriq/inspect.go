@@ -219,11 +219,89 @@ func rebuildCommand() cli.Command {
 }
 
 func reconcileCommand() cli.Command {
-	cmd := cli.NewCommand("reconcile", "Compare Postgres against projections and re-emit drifted aggregates", func(_ cli.CommandContext) error {
-		return cliError("reconcile is not implemented yet (phase 6: reconciler)")
+	cmd := cli.NewCommand("reconcile", "Compare Postgres against projections and re-emit drifted aggregates", func(ctx cli.CommandContext) error {
+		dsn, ok := dsnFromContext(ctx)
+		if !ok {
+			return errMissingDSN
+		}
+		tenantID := ctx.String("tenant")
+		if tenantID == "" {
+			return cliError("--tenant is required")
+		}
+		cfg := fabriq.Config{Postgres: fabriq.PostgresConfig{DSN: dsn}}
+		if addr := orEnv(ctx.String("falkordb"), "FABRIQ_FALKORDB_ADDR"); addr != "" {
+			cfg.FalkorDB.Addr = addr
+		}
+		if addrs := orEnv(ctx.String("elasticsearch"), "FABRIQ_ELASTICSEARCH_ADDRS"); addrs != "" {
+			cfg.Elasticsearch.Addrs = strings.Split(addrs, ",")
+		}
+		if cfg.FalkorDB.Addr == "" && len(cfg.Elasticsearch.Addrs) == 0 {
+			return cliError("nothing to reconcile: pass --falkordb and/or --elasticsearch")
+		}
+
+		r := registry.New()
+		if err := domain.RegisterAll(r); err != nil {
+			return err
+		}
+		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = stores.Close() }()
+
+		repair := ctx.Bool("repair")
+		run := func(name string, rec *projection.Reconciler) error {
+			drifts, err := rec.Reconcile(ctx.Context(), tenantID, repair)
+			if err != nil {
+				return err
+			}
+			if len(drifts) == 0 {
+				ctx.Success(fmt.Sprintf("%s: no drift", name))
+				return nil
+			}
+			for _, d := range drifts {
+				ctx.Warning(fmt.Sprintf("%s drift: %s/%s truth=v%d projected=v%d",
+					name, d.Entity, d.AggID, d.TruthVersion, d.ProjectedVersion))
+			}
+			if repair {
+				ctx.Success(fmt.Sprintf("%s: %d aggregates re-emitted through the outbox", name, len(drifts)))
+			} else {
+				ctx.Info(fmt.Sprintf("%s: %d drifted (dry run; pass --repair)", name, len(drifts)))
+			}
+			return nil
+		}
+
+		if stores.Falkor != nil {
+			rec, err := stores.GraphReconciler(r)
+			if err != nil {
+				return err
+			}
+			if err := run("graph", rec); err != nil {
+				return err
+			}
+		}
+		if stores.Elastic != nil {
+			rec, err := stores.SearchReconciler(r)
+			if err != nil {
+				return err
+			}
+			if err := run("search", rec); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	cmd.AddFlag(cli.NewStringFlag("dsn", "", "Postgres DSN (or FABRIQ_POSTGRES_DSN)", ""))
+	cmd.AddFlag(cli.NewStringFlag("falkordb", "", "FalkorDB address (or FABRIQ_FALKORDB_ADDR)", ""))
+	cmd.AddFlag(cli.NewStringFlag("elasticsearch", "", "Elasticsearch addrs (or FABRIQ_ELASTICSEARCH_ADDRS)", ""))
 	cmd.AddFlag(cli.NewStringFlag("tenant", "t", "tenant id", ""))
-	cmd.AddFlag(cli.NewBoolFlag("repair", "", "re-emit synthetic events for drifted aggregates", false))
+	cmd.AddFlag(cli.NewBoolFlag("repair", "", "re-emit drifted aggregates through the outbox", false))
 	return cmd
+}
+
+func orEnv(v, env string) string {
+	if v != "" {
+		return v
+	}
+	return os.Getenv(env)
 }
