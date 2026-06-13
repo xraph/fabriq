@@ -17,6 +17,9 @@ import (
 type server struct {
 	fabric *fabriq.Fabriq
 	auth   *authenticator
+	// Typed repository over the asset model — entity resolved from the
+	// grove struct, reads return *domain.Asset. Built once at startup.
+	assets *query.Repo[domain.Asset]
 }
 
 func (s *server) routes(r forge.Router) {
@@ -137,8 +140,8 @@ func (s *server) getAsset(ctx forge.Context) error {
 	if err != nil {
 		return nil
 	}
-	var asset domain.Asset
-	if err := s.fabric.Relational().Get(tctx, "asset", ctx.Param("id"), &asset); err != nil {
+	asset, err := s.assets.Get(tctx, ctx.Param("id")) // *domain.Asset, typed
+	if err != nil {
 		return writeCommandError(ctx, err)
 	}
 	return ctx.JSON(http.StatusOK, asset)
@@ -163,8 +166,8 @@ func (s *server) listAssets(ctx forge.Context) error {
 	if kinds := ctx.Query("kind"); kinds != "" {
 		q.Where = append(q.Where, query.In("kind", strings.Split(kinds, ",")))
 	}
-	var assets []*domain.Asset
-	if err := s.fabric.Relational().List(tctx, "asset", q, &assets); err != nil {
+	assets, err := s.assets.List(tctx, q) // []*domain.Asset, typed
+	if err != nil {
 		return writeCommandError(ctx, err)
 	}
 	return ctx.JSON(http.StatusOK, assets)

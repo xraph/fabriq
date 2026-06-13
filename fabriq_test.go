@@ -224,3 +224,35 @@ func TestConfig_Validate(t *testing.T) {
 		t.Fatal("search projection without elasticsearch addresses must fail")
 	}
 }
+
+func TestFabriq_RepoFor_Typed(t *testing.T) {
+	w := fabriqtest.NewWorld(fReg(t))
+	f := newFabric(t, w)
+	ctx := fCtx(t)
+
+	res, err := f.Exec(ctx, command.Command{Entity: "site", Op: command.OpCreate, Payload: &fSite{Name: "Plant A"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := fabriq.RepoFor[fSite](f)
+	if err != nil {
+		t.Fatalf("RepoFor[fSite]: %v", err)
+	}
+	if repo.Entity() != "site" {
+		t.Fatalf("entity = %q", repo.Entity())
+	}
+
+	site, err := repo.Get(ctx, res.AggID) // *fSite, typed
+	if err != nil {
+		t.Fatal(err)
+	}
+	if site.Name != "Plant A" {
+		t.Fatalf("Get = %+v", site)
+	}
+
+	one, err := repo.One(ctx, query.ListQuery{Where: []query.Cond{query.Eq("name", "Plant A")}})
+	if err != nil || one.ID != res.AggID {
+		t.Fatalf("One = (%+v, %v)", one, err)
+	}
+}
