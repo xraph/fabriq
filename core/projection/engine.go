@@ -29,6 +29,43 @@ type AppliedRecorder interface {
 	SetApplied(ctx context.Context, tenantID, projection, aggregate, aggID string, version int64) error
 }
 
+// CustomApplier contributes extra mutations for a target beyond the built-in
+// declarative applier. Apply MUST be deterministic and side-effect-free: given
+// the same Envelope it must always return the same Mutations regardless of
+// wall-clock time, feature flags, or any external state — this is what makes
+// blue-green rebuilds produce identical projections. Specifically forbidden:
+// network/database I/O, model calls, time.Now(), cross-aggregate reads, and
+// randomness. A CustomApplier must be wired into BOTH Engine.Custom and the
+// matching Rebuilder.Custom, or the live and rebuilt projections will diverge.
+type CustomApplier struct {
+	Target string // "" = any target, else must equal the engine's Projection
+	Entity string // "" = any aggregate, else must equal the event's Aggregate
+	Apply  Applier
+}
+
+// ApplyChain runs the built-in applier then every matching custom applier,
+// unioning their mutations. Pure.
+func ApplyChain(builtin Applier, custom []CustomApplier, projection string, env event.Envelope) ([]Mutation, error) {
+	muts, err := builtin.Apply(env)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range custom {
+		if c.Target != "" && c.Target != projection {
+			continue
+		}
+		if c.Entity != "" && c.Entity != env.Aggregate {
+			continue
+		}
+		extra, err := c.Apply.Apply(env)
+		if err != nil {
+			return nil, err
+		}
+		muts = append(muts, extra...)
+	}
+	return muts, nil
+}
+
 // Engine consumes one projection's group and applies events:
 // upcast -> pure applier -> sink (per target) -> applied bookkeeping.
 // Handler success acks; failure leaves the entry pending for redelivery —
@@ -39,6 +76,7 @@ type Engine struct {
 	Source     Source
 	Sink       Sink
 	Applier    Applier
+	Custom     []CustomApplier      // optional; unioned after the built-in applier
 	Upcasters  *event.UpcasterChain // optional; appliers see the latest shape
 	State      AppliedRecorder
 
@@ -75,7 +113,7 @@ func (e *Engine) handle(ctx context.Context, env event.Envelope) error {
 		env = upcast
 	}
 
-	muts, err := e.Applier.Apply(env)
+	muts, err := ApplyChain(e.Applier, e.Custom, e.Projection, env)
 	if err != nil {
 		return nil // malformed payload: same poison-avoidance as above
 	}
