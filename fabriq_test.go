@@ -225,7 +225,7 @@ func TestConfig_Validate(t *testing.T) {
 	}
 }
 
-func TestFabriq_RepoFor_Typed(t *testing.T) {
+func TestFabriq_For_Typed(t *testing.T) {
 	w := fabriqtest.NewWorld(fReg(t))
 	f := newFabric(t, w)
 	ctx := fCtx(t)
@@ -235,9 +235,9 @@ func TestFabriq_RepoFor_Typed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repo, err := fabriq.RepoFor[fSite](f)
+	repo, err := fabriq.For[fSite](f)
 	if err != nil {
-		t.Fatalf("RepoFor[fSite]: %v", err)
+		t.Fatalf("For[fSite]: %v", err)
 	}
 	if repo.Entity() != "site" {
 		t.Fatalf("entity = %q", repo.Entity())

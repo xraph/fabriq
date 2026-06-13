@@ -57,7 +57,7 @@ func main() {
 		HTTPAddress: addr,
 	})
 
-	assets, err := fabriq.RepoFor[domain.Asset](f)
+	assets, err := fabriq.For[domain.Asset](f)
 	if err != nil {
 		log.Fatalf("api-example: %v", err)
 	}

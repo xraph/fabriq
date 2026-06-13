@@ -64,7 +64,7 @@ func bootAPI(t *testing.T) *server {
 	t.Cleanup(stop)
 	go func() { _ = elector.Run(runCtx, relay.Run) }()
 
-	assets, err := fabriq.RepoFor[domain.Asset](f)
+	assets, err := fabriq.For[domain.Asset](f)
 	if err != nil {
 		t.Fatal(err)
 	}
