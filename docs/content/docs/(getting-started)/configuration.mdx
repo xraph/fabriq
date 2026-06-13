@@ -11,7 +11,8 @@ Fabriq takes its configuration two ways: library code passes a `fabriq.Config` v
 
 ```go
 type Config struct {
-	Postgres      PostgresConfig      // DSN required: the source of truth
+	Postgres      PostgresConfig      // DSN required (single-shard): the source of truth
+	Shards        []ShardConfig       // optional: shard the source of truth by tenant
 	Redis         RedisConfig         // event fan-out; required for subscriptions + projections
 	FalkorDB      FalkorDBConfig      // graph projection engine
 	Elasticsearch ElasticsearchConfig // search projection engine
@@ -20,7 +21,7 @@ type Config struct {
 }
 ```
 
-Postgres is the only required store. `PostgresConfig.DSN` must be set; `PostgresConfig.PoolSize` is optional. Everything else is opt-in and degrades to a typed `ErrStoreNotConfigured` when absent.
+Postgres is the only required store. `PostgresConfig.DSN` must be set; `PostgresConfig.PoolSize` is optional. Everything else is opt-in and degrades to a typed `ErrStoreNotConfigured` when absent. To scale the source of truth across multiple Postgres instances, set `Shards` in place of `Postgres` — a single `Postgres` block is the one-shard case. See [Sharding](/docs/sharding).
 
 The subscription plane is tuned through three fields:
 

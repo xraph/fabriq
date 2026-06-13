@@ -4,6 +4,7 @@
     "architecture",
     "registry",
     "tenancy",
+    "sharding",
     "commands-and-events",
     "projections",
     "subscriptions"

@@ -1,0 +1,106 @@
+name: Release
+
+# Tag-triggered, learning from octopus's release split: goreleaser cuts the
+# GitHub Release with cross-compiled binaries + a multi-arch ghcr.io image,
+# then a sibling job packages the Helm chart and publishes it as an OCI
+# artifact (goreleaser does not package charts).
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# Pre-release suffixes (v0.2.0-rc.1) are auto-marked pre-release.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  goreleaser:
+    name: Binaries & image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release + upload archives
+      packages: write # push the container image to ghcr.io
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the changelog can diff tags
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    needs: goreleaser # the release exists before we attach the chart
+    permissions:
+      contents: write # attach the packaged chart to the release
+      packages: write # push the chart as an OCI artifact to ghcr.io
+    env:
+      CHART_DIR: deploy/helm/fabriq
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Resolve chart version from the tag
+        id: ver
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing chart version ${VERSION}"
+
+      - name: Lint chart
+        run: helm lint "$CHART_DIR" --set postgres.dsn=postgres://u@h/d --set redis.addr=h:6379
+
+      - name: Package chart
+        id: pkg
+        run: |
+          mkdir -p dist
+          helm package "$CHART_DIR" \
+            --version "${{ steps.ver.outputs.version }}" \
+            --app-version "${{ steps.ver.outputs.version }}" \
+            --destination dist
+          echo "chart=dist/fabriq-${{ steps.ver.outputs.version }}.tgz" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR (Helm OCI)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push chart to GHCR (OCI)
+        run: helm push "${{ steps.pkg.outputs.chart }}" "oci://ghcr.io/${{ github.repository_owner }}/charts"
+
+      - name: Attach chart to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: ${{ steps.pkg.outputs.chart }}

@@ -9,3 +9,4 @@ config.local.yaml
 
 # Build artifacts
 /vendor/
+/dist/

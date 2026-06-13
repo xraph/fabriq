@@ -5,11 +5,12 @@ description: Exhaustive reference for the Fabriq Config struct, functional Optio
 
 This is the exhaustive reference for every `Config` field, functional `Option`, and `FABRIQ_*` environment variable. For the task-oriented walkthrough of how to assemble and pass configuration, see [Getting Started · Configuration](/docs/configuration).
 
-`Config` is Fabriq's declarative configuration: which stores exist and which projections run. It carries `yaml` and `json` struct tags (the same schema a standalone `fabriqd` would load from YAML). Entities are **not** configured here — they are registered in code via the registry.
+`Config` is Fabriq's declarative configuration: which stores exist and which projections run. It carries `yaml` and `json` struct tags (the same schema the `fabriq` binary loads from YAML). Entities are **not** configured here — they are registered in code via the registry.
 
 ```go
 type Config struct {
 	Postgres      PostgresConfig
+	Shards        []ShardConfig
 	Redis         RedisConfig
 	FalkorDB      FalkorDBConfig
 	Elasticsearch ElasticsearchConfig
@@ -20,12 +21,26 @@ type Config struct {
 
 ## PostgresConfig
 
-Locates the source of truth (always required). YAML/JSON key: `postgres`.
+Locates the source of truth. Required unless `shards` is set (a single `postgres` block is the one-shard shorthand). YAML/JSON key: `postgres`.
 
 | Field | Type | yaml/json key | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `DSN` | `string` | `dsn` | `""` | Postgres connection string. Required — Postgres is the source of truth. |
+| `DSN` | `string` | `dsn` | `""` | Postgres connection string. Required when `shards` is empty (the single-shard case). |
 | `PoolSize` | `int` | `pool_size` | `0` | Connection pool size passed to the adapter via `postgres.WithPoolSize`. Zero leaves the adapter default. |
+
+## ShardConfig
+
+Locates one source-of-truth shard. YAML/JSON key: `shards` (a list). When `shards` is non-empty, tenants are routed across these shards and the top-level `postgres` block is ignored. See [Sharding](/docs/sharding).
+
+| Field | Type | yaml/json key | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `ID` | `string` | `id` | `""` | Stable shard identifier. Required and unique within `shards`. |
+| `DSN` | `string` | `dsn` | `""` | Postgres connection string for this shard. Required. |
+| `PoolSize` | `int` | `pool_size` | `0` | Connection pool size for this shard. Zero leaves the adapter default. |
+
+<Callout type="warn">
+`shards` is a list of structs and cannot be set through the `FABRIQ_*` environment overlay — multi-shard deployments must mount a `config.yaml`, and the shard count is fixed at deploy time. See [Sharding](/docs/sharding).
+</Callout>
 
 ## RedisConfig
 
@@ -122,7 +137,7 @@ To serve, both `FABRIQ_POSTGRES_DSN` and `FABRIQ_REDIS_ADDR` must be set — the
 
 `Config.Validate()` checks cross-field consistency only — it does **not** dial any store. `Open` calls it before opening adapters. The rules:
 
-- `postgres.dsn` must be non-empty (Postgres is the source of truth).
+- `postgres.dsn` must be non-empty **unless** `shards` is set. When `shards` is set, every shard needs a non-empty, unique `id` and a non-empty `dsn`.
 - If `projections.graph` is enabled, `falkordb.addr` must be non-empty.
 - If `projections.search` is enabled, `elasticsearch.addrs` must be non-empty.
 - If either projection is enabled, `redis.addr` must be non-empty (projections need the event stream).

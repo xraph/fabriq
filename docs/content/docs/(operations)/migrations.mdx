@@ -40,6 +40,13 @@ grove acquires its migration lock on a dedicated connection, so concurrent
 `fabriq migrate` runs (for example, parallel Helm hooks across releases) are
 safe.
 
+<Callout type="info">
+With multiple shards ([Sharding](/docs/sharding)), `fabriq migrate` is **not**
+shard-aware — it targets the single DSN you pass. Run `fabriq migrate up` once
+per shard DSN and gate the app rollout on every shard reaching the target
+version. There is no separate catalog database to migrate.
+</Callout>
+
 ## Expand / contract discipline
 
 Every schema change ships across two or three releases so old and new code

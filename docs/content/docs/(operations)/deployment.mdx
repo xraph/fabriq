@@ -17,6 +17,33 @@ operator commands — both share one wiring path.
 There is no separate worker binary. See [CLI](/docs/cli) for the
 full command surface.
 
+## Releases & published artifacts
+
+Every `vX.Y.Z` git tag publishes three things via GitHub Actions
+([`.github/workflows/release.yml`](https://github.com/xraph/fabriq/blob/main/.github/workflows/release.yml),
+driven by [goreleaser](https://github.com/xraph/fabriq/blob/main/.goreleaser.yaml)):
+
+- **Container image** — multi-arch (`linux/amd64`, `linux/arm64`) on GHCR:
+
+  ```bash
+  docker pull ghcr.io/xraph/fabriq:0.2.0   # also :0.2 and :latest
+  ```
+
+- **Helm chart** — pushed as an OCI artifact and attached to the release:
+
+  ```bash
+  helm install fabriq oci://ghcr.io/xraph/charts/fabriq --version 0.2.0 \
+    --set postgres.existingSecret=pg-conn --set redis.addr=redis:6379
+  ```
+
+- **Binaries** — `linux`/`darwin` × `amd64`/`arm64` archives plus
+  `checksums.txt` on the [GitHub Release](https://github.com/xraph/fabriq/releases),
+  for running the operator CLI (`fabriq migrate`, `inspect`, …) off-cluster.
+
+Cutting a release is just a tag — `git tag v0.2.0 && git push origin v0.2.0`.
+Pre-release suffixes (`v0.2.0-rc.1`) are auto-marked pre-release. Versions are
+stamped into the binary (`fabriq --version`) and the image's OCI labels.
+
 ## The image
 
 The Dockerfile builds a single static, stripped binary and ships it on
@@ -201,6 +228,17 @@ The chart includes:
 
 The worker drains on SIGTERM (~10s); the chart sets
 `terminationGracePeriodSeconds: 30` for headroom.
+
+### Sharded deployments
+
+The chart's connection values render a single `FABRIQ_POSTGRES_DSN`, so out of
+the box they configure a **one-shard** deployment. To shard the source of truth
+across multiple Postgres instances ([Sharding](/docs/sharding)), supply a
+`config.yaml` carrying a `shards:` list — the `FABRIQ_*` environment overlay
+cannot express a list of shards. Mount it (for example a ConfigMap at
+`/etc/fabriq/config.yaml`), and run the migrate step **once per shard DSN**:
+`fabriq migrate` targets one database at a time. The shard count is fixed at
+deploy time.
 
 ## Bare deployment (without Helm)
 
