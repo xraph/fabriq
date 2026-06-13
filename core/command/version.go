@@ -16,6 +16,8 @@ func checkVersion(p *preparedCommand, current int64) error {
 		if current == 0 {
 			return &fabriqerr.NotFoundError{Entity: p.entity.Spec.Name, ID: p.aggID}
 		}
+	case OpUpsert:
+		// create-or-update by AggID: no existence precondition.
 	}
 	if p.cmd.ExpectedVersion != nil && *p.cmd.ExpectedVersion != current {
 		return &fabriqerr.VersionConflictError{
