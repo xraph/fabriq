@@ -7,6 +7,7 @@ import (
 
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
+	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
@@ -87,6 +88,10 @@ func New(reg *registry.Registry, ports Ports, opts ...Option) (*Fabriq, error) {
 
 // Registry exposes the schema registry (read-only use).
 func (f *Fabriq) Registry() *registry.Registry { return f.reg }
+
+// Upcasters exposes the registered payload upcaster chain (nil when none)
+// — the worker hands it to projection engines.
+func (f *Fabriq) Upcasters() *event.UpcasterChain { return f.settings.upcasters }
 
 // Hub exposes the subscription hub for the delta pump (fabriq-worker / the
 // redis stream bridge) and for shutdown draining. Application code

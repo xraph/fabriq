@@ -251,14 +251,21 @@ func (h *Hub) flush(channel string) {
 	}
 }
 
-// deliverLocked sends deltas to every subscriber without blocking: full
-// buffers drop (clients refetch + resume via Last-Event-ID).
+// deliverLocked sends deltas to every subscriber without blocking.
+// Conflated channels drop on a full buffer (clients refetch + resume via
+// Last-Event-ID). Raw channels must deliver complete-and-in-order or
+// nothing: an overflowing raw subscriber is CLOSED so its client knows to
+// re-Sync instead of silently missing a frame.
 func deliverLocked(cs *channelState, deltas []query.Delta) {
 	for _, d := range deltas {
-		for _, sub := range cs.subs {
+		for id, sub := range cs.subs {
 			select {
 			case sub <- d:
 			default:
+				if cs.raw {
+					delete(cs.subs, id)
+					close(sub)
+				}
 			}
 		}
 	}

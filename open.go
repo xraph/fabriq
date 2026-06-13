@@ -101,6 +101,9 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		return nil, nil, err
 	}
 	f.stores = stores
+	if ds, ok := ports.Documents.(*syncingDocStore); ok {
+		ds.authz = f.settings.docAuthz
+	}
 	return f, stores, nil
 }
 
@@ -134,6 +137,37 @@ func (s *Stores) Close() error {
 	return firstErr
 }
 
+// cachedState wraps projection_state lookups with a small TTL cache —
+// the engines consult state per consumed EVENT, which must not cost a
+// Postgres round-trip each. 2s staleness only widens the dual-apply
+// window at a rebuild's edges; version gating keeps that safe.
+func cachedState(repo *postgres.StateRepo, proj string) func(ctx context.Context, tenantID string) (projection.State, error) {
+	type entry struct {
+		st  projection.State
+		exp time.Time
+	}
+	var mu sync.Mutex
+	cache := map[string]entry{}
+	const ttl = 2 * time.Second
+
+	return func(ctx context.Context, tenantID string) (projection.State, error) {
+		mu.Lock()
+		if e, ok := cache[tenantID]; ok && time.Now().Before(e.exp) {
+			mu.Unlock()
+			return e.st, nil
+		}
+		mu.Unlock()
+		st, err := repo.Get(ctx, tenantID, proj)
+		if err != nil {
+			return projection.State{}, err
+		}
+		mu.Lock()
+		cache[tenantID] = entry{st: st, exp: time.Now().Add(ttl)}
+		mu.Unlock()
+		return st, nil
+	}
+}
+
 // GraphEngine assembles the graph projection consumer over the opened
 // stores: Redis consumer group -> registry-derived applier -> FalkorDB
 // sink, with projection_state bookkeeping and rebuild-aware dual targets.
@@ -143,6 +177,7 @@ func (s *Stores) GraphEngine(reg *registry.Registry, upcasters *event.UpcasterCh
 		return nil, fmt.Errorf("fabriq: graph engine needs postgres, redis and falkordb configured")
 	}
 	repo := s.Postgres.ProjectionState()
+	stateFor := cachedState(repo, "graph")
 	return &projection.Engine{
 		Projection: "graph",
 		Group:      "proj:graph",
@@ -152,7 +187,7 @@ func (s *Stores) GraphEngine(reg *registry.Registry, upcasters *event.UpcasterCh
 		Upcasters:  upcasters,
 		State:      repo,
 		TargetsFor: func(ctx context.Context, tenantID string) ([]string, error) {
-			st, err := repo.Get(ctx, tenantID, "graph")
+			st, err := stateFor(ctx, tenantID)
 			if err != nil {
 				return nil, err
 			}
@@ -189,6 +224,7 @@ func (s *Stores) SearchEngine(reg *registry.Registry, upcasters *event.UpcasterC
 		return nil, fmt.Errorf("fabriq: search engine needs postgres, redis and elasticsearch configured")
 	}
 	repo := s.Postgres.ProjectionState()
+	stateFor := cachedState(repo, "search")
 	return &projection.Engine{
 		Projection: "search",
 		Group:      "proj:search",
@@ -198,7 +234,7 @@ func (s *Stores) SearchEngine(reg *registry.Registry, upcasters *event.UpcasterC
 		Upcasters:  upcasters,
 		State:      repo,
 		TargetsFor: func(ctx context.Context, tenantID string) ([]string, error) {
-			st, err := repo.Get(ctx, tenantID, "search")
+			st, err := stateFor(ctx, tenantID)
 			if err != nil {
 				return nil, err
 			}

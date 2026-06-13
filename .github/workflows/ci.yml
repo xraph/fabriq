@@ -69,7 +69,7 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Integration tests (testcontainers)
-        run: go test -race -count=1 -tags=integration -timeout 20m ./...
+        run: go test -race -count=1 -tags=integration -p 1 -timeout 30m ./...
 
   lint:
     name: Lint

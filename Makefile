@@ -13,7 +13,7 @@ test:
 
 # Integration tests need Docker (testcontainers: Postgres+Timescale, Redis, FalkorDB, ES).
 test-integration:
-	$(GO) test -race -count=1 -tags=integration -timeout 20m ./...
+	$(GO) test -race -count=1 -tags=integration -p 1 -timeout 30m ./...
 
 test-all: test test-integration
 
