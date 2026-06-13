@@ -90,18 +90,25 @@ func New(reg *registry.Registry, ports Ports, opts ...Option) (*Fabriq, error) {
 func (f *Fabriq) Registry() *registry.Registry { return f.reg }
 
 // For returns a type-safe repository over the entity whose grove model is
-// T — the typed counterpart to f.Relational(). The entity is resolved from
-// T (no string), and reads return *T / []*T:
+// T — the typed counterpart to f.Relational() and the projection ports.
+// The entity is resolved from T (no string), and reads return *T / []*T:
 //
 //	repo, _ := fabriq.For[domain.Asset](f)
-//	asset, err := repo.Get(ctx, id)          // *domain.Asset
+//	asset, err := repo.Get(ctx, id)                       // *domain.Asset
 //	pump, err := repo.One(ctx, query.Eq("serial", sn))
+//	kids, err := repo.Traverse(ctx, cypher, params)       // graph -> hydrated
+//	hits, err := repo.Search(ctx, "centrifugal", 20)      // search -> hydrated
+//	near, err := repo.Similar(ctx, embedding, 10)         // vector -> hydrated
 //
 // It is a free function, not a method, because Go methods cannot introduce
 // type parameters. (The lower-level query.For takes a registry + querier
-// directly, for code without the facade.)
+// directly; attach projection ports with WithGraph/WithSearch/WithVector.)
 func For[T any](f *Fabriq) (*query.Repo[T], error) {
-	return query.For[T](f.reg, f.Relational())
+	repo, err := query.For[T](f.reg, f.Relational())
+	if err != nil {
+		return nil, err
+	}
+	return repo.WithGraph(f.Graph()).WithSearch(f.Search()).WithVector(f.Vector()), nil
 }
 
 // Upcasters exposes the registered payload upcaster chain (nil when none)
