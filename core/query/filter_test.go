@@ -77,3 +77,22 @@ func TestValidateConds_IsNullIgnoresValue(t *testing.T) {
 		t.Fatalf("null checks must not require a value: %v", err)
 	}
 }
+
+func TestEqs(t *testing.T) {
+	conds := query.Eqs(map[string]any{"site_id": "S1", "kind": "pump"})
+	if len(conds) != 2 {
+		t.Fatalf("Eqs len = %d", len(conds))
+	}
+	// Deterministic order (sorted by column) so generated SQL is stable.
+	if conds[0].Column != "kind" || conds[1].Column != "site_id" {
+		t.Fatalf("Eqs not sorted: %v", conds)
+	}
+	for _, c := range conds {
+		if c.Op != query.OpEq {
+			t.Fatalf("Eqs produced non-eq op: %+v", c)
+		}
+	}
+	if query.Eqs(nil) != nil && len(query.Eqs(nil)) != 0 {
+		t.Fatal("Eqs(nil) should be empty")
+	}
+}

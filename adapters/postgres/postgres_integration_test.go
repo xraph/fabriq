@@ -293,7 +293,7 @@ func TestPG_ListFilterLimitOrder(t *testing.T) {
 
 	var got []*domain.Asset
 	err = h.A.List(ctx, "asset", query.ListQuery{
-		Filter: map[string]any{"site_id": site.AggID}, OrderBy: "name", Limit: 2,
+		Where: query.Eqs(map[string]any{"site_id": site.AggID}), OrderBy: "name", Limit: 2,
 	}, &got)
 	if err != nil {
 		t.Fatal(err)
@@ -303,7 +303,7 @@ func TestPG_ListFilterLimitOrder(t *testing.T) {
 	}
 
 	// Filter columns are validated against the binding (injection guard).
-	err = h.A.List(ctx, "asset", query.ListQuery{Filter: map[string]any{"name; DROP TABLE sites--": "x"}}, &got)
+	err = h.A.List(ctx, "asset", query.ListQuery{Where: []query.Cond{query.Eq("name; DROP TABLE sites--", "x")}}, &got)
 	if err == nil {
 		t.Fatal("unknown filter column must be rejected")
 	}
@@ -357,13 +357,13 @@ func TestPG_ListRichFilter(t *testing.T) {
 	if n := names(query.ListQuery{Where: []query.Cond{query.NotIn("kind", []string{"pump"})}, OrderBy: "name"}); len(n) != 2 || n[0] != "Inlet Valve" {
 		t.Fatalf("NOT IN = %v", n)
 	}
-	// OR group + equality Filter, combined.
+	// OR group + equality, combined in one Where.
 	if n := names(query.ListQuery{
-		Filter: map[string]any{"site_id": site.AggID},
-		Where:  []query.Cond{query.Or(query.Eq("kind", "valve"), query.Like("name", "Main%"))},
+		Where: append(query.Eqs(map[string]any{"site_id": site.AggID}),
+			query.Or(query.Eq("kind", "valve"), query.Like("name", "Main%"))),
 		OrderBy: "name",
 	}); len(n) != 2 || n[0] != "Inlet Valve" || n[1] != "Main Pump" {
-		t.Fatalf("OR + Filter = %v", n)
+		t.Fatalf("OR + equality = %v", n)
 	}
 
 	// Comparison: bump one asset's version and select version > 1.

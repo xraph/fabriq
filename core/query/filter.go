@@ -3,6 +3,7 @@ package query
 import (
 	"fmt"
 	"reflect"
+	"sort"
 )
 
 // Op is the bounded, engine-neutral comparison vocabulary the
@@ -78,6 +79,26 @@ func IsNotNull(column string) Cond { return Cond{Column: column, Op: OpIsNotNull
 
 // Or groups sub-conditions into a single OR predicate.
 func Or(conds ...Cond) Cond { return Cond{Or: conds} }
+
+// Eqs is the terse equality shorthand: it turns a column=value map into a
+// slice of Eq conditions, sorted by column for deterministic SQL. Use it
+// when you just want "match these columns": ListQuery{Where: Eqs(m)}; mix
+// with other conditions via append(Eqs(m), Like(...)).
+func Eqs(equalities map[string]any) []Cond {
+	if len(equalities) == 0 {
+		return nil
+	}
+	cols := make([]string, 0, len(equalities))
+	for c := range equalities {
+		cols = append(cols, c)
+	}
+	sort.Strings(cols)
+	conds := make([]Cond, len(cols))
+	for i, c := range cols {
+		conds[i] = Eq(c, equalities[c])
+	}
+	return conds
+}
 
 // IsGroup reports whether the Cond is an OR group rather than a leaf.
 func (c Cond) IsGroup() bool { return len(c.Or) > 0 }

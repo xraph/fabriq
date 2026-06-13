@@ -79,12 +79,11 @@ func TestFakeRelational_RichFilter_OperatorsAndOr(t *testing.T) {
 		t.Fatalf("OR group = %v", names)
 	}
 
-	// Filter (equality shorthand) AND Where, combined.
+	// Equality (Eqs) AND operator conditions, combined in one Where.
 	if names := listAssets(t, w, query.ListQuery{
-		Filter: map[string]any{"site_id": "S1"},
-		Where:  []query.Cond{query.Like("name", "Main%")},
+		Where: append(query.Eqs(map[string]any{"site_id": "S1"}), query.Like("name", "Main%")),
 	}); len(names) != 1 || names[0] != "Main Pump" {
-		t.Fatalf("Filter AND Where = %v", names)
+		t.Fatalf("Eqs + Where = %v", names)
 	}
 
 	// NotIn.

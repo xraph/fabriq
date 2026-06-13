@@ -154,7 +154,7 @@ func TestFakeRelational_ListFilterAndLimit(t *testing.T) {
 
 	var got []*ftAsset
 	if err := w.Rel.List(ctx, "asset", query.ListQuery{
-		Filter: map[string]any{"site_id": site.AggID}, Limit: 2,
+		Where: query.Eqs(map[string]any{"site_id": site.AggID}), Limit: 2,
 	}, &got); err != nil {
 		t.Fatal(err)
 	}

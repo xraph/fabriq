@@ -277,22 +277,12 @@ func (r *FakeRelational) List(ctx context.Context, entity string, q query.ListQu
 	rows := r.db.rows[tid][entity]
 	ids := make([]string, 0, len(rows))
 	for id, row := range rows {
-		match := true
-		for col, want := range q.Filter {
-			if !valuesEqual(row.vals[col], want) {
-				match = false
-				break
-			}
+		ok, evErr := evalConds(row.vals, q.Where)
+		if evErr != nil {
+			r.db.mu.RUnlock()
+			return evErr
 		}
-		if match {
-			ok, evErr := evalConds(row.vals, q.Where)
-			if evErr != nil {
-				r.db.mu.RUnlock()
-				return evErr
-			}
-			match = ok
-		}
-		if match {
+		if ok {
 			ids = append(ids, id)
 		}
 	}

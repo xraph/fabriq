@@ -155,7 +155,7 @@ func (s *server) listAssets(ctx forge.Context) error {
 	//   ?kind=pump,valve   membership (IN)
 	q := query.ListQuery{OrderBy: "name", Limit: 100}
 	if siteID := ctx.Query("site_id"); siteID != "" {
-		q.Filter = map[string]any{"site_id": siteID}
+		q.Where = append(q.Where, query.Eq("site_id", siteID))
 	}
 	if search := ctx.Query("search"); search != "" {
 		q.Where = append(q.Where, query.ILike("name", "%"+search+"%"))
