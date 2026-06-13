@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/xraph/forge"
 
@@ -148,9 +149,19 @@ func (s *server) listAssets(ctx forge.Context) error {
 	if err != nil {
 		return nil
 	}
+	// Structured, engine-neutral filters straight from query params:
+	//   ?site_id=S1        equality
+	//   ?search=pump       case-insensitive name match (ILIKE)
+	//   ?kind=pump,valve   membership (IN)
 	q := query.ListQuery{OrderBy: "name", Limit: 100}
 	if siteID := ctx.Query("site_id"); siteID != "" {
 		q.Filter = map[string]any{"site_id": siteID}
+	}
+	if search := ctx.Query("search"); search != "" {
+		q.Where = append(q.Where, query.ILike("name", "%"+search+"%"))
+	}
+	if kinds := ctx.Query("kind"); kinds != "" {
+		q.Where = append(q.Where, query.In("kind", strings.Split(kinds, ",")))
 	}
 	var assets []*domain.Asset
 	if err := s.fabric.Relational().List(tctx, "asset", q, &assets); err != nil {
