@@ -1,9 +1,9 @@
 ---
 title: Relational
-description: The relational read port over Postgres — Get, GetMany, List, and the raw-SQL escape hatch, every method tenant-scoped.
+description: The relational read port over Postgres — point reads, batched hydration, structured filters, load-one-by-condition, and a raw-SQL escape hatch — plus the typed Repo[T] layer. Every method is tenant-scoped.
 ---
 
-Postgres is Fabriq's source of truth: every aggregate row lives there, written exclusively through the command plane (`Exec`/`ExecBatch`) and read through `query.RelationalQuerier`. The port is deliberately small — point reads, batched hydration, equality-filtered paging, and a raw-SQL escape hatch for the rest. It is implemented in `adapters/postgres` on grove's `pgdriver`.
+Postgres is Fabriq's source of truth: every aggregate row lives there, written exclusively through the command plane (`Exec`/`ExecBatch`) and read through `query.RelationalQuerier`. The port is deliberately small — point reads, batched hydration, structured-filter paging, and a raw-SQL escape hatch for the rest. It is implemented in `adapters/postgres` on grove's `pgdriver`.
 
 Every method is tenant-scoped structurally: each call runs inside a transaction stamped with `SET LOCAL app.tenant_id` (via `set_config(..., true)`), and every generated query carries an explicit `tenant_id` predicate. Postgres RLS (`FORCE`) keys on that setting, and a grove pre-query hook backstop denies any pool-path access to a tenant table — see [Tenancy](/docs/tenancy). The tenant comes from the `context.Context`; an unstamped context fails with `ErrNoTenant`.
 
@@ -16,66 +16,115 @@ type RelationalQuerier interface {
 }
 ```
 
-Reach the port through the facade: `f.Relational()`.
+Reach the port directly through the facade — `f.Relational()` — or, preferably, through a **typed repository**.
+
+## Typed repositories
+
+`fabriq.For[T]` returns a `*query.Repo[T]` — a thin generic layer over the port where `T` is the entity's grove model. The entity is resolved from `T` (no entity string at the call site), and reads return `*T` / `[]*T` instead of `any`:
+
+```go
+repo, err := fabriq.For[domain.Asset](f)        // entity inferred from the model type
+if err != nil {
+	return err                                  // unregistered model type -> error
+}
+
+asset, err := repo.Get(ctx, assetID)            // *domain.Asset
+pump, err  := repo.One(ctx, query.Eq("serial", sn))
+pumps, err := repo.List(ctx, query.ListQuery{Where: query.Where{query.Eq("kind", "pump")}})
+many, err  := repo.GetMany(ctx, ids)            // []*domain.Asset
+```
+
+It adds no query capability beyond the port — just typing and the `One` helper. (Go methods cannot introduce type parameters, so `For` is a free function, not a method.) The same repo also reaches the projection planes when configured — `Traverse`/`Out`/`In`/`Reachable` ([Graph](/docs/graph)), `Search`/`SearchWith` ([Search](/docs/search)), `Similar` ([Vector](/docs/vector)) — all returning hydrated `[]*T`.
+
+The sections below describe each operation's semantics; both the typed `repo.X` form and the raw `f.Relational().X` form are shown where they differ.
 
 ## Get
 
-`Get` loads one aggregate row by id into a model pointer. A missing row returns `ErrNotFound` (a typed `*fabriqerr.NotFoundError`), not a zero value.
+`Get` loads one aggregate row by id. A missing row returns `ErrNotFound` (a typed `*fabriqerr.NotFoundError`), not a zero value.
 
 ```go
-var asset domain.Asset
-if err := f.Relational().Get(ctx, "asset", assetID, &asset); err != nil {
+asset, err := repo.Get(ctx, assetID)            // *domain.Asset
+if err != nil {
 	if errors.Is(err, fabriq.ErrNotFound) {
 		// no such aggregate in this tenant
 	}
 	return err
 }
+
+// Raw port form:
+var a domain.Asset
+err = f.Relational().Get(ctx, "asset", assetID, &a)
 ```
 
 ## GetMany
 
-`GetMany` is the dataloader-style hydration primitive: it loads many rows in ONE batched query (`WHERE id = ANY($1)`), never a loop of `Get`s. Result order follows the `ids` slice (the query appends `ORDER BY array_position($2, id)`), and rows that do not exist are simply skipped — the result slice can be shorter than `ids`. An empty `ids` slice is a no-op.
+`GetMany` is the dataloader-style hydration primitive: it loads many rows in ONE batched query (`WHERE id = ANY($1)`), never a loop of `Get`s. Result order follows the `ids` slice, and rows that do not exist are simply skipped — the result slice can be shorter than `ids`. An empty `ids` slice is a no-op.
 
 ```go
 ids := []string{"asset-1", "asset-2", "asset-3"}
-
-var assets []domain.Asset
-if err := f.Relational().GetMany(ctx, "asset", ids, &assets); err != nil {
-	return err
-}
-// len(assets) <= len(ids); order matches ids, missing rows dropped.
+assets, err := repo.GetMany(ctx, ids)           // []*domain.Asset, order matches ids, missing dropped
 ```
 
-This is the same batched hydration that backs `Graph().TraverseAndHydrate` — graph traversals return ids, then exactly one `GetMany` fills the rows from Postgres. See [Graph](/docs/graph).
+This is the same batched hydration that backs the projection planes: a graph traversal, search query, or vector search returns ids, then exactly one `GetMany` fills the rows from Postgres. See [Graph](/docs/graph).
+
+## One
+
+`One` loads the single row matching a set of conditions (ANDed) — the "load one by something other than id" primitive, e.g. a unique serial. It takes the conditions directly (no `ListQuery`):
+
+```go
+pump, err := repo.One(ctx, query.Eq("serial", "SN-777"))
+```
+
+Zero matches returns `ErrNotFound`; more than one match is an error (`One` means one — it caps the read at two rows to detect ambiguity cheaply). Use `List` when several rows are expected.
 
 ## List
 
-`List` pages through an entity's rows with equality filters and a single order column. `ListQuery` is intentionally minimal — anything richer is raw SQL or a projection query.
+`List` pages an entity's rows with a structured, engine-neutral filter, one order column, and limit/offset.
 
 ```go
 type ListQuery struct {
-	Filter  map[string]any // column = value, ANDed
-	OrderBy string         // column name, optionally " DESC"
+	Where   Where  // conditions ANDed together
+	OrderBy string // column, optionally suffixed " DESC"; empty orders by id
 	Limit   int
 	Offset  int
 }
 ```
 
-Filter keys and the `OrderBy` column are validated against the entity's binding — an unknown column is rejected, which is also the SQL-injection guard. With no `OrderBy`, rows order by `id ASC`.
+`Where` is a list of conditions (a `[]Cond`) combined with AND. Build them with the constructors rather than by hand:
+
+| Constructor | SQL |
+| --- | --- |
+| `Eq(col, v)` / `Ne(col, v)` | `col = v` / `col != v` |
+| `Gt` / `Gte` / `Lt` / `Lte` | `col > v`, `>=`, `<`, `<=` |
+| `In(col, slice)` / `NotIn(col, slice)` | `col = ANY(v)` / `NOT (col = ANY(v))` |
+| `Like(col, pat)` / `ILike(col, pat)` | `col LIKE pat` / `col ILIKE pat` |
+| `IsNull(col)` / `IsNotNull(col)` | `col IS [NOT] NULL` |
+| `Or(conds...)` | parenthesised disjunction of its sub-conditions |
 
 ```go
-var pumps []domain.Asset
-err := f.Relational().List(ctx, "asset", query.ListQuery{
-	Filter:  map[string]any{"site_id": siteID, "kind": "pump"},
-	OrderBy: "name",
+pumps, err := repo.List(ctx, query.ListQuery{
+	Where: query.Where{
+		query.Eq("site_id", siteID),
+		query.In("kind", []string{"pump", "valve"}),
+		query.ILike("name", "%centrifugal%"),
+	},
+	OrderBy: "name DESC",
 	Limit:   50,
-	Offset:  0,
-}, &pumps)
+})
 ```
+
+`Eqs(map)` is the terse all-equality shorthand — it expands a `column = value` map into `Eq` conditions, sorted by column for deterministic SQL. Mix it with other conditions by appending:
+
+```go
+Where: append(query.Eqs(map[string]any{"site_id": siteID, "kind": "pump"}),
+	query.Gte("version", 3))
+```
+
+Columns are validated against the entity's binding — an unknown column is rejected, which is also the injection guard — the operator vocabulary is a fixed allowlist, and every value travels as a bound parameter. So a structured filter is as injection-safe as the equality shorthand. Reads the filter cannot express (joins, aggregates, window functions) drop to the raw `Query` escape hatch below.
 
 ## Query (raw SQL escape hatch)
 
-`Query` runs raw SQL for reads that grove's builders cannot express — joins, aggregates, window functions. It still runs inside a tenant-stamped transaction, so RLS contains it; the result scans into the `into` pointer. Note the argument order: `into` comes first, then the SQL string and its args.
+`Query` runs raw SQL for reads the structured filter cannot express. It still runs inside a tenant-stamped transaction, so RLS contains it; the result scans into the `into` pointer. Note the argument order: `into` comes first, then the SQL string and its args.
 
 ```go
 var rows []struct {
@@ -95,5 +144,7 @@ err := f.Relational().Query(ctx, &rows,
 
 <Cards>
   <Card title="Tenancy" href="/docs/tenancy">How the SET LOCAL stamp, RLS, and the grove hook backstop layer tenant isolation.</Card>
-  <Card title="Graph" href="/docs/graph">TraverseAndHydrate reuses GetMany for one-query hydration after a traversal.</Card>
+  <Card title="Commands and Events" href="/docs/commands-and-events">The write path: Exec/ExecBatch and the versioned outbox every write produces.</Card>
+  <Card title="Graph" href="/docs/graph">Traverse/Out/In/Reachable on Repo[T] reuse GetMany for one-query hydration after a traversal.</Card>
+  <Card title="Search" href="/docs/search">SearchWith reuses the same Where vocabulary for non-scoring filters.</Card>
 </Cards>
