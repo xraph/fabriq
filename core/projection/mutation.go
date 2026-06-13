@@ -14,10 +14,11 @@ type Mutation interface{ isMutation() }
 // NodeUpsert creates or updates a graph node. Props are column-keyed and
 // always include "version"; adapters use Version for idempotency gating.
 type NodeUpsert struct {
-	Label   string
-	ID      string
-	Props   map[string]any
-	Version int64
+	Label       string
+	ExtraLabels []string // additional labels added via SET (e.g. []string{"Archived", "Featured"})
+	ID          string
+	Props       map[string]any
+	Version     int64
 }
 
 // EdgeUpsert creates or refreshes a relationship between two nodes.
