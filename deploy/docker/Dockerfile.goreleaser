@@ -1,0 +1,10 @@
+# Release image, assembled by goreleaser from the prebuilt `fabriq` binary
+# (see .goreleaser.yaml). goreleaser cross-compiles the binary with the Go
+# toolchain and drops it into this build context, so there is no build stage
+# here — just a minimal, non-root runtime. The from-source build with the
+# vendored tree still lives in deploy/docker/Dockerfile for `make docker-build`.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY fabriq /usr/local/bin/fabriq
+USER nonroot:nonroot
+EXPOSE 8081
+ENTRYPOINT ["/usr/local/bin/fabriq", "serve"]

@@ -20,6 +20,13 @@ that needs Postgres errors with `postgres DSN required: pass --dsn or set
 FABRIQ_POSTGRES_DSN`. Operator commands accept `--dsn` at both the command and
 subcommand level.
 
+<Callout type="info">
+Operator commands take a single `--dsn` and are not shard-aware. In a
+[sharded](/docs/sharding) deployment, point `--dsn` at one shard's database and
+run the command once per shard — including `rebuild --all-tenants`, which then
+iterates only that shard's tenants.
+</Callout>
+
 The serve path reads everything from the environment:
 
 | Variable | Required | Meaning |

@@ -1,9 +1,9 @@
 ---
 title: Introduction
-description: Fabriq is the TWINOS data fabric — the single module through which application code talks to every datastore, enforcing tenancy, eventing, and projection invariants across all of them.
+description: Fabriq is a standalone data fabric for Go — the single module through which application code talks to every datastore, enforcing tenancy, eventing, and projection invariants across all of them.
 ---
 
-Fabriq is the **only module in the TWINOS platform allowed to talk to a
+Fabriq is the **single module through which application code talks to every
 datastore**. Application code never opens a connection, writes SQL, or calls
 Redis directly — it holds one facade and reaches every store through typed
 capability ports. In exchange, fabriq guarantees a small set of invariants

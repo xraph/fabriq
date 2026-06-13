@@ -1,0 +1,75 @@
+---
+title: Sharding
+description: Routing the source of truth across multiple Postgres shards — by tenant, without distributed transactions.
+---
+
+Fabriq's request path, projection consumers, and live subscriptions already scale horizontally. The one component that does not is the **source of truth**: Postgres is a single linearizable anchor, and everything else is a derived, rebuildable read model. Sharding distributes that anchor — **by tenant** — for when a single Postgres runs out of write throughput.
+
+## The model: routing, not consensus
+
+A tenant's entire aggregate history, event log, and outbox live on exactly **one** shard. That single fact collapses the hard parts of distribution:
+
+- **No scatter-gather reads.** Every port operation carries a tenant on `ctx`, and there are no cross-tenant queries — so a read routes to one shard, full stop.
+- **No distributed transactions.** A command never spans tenants (`ExecBatch` is one tenant's commands), so a write is a route to one shard's local transaction. The aggregate row, its event, and the outbox row still commit atomically in a single Postgres transaction, exactly as in the unsharded case.
+
+Sharding is therefore a **routing adapter behind the existing ports** plus a per-shard worker loop. `core/`, the `Fabric` facade, and every call site (`f.Exec`, `f.Relational().Get`, …) are unchanged — they never learn that shards exist. The `Store`, `Relational`, `Vector`, and `Timeseries` ports resolve the `ctx` tenant to a shard, then delegate unmodified.
+
+## Configuration
+
+Set `Config.Shards` to a list of shards; each tenant is routed to one of them. A single `postgres` block with no `shards` is the degenerate one-shard case, so existing deployments are unaffected.
+
+```yaml
+# config.yaml — multi-shard
+shards:
+  - id: "shard-a"
+    dsn: "postgres://fabriq_app:***@pg-a:5432/fabriq?sslmode=require"
+    pool_size: 16
+  - id: "shard-b"
+    dsn: "postgres://fabriq_app:***@pg-b:5432/fabriq?sslmode=require"
+    pool_size: 16
+```
+
+When `shards` is set, the top-level `postgres.dsn` is ignored. The shard with the lowest `id` is the **primary** — it backs health checks, the migrations CLI, and the document plane.
+
+<Callout type="warn">
+  Multi-shard can only be configured through a mounted `config.yaml`. The shards list is a list of structs, which the `FABRIQ_*` environment overlay cannot express — `FABRIQ_POSTGRES_DSN` configures the single-shard case only.
+</Callout>
+
+## The directory
+
+The tenant → shard mapping is a deterministic **hash** of the tenant id over the configured shard ids (memoized in-process for 30s). It needs no coordination: every replica computes the same placement from the same shard list.
+
+<Callout type="warn">
+  **Shard count is fixed at deploy time.** Because placement is a pure hash of the tenant id, adding or removing a shard re-hashes existing tenants onto different shards — and Fabriq performs no data move, so a re-placed tenant would route to a database that lacks its data. Choose the shard count up front. Online rebalancing arrives with the catalog-backed directory (see [Status](#status)).
+</Callout>
+
+## The worker plane
+
+Advisory-lock leadership is scoped per database, so the singleton runners shard for free:
+
+- **Outbox relay — one leader per shard.** Each shard runs its own relay under advisory lock `1001` on its own database, so relay throughput scales linearly with shard count. The single-global-relay bottleneck disappears.
+- **Reconciler and document plane — on the primary.** These elect a single leader on the primary shard, but their work is tenant-routed internally: the reconciler unions tenants across every shard and routes each tenant's repair to the owning shard's outbox.
+- **Projection consumers — unchanged.** The relay still publishes to one shared Redis stream, events still carry `tenant_id`, and consumer groups still scale by replica. Hydration from Postgres routes per-tenant transparently.
+
+## Migrations
+
+`fabriq migrate` operates on a single DSN and is **not** shard-aware. With N shards, run it once per shard, and gate your app rollout on every shard reaching the target version:
+
+```bash
+for dsn in "$SHARD_A_DSN" "$SHARD_B_DSN"; do
+  fabriq migrate up --dsn "$dsn"
+done
+```
+
+All shards carry the same schema; there is no separate catalog database to migrate.
+
+## Status
+
+<Callout type="info">
+  **Implemented:** the tenant→shard routing layer behind the ports, multi-shard `Open`, the hash directory, and the per-shard outbox relay. **Not yet:** a catalog-backed placement directory (explicit tenant→shard mapping with controlled moves), online tenant rebalancing, a shard-aware migrate CLI, and sharding of the document plane (single-shard on the primary today).
+</Callout>
+
+<Cards>
+  <Card title="Tenancy" href="/docs/tenancy">The tenant scoping that makes routing — not consensus — sufficient.</Card>
+  <Card title="Architecture Decisions" href="/docs/reference/decisions">Why sharding is a routing problem, not a distributed-systems one.</Card>
+</Cards>

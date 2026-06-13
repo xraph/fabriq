@@ -38,12 +38,13 @@ TimescaleDB's columnstore refuses tables with row security, and compressed telem
 ## Horizontal scale is sharding by tenant — routing, not consensus
 
 <Callout type="info">
-  Planned. The single-Postgres path is the production path today; the routing seam already exists, and the rest lands when one Postgres actually runs out.
+  The tenant→shard routing layer, multi-shard `Open`, and the per-shard outbox relay are **implemented**. A catalog-backed placement directory (with controlled tenant moves), online rebalancing, and a shard-aware migrate CLI are **not yet** — see [Sharding](/docs/sharding).
 </Callout>
 
 When the source of truth needs to scale past a single Postgres, Fabriq shards **by tenant**: a tenant's entire history, event log, and outbox live on exactly one shard. Two existing invariants turn this into a routing problem rather than a distributed-systems one. Every read carries a tenant and there are no cross-tenant queries, so there is no scatter-gather. A command never spans tenants, so one tenant routes to one shard's local ACID transaction — **no two-phase commit, no sagas**. Sharding enters as a routing adapter behind the existing ports plus a per-shard leader loop; `core/`, the facade, and every call site stay unchanged. And because projections are rebuildable from Postgres, moving a tenant means copying only its rows and log — projections are rebuilt on the far side.
 
 <Cards>
   <Card title="Tenancy" href="/docs/tenancy">How the tenancy layers and the telemetry exception work in practice.</Card>
+  <Card title="Sharding" href="/docs/sharding">The tenant-routed, multi-shard source of truth.</Card>
   <Card title="Errors" href="/docs/reference/errors">The ErrTenantHookTripped trip and the rest of the error taxonomy.</Card>
 </Cards>

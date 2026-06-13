@@ -1,0 +1,144 @@
+# goreleaser — fabriq release pipeline.
+#
+# On a `vX.Y.Z` tag the release workflow (.github/workflows/release.yml) runs
+# this to: cross-compile the `fabriq` binary for linux/darwin × amd64/arm64,
+# archive + checksum them, build a multi-arch container image on ghcr.io, and
+# cut a GitHub Release with an auto-generated changelog. The Helm chart is
+# published by a sibling job in the same workflow (goreleaser does not package
+# charts). Validate locally with `goreleaser check` and
+# `goreleaser build --snapshot --clean`.
+version: 2
+
+project_name: fabriq
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: fabriq
+    main: ./cmd/fabriq
+    binary: fabriq
+    env:
+      - CGO_ENABLED=0 # pure-Go deps (pgx, go-redis); static binary
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: fabriq
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+      - config.example.yaml
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge branch"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Others
+      order: 999
+
+# Multi-arch image, assembled from the prebuilt binaries (no in-image compile,
+# so the arm64 build packages a cross-compiled binary rather than emulating a
+# toolchain). The workflow sets up QEMU + buildx and logs in to ghcr.io.
+dockers:
+  - id: fabriq-amd64
+    goos: linux
+    goarch: amd64
+    dockerfile: deploy/docker/Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - "ghcr.io/xraph/fabriq:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=fabriq"
+      - "--label=org.opencontainers.image.description=TWINOS data fabric: worker + operations CLI"
+      - "--label=org.opencontainers.image.url=https://github.com/xraph/fabriq"
+      - "--label=org.opencontainers.image.source=https://github.com/xraph/fabriq"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+  - id: fabriq-arm64
+    goos: linux
+    goarch: arm64
+    dockerfile: deploy/docker/Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - "ghcr.io/xraph/fabriq:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=fabriq"
+      - "--label=org.opencontainers.image.description=TWINOS data fabric: worker + operations CLI"
+      - "--label=org.opencontainers.image.url=https://github.com/xraph/fabriq"
+      - "--label=org.opencontainers.image.source=https://github.com/xraph/fabriq"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+docker_manifests:
+  - name_template: "ghcr.io/xraph/fabriq:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/xraph/fabriq:{{ .Version }}-amd64"
+      - "ghcr.io/xraph/fabriq:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/xraph/fabriq:{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/xraph/fabriq:{{ .Version }}-amd64"
+      - "ghcr.io/xraph/fabriq:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/xraph/fabriq:latest"
+    image_templates:
+      - "ghcr.io/xraph/fabriq:{{ .Version }}-amd64"
+      - "ghcr.io/xraph/fabriq:{{ .Version }}-arm64"
+
+release:
+  github:
+    owner: xraph
+    name: fabriq
+  prerelease: auto # vX.Y.Z-rc.1 etc. are marked pre-release
+  draft: false
+  name_template: "fabriq {{ .Tag }}"
+  footer: |
+    ## Container image
+
+    ```bash
+    docker pull ghcr.io/xraph/fabriq:{{ .Version }}
+    ```
+
+    ## Helm chart
+
+    ```bash
+    helm install fabriq oci://ghcr.io/xraph/charts/fabriq --version {{ .Version }}
+    ```
