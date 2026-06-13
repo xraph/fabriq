@@ -95,7 +95,7 @@ func (f *Fabriq) Registry() *registry.Registry { return f.reg }
 //
 //	repo, _ := fabriq.For[domain.Asset](f)
 //	asset, err := repo.Get(ctx, id)          // *domain.Asset
-//	pump, err := repo.One(ctx, query.ListQuery{Where: []query.Cond{query.Eq("serial", sn)}})
+//	pump, err := repo.One(ctx, query.Eq("serial", sn))
 //
 // It is a free function, not a method, because Go methods cannot introduce
 // type parameters. (The lower-level query.For takes a registry + querier

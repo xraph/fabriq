@@ -84,18 +84,18 @@ func TestRepo_One(t *testing.T) {
 	}
 
 	// Exactly one match -> *ftAsset.
-	got, err := repo.One(ctx, query.ListQuery{Where: []query.Cond{query.Eq("name", "Alpha")}})
+	got, err := repo.One(ctx, query.Eq("name", "Alpha"))
 	if err != nil || got.Name != "Alpha" {
 		t.Fatalf("One(Alpha) = (%+v, %v)", got, err)
 	}
 
 	// No match -> ErrNotFound.
-	if _, err := repo.One(ctx, query.ListQuery{Where: []query.Cond{query.Eq("name", "Nope")}}); !errors.Is(err, fabriqerr.ErrNotFound) {
+	if _, err := repo.One(ctx, query.Eq("name", "Nope")); !errors.Is(err, fabriqerr.ErrNotFound) {
 		t.Fatalf("One(none): want ErrNotFound, got %v", err)
 	}
 
 	// Multiple matches -> error (One means one).
-	if _, err := repo.One(ctx, query.ListQuery{Where: []query.Cond{query.Eq("name", "Beta")}}); err == nil || errors.Is(err, fabriqerr.ErrNotFound) {
+	if _, err := repo.One(ctx, query.Eq("name", "Beta")); err == nil || errors.Is(err, fabriqerr.ErrNotFound) {
 		t.Fatalf("One(multiple): want a 'matched multiple' error, got %v", err)
 	}
 }

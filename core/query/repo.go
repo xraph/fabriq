@@ -73,14 +73,16 @@ func (r *Repo[T]) List(ctx context.Context, q ListQuery) ([]*T, error) {
 	return out, nil
 }
 
-// One fetches the single row matching the filter — the "load by something
-// other than id" primitive (e.g. a unique serial). Zero matches is
-// ErrNotFound; more than one is an error (One means one). It caps the
-// underlying read at two rows to detect ambiguity cheaply.
-func (r *Repo[T]) One(ctx context.Context, q ListQuery) (*T, error) {
-	q.Limit = 2
-	q.Offset = 0
-	out, err := r.List(ctx, q)
+// One fetches the single row matching the given conditions (ANDed) — the
+// "load one by something other than id" primitive (e.g. a unique serial):
+//
+//	pump, err := repo.One(ctx, query.Eq("serial", "SN-777"))
+//
+// Zero matches is ErrNotFound; more than one is an error (One means one).
+// It needs no ListQuery — order and pagination are meaningless for a
+// single row — and caps the read at two to detect ambiguity cheaply.
+func (r *Repo[T]) One(ctx context.Context, where ...Cond) (*T, error) {
+	out, err := r.List(ctx, ListQuery{Where: where, Limit: 2})
 	if err != nil {
 		return nil, err
 	}

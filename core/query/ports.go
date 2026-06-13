@@ -74,7 +74,7 @@ type RelationalQuerier interface {
 type ListQuery struct {
 	// Where: conditions ANDed together. Use the constructors; Eqs(map)
 	// is the terse equality shorthand.
-	Where []Cond
+	Where Where
 	// OrderBy: a column, optionally suffixed " DESC". Empty orders by id.
 	OrderBy string
 	Limit   int
