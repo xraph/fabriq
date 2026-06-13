@@ -19,14 +19,20 @@ import (
 //	asset, err := repo.Get(ctx, id)            // *domain.Asset, not any
 //	pumps, err := repo.List(ctx, query.ListQuery{Where: []query.Cond{query.Eq("kind", "pump")}})
 //
-// It adds no query capability beyond the four port methods — just typing.
+// It adds no query capability beyond the ports — just typing. The graph,
+// search and vector queriers are optional; the relational one is required.
 type Repo[T any] struct {
 	rel    RelationalQuerier
+	graph  GraphQuerier
+	search SearchQuerier
+	vector VectorQuerier
 	entity string
 }
 
 // For builds a typed Repo by resolving T's registered entity. T is the
-// grove model struct (value or pointer); an unregistered type errors.
+// grove model struct (value or pointer); an unregistered type errors. The
+// repo is relational-only until you attach projection queriers via With*
+// (fabriq.For wires them all from the facade).
 func For[T any](reg *registry.Registry, rel RelationalQuerier) (*Repo[T], error) {
 	if reg == nil || rel == nil {
 		return nil, fmt.Errorf("fabriq: For needs a registry and a relational querier")
@@ -41,6 +47,15 @@ func For[T any](reg *registry.Registry, rel RelationalQuerier) (*Repo[T], error)
 	}
 	return &Repo[T]{rel: rel, entity: ent.Spec.Name}, nil
 }
+
+// WithGraph attaches the graph querier (enables Traverse).
+func (r *Repo[T]) WithGraph(g GraphQuerier) *Repo[T] { r.graph = g; return r }
+
+// WithSearch attaches the search querier (enables Search).
+func (r *Repo[T]) WithSearch(s SearchQuerier) *Repo[T] { r.search = s; return r }
+
+// WithVector attaches the vector querier (enables Similar).
+func (r *Repo[T]) WithVector(v VectorQuerier) *Repo[T] { r.vector = v; return r }
 
 // Entity returns the resolved registry entity name.
 func (r *Repo[T]) Entity() string { return r.entity }
@@ -94,4 +109,68 @@ func (r *Repo[T]) One(ctx context.Context, where ...Cond) (*T, error) {
 	default:
 		return nil, fmt.Errorf("fabriq: One matched multiple %s rows; use List", r.entity)
 	}
+}
+
+// Traverse runs a graph traversal that RETURNs ids and hydrates the full
+// rows from Postgres in one batched query — typed, never N+1. The Cypher
+// stays raw (the graph's swappability rests on common-subset openCypher,
+// not a builder); only the result is typed:
+//
+//	assets, err := repo.Traverse(ctx,
+//	    `MATCH (a:Asset)-[:LOCATED_AT]->(:Site {id:$s}) RETURN a.id`,
+//	    map[string]any{"s": siteID})
+func (r *Repo[T]) Traverse(ctx context.Context, cypher string, params map[string]any) ([]*T, error) {
+	if r.graph == nil {
+		return nil, fmt.Errorf("fabriq: Traverse: graph %w (build via fabriq.For)", fabriqerr.ErrStoreNotConfigured)
+	}
+	var out []*T
+	if err := r.graph.TraverseAndHydrate(ctx, cypher, params, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Search runs a full-text query against the entity's declared search
+// fields, then hydrates the matching rows from Postgres in one batched
+// query — typed entities in relevance order, never N+1. For raw hits
+// (highlighting, scores) use f.Search() directly.
+func (r *Repo[T]) Search(ctx context.Context, text string, limit int) ([]*T, error) {
+	if r.search == nil {
+		return nil, fmt.Errorf("fabriq: Search: search %w (build via fabriq.For)", fabriqerr.ErrStoreNotConfigured)
+	}
+	var hits []map[string]any
+	if err := r.search.Search(ctx, SearchQuery{Entity: r.entity, Query: text, Limit: limit}, &hits); err != nil {
+		return nil, err
+	}
+	return r.GetMany(ctx, idsFromHits(hits))
+}
+
+// Similar runs a vector nearest-neighbour search and hydrates the matched
+// rows from Postgres in one batched query — typed entities in similarity
+// order, never N+1. For the relevance scores use f.Vector() directly.
+func (r *Repo[T]) Similar(ctx context.Context, embedding []float32, k int) ([]*T, error) {
+	if r.vector == nil {
+		return nil, fmt.Errorf("fabriq: Similar: vector %w (build via fabriq.For)", fabriqerr.ErrStoreNotConfigured)
+	}
+	var matches []VectorMatch
+	if err := r.vector.Similar(ctx, VectorQuery{Entity: r.entity, Embedding: embedding, K: k}, &matches); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(matches))
+	for _, m := range matches {
+		ids = append(ids, m.ID)
+	}
+	return r.GetMany(ctx, ids)
+}
+
+// idsFromHits pulls the id column out of search documents, preserving
+// relevance order.
+func idsFromHits(hits []map[string]any) []string {
+	ids := make([]string, 0, len(hits))
+	for _, h := range hits {
+		if id, ok := h[registry.ColumnID].(string); ok && id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
