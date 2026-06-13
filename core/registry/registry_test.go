@@ -239,6 +239,96 @@ func TestValuesByColumn_RejectsWrongType(t *testing.T) {
 	}
 }
 
+type testKGEdge struct {
+	grove.BaseModel `grove:"table:kg_edges"`
+
+	ID       string `grove:"id,pk"`
+	TenantID string `grove:"tenant_id,notnull"`
+	Version  int64  `grove:"version,notnull"`
+	Type     string `grove:"type,notnull"`
+	SourceID string `grove:"source_id,notnull"`
+	TargetID string `grove:"target_id,notnull"`
+	Status   string `grove:"status"`
+}
+
+func TestRegister_GraphEdge_Valid(t *testing.T) {
+	r := registry.New()
+	if err := r.Register(registry.EntitySpec{
+		Name:  "kgedge",
+		Kind:  registry.KindAggregate,
+		Model: (*testKGEdge)(nil),
+		GraphEdge: &registry.GraphEdgeSpec{
+			TypeField:   "type",
+			SourceField: "source_id",
+			TargetField: "target_id",
+			SourceLabel: "Node",
+			TargetLabel: "Node",
+			PropFields:  []string{"status"},
+		},
+	}); err != nil {
+		t.Fatalf("valid GraphEdge spec must register cleanly: %v", err)
+	}
+}
+
+func TestRegister_GraphEdge_Failures(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*registry.EntitySpec)
+		wantSub string
+	}{
+		{
+			"source field not a column",
+			func(s *registry.EntitySpec) { s.GraphEdge.SourceField = "not_a_column" },
+			"not_a_column",
+		},
+		{
+			"exclusive with GraphNode",
+			func(s *registry.EntitySpec) { s.GraphNode = "KGEdge" },
+			"GraphEdge",
+		},
+		{
+			"exclusive with Edges",
+			func(s *registry.EntitySpec) {
+				s.GraphNode = "KGEdge"
+				s.Edges = []registry.EdgeSpec{{Field: "source_id", Rel: "X", Target: "y"}}
+			},
+			"exclusive",
+		},
+		{
+			"prop field shadows structural field",
+			func(s *registry.EntitySpec) {
+				s.GraphEdge.TypeField = "type"
+				s.GraphEdge.PropFields = []string{"type"}
+			},
+			"shadows",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := registry.EntitySpec{
+				Name:  "kgedge",
+				Kind:  registry.KindAggregate,
+				Model: (*testKGEdge)(nil),
+				GraphEdge: &registry.GraphEdgeSpec{
+					TypeField:   "type",
+					SourceField: "source_id",
+					TargetField: "target_id",
+					SourceLabel: "Node",
+					TargetLabel: "Node",
+				},
+			}
+			tc.mutate(&spec)
+			err := registry.New().Register(spec)
+			if err == nil {
+				t.Fatalf("Register accepted invalid GraphEdge spec")
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("error %q does not mention %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
 func BenchmarkRegistryGet(b *testing.B) {
 	r := registry.New()
 	if err := r.Register(siteSpec()); err != nil {

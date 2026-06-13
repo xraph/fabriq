@@ -29,7 +29,13 @@ func (f ApplierFunc) Apply(env event.Envelope) ([]Mutation, error) { return f(en
 func GraphApplier(reg *registry.Registry) Applier {
 	return ApplierFunc(func(env event.Envelope) ([]Mutation, error) {
 		ent, ok := reg.Get(env.Aggregate)
-		if !ok || ent.Spec.GraphNode == "" {
+		if !ok {
+			return nil, nil
+		}
+		if ent.Spec.GraphEdge != nil {
+			return reifiedEdgeMutations(ent, env)
+		}
+		if ent.Spec.GraphNode == "" {
 			return nil, nil
 		}
 		verb := eventVerb(env.Type)
@@ -74,6 +80,37 @@ func GraphApplier(reg *registry.Registry) Applier {
 		}
 		return muts, nil
 	})
+}
+
+func reifiedEdgeMutations(ent *registry.Entity, env event.Envelope) ([]Mutation, error) {
+	verb := eventVerb(env.Type)
+	if verb == registry.VerbDeleted {
+		return []Mutation{RelDelete{ID: env.AggID, Version: env.Version}}, nil
+	}
+	if verb != registry.VerbCreated && verb != registry.VerbUpdated {
+		return nil, nil
+	}
+	props, err := decodePayload(env)
+	if err != nil {
+		return nil, err
+	}
+	spec := ent.Spec.GraphEdge
+	relType := stringProp(props, spec.TypeField)
+	from := stringProp(props, spec.SourceField)
+	to := stringProp(props, spec.TargetField)
+	if relType == "" || from == "" || to == "" {
+		return nil, fmt.Errorf("fabriq: entity %q reified edge missing type/source/target", env.Aggregate)
+	}
+	relProps := make(map[string]any, len(spec.PropFields))
+	for _, f := range spec.PropFields {
+		if v, ok := props[f]; ok {
+			relProps[f] = v
+		}
+	}
+	return []Mutation{RelUpsert{
+		ID: env.AggID, Type: relType, FromLabel: spec.SourceLabel, FromID: from,
+		ToLabel: spec.TargetLabel, ToID: to, Props: relProps, Version: env.Version,
+	}}, nil
 }
 
 // SearchApplier derives the search projection: created/updated -> DocIndex

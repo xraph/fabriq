@@ -64,6 +64,31 @@ func (r *Registry) Register(spec EntitySpec) error {
 	if spec.Search.Index == "" && len(spec.Search.Fields) > 0 {
 		return fmt.Errorf("fabriq: entity %q: search fields declared but index name is empty", spec.Name)
 	}
+	if spec.GraphEdge != nil {
+		if spec.GraphNode != "" || len(spec.Edges) > 0 {
+			return fmt.Errorf("fabriq: entity %q: GraphEdge is exclusive with GraphNode/Edges", spec.Name)
+		}
+		ge := spec.GraphEdge
+		if ge.SourceLabel == "" || ge.TargetLabel == "" {
+			return fmt.Errorf("fabriq: entity %q: GraphEdge needs SourceLabel and TargetLabel", spec.Name)
+		}
+		for _, f := range []string{ge.TypeField, ge.SourceField, ge.TargetField} {
+			if f == "" || !binding.HasColumn(f) {
+				return fmt.Errorf("fabriq: entity %q: GraphEdge field %q is not a column of %s", spec.Name, f, binding.Table)
+			}
+		}
+		structural := map[string]bool{ge.TypeField: true, ge.SourceField: true, ge.TargetField: true}
+		for _, f := range ge.PropFields {
+			if structural[f] {
+				return fmt.Errorf("fabriq: entity %q: GraphEdge PropField %q shadows a structural field", spec.Name, f)
+			}
+		}
+		for _, f := range ge.PropFields {
+			if !binding.HasColumn(f) {
+				return fmt.Errorf("fabriq: entity %q: GraphEdge prop %q is not a column of %s", spec.Name, f, binding.Table)
+			}
+		}
+	}
 	for _, s := range spec.Subscribe {
 		if s.Name == "" {
 			return fmt.Errorf("fabriq: entity %q: subscription scope with empty name", spec.Name)
