@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -208,5 +209,76 @@ func TestEngine_DualTargetsDuringRebuild(t *testing.T) {
 	}
 	if _, ok := w.Graph.Node(building, "Asset", "A1"); !ok {
 		t.Fatal("building target missed the event (rebuild catch-up broken)")
+	}
+}
+
+func TestApplyChain_UnionsBuiltinAndCustom(t *testing.T) {
+	builtin := projection.ApplierFunc(func(env event.Envelope) ([]projection.Mutation, error) {
+		return []projection.Mutation{projection.NodeUpsert{Label: "A", ID: env.AggID, Version: env.Version}}, nil
+	})
+	custom := []projection.CustomApplier{
+		{Target: "graph", Entity: "thing", Apply: projection.ApplierFunc(func(env event.Envelope) ([]projection.Mutation, error) {
+			return []projection.Mutation{projection.NodeUpsert{Label: "A", ExtraLabels: []string{"Extra"}, ID: env.AggID, Version: env.Version}}, nil
+		})},
+		{Target: "search", Entity: "thing", Apply: projection.ApplierFunc(func(event.Envelope) ([]projection.Mutation, error) {
+			t.Fatal("wrong-target applier must not run")
+			return nil, nil
+		})},
+		{Target: "graph", Entity: "other", Apply: projection.ApplierFunc(func(event.Envelope) ([]projection.Mutation, error) {
+			t.Fatal("wrong-entity applier must not run")
+			return nil, nil
+		})},
+	}
+	muts, err := projection.ApplyChain(builtin, custom, "graph", event.Envelope{Aggregate: "thing", AggID: "x", Version: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(muts) != 2 {
+		t.Fatalf("want builtin + 1 matching custom = 2 mutations, got %d", len(muts))
+	}
+}
+
+func TestApplyChain_BuiltinErrorPropagates(t *testing.T) {
+	builtin := projection.ApplierFunc(func(event.Envelope) ([]projection.Mutation, error) {
+		return nil, fmt.Errorf("boom")
+	})
+	_, err := projection.ApplyChain(builtin, nil, "graph", event.Envelope{Aggregate: "thing"})
+	if err == nil {
+		t.Fatal("builtin applier error must propagate")
+	}
+}
+
+func TestApplyChain_CustomErrorPropagates(t *testing.T) {
+	builtin := projection.ApplierFunc(func(event.Envelope) ([]projection.Mutation, error) {
+		return nil, nil
+	})
+	custom := []projection.CustomApplier{
+		{Apply: projection.ApplierFunc(func(event.Envelope) ([]projection.Mutation, error) {
+			return nil, fmt.Errorf("custom boom")
+		})},
+	}
+	_, err := projection.ApplyChain(builtin, custom, "", event.Envelope{})
+	if err == nil {
+		t.Fatal("custom applier error must propagate")
+	}
+}
+
+func TestApplyChain_WildcardMatchesAnyTargetAndEntity(t *testing.T) {
+	builtin := projection.ApplierFunc(func(event.Envelope) ([]projection.Mutation, error) {
+		return nil, nil
+	})
+	ran := false
+	custom := []projection.CustomApplier{
+		{Target: "", Entity: "", Apply: projection.ApplierFunc(func(env event.Envelope) ([]projection.Mutation, error) {
+			ran = true
+			return []projection.Mutation{projection.NodeUpsert{Label: "A", ID: env.AggID, Version: 1}}, nil
+		})},
+	}
+	muts, err := projection.ApplyChain(builtin, custom, "anything", event.Envelope{Aggregate: "whatever", AggID: "z", Version: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ran || len(muts) != 1 {
+		t.Fatalf("wildcard custom applier must run for any target/entity, ran=%v muts=%d", ran, len(muts))
 	}
 }

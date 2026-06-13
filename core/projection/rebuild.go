@@ -38,6 +38,7 @@ type Rebuilder struct {
 	State      StateRepo
 	Sink       TargetSink
 	Applier    Applier
+	Custom     []CustomApplier // MUST mirror the live Engine.Custom so rebuilds stay identical
 	Snapshot   Snapshotter
 	// TargetName derives the versioned build target (registry naming).
 	TargetName func(tenantID string, modelVersion int) string
@@ -90,7 +91,7 @@ func (r *Rebuilder) Rebuild(ctx context.Context, tenantID string) (oldTarget, ne
 
 	// Snapshot replay. Payloads are current-shape: no upcasters here.
 	err = r.Snapshot.SnapshotEntities(ctx, tenantID, func(env event.Envelope) error {
-		muts, aerr := r.Applier.Apply(env)
+		muts, aerr := ApplyChain(r.Applier, r.Custom, r.Projection, env)
 		if aerr != nil || len(muts) == 0 {
 			return aerr
 		}
