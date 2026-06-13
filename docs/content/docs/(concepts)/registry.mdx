@@ -79,7 +79,7 @@ The merge engine itself comes from grove's CRDT packages — referenced, not rei
 
 ## A real spec
 
-The TWINOS pack registers four entities. Here is the aggregate `asset` and the document `page`, verbatim from `domain/register.go`:
+The example domain pack registers four entities. Here is the aggregate `asset` and the document `page`, verbatim from `domain/register.go`:
 
 ```go
 {
@@ -143,7 +143,7 @@ if err := reg.Validate(); err != nil {
 `Validate()` runs the cross-entity checks once all entities are registered: every edge `Target` must itself be a registered entity, and that target must declare a `GraphNode`. `fabriq.New` and `fabriq.Open` both call `Validate()` for you.
 
 <Callout type="info">
-`RegisterAll` registers the TWINOS pack (site, asset, tag, page). To model your own domain, build the same shape of `EntitySpec` set against a fresh `registry.New()`. The kernel and adapters are unchanged.
+`RegisterAll` registers the example domain pack (site, asset, tag, page). To model your own domain, build the same shape of `EntitySpec` set against a fresh `registry.New()`. The kernel and adapters are unchanged.
 </Callout>
 
 ## What is derived from specs
