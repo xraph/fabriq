@@ -1,0 +1,163 @@
+---
+title: Configuration
+description: Configure Fabriq in library code with the Config struct and functional options, or via the environment variables the binary reads.
+---
+
+Fabriq takes its configuration two ways: library code passes a `fabriq.Config` value (plus functional `Option`s) to `fabriq.Open`, and the `fabriq` binary reads the same shape from environment variables. This page is task-oriented — the exhaustive field-by-field reference lives at [Reference: Configuration](/docs/reference/configuration).
+
+## The Config shape
+
+`fabriq.Config` declares which stores exist and which projections run. Entities are not configured here — they are registered in code through the registry.
+
+```go
+type Config struct {
+	Postgres      PostgresConfig      // DSN required: the source of truth
+	Redis         RedisConfig         // event fan-out; required for subscriptions + projections
+	FalkorDB      FalkorDBConfig      // graph projection engine
+	Elasticsearch ElasticsearchConfig // search projection engine
+	Projections   ProjectionsConfig   // Graph/Search on-off toggles
+	Subscriptions SubscriptionsConfig // delta-plane tuning
+}
+```
+
+Postgres is the only required store. `PostgresConfig.DSN` must be set; `PostgresConfig.PoolSize` is optional. Everything else is opt-in and degrades to a typed `ErrStoreNotConfigured` when absent.
+
+The subscription plane is tuned through three fields:
+
+```go
+type SubscriptionsConfig struct {
+	ConflationWindow time.Duration // hub last-write-wins flush window (default 150ms)
+	StreamMaxLen     int64         // approximate MAXLEN per Redis change channel (default 500)
+	SubscribeBuffer  int           // per-subscriber delta buffer (default 64)
+}
+```
+
+### Library vs binary
+
+<Tabs items={['Library (Go)', 'Binary (env)']}>
+<Tab value="Library (Go)">
+
+```go
+f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
+	Postgres: fabriq.PostgresConfig{
+		DSN:      "postgres://user:pass@pg:5432/fabriq?sslmode=disable",
+		PoolSize: 16,
+	},
+	Redis: fabriq.RedisConfig{Addr: "redis:6379"},
+
+	// Turn projections on only when their backing store is configured.
+	FalkorDB:      fabriq.FalkorDBConfig{Addr: "falkordb:6379"},
+	Elasticsearch: fabriq.ElasticsearchConfig{Addrs: []string{"http://es:9200"}},
+	Projections:   fabriq.ProjectionsConfig{Graph: true, Search: true},
+
+	Subscriptions: fabriq.SubscriptionsConfig{
+		ConflationWindow: 200 * time.Millisecond,
+		StreamMaxLen:     1000,
+		SubscribeBuffer:  128,
+	},
+})
+```
+
+</Tab>
+<Tab value="Binary (env)">
+
+```bash
+export FABRIQ_POSTGRES_DSN="postgres://user:pass@pg:5432/fabriq?sslmode=disable"
+export FABRIQ_REDIS_ADDR="redis:6379"
+export FABRIQ_FALKORDB_ADDR="falkordb:6379"
+export FABRIQ_ELASTICSEARCH_ADDRS="http://es:9200"
+export FABRIQ_HTTP_ADDR=":8081"
+
+fabriq serve
+```
+
+The binary builds the equivalent `Config` from these variables in its `setup` path. Subscription-plane knobs and projection toggles are not env-driven in the binary today — tune them in library wiring when embedding the facade.
+
+</Tab>
+</Tabs>
+
+## Functional options
+
+Pass `Option` values after the `Config` to `fabriq.Open` (or `fabriq.New`). These come from `options.go`:
+
+```go
+f, stores, err := fabriq.Open(ctx, reg, cfg,
+	fabriq.WithConflationWindow(200*time.Millisecond),
+	fabriq.WithSubscribeBuffer(128),
+	fabriq.WithStreamMaxLen(1000),
+	fabriq.WithWaitPollInterval(25*time.Millisecond),
+	fabriq.WithUpcasters(chain),
+	fabriq.WithAuthz(authzFn),
+	fabriq.WithDocumentAuthz(docAuthzFn),
+)
+```
+
+The full set:
+
+- `WithConflationWindow(d time.Duration)` — the hub's last-write-wins flush window (spec range 100–250ms; default 150ms).
+- `WithSubscribeBuffer(n int)` — per-subscriber delta buffer (default 64). A full buffer drops; clients refetch and resume by `Last-Event-ID`.
+- `WithStreamMaxLen(n int64)` — approximate `MAXLEN` for per-channel Redis streams, i.e. catch-up depth before clients must refetch (default 500).
+- `WithWaitPollInterval(d time.Duration)` — poll cadence for `WaitForProjection` (default 25ms).
+- `WithAuthz(fn subscribe.AuthzFunc)` — the subscribe-time authorization hook, consulted when resolving a `SubscribeScope` to a channel.
+- `WithDocumentAuthz(fn func(ctx context.Context, docID string) error)` — the document-plane authorization hook, consulted for both `ApplyUpdate` (writes) and `SubscribeDocument` (reads). Without it, any authenticated member of the tenant may touch any of the tenant's documents.
+- `WithUpcasters(chain *event.UpcasterChain)` — registers the event payload upcaster chain. Projection engines apply it at decode, so appliers only ever see the latest payload shape.
+- `WithTraceparent(fn func(context.Context) string)` — supplies the W3C traceparent extractor stamped into event envelopes. `Open` already installs the production extractor by default, so override only for custom propagation.
+- `WithClock(now func() time.Time)` — overrides the command-plane clock (tests).
+
+### Config derives some options for you
+
+`Config.Options()` translates the `Subscriptions` block into the matching options, so a value you set on `Config` and the equivalent option are interchangeable:
+
+```go
+func (c Config) Options() []Option {
+	var opts []Option
+	if c.Subscriptions.ConflationWindow > 0 {
+		opts = append(opts, WithConflationWindow(c.Subscriptions.ConflationWindow))
+	}
+	if c.Subscriptions.StreamMaxLen > 0 {
+		opts = append(opts, WithStreamMaxLen(c.Subscriptions.StreamMaxLen))
+	}
+	if c.Subscriptions.SubscribeBuffer > 0 {
+		opts = append(opts, WithSubscribeBuffer(c.Subscriptions.SubscribeBuffer))
+	}
+	return opts
+}
+```
+
+`Open` prepends `cfg.Options()` to the explicit options you pass, so an explicit option wins on a later duplicate. Use `Config` for declarative deployment values; use options for behaviors with no config field (authz hooks, upcasters, clock).
+
+## Environment variables
+
+The `fabriq` binary reads these. `--dsn` is a global flag that overrides `FABRIQ_POSTGRES_DSN` for ad-hoc operator commands.
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `FABRIQ_POSTGRES_DSN` | to serve | — | Postgres DSN; the source of truth. Overridable with `--dsn`. |
+| `FABRIQ_REDIS_ADDR` | to serve | — | Redis address for the event stream and subscriptions. |
+| `FABRIQ_FALKORDB_ADDR` | no | — | FalkorDB address; enables the graph projection. |
+| `FABRIQ_ELASTICSEARCH_ADDRS` | no | — | Comma-separated Elasticsearch addresses; enables the search projection. |
+| `FABRIQ_HTTP_ADDR` | no | `:8081` | Worker HTTP listen address (health, metrics). |
+| `FABRIQ_RECONCILE_INTERVAL` | no | — | Reconciliation cadence as a Go duration; `"0"` disables it. |
+
+<Callout type="info">
+The operator commands (`migrate`, `inspect`, `rebuild`, `reconcile`) open their own stores from `--dsn`/`FABRIQ_POSTGRES_DSN` and never serve. Only `fabriq serve` connects the full worker plane. See [CLI](/docs/cli).
+</Callout>
+
+## Validation
+
+`Config.Validate()` runs cross-field checks before `Open` dials anything — it never opens a connection. It enforces:
+
+- `postgres.dsn` is set (the source of truth).
+- If `projections.graph` is on, `falkordb.addr` is non-empty.
+- If `projections.search` is on, `elasticsearch.addrs` is non-empty.
+- If either projection is on, `redis.addr` is set (projections need the event stream).
+- `subscriptions.conflation_window` is `>= 0`.
+
+A failed check returns a descriptive error and `Open` aborts before touching the network, so a misconfiguration surfaces at startup rather than on the first request.
+
+## Next steps
+
+<Cards>
+  <Card title="Reference: Configuration" href="/docs/reference/configuration">The exhaustive field-by-field table for every Config struct and option.</Card>
+  <Card title="Deployment" href="/docs/deployment">Running the worker and migrate Job in a cluster.</Card>
+</Cards>

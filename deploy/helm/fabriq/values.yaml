@@ -15,23 +15,65 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# --- Datastore connections (sensitive) --------------------------------
-# Either reference a pre-created Secret (recommended for production) or
-# let the chart create one from the literals below (dev/CI only).
-#
-# Keys the worker + migrate Job read:
-#   FABRIQ_POSTGRES_DSN          (required)  postgres://user:pass@host:5432/db?sslmode=require
-#   FABRIQ_REDIS_ADDR            (required for projections/subscriptions) host:6379
-#   FABRIQ_FALKORDB_ADDR         (optional)  host:6379  — enables the graph projection
-#   FABRIQ_ELASTICSEARCH_ADDRS   (optional)  https://host:9200 (comma-separated) — enables search
-secret:
-  # When set, the chart uses this Secret and creates none of its own.
+# --- Optional projection planes ---------------------------------------
+# Graph (FalkorDB) and search (Elasticsearch) are optional, derived
+# projections. Enabling one here is a statement of intent: the chart then
+# REQUIRES that datastore's connection below and fails the install if it
+# is missing. The worker itself enables a plane whenever its address is
+# present, so leaving these false while still setting an address also
+# works — the toggles exist to catch "I meant to wire search" mistakes.
+projections:
+  graph: false
+  search: false
+
+# --- Datastore connections --------------------------------------------
+# Datastores are EXTERNAL (managed Postgres+Timescale, Redis, FalkorDB,
+# Elasticsearch). Each block accepts a managed-secret reference OR inline
+# values; nothing here bundles a database. Only the Postgres DSN is
+# sensitive (it carries credentials); the other addresses are host:port.
+
+# Postgres — the source of truth (always required). Supply ONE of:
+#   1. existingSecret + dsnKey  — read a full DSN from a Secret you manage
+#      (operators like CloudNativePG/Crunchy expose a ready "uri" key).
+#   2. dsn                      — a full DSN literal (dev/CI; the chart puts
+#      it in its own Secret rather than a ConfigMap).
+#   3. host/user/database/...   — compose a DSN from parts; the password may
+#      be inline (dev/CI) or pulled from an existing Secret (passwordSecret).
+postgres:
   existingSecret: ""
-  # Used only when existingSecret is empty:
-  postgresDSN: ""
-  redisAddr: ""
-  falkordbAddr: ""
-  elasticsearchAddrs: ""
+  dsnKey: FABRIQ_POSTGRES_DSN
+  dsn: ""
+  host: ""
+  port: 5432
+  database: ""
+  user: ""
+  sslmode: require
+  # Extra DSN query params, appended after sslmode, e.g. "pool_max_conns=20".
+  params: ""
+  # Password: inline (dev/CI) OR from an existing Secret. When passwordSecret
+  # is set the DSN is composed with a $(VAR) reference so the password never
+  # leaves its Secret — keep it URL-safe, or use option 1/2 instead.
+  password: ""
+  passwordSecret: ""
+  passwordKey: password
+
+# Redis — event fan-out (required for projections + live subscriptions).
+redis:
+  existingSecret: ""
+  addrKey: FABRIQ_REDIS_ADDR
+  addr: "" # host:6379
+
+# FalkorDB — graph projection engine (required when projections.graph).
+falkordb:
+  existingSecret: ""
+  addrKey: FABRIQ_FALKORDB_ADDR
+  addr: "" # host:6379
+
+# Elasticsearch — search projection engine (required when projections.search).
+elasticsearch:
+  existingSecret: ""
+  addrsKey: FABRIQ_ELASTICSEARCH_ADDRS
+  addrs: "" # comma-separated, e.g. https://host:9200
 
 # --- Non-secret tuning (ConfigMap) ------------------------------------
 config:

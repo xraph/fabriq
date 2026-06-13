@@ -1,13 +1,127 @@
 ---
-title: Hello World
-description: Your first document
+title: Introduction
+description: Fabriq is the TWINOS data fabric — the single module through which application code talks to every datastore, enforcing tenancy, eventing, and projection invariants across all of them.
 ---
 
-Welcome to the docs! You can start writing documents in `/content/docs`.
+Fabriq is the **only module in the TWINOS platform allowed to talk to a
+datastore**. Application code never opens a connection, writes SQL, or calls
+Redis directly — it holds one facade and reaches every store through typed
+capability ports. In exchange, fabriq guarantees a small set of invariants
+that are otherwise impossible to hold across five different engines.
 
-## What is Next?
+## The three invariants
 
 <Cards>
-  <Card title="Learn more about Next.js" href="https://nextjs.org/docs" />
-  <Card title="Learn more about Fumadocs" href="https://fumadocs.dev" />
+  <Card title="One versioned event per write" href="/docs/commands-and-events">
+    Every command runs in a Postgres transaction that appends exactly one
+    versioned event to a transactional outbox. A leader-elected relay
+    publishes it to Redis Streams. Delivery-on-commit: the event can never
+    outrun the data.
+  </Card>
+  <Card title="Every access is tenant-scoped" href="/docs/tenancy">
+    Tenant rides on <code>context.Context</code> and is stamped structurally
+    into every engine — Postgres <code>SET LOCAL</code> + RLS, graph-per-tenant,
+    index routing, key prefixes — with a grove pre-query hook as a loud
+    backstop.
+  </Card>
+  <Card title="Projections rebuild from Postgres" href="/docs/projections">
+    The knowledge graph and the search index are <em>derived</em> projections,
+    never written directly. They can always be rebuilt from the source of
+    truth, and the rebuild is proven identical to the event-built result.
+  </Card>
 </Cards>
+
+## Architecture
+
+Postgres is the source of truth. Redis is the event fan-out. FalkorDB and
+Elasticsearch are derived projections. The kernel in `core/` is
+domain-agnostic and engine-agnostic; engine dialects live exclusively under
+`adapters/`.
+
+```text
+        commands                queries (capability ports)        deltas
+           │                            │                           ▲
+           ▼                            ▼                           │
+┌──────────────────────────────────────────────────────────────────┴─────┐
+│ fabriq (facade)                                                         │
+│  core/registry  core/command  core/event  core/projection  core/subscribe
+│  ─────────────────────────── ports ──────────────────────────────────  │
+│  adapters/postgres (grove)  adapters/redis  adapters/falkordb  adapters/elastic
+└─────────────────────────────────────────────────────────────────────────┘
+     Postgres+Timescale+pgvector   Redis Streams   FalkorDB    Elasticsearch
+        (source of truth)           (fan-out)      (projection) (projection)
+```
+
+## Capability ports
+
+There is deliberately **no unified query language**. Each storage capability
+has an explicit, engine-typed port. Relational work speaks SQL through grove,
+graph work speaks openCypher, search speaks queries over declared fields. No
+engine types appear in any signature, so adapters stay swappable.
+
+| Port | Engine | Purpose |
+| --- | --- | --- |
+| [Relational](/docs/relational) | Postgres (grove) | The source of truth: aggregate rows, raw SQL escape hatch. |
+| [Graph](/docs/graph) | FalkorDB | Knowledge-graph projection, openCypher traversal + batched hydration. |
+| [Search](/docs/search) | Elasticsearch | Full-text projection over declared fields. |
+| [Timeseries](/docs/timeseries) | TimescaleDB | Bulk telemetry ingest and windowed reads (event-bypass). |
+| [Vector](/docs/vector) | pgvector | Embedding upsert and nearest-neighbour search. |
+| [Document](/docs/documents) | Postgres + grove CRDT | Collaborative CRDT documents that materialize into ordinary events. |
+
+## A first taste
+
+```go
+reg := registry.New()
+_ = domain.RegisterAll(reg) // or your own entity pack
+
+f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
+    Postgres: fabriq.PostgresConfig{DSN: dsn},
+    Redis:    fabriq.RedisConfig{Addr: redisAddr},
+})
+
+// Writes: the only path, one versioned event per command.
+res, err := f.Exec(tenantCtx, command.Command{
+    Entity: "asset", Op: command.OpCreate,
+    Payload: &domain.Asset{Name: "Pump 7", SiteID: siteID},
+})
+
+// Reads: capability ports.
+var a domain.Asset
+err = f.Relational().Get(tenantCtx, "asset", res.AggID, &a)
+
+// Live deltas: server-resolved channel, conflated, resumable.
+deltas, err := f.Subscribe(tenantCtx, query.SubscribeScope{
+    Entity: "asset", Scope: "site", ID: siteID,
+})
+```
+
+<Callout type="warn">
+  Every call requires a tenant-stamped context (`tenant.WithTenant`), set only
+  by auth middleware from validated claims. An unstamped context is rejected
+  before it reaches a store.
+</Callout>
+
+## Where to go next
+
+<Cards>
+  <Card title="Getting Started" href="/docs/installation">
+    Install fabriq, wire the facade, and run your first command, query, and
+    subscription.
+  </Card>
+  <Card title="Core Concepts" href="/docs/architecture">
+    The facade, the registry, tenancy layers, the command/outbox plane,
+    projections, and the delta plane.
+  </Card>
+  <Card title="Data Planes" href="/docs/relational">
+    Per-port guides: relational, graph, search, timeseries, vector, and the
+    CRDT document plane.
+  </Card>
+  <Card title="Operations" href="/docs/deployment">
+    Deploy the worker, run migrations, rebuild and reconcile projections, and
+    read the metrics and runbooks.
+  </Card>
+</Cards>
+
+Fabriq is built on the [Forge ecosystem](https://github.com/xraph): storage on
+[grove](https://github.com/xraph/grove), binaries on
+[forge](https://github.com/xraph/forge) (apps) and forge/cli.

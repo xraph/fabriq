@@ -1,0 +1,91 @@
+---
+title: Tenancy
+description: The three enforcement layers — stamped transactions plus RLS, structural stamping, and the grove hook backstop — that make every access tenant-scoped.
+---
+
+Every access in fabriq is tenant-scoped. The tenant identity rides on `context.Context`, is stamped structurally into every engine, and is backstopped by a database-level hook that turns any leak into a loud, counted error. This page covers the three enforcement layers, how the tenant gets onto the context, and the one place row-level security cannot reach.
+
+## The tenant lives on context
+
+The tenant is carried on `context.Context` and nowhere else. Only auth middleware stamps it — from validated claims, never from a forwarded header — using `tenant.WithTenant`, which validates the id at stamp time so every name later derived from it (graph names, index names, stream keys, cache prefixes) is safe by construction:
+
+```go
+ctx, err := tenant.WithTenant(ctx, "acme")
+// ids must match ^[a-zA-Z0-9_-]{1,64}$, else WithTenant errors
+```
+
+Every fabric entry point calls `tenant.Require(ctx)` first and fails with `ErrNoTenant` on an unstamped context. The command executor, channel resolution, and the relational adapter all begin with this assertion.
+
+<Callout type="warn">
+An unstamped context is rejected before it reaches any store. `f.Exec`, `f.Subscribe`, `f.Relational().Get`, and `WaitForProjection` all return `fabriq.ErrNoTenant` if no tenant was stamped. There is no implicit "default tenant" — missing tenant context is a hard failure, by design.
+</Callout>
+
+## Layer 1 — structural stamping plus RLS
+
+This is the primary guarantee. Every tenant-table operation — reads included — runs inside a transaction the Postgres adapter stamps with the context tenant:
+
+```sql
+SELECT set_config('app.tenant_id', $1, true)
+```
+
+The `true` third argument scopes the setting to the transaction (`SET LOCAL` semantics). RLS policies on every tenant table are declared `FORCE` and key on that setting, so even arbitrary SQL through the raw escape hatch (`Relational().Query`) cannot cross tenants — an unstamped session sees zero rows. On top of the database guarantee, the adapter also adds explicit tenant predicates to generated queries.
+
+This layer has one operational requirement: the application **must** connect as a non-superuser role, because RLS never constrains superusers. The integration harness provisions a `fabriq_app` role accordingly.
+
+The command executor enforces the write-side half structurally. It forces `id`, `tenant_id`, and `version` from context — caller-provided values for `id`/`version` are ignored, and a payload carrying a *foreign* `tenant_id` is rejected outright:
+
+```go
+// from the command plane's prepare step
+if v, ok := vals[registry.ColumnTenant].(string); ok && v != "" && v != tenantID {
+	return nil, fmt.Errorf("payload tenant_id %q does not match context tenant %q", v, tenantID)
+}
+```
+
+## Layer 2 — per-engine stamping
+
+Postgres RLS is only one engine. Each adapter stamps the tenant in the way its engine supports, all derived from the context tenant in exactly one place (`core/registry/derive.go`):
+
+| Engine | Stamping mechanism |
+| --- | --- |
+| Postgres | `SET LOCAL app.tenant_id` + RLS `FORCE` policies |
+| FalkorDB (graph) | graph-per-tenant: each tenant gets its own graph keyed `tenant_{id}` |
+| Elasticsearch (search) | index routing: per-tenant alias `fabriq_{tenant}_{base}` |
+| Redis (fan-out / cache) | key prefixes; change channels are `changes:{tenant}:{scope}:{id}` |
+
+Because the names come from a single derivation point and the tenant id is validated at stamp time, there is no path by which one tenant's request can name another tenant's graph, index, or channel.
+
+## Layer 3 — the grove hook backstop
+
+The last layer is a grove pre-query/pre-mutation hook that observes every relational query on both the transaction path and the pool path. Its policy:
+
+- **Transaction path** (`InTransaction == true`): **allow.** fabriq stamped the tenant with `SET LOCAL` and RLS enforces isolation in the database — a stronger guarantee than any predicate inspection. The hook merely observes this path so the trip counter stays honest.
+- **Pool path**: **deny** with `ErrTenantHookTripped` and a metric trip. In this architecture any pool-path access to a tenant table is a bug — the structural stamping was bypassed — so denying outright is stronger and simpler than predicate-sniffing.
+
+```go
+func (a *Adapter) Grove() *grove.DB { return a.gdb }
+// Tenant tables are NOT reachable through the raw grove handle — the
+// backstop denies them; use the fabric ports.
+```
+
+The backstop never fires in correct operation. When it does, it means fabriq itself has a bug. The trip is exported as the Prometheus counter `fabriq_tenant_hook_trips_total`; a non-zero value is an alertable bug signal, not a routine condition. See the [runbooks](/docs/runbooks) for the response.
+
+## The one RLS exception: tag_readings
+
+TimescaleDB's columnstore refuses tables with row security — compressed telemetry and RLS are mutually exclusive on the engine. Since compression is the entire reason Timescale is in the stack (industrial tag readings at volume are unaffordable uncompressed), the `tag_readings` hypertable keeps compression and drops RLS.
+
+Tenancy there is **structural plus a raw-SQL guard** instead of RLS:
+
+1. The table is reachable only through the `TSQuerier` port (`BulkWrite` / `Range`), which stamps `tenant_id` into every statement structurally and validates the series name.
+2. It is not a registry entity, so the generic relational port cannot even name it.
+3. The raw-SQL escape hatch is guarded: any SQL referencing this unprotected table without a literal `tenant_id` reference is rejected with `ErrTenantHookTripped` (counted, alertable). Operators register the table via `postgres.WithGuardedTables`.
+4. Cross-tenant isolation is integration-tested.
+
+See ADR 0006 for the full reasoning and the `CREATE POLICY` that would restore RLS if Timescale ever lifts the restriction.
+
+## Where to go next
+
+<Cards>
+  <Card title="Commands and Events" href="/docs/commands-and-events">The stamped transaction that the write path runs inside.</Card>
+  <Card title="Timeseries plane" href="/docs/timeseries">The bulk telemetry path and its raw-SQL tenant guard.</Card>
+  <Card title="Runbooks" href="/docs/runbooks">Responding to a non-zero tenant-hook-trips counter.</Card>
+</Cards>

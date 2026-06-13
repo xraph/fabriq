@@ -1,0 +1,168 @@
+---
+title: CLI
+description: The full fabriq command surface — serve the worker, run migrations, inspect state, and rebuild or reconcile projections.
+---
+
+`fabriq` is one binary wrapping a forge app in forge/cli `RunApp`. The serve
+path runs the worker; the operator commands open their own stores from flags
+and environment, run once, and exit.
+
+## Global flag and environment
+
+A single global flag overrides the Postgres DSN for ad-hoc operator use:
+
+```bash
+fabriq --dsn postgres://owner:...@pg:5432/fabriq inspect state -t acme
+```
+
+`--dsn` falls back to `FABRIQ_POSTGRES_DSN`. If neither is set, any command
+that needs Postgres errors with `postgres DSN required: pass --dsn or set
+FABRIQ_POSTGRES_DSN`. Operator commands accept `--dsn` at both the command and
+subcommand level.
+
+The serve path reads everything from the environment:
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `FABRIQ_POSTGRES_DSN` | yes (to serve) | Source-of-truth Postgres DSN. |
+| `FABRIQ_REDIS_ADDR` | yes (to serve) | Redis address for the event stream and subscriptions. |
+| `FABRIQ_FALKORDB_ADDR` | no | Enables the graph projection consumer. |
+| `FABRIQ_ELASTICSEARCH_ADDRS` | no | Comma-separated; enables the search projection consumer. |
+| `FABRIQ_HTTP_ADDR` | no | Health + `/metrics` bind address (default `:8081`). |
+| `FABRIQ_RECONCILE_INTERVAL` | no | Scheduled reconciler cadence (Go duration; `0` disables; default 5m). |
+
+## serve — run the worker
+
+```bash
+fabriq serve        # explicit
+fabriq start        # alias
+fabriq run          # alias
+fabriq              # no args: defaults to serve
+```
+
+`serve` runs the background plane until SIGTERM: the leader-elected outbox
+relay, the CRDT document materializer, the scheduled reconciler, and the graph
+and search projection consumers. It requires `FABRIQ_POSTGRES_DSN` and
+`FABRIQ_REDIS_ADDR`; FalkorDB and Elasticsearch consumers start only when their
+addresses are set. Singletons are leader-elected, so any number of replicas is
+safe — see [Deployment](/docs/deployment).
+
+## migrate — schema migrations
+
+Migrations are a discrete deploy step, never run at app startup, and connect as
+the schema **owner**. Full detail in [Migrations](/docs/migrations).
+
+<Tabs items={['up', 'status', 'down']}>
+<Tab value="up">
+```bash
+fabriq migrate up
+```
+Apply all pending migrations under grove's advisory migration lock. Prints each
+applied migration; says `database is up to date` when there is nothing to do.
+</Tab>
+<Tab value="status">
+```bash
+fabriq migrate status
+```
+Print applied and pending migrations per group.
+</Tab>
+<Tab value="down">
+```bash
+fabriq migrate down
+```
+Roll back the most recent migration.
+</Tab>
+</Tabs>
+
+## inspect — registry and projection state
+
+```bash
+fabriq inspect registry          # dump registered entity specs (no DB needed)
+fabriq inspect state -t acme     # projection state for a tenant
+```
+
+`inspect registry` prints every registered entity: name, kind, table, graph
+node, search index, declared edges, and subscription scopes. It reads no
+database.
+
+`inspect state` needs `--dsn`/`FABRIQ_POSTGRES_DSN` and `--tenant`/`-t`. For
+the `graph` and `search` projections it prints the model version, status,
+target name, and event-stream position:
+
+```text
+graph   model_v3   status=live      target=tenant_acme_v3            stream=...
+search  model_v1   status=live      target=v1                        stream=...
+```
+
+## rebuild — blue-green projection rebuild
+
+```bash
+fabriq rebuild --tenant acme --projection graph   --falkordb falkordb:6379
+fabriq rebuild --tenant acme --projection search  --elasticsearch https://es:9200
+```
+
+Rebuilds one projection for a tenant by replaying the Postgres snapshot into a
+new target, then flipping the pointer. Flags:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--tenant`, `-t` | — | Tenant to rebuild (required unless `--all-tenants`). |
+| `--projection`, `-p` | `graph` | `graph` or `search`. |
+| `--falkordb` | `FABRIQ_FALKORDB_ADDR` | Required for graph rebuilds. |
+| `--elasticsearch` | `FABRIQ_ELASTICSEARCH_ADDRS` | Required for search rebuilds. |
+| `--all-tenants` | `false` | Rebuild every tenant in projection state. |
+| `--drop-old` | `false` | Drop the old target immediately instead of soaking. |
+
+Without `--drop-old`, the new target is left `soaking` and the command prints
+the finalize line to run after the soak window. End the soak with:
+
+```bash
+fabriq rebuild finalize --tenant acme --old tenant_acme_v2 --falkordb falkordb:6379
+```
+
+`finalize` flags: `--tenant`/`-t`, `--old` (the old target to drop), and
+`--falkordb` (or `FABRIQ_FALKORDB_ADDR`). Full procedure and semantics in
+[Rebuild & Reconcile](/docs/rebuild-and-reconcile).
+
+## reconcile — drift reconciliation
+
+```bash
+fabriq reconcile --tenant acme --falkordb falkordb:6379                  # dry run
+fabriq reconcile --tenant acme --falkordb falkordb:6379 --repair        # heal
+fabriq reconcile --tenant acme --elasticsearch https://es:9200 --repair
+```
+
+Compares per-aggregate versions between Postgres and each configured
+projection. Flags:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--tenant`, `-t` | — | Tenant to reconcile (required). |
+| `--falkordb` | `FABRIQ_FALKORDB_ADDR` | Reconcile the graph projection. |
+| `--elasticsearch` | `FABRIQ_ELASTICSEARCH_ADDRS` | Reconcile the search projection. |
+| `--repair` | `false` | Re-emit drifted aggregates through the outbox. |
+
+You must pass at least one of `--falkordb` / `--elasticsearch`. Without
+`--repair` it is a dry run that lists drift. With `--repair` it re-emits each
+drifted aggregate through the outbox; it never writes an engine directly. The
+worker also runs this on a schedule — see
+[Rebuild & Reconcile](/docs/rebuild-and-reconcile).
+
+## Forge built-ins
+
+```bash
+fabriq info          # app information
+fabriq health        # check app health
+fabriq extensions    # list registered extensions
+```
+
+These come from forge/cli and reflect the worker app's wiring.
+
+<Cards>
+  <Card title="Migrations" href="/docs/migrations">
+    The DDL authority and the expand/contract rules behind migrate.
+  </Card>
+  <Card title="Rebuild & Reconcile" href="/docs/rebuild-and-reconcile">
+    Blue-green rebuild and drift reconciliation in depth.
+  </Card>
+</Cards>

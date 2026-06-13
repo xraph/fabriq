@@ -13,17 +13,15 @@ Health & metrics (port {{ .Values.service.port }}):
   curl localhost:{{ .Values.service.port }}/_/readyz
   curl localhost:{{ .Values.service.port }}/metrics
 
-Datastores are EXTERNAL. The worker reads (from the {{ if .Values.secret.existingSecret }}existing{{ else }}chart-created{{ end }} Secret "{{ include "fabriq.secretName" . }}"):
-  FABRIQ_POSTGRES_DSN          (required)
-  FABRIQ_REDIS_ADDR            (projections + live subscriptions)
-  FABRIQ_FALKORDB_ADDR         (set to enable the graph projection)
-  FABRIQ_ELASTICSEARCH_ADDRS   (set to enable the search projection)
-{{- if not .Values.secret.redisAddr }}
-{{- if not .Values.secret.existingSecret }}
+Datastores are EXTERNAL. Connections the worker + migrate Job resolve:
+  Postgres   {{ if .Values.postgres.existingSecret }}Secret {{ .Values.postgres.existingSecret }} (key {{ .Values.postgres.dsnKey }}){{ else if .Values.postgres.passwordSecret }}composed; password from Secret {{ .Values.postgres.passwordSecret }}{{ else if include "fabriq.postgres.needsChartSecret" . }}chart Secret {{ include "fabriq.fullname" . }} (inline — dev/CI){{ else if .Values.postgres.host }}composed from postgres.host{{ else }}UNSET{{ end }}  (required)
+  Redis      {{ if .Values.redis.existingSecret }}Secret {{ .Values.redis.existingSecret }}{{ else if .Values.redis.addr }}{{ .Values.redis.addr }}{{ else }}unset{{ end }}  (projections + live subscriptions)
+  FalkorDB   {{ if .Values.falkordb.existingSecret }}Secret {{ .Values.falkordb.existingSecret }}{{ else if .Values.falkordb.addr }}{{ .Values.falkordb.addr }}{{ else }}unset{{ end }}  (graph projection{{ if .Values.projections.graph }} — ENABLED{{ end }})
+  Elastic    {{ if .Values.elasticsearch.existingSecret }}Secret {{ .Values.elasticsearch.existingSecret }}{{ else if .Values.elasticsearch.addrs }}{{ .Values.elasticsearch.addrs }}{{ else }}unset{{ end }}  (search projection{{ if .Values.projections.search }} — ENABLED{{ end }})
+{{- if and (not .Values.redis.existingSecret) (not .Values.redis.addr) }}
 
 NOTE: no Redis address set — the worker runs the relay only; projection
-consumers and live subscriptions need FABRIQ_REDIS_ADDR.
-{{- end }}
+consumers and live subscriptions need a Redis connection.
 {{- end }}
 
 Watch it come up:

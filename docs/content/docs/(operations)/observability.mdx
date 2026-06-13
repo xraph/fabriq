@@ -1,0 +1,87 @@
+---
+title: Observability
+description: The fabriq metric catalog, health endpoints, and W3C trace propagation across the async event hop.
+---
+
+The worker exposes Prometheus metrics and health on `FABRIQ_HTTP_ADDR`
+(default `:8081`). Metrics are at `/metrics` (mounted by fabriq) and forge's
+own `/_/metrics`; health is at the forge endpoints below.
+
+## Metrics
+
+Five instruments, defined in `internal/metrics`. The names are exact.
+
+| Metric | Type | Meaning | Direction |
+| --- | --- | --- | --- |
+| `fabriq_outbox_backlog` | gauge | Unpublished transactional-outbox rows. | Near zero is healthy. Sustained growth means the relay is down, has no leader, or Redis is unreachable. |
+| `fabriq_projection_lag_events` | gauge | Events between a projection's position and the stream head. Labels `projection` (`graph`/`search`) and `tenant`. | Near zero is healthy. Sustained growth means consumers cannot keep up or a projection is stalled. |
+| `fabriq_tenant_hook_trips_total` | counter | Tenant-guard backstop trips. | Must stay zero. **Any non-zero value is a fabriq bug.** |
+| `fabriq_conflation_depth` | gauge | Deltas buffered in subscription-hub conflation windows. | Low is healthy. Sustained growth means subscribers cannot drain. |
+| `fabriq_relay_published_total` | counter | Events published by the outbox relay. | Monotonic; flatlining while backlog grows confirms a stalled relay. |
+
+<Callout type="error">
+`fabriq_tenant_hook_trips_total` is a correctness alarm, not a capacity one. A
+non-zero value means a query reached an engine without tenant scoping — RLS
+contained the blast radius, but the call site must be found and fixed. Page the
+owning team. See [Runbooks](/docs/runbooks).
+</Callout>
+
+### How they are populated
+
+- `fabriq_relay_published_total` increments on every relay publish (an
+  on-publish callback wired into the relay).
+- The gauges are refreshed by a poller that runs **every 15s** while the worker
+  leads. Each tick: counts unpublished `fabriq_outbox` rows into
+  `fabriq_outbox_backlog`; folds new backstop trips into
+  `fabriq_tenant_hook_trips_total`; and reads consumer-group lag for the
+  `graph` and `search` projections into `fabriq_projection_lag_events`. Lag is
+  a group property, so the poller emits it under the `tenant` label `_all`.
+
+## Health endpoints
+
+Forge serves three health endpoints on the same address:
+
+| Path | Use |
+| --- | --- |
+| `/_/livez` | Liveness — process is up. Kubernetes liveness probe. |
+| `/_/readyz` | Readiness — ready to serve. Kubernetes readiness probe. |
+| `/_/health` | Aggregate health detail, including the worker's store ping. |
+
+The worker's health check pings Postgres through grove; it reports unhealthy if
+the stores are not open.
+
+```bash
+curl localhost:8081/_/readyz
+curl localhost:8081/_/health
+curl localhost:8081/metrics
+```
+
+## Trace propagation
+
+Every command stamps the active **W3C `traceparent`** into the event envelope
+by default (`otel.TraceparentFromContext`). The projection engine restores that
+trace context when it applies the event, so a trace flows across the async hop
+from command to projection — the write transaction, the relay publish, and the
+downstream apply share one trace. The `traceparent` column on `fabriq_outbox`
+persists it.
+
+## Scraping
+
+The Helm chart adds `prometheus.io/scrape` pod annotations by default
+(`/metrics` on the http port). For a Prometheus Operator install, enable the
+ServiceMonitor (`metrics.serviceMonitor.enabled`) to scrape the `http` port at
+`/metrics`. See [Deployment](/docs/deployment).
+
+For lag-driven autoscaling of projection consumers, drive a KEDA scaler off
+Redis stream lag or `fabriq_projection_lag_events` rather than CPU — the
+singleton runners are leader-elected and do not scale with replica count, but
+the consumers do.
+
+<Cards>
+  <Card title="Runbooks" href="/docs/runbooks">
+    What to do when each metric goes the wrong direction.
+  </Card>
+  <Card title="Deployment" href="/docs/deployment">
+    Probes, ServiceMonitor, and the metrics scrape configuration.
+  </Card>
+</Cards>

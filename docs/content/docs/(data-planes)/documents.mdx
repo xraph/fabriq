@@ -1,0 +1,135 @@
+---
+title: Documents
+description: The CRDT document plane — append-only update log, seq-vector sync, compaction, and quiet-window materialization back into ordinary entities.
+---
+
+The document plane backs `KindDocument` entities: collaborative documents — page-builder pages, annotations — where concurrent editing is normal and last-write-wins rows would destroy work. These entities are **not** written through the command plane (`Exec` rejects them). They converge through CRDT merges in an append-only log and only periodically *materialize* into ordinary rows. The plane is implemented in `adapters/postgres` (`DocStore`), folding the log through grove's `crdt.MergeEngine` (HLC-stamped field merge) — referenced, never reimplemented.
+
+## Declaring a document entity
+
+A document entity is `Kind: KindDocument` with a `CRDTSpec`:
+
+```go
+type CRDTSpec struct {
+	Engine        string        // engine reference, e.g. "grove-crdt"
+	SnapshotEvery int           // compact after this many updates
+	QuietWindow   time.Duration // idle window before materialization
+}
+```
+
+```go
+registry.EntitySpec{
+	Name:  "page",
+	Kind:  registry.KindDocument,
+	Model: (*domain.Page)(nil),
+	CRDT: &registry.CRDTSpec{
+		Engine:        "grove-crdt",
+		SnapshotEvery: 200,
+		QuietWindow:   30 * time.Second,
+	},
+}
+```
+
+The registry still binds the relational shape (`Model`), because materialization writes an ordinary row for the entity. See [Registry](/docs/registry).
+
+## The Store port
+
+`f.Document()` returns the `document.Store` port:
+
+```go
+type Store interface {
+	ApplyUpdate(ctx context.Context, docID string, update []byte) error
+	Sync(ctx context.Context, docID string, stateVector []byte) ([]byte, error)
+	Snapshot(ctx context.Context, docID string) (Materialized, error)
+	Compact(ctx context.Context, docID string) error
+}
+```
+
+Document ids carry their entity: `<entity>/<ulid>`, e.g. `page/01HZX…`. The entity prefix is validated against the registry on every call (it must be a registered `KindDocument`), and the ulid identifies the document.
+
+### ApplyUpdate
+
+`ApplyUpdate` appends one encoded CRDT update to the document's log and advances the per-document monotonic `seq`. Update blobs are JSON-encoded `[]crdt.ChangeRecord` (the `grove-crdt` engine); an empty or malformed blob is rejected.
+
+```go
+docID := "page/01HZX8N3QK8M4G7P2W5C0V9R6T"
+
+update := encodeChanges(/* []crdt.ChangeRecord from the client editor */)
+if err := f.Document().ApplyUpdate(ctx, docID, update); err != nil {
+	return err
+}
+```
+
+### Sync (client/server reconciliation)
+
+`Sync` is the diff protocol. The client passes its encoded **state vector** — an 8-byte big-endian last-seen `seq` (empty means "from the beginning") — and the server replies with everything the client is missing: the compacted snapshot (only when the client is behind it) plus every later update, and the new vector seq. The reply is bounded to 500 updates per page; a client far behind loops, advancing its vector each round, until it gets an empty page.
+
+```go
+// First sync: empty state vector means "send me everything".
+reply, err := f.Document().Sync(ctx, docID, nil)
+if err != nil {
+	return err
+}
+// reply is the JSON sync payload: {seq, snapshot?, updates[]}.
+// Apply it client-side, then resume from reply.seq encoded as 8 big-endian bytes:
+var sv [8]byte
+binary.BigEndian.PutUint64(sv[:], uint64(seq))
+reply, err = f.Document().Sync(ctx, docID, sv[:])
+```
+
+### Snapshot
+
+`Snapshot` returns the merged current state (compacted snapshot folded with the log tail) and the materialized aggregate version.
+
+```go
+type Materialized struct {
+	DocID    string
+	Snapshot json.RawMessage // merged field values, column-keyed
+	Version  int64           // aggregate version of the LAST materialization
+}
+```
+
+`Version` only advances when a quiet-window materialization lands — not per update. A document with unmaterialized edits has a `Snapshot` newer than its `Version`.
+
+### Compact
+
+`Compact` folds the update log into a snapshot row at the current high-water seq and trims log rows with `seq <= last_seq`, in one transaction. It changes storage shape only — never merge results — and bounds reconnect cost for long-lived documents. Cadence is governed by `CRDTSpec.SnapshotEvery`; in production it runs as the worker's leader-elected compactor job, not from request handlers.
+
+## Live sync transport
+
+Bidirectional sync rides the subscription hub's connection layer with **no conflation and no coalescing** — CRDT frames must arrive complete and in order. The conflating delta path ([Subscriptions](/docs/subscriptions)) and the document sync path share connections, never semantics. The seam is the hub's raw channel pair, `Hub.SubscribeRaw` / `Hub.PublishRaw`, distinct from the conflated `Subscribe` / `Publish`.
+
+`Fabriq.SubscribeDocument` is the application entry point: it attaches to a document's live frames over a RAW channel, resolves the channel server-side from the validated doc id and the context tenant (`doc:{tenant}:{docID}`), and runs the same authz hooks as `Subscribe`.
+
+```go
+frames, err := f.SubscribeDocument(ctx, docID)
+if err != nil {
+	return err
+}
+for frame := range frames {
+	// frame is a query.Delta: Payload is the update blob,
+	// Version is the log seq. A gap in Version means
+	// "call Document().Sync and resume".
+}
+```
+
+On the write side, every `ApplyUpdate` fans its frame out on that channel as a best-effort live notification — the log is the truth, and clients heal any dropped frame through `Sync` (each frame carries the log seq as `Version` for gap detection). Awareness traffic (cursors, who's-online) rides a separate ephemeral Redis pub/sub path and is never persisted.
+
+## Materialization — the bridge back into the fabric
+
+After `CRDTSpec.QuietWindow` of silence on a document, the materializer runs:
+
+1. **Merge** the log through grove's CRDT engine.
+2. **Post-merge validation.** CRDTs converge but do not guarantee business validity. A validation hook inspects the merged values; on a violation the document is **flagged for resolution** (with the reason recorded) and nothing materializes.
+3. **Write one event.** The merged state is written into the entity's relational row and **exactly ONE** ordinary versioned domain event (`<entity>.updated`, `version+1`) is appended through the transactional outbox — row, event, and the materialization watermark all in the same transaction, so a crash can never re-materialize.
+
+Downstream — graph, search, audit, subscriptions — therefore sees a CRDT document as a perfectly normal entity; nothing knows the row was CRDT-merged. The materializer runs leader-elected in the worker (see [Deployment](/docs/deployment)), scanning for documents idle past their `QuietWindow` with updates beyond the last materialization.
+
+<Callout type="info">
+Until a document goes quiet, its edits exist only in the CRDT log — projections and the relational read port see the last materialized version, not in-flight edits. Read live state with `Document().Snapshot`; read the durable, projected entity with `Relational().Get`.
+</Callout>
+
+<Cards>
+  <Card title="Registry" href="/docs/registry">CRDTSpec — declaring Engine, SnapshotEvery, and QuietWindow on a document entity.</Card>
+  <Card title="Deployment" href="/docs/deployment">The leader-elected worker that runs the materializer and compactor jobs.</Card>
+</Cards>

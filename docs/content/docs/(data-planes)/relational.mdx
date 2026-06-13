@@ -1,0 +1,99 @@
+---
+title: Relational
+description: The relational read port over Postgres — Get, GetMany, List, and the raw-SQL escape hatch, every method tenant-scoped.
+---
+
+Postgres is Fabriq's source of truth: every aggregate row lives there, written exclusively through the command plane (`Exec`/`ExecBatch`) and read through `query.RelationalQuerier`. The port is deliberately small — point reads, batched hydration, equality-filtered paging, and a raw-SQL escape hatch for the rest. It is implemented in `adapters/postgres` on grove's `pgdriver`.
+
+Every method is tenant-scoped structurally: each call runs inside a transaction stamped with `SET LOCAL app.tenant_id` (via `set_config(..., true)`), and every generated query carries an explicit `tenant_id` predicate. Postgres RLS (`FORCE`) keys on that setting, and a grove pre-query hook backstop denies any pool-path access to a tenant table — see [Tenancy](/docs/tenancy). The tenant comes from the `context.Context`; an unstamped context fails with `ErrNoTenant`.
+
+```go
+type RelationalQuerier interface {
+	Get(ctx context.Context, entity, id string, into any) error
+	GetMany(ctx context.Context, entity string, ids []string, into any) error
+	List(ctx context.Context, entity string, q ListQuery, into any) error
+	Query(ctx context.Context, into any, sql string, args ...any) error
+}
+```
+
+Reach the port through the facade: `f.Relational()`.
+
+## Get
+
+`Get` loads one aggregate row by id into a model pointer. A missing row returns `ErrNotFound` (a typed `*fabriqerr.NotFoundError`), not a zero value.
+
+```go
+var asset domain.Asset
+if err := f.Relational().Get(ctx, "asset", assetID, &asset); err != nil {
+	if errors.Is(err, fabriq.ErrNotFound) {
+		// no such aggregate in this tenant
+	}
+	return err
+}
+```
+
+## GetMany
+
+`GetMany` is the dataloader-style hydration primitive: it loads many rows in ONE batched query (`WHERE id = ANY($1)`), never a loop of `Get`s. Result order follows the `ids` slice (the query appends `ORDER BY array_position($2, id)`), and rows that do not exist are simply skipped — the result slice can be shorter than `ids`. An empty `ids` slice is a no-op.
+
+```go
+ids := []string{"asset-1", "asset-2", "asset-3"}
+
+var assets []domain.Asset
+if err := f.Relational().GetMany(ctx, "asset", ids, &assets); err != nil {
+	return err
+}
+// len(assets) <= len(ids); order matches ids, missing rows dropped.
+```
+
+This is the same batched hydration that backs `Graph().TraverseAndHydrate` — graph traversals return ids, then exactly one `GetMany` fills the rows from Postgres. See [Graph](/docs/graph).
+
+## List
+
+`List` pages through an entity's rows with equality filters and a single order column. `ListQuery` is intentionally minimal — anything richer is raw SQL or a projection query.
+
+```go
+type ListQuery struct {
+	Filter  map[string]any // column = value, ANDed
+	OrderBy string         // column name, optionally " DESC"
+	Limit   int
+	Offset  int
+}
+```
+
+Filter keys and the `OrderBy` column are validated against the entity's binding — an unknown column is rejected, which is also the SQL-injection guard. With no `OrderBy`, rows order by `id ASC`.
+
+```go
+var pumps []domain.Asset
+err := f.Relational().List(ctx, "asset", query.ListQuery{
+	Filter:  map[string]any{"site_id": siteID, "kind": "pump"},
+	OrderBy: "name",
+	Limit:   50,
+	Offset:  0,
+}, &pumps)
+```
+
+## Query (raw SQL escape hatch)
+
+`Query` runs raw SQL for reads that grove's builders cannot express — joins, aggregates, window functions. It still runs inside a tenant-stamped transaction, so RLS contains it; the result scans into the `into` pointer. Note the argument order: `into` comes first, then the SQL string and its args.
+
+```go
+var rows []struct {
+	SiteID string `grove:"site_id"`
+	N      int    `grove:"n"`
+}
+err := f.Relational().Query(ctx, &rows,
+	`SELECT site_id, count(*) AS n
+	   FROM assets
+	  WHERE tenant_id = current_setting('app.tenant_id')
+	  GROUP BY site_id`)
+```
+
+<Callout type="warn">
+`Query` is for reads only. Writes go through `Exec` — the command plane is the only path that appends the versioned outbox event a write must produce. Tables outside RLS (guarded tables such as the telemetry hypertable) additionally require a literal `tenant_id` reference in the SQL, or the tenant backstop rejects the statement with `ErrTenantHookTripped`.
+</Callout>
+
+<Cards>
+  <Card title="Tenancy" href="/docs/tenancy">How the SET LOCAL stamp, RLS, and the grove hook backstop layer tenant isolation.</Card>
+  <Card title="Graph" href="/docs/graph">TraverseAndHydrate reuses GetMany for one-query hydration after a traversal.</Card>
+</Cards>

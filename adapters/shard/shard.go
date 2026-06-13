@@ -86,15 +86,39 @@ func (s *Set) For(ctx context.Context) (Shard, error) {
 	if err != nil {
 		return Shard{}, err
 	}
-	id, err := s.dir.Shard(ctx, tid)
+	return s.ForTenant(ctx, tid)
+}
+
+// ForTenant resolves the shard owning an explicit tenant id — the seam the
+// worker plane uses to route by the tenant carried in a method argument
+// (projection bookkeeping, snapshot, reconcile) rather than on ctx.
+func (s *Set) ForTenant(ctx context.Context, tenantID string) (Shard, error) {
+	id, err := s.dir.Shard(ctx, tenantID)
 	if err != nil {
 		return Shard{}, err
 	}
 	sh, ok := s.shards[id]
 	if !ok {
-		return Shard{}, fmt.Errorf("fabriq: tenant %q routed to unknown shard %q", tid, id)
+		return Shard{}, fmt.Errorf("fabriq: tenant %q routed to unknown shard %q", tenantID, id)
 	}
 	return sh, nil
+}
+
+// ResolveID returns just the shard id a tenant routes to — for the worker
+// plane to pick the matching concrete adapter (relay, reconcile, snapshot)
+// from its own per-shard map.
+func (s *Set) ResolveID(ctx context.Context, tenantID string) (string, error) {
+	return s.dir.Shard(ctx, tenantID)
+}
+
+// IDs returns the shard ids, sorted — for building per-shard worker runners.
+func (s *Set) IDs() []string {
+	out := make([]string, 0, len(s.shards))
+	for id := range s.shards {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // All returns the shards, ordered by id — for the worker plane to start a

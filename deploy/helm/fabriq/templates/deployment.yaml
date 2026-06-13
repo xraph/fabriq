@@ -22,9 +22,9 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        # Roll pods when the connection secret or tuning changes.
+        # Roll pods when the connection config or tuning changes.
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-        {{- if not .Values.secret.existingSecret }}
+        {{- if include "fabriq.postgres.needsChartSecret" . }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
         {{- if .Values.metrics.podAnnotations }}
@@ -48,9 +48,9 @@ spec:
         - name: worker
           image: {{ include "fabriq.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            {{- include "fabriq.connectionEnv" . | trim | nindent 12 }}
           envFrom:
-            - secretRef:
-                name: {{ include "fabriq.secretName" . }}
             - configMapRef:
                 name: {{ include "fabriq.fullname" . }}
           ports:

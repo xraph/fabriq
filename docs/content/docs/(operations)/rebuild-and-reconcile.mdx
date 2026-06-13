@@ -1,0 +1,124 @@
+---
+title: Rebuild & Reconcile
+description: Blue-green projection rebuilds and drift reconciliation — both source-of-truth from Postgres, never written to an engine directly.
+---
+
+The graph and search projections are derived, never authoritative. Two
+operations restore them from Postgres: **rebuild** (replace a projection
+wholesale, blue-green) and **reconcile** (heal per-aggregate drift in place).
+Both source from Postgres, and reconcile never touches an engine directly.
+
+## Blue-green rebuild
+
+Use rebuild when a projection must be rebuilt from scratch — a model-version
+bump, a corrupted target, or a projection that fell off the Redis stream's
+`MAXLEN` horizon (replay is no longer possible from the stream, but Postgres
+always can).
+
+```bash
+fabriq rebuild --tenant T --projection graph  --falkordb falkordb:6379
+fabriq rebuild --tenant T --projection search --elasticsearch https://es:9200
+```
+
+What happens:
+
+<Steps>
+<Step>
+The rebuilder marks `fabriq_projection_state` `status=building`. The **live
+engine starts dual-applying immediately** — new events land in both the old
+and new target while the rebuild runs, so the new target is never stale on
+flip.
+</Step>
+<Step>
+It replays the Postgres snapshot into the new target: `tenant_T_v{N+1}` for
+graph, or the `_v{N+1}` indexes for search. The reindex source is **always
+Postgres**, never the old projection.
+</Step>
+<Step>
+It flips: `model_version++`, the target pointer moves, and for search the ES
+aliases swap atomically in one `_aliases` call. Readers follow the pointer or
+alias; graph reads re-resolve within the resolver TTL.
+</Step>
+<Step>
+The new target enters `soaking`. Verify it, then end the soak (below).
+</Step>
+</Steps>
+
+<Callout type="info">
+The e2e suite proves the rebuilt graph is **identical** to the event-built
+one. A rebuild from Postgres is always safe and always possible.
+</Callout>
+
+### Finalize
+
+Without `--drop-old`, the command leaves the old target in place and prints the
+finalize line. After the soak window, drop the old target and mark the
+projection live:
+
+```bash
+fabriq rebuild finalize --tenant T --old <oldTarget> --falkordb falkordb:6379
+```
+
+`--old` is the old target name the rebuild printed (for example
+`tenant_acme_v2`). To skip the soak entirely, pass `--drop-old` on the original
+rebuild — it finalizes immediately after the flip.
+
+Rebuild every tenant at once with `--all-tenants` (it iterates every tenant in
+projection state) instead of `--tenant`.
+
+## Reconciler
+
+Reconciliation compares per-aggregate versions between Postgres and each
+projection and heals the difference by re-emitting through the outbox.
+
+```bash
+fabriq reconcile --tenant T --falkordb falkordb:6379                  # dry run
+fabriq reconcile --tenant T --falkordb falkordb:6379 --repair         # heal
+fabriq reconcile --tenant T --elasticsearch https://es:9200 --repair
+```
+
+Drift classes:
+
+- **missing / stale** (the projection is behind the Postgres row): repaired by
+  upserting the aggregate's latest event into the outbox with
+  `published_at = NULL`. The relay republishes it; version-gated consumers
+  apply it and converge. Replaying an already-seen event is harmless —
+  consumers are idempotent.
+- **zombie** (projected but the row is gone): emits a synthetic
+  `<entity>.deleted` event one version past what the projection holds, so the
+  consumer removes it.
+- **AHEAD is not drift.** A projection scanning ahead of the truth read just
+  saw events that landed between the two reads.
+
+<Callout type="info">
+The reconciler **never writes an engine directly** — every repair flows through
+the outbox and the normal relay/consumer path, so a single code path owns all
+projection writes.
+</Callout>
+
+Without `--repair` the command is a dry run that lists drift. With `--repair`
+it re-emits each drifted aggregate. You must pass at least one of `--falkordb`
+/ `--elasticsearch`.
+
+### Scheduled reconciliation in the worker
+
+The worker also runs the reconciler on a schedule, **leader-elected** (advisory
+lock `1002`) so exactly one replica scans. It runs every
+`FABRIQ_RECONCILE_INTERVAL` (Go duration, default 5m; `0` disables it), across
+**every tenant seen in projection state**, with repair enabled. It starts only
+when a graph or search store is configured.
+
+<Callout type="warn">
+The Elasticsearch projection scan is capped at **10k docs per entity per
+tenant**. Beyond that, zombie detection on search is not trustworthy until
+scroll support lands — rebuild instead.
+</Callout>
+
+<Cards>
+  <Card title="Observability" href="/docs/observability">
+    The metrics that signal when a rebuild or reconcile is needed.
+  </Card>
+  <Card title="Runbooks" href="/docs/runbooks">
+    Incident procedures — rebuild is the recovery for a projection off the stream horizon.
+  </Card>
+</Cards>

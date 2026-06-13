@@ -1,0 +1,237 @@
+---
+title: Deployment
+description: Build the single fabriq image, run schema migrations as a pre-upgrade hook, and deploy the leader-elected worker with the Helm chart.
+---
+
+Fabriq ships as **one binary**, `fabriq`, built from `cmd/fabriq` on
+forge/cli `RunApp`. The same image is the long-lived worker and the one-shot
+operator commands — both share one wiring path.
+
+- `fabriq serve` (also the no-arg default) runs the background plane: the
+  leader-elected outbox relay, projection consumers, the reconciler, and the
+  CRDT document plane. This is what the container ENTRYPOINT runs.
+- `fabriq migrate | inspect | rebuild | reconcile` are operator commands that
+  open their own stores from flags/env and exit. They never serve.
+- `fabriq info | health | extensions` are forge built-ins.
+
+There is no separate worker binary. See [CLI](/docs/cli) for the
+full command surface.
+
+## The image
+
+The Dockerfile builds a single static, stripped binary and ships it on
+`distroless/static-debian12:nonroot`. The ENTRYPOINT is `fabriq serve`; the
+migrate Job overrides the command.
+
+```dockerfile
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY vendor/ vendor/
+COPY . .
+RUN CGO_ENABLED=0 GOFLAGS=-mod=vendor go build -trimpath -ldflags "-s -w" \
+      -o /out/fabriq ./cmd/fabriq
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/fabriq /usr/local/bin/fabriq
+USER nonroot:nonroot
+EXPOSE 8081
+ENTRYPOINT ["/usr/local/bin/fabriq", "serve"]
+```
+
+<Callout type="warn">
+The build is **hermetic from a vendored tree**. The repo carries local grove
+`replace` directives pointing outside this checkout (until grove cuts a tagged
+release), so a plain `docker build` cannot resolve them. Build through the
+Makefile, which runs `go mod vendor` first:
+
+```bash
+make docker-build   # = go mod vendor, then docker build -f deploy/docker/Dockerfile
+```
+
+Vendoring is harmless once the replaces are dropped, so the Dockerfile keeps
+working unchanged after the grove tag.
+</Callout>
+
+## The Helm chart
+
+The chart in `deploy/helm/fabriq` deploys the worker Deployment plus a
+schema-migration Job. **Datastores are external** — the chart bundles no
+databases. Point it at managed Postgres+Timescale, Redis, and (optionally)
+FalkorDB and Elasticsearch.
+
+<Steps>
+<Step>
+Configure datastore connections. Each store has its own values block. Only
+the Postgres DSN is sensitive (it carries credentials); Redis, FalkorDB and
+Elasticsearch are plain addresses. For production, reference Secrets you (or
+an operator like CloudNativePG / External Secrets) already manage:
+
+```yaml
+# Postgres: read a full DSN from a managed Secret key (e.g. "uri").
+postgres:
+  existingSecret: pg-conn
+  dsnKey: uri
+redis:
+  addr: redis-master:6379          # or redis.existingSecret + addrKey
+# Optional projection planes — enabling one REQUIRES its connection, and the
+# chart fails the install if it is missing.
+projections:
+  search: true
+elasticsearch:
+  existingSecret: es-conn
+```
+
+Alternatively, compose Postgres from parts with the password pulled from a
+Secret (the chart builds a `$(VAR)` reference so the password never leaves
+its Secret), or set `postgres.dsn` inline for dev/CI (the chart then creates
+its own Secret rather than putting the DSN in a ConfigMap):
+
+```yaml
+postgres:
+  host: pg.internal
+  user: fabriq_app
+  database: fabriq
+  sslmode: require
+  passwordSecret: rds-creds        # an existing Secret
+  passwordKey: password
+```
+
+The connection env the worker and migrate Job resolve is `FABRIQ_POSTGRES_DSN`
+(required), `FABRIQ_REDIS_ADDR` (required for projections and subscriptions),
+`FABRIQ_FALKORDB_ADDR` (graph projection), and `FABRIQ_ELASTICSEARCH_ADDRS`
+(comma-separated; search projection).
+</Step>
+
+<Step>
+Install or upgrade. The migrate Job runs first as a `pre-install,pre-upgrade`
+hook, so the schema is current before the worker rolls.
+
+```bash
+helm upgrade --install fabriq deploy/helm/fabriq \
+  --set postgres.existingSecret=pg-conn --set postgres.dsnKey=uri \
+  --set redis.addr=redis-master:6379
+```
+</Step>
+
+<Step>
+Watch it come up and confirm health.
+
+```bash
+kubectl rollout status deploy/fabriq
+kubectl port-forward svc/fabriq 8081:8081
+curl localhost:8081/_/readyz
+curl localhost:8081/metrics
+```
+</Step>
+</Steps>
+
+### Migration Job (pre-upgrade hook)
+
+When `migrate.enabled` (default `true`), the chart renders a Job annotated
+`helm.sh/hook: pre-install,pre-upgrade` that overrides the container command
+to `fabriq migrate up`. grove holds an advisory migration lock, so parallel
+hook runs across releases are safe. The Job resolves the same connection env
+as the worker but uses only the Postgres DSN. If you disable the hook, you
+must run `fabriq migrate up` yourself before the worker serves traffic. See
+[Migrations](/docs/migrations).
+
+### Worker Deployment
+
+The worker container uses the image ENTRYPOINT (`fabriq serve`) — the chart
+does not override the command. It runs as non-root with a read-only root
+filesystem (a `/tmp` `emptyDir` is mounted writable) and drops all
+capabilities.
+
+Config splits across two sources, both injected as env:
+
+- **Connection env** — the datastore connections above, rendered per store as
+  `valueFrom.secretKeyRef` (managed Secrets), a `$(VAR)`-composed DSN, or a
+  plain value. Inline dev credentials land in a chart-created Secret rather
+  than a ConfigMap.
+- **ConfigMap** — non-secret tuning: `FABRIQ_HTTP_ADDR` (default `:8081`) and
+  `FABRIQ_RECONCILE_INTERVAL` (Go duration; empty uses the binary default of
+  5m, `0` disables the scheduled reconciler). Extra plain env merges via
+  `config.extraEnv`.
+
+A pod-template checksum annotation rolls the workers when the ConfigMap (or
+the chart-created Secret, when inline credentials are used) changes.
+
+### Health probes and metrics
+
+Forge serves health and metrics on `FABRIQ_HTTP_ADDR` (default `:8081`,
+chart `service.port`):
+
+| Path | Use |
+| --- | --- |
+| `/_/livez` | Liveness probe (chart: `periodSeconds: 15`). |
+| `/_/readyz` | Readiness probe (chart: `periodSeconds: 10`). |
+| `/_/health` | Aggregate health detail. |
+| `/metrics` | Prometheus scrape (mounted by fabriq). |
+
+The Service is `ClusterIP` and not internet-facing. See
+[Observability](/docs/observability) for the metric catalog.
+
+### Scaling model
+
+The worker is **safe to scale** (chart default `worker.replicaCount: 2`):
+
+- **Singletons are leader-elected** via Postgres advisory locks, so exactly
+  one replica runs each: the outbox relay (lock `1001`), the reconciler
+  (`1002`), and the document plane materializer (`1003`). Extra replicas
+  campaign and stand by. A leader that loses its Postgres session abdicates;
+  another replica wins the next campaign.
+- **Projection consumers scale by replica count.** The graph and search
+  consumers share Redis Streams consumer groups (no election), so apply
+  throughput grows with replicas.
+
+The chart includes:
+
+- **PDB** (`pdb.enabled`, `minAvailable: 1`) — keeps a replica during
+  voluntary disruptions so a leader is always available.
+- **HPA** (`autoscaling.enabled`, CPU target) — optional. For lag-driven
+  scaling of consumers, prefer KEDA on Redis stream lag or
+  `fabriq_projection_lag_events` rather than CPU.
+- **ServiceMonitor** (`metrics.serviceMonitor.enabled`) — scrapes `/metrics`
+  on the `http` port for a Prometheus Operator install. Without it, the chart
+  adds `prometheus.io/scrape` pod annotations by default.
+- **NetworkPolicy** (`networkPolicy.enabled`) — allows ingress to the http
+  port (scrape + health) and DNS egress; you supply datastore egress peers in
+  `networkPolicy.egress`.
+
+The worker drains on SIGTERM (~10s); the chart sets
+`terminationGracePeriodSeconds: 30` for headroom.
+
+## Bare deployment (without Helm)
+
+Run the same image anywhere with the env vars set:
+
+```bash
+docker run --rm \
+  -e FABRIQ_POSTGRES_DSN='postgres://app:...@pg:5432/fabriq?sslmode=require' \
+  -e FABRIQ_REDIS_ADDR='redis:6379' \
+  -e FABRIQ_FALKORDB_ADDR='falkordb:6379' \
+  -e FABRIQ_ELASTICSEARCH_ADDRS='https://es:9200' \
+  -p 8081:8081 \
+  ghcr.io/xraph/fabriq:latest          # ENTRYPOINT runs `fabriq serve`
+```
+
+Run migrations as a discrete step first, as the schema owner:
+
+```bash
+docker run --rm \
+  -e FABRIQ_POSTGRES_DSN='postgres://owner:...@pg:5432/fabriq' \
+  ghcr.io/xraph/fabriq:latest migrate up
+```
+
+<Cards>
+  <Card title="CLI" href="/docs/cli">
+    Every fabriq command and flag, with examples.
+  </Card>
+  <Card title="Migrations" href="/docs/migrations">
+    The DDL authority, the migrate commands, and expand/contract discipline.
+  </Card>
+  <Card title="Observability" href="/docs/observability">
+    The metric catalog, health endpoints, and trace propagation.
+  </Card>
+</Cards>

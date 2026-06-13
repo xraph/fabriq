@@ -1,0 +1,16 @@
+{
+  "title": "Fabriq",
+  "pages": [
+    "index",
+    "---Getting Started---",
+    "...(getting-started)",
+    "---Core Concepts---",
+    "...(concepts)",
+    "---Data Planes---",
+    "...(data-planes)",
+    "---Operations---",
+    "...(operations)",
+    "---Misc---",
+    "reference"
+  ]
+}
