@@ -238,6 +238,91 @@ func TestSearchApplier_EntityWithoutIndexIsNoOp(t *testing.T) {
 	}
 }
 
+type edgeModel struct {
+	grove.BaseModel `grove:"table:kg_edges"`
+	ID       string `grove:"id,pk"`
+	TenantID string `grove:"tenant_id,notnull"`
+	Version  int64  `grove:"version,notnull"`
+	Type     string `grove:"type,notnull"`
+	SourceID string `grove:"source_id,notnull"`
+	TargetID string `grove:"target_id,notnull"`
+	Status   string `grove:"status"`
+}
+
+func jsonOf(t *testing.T, m map[string]any) []byte {
+	t.Helper()
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestGraphApplier_ReifiedEdge(t *testing.T) {
+	r := registry.New()
+	r.MustRegister(registry.EntitySpec{
+		Name: "kgedge", Kind: registry.KindAggregate, Model: (*edgeModel)(nil),
+		GraphEdge: &registry.GraphEdgeSpec{
+			TypeField: "type", SourceField: "source_id", TargetField: "target_id",
+			SourceLabel: "Node", TargetLabel: "Node", PropFields: []string{"status"},
+		},
+	})
+	app := projection.GraphApplier(r)
+
+	muts, err := app.Apply(event.Envelope{
+		Aggregate: "kgedge", AggID: "e1", Version: 1, Type: "kgedge.created",
+		Payload: jsonOf(t, map[string]any{"type": "SIMILAR", "source_id": "a", "target_id": "b", "status": "tentative"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ru, ok := muts[0].(projection.RelUpsert)
+	if !ok || ru.ID != "e1" || ru.Type != "SIMILAR" || ru.FromID != "a" || ru.ToID != "b" || ru.Props["status"] != "tentative" {
+		t.Fatalf("reified-edge create => RelUpsert, got %#v", muts)
+	}
+
+	del, err := app.Apply(event.Envelope{Aggregate: "kgedge", AggID: "e1", Version: 2, Type: "kgedge.deleted", Payload: []byte("{}")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rd, ok := del[0].(projection.RelDelete); !ok || rd.ID != "e1" {
+		t.Fatalf("reified-edge delete => RelDelete by id, got %#v", del)
+	}
+}
+
+func TestGraphApplier_ReifiedEdgeUpdateAndMalformed(t *testing.T) {
+	r := registry.New()
+	r.MustRegister(registry.EntitySpec{
+		Name: "kgedge", Kind: registry.KindAggregate, Model: (*edgeModel)(nil),
+		GraphEdge: &registry.GraphEdgeSpec{
+			TypeField: "type", SourceField: "source_id", TargetField: "target_id",
+			SourceLabel: "Node", TargetLabel: "Node", PropFields: []string{"status"},
+		},
+	})
+	app := projection.GraphApplier(r)
+
+	// updated follows the same path as created -> RelUpsert
+	muts, err := app.Apply(event.Envelope{
+		Aggregate: "kgedge", AggID: "e1", Version: 3, Type: "kgedge.updated",
+		Payload: jsonOf(t, map[string]any{"type": "SIMILAR", "source_id": "a", "target_id": "b", "status": "promoted"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ru, ok := muts[0].(projection.RelUpsert); !ok || ru.Version != 3 || ru.Props["status"] != "promoted" {
+		t.Fatalf("updated => RelUpsert v3, got %#v", muts)
+	}
+
+	// missing source_id -> error (engine will swallow it; we assert the applier surfaces it)
+	_, err = app.Apply(event.Envelope{
+		Aggregate: "kgedge", AggID: "e2", Version: 1, Type: "kgedge.created",
+		Payload: jsonOf(t, map[string]any{"type": "SIMILAR", "target_id": "b"}),
+	})
+	if err == nil {
+		t.Fatal("reified edge missing source/type/target must return an error")
+	}
+}
+
 func BenchmarkGraphApplier(b *testing.B) {
 	ap := projection.GraphApplier(testRegistry(b))
 	env := assetEnvelope(b, registry.VerbUpdated, map[string]any{

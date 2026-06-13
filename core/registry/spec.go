@@ -81,6 +81,19 @@ type CRDTSpec struct {
 	QuietWindow   time.Duration // idle window before materialization
 }
 
+// GraphEdgeSpec maps a reified-edge ENTITY (rows that ARE relationships) into
+// the graph. Endpoints are matched by id under their identity labels; the rel
+// type comes from a column value. General: reified relationships (membership,
+// grant, subscription) are a common pattern, not specific to any domain.
+type GraphEdgeSpec struct {
+	TypeField   string
+	SourceField string
+	TargetField string
+	SourceLabel string
+	TargetLabel string
+	PropFields  []string
+}
+
 // EntitySpec declares one entity. Model must be a grove-tagged struct
 // pointer such as (*domain.Asset)(nil); its table and columns are bound at
 // registration.
@@ -88,7 +101,8 @@ type EntitySpec struct {
 	Name      string
 	Kind      Kind
 	Model     any
-	GraphNode string // graph label; empty = not projected to the graph
+	GraphNode string     // graph label; empty = not projected to the graph
+	GraphEdge *GraphEdgeSpec // when set, the entity projects as a relationship
 	Edges     []EdgeSpec
 	Search    SearchSpec
 	Subscribe []Scope
