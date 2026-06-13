@@ -198,20 +198,12 @@ func (a *Adapter) List(ctx context.Context, entity string, q query.ListQuery, in
 	if err != nil {
 		return err
 	}
-	for col := range q.Filter {
-		if !ent.Binding.HasColumn(col) {
-			return fmt.Errorf("fabriq: entity %q has no column %q", entity, col)
-		}
-	}
 	if err := query.ValidateConds(q.Where, ent.Binding.HasColumn); err != nil {
 		return err
 	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
 		sel := tx.NewSelect(into).Where(registry.ColumnTenant+" = ?", tid)
-		for col, val := range q.Filter {
-			sel = sel.Where(quoteIdent(col)+" = ?", val)
-		}
 		for _, c := range q.Where {
 			frag, args, cerr := condSQL(c)
 			if cerr != nil {

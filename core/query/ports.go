@@ -65,17 +65,15 @@ type RelationalQuerier interface {
 	Query(ctx context.Context, into any, sql string, args ...any) error
 }
 
-// ListQuery selects, filters, orders and paginates an entity's rows. Its
-// filter is structured and engine-neutral: Filter is the equality
-// shorthand, Where is the operator-capable form (build conditions with
-// Eq, Ne, Gt/Lt, In, Like/ILike, IsNull, Or, …). Filter and Where are
-// ANDed together; columns are validated against the entity (an unknown
-// column is rejected, which is also the injection guard).
+// ListQuery selects, filters, orders and paginates an entity's rows. The
+// filter is a single structured, engine-neutral mechanism: Where is a list
+// of conditions, ANDed, built with Eq, Ne, Gt/Lt, In, Like/ILike, IsNull,
+// Or, … (and Eqs for the pure-equality case). Columns are validated against
+// the entity — an unknown column is rejected, which is also the injection
+// guard. Reads the structured filter cannot express drop to raw Query.
 type ListQuery struct {
-	// Filter: column = value, ANDed. Equivalent to a Where of Eq's; kept
-	// for the common case.
-	Filter map[string]any
-	// Where: operator conditions, ANDed (and ANDed with Filter).
+	// Where: conditions ANDed together. Use the constructors; Eqs(map)
+	// is the terse equality shorthand.
 	Where []Cond
 	// OrderBy: a column, optionally suffixed " DESC". Empty orders by id.
 	OrderBy string
