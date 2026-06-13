@@ -309,6 +309,81 @@ func TestPG_ListFilterLimitOrder(t *testing.T) {
 	}
 }
 
+// TestPG_ListRichFilter exercises the structured operator filter against
+// real Postgres: LIKE/ILIKE, IN/NOT IN, comparisons, OR groups, and
+// Filter+Where combined — all engine-neutral, all column-validated.
+func TestPG_ListRichFilter(t *testing.T) {
+	h := newHarness(t)
+	ctx := tctx(t, "acme")
+
+	site, err := h.X.Exec(ctx, command.Command{Entity: "site", Op: command.OpCreate, Payload: &domain.Site{Name: "S"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(name, kind, siteID string) string {
+		res, err := h.X.Exec(ctx, command.Command{Entity: "asset", Op: command.OpCreate,
+			Payload: &domain.Asset{Name: name, Kind: kind, SiteID: siteID}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.AggID
+	}
+	pumpA := mk("Main Pump", "pump", site.AggID)
+	mk("Backup Pump", "pump", site.AggID)
+	mk("Inlet Valve", "valve", site.AggID)
+	mk("Spare Motor", "motor", "")
+
+	names := func(q query.ListQuery) []string {
+		var got []*domain.Asset
+		if err := h.A.List(ctx, "asset", q, &got); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		out := make([]string, len(got))
+		for i, a := range got {
+			out[i] = a.Name
+		}
+		return out
+	}
+
+	if n := names(query.ListQuery{Where: []query.Cond{query.Like("name", "%Pump")}, OrderBy: "name"}); len(n) != 2 || n[0] != "Backup Pump" || n[1] != "Main Pump" {
+		t.Fatalf("LIKE = %v", n)
+	}
+	if n := names(query.ListQuery{Where: []query.Cond{query.ILike("name", "%pump")}}); len(n) != 2 {
+		t.Fatalf("ILIKE = %v", n)
+	}
+	if n := names(query.ListQuery{Where: []query.Cond{query.In("kind", []string{"valve", "motor"})}, OrderBy: "name"}); len(n) != 2 || n[0] != "Inlet Valve" || n[1] != "Spare Motor" {
+		t.Fatalf("IN = %v", n)
+	}
+	if n := names(query.ListQuery{Where: []query.Cond{query.NotIn("kind", []string{"pump"})}, OrderBy: "name"}); len(n) != 2 || n[0] != "Inlet Valve" {
+		t.Fatalf("NOT IN = %v", n)
+	}
+	// OR group + equality Filter, combined.
+	if n := names(query.ListQuery{
+		Filter: map[string]any{"site_id": site.AggID},
+		Where:  []query.Cond{query.Or(query.Eq("kind", "valve"), query.Like("name", "Main%"))},
+		OrderBy: "name",
+	}); len(n) != 2 || n[0] != "Inlet Valve" || n[1] != "Main Pump" {
+		t.Fatalf("OR + Filter = %v", n)
+	}
+
+	// Comparison: bump one asset's version and select version > 1.
+	for i := 0; i < 2; i++ {
+		if _, err := h.X.Exec(ctx, command.Command{Entity: "asset", Op: command.OpUpdate, AggID: pumpA,
+			Payload: &domain.Asset{Name: "Main Pump", Kind: "pump", SiteID: site.AggID}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := names(query.ListQuery{Where: []query.Cond{query.Gt("version", 1)}}); len(n) != 1 || n[0] != "Main Pump" {
+		t.Fatalf("version > 1 = %v", n)
+	}
+
+	// Validation still guards structured filters.
+	var sink []*domain.Asset
+	if err := h.A.List(ctx, "asset", query.ListQuery{Where: []query.Cond{query.Eq("nope", "x")}}, &sink); err == nil {
+		t.Fatal("unknown structured-filter column must be rejected")
+	}
+}
+
 func TestPG_TimescaleBulkWriteAndRange(t *testing.T) {
 	h := newHarness(t)
 	ctx := tctx(t, "acme")

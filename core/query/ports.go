@@ -53,19 +53,32 @@ type RelationalQuerier interface {
 	// rows are skipped.
 	GetMany(ctx context.Context, entity string, ids []string, into any) error
 
-	// List pages through an entity's rows.
+	// List pages through an entity's rows with a structured, engine-neutral
+	// filter (Where/Filter), ordering and pagination. The filter covers
+	// grove's builder expressiveness — operators, IN, LIKE, null checks,
+	// OR groups — without leaking engine types; reads it cannot express
+	// drop to the raw Query escape hatch.
 	List(ctx context.Context, entity string, q ListQuery, into any) error
 
 	// Query is the raw SQL escape hatch (still tenant-guarded). Use it for
-	// reads grove's builders cannot express; writes belong to Exec.
+	// reads the structured filter cannot express; writes belong to Exec.
 	Query(ctx context.Context, into any, sql string, args ...any) error
 }
 
-// ListQuery is deliberately small: list pages, equality filters, one order
-// column. Anything richer is raw SQL or a projection query.
+// ListQuery selects, filters, orders and paginates an entity's rows. Its
+// filter is structured and engine-neutral: Filter is the equality
+// shorthand, Where is the operator-capable form (build conditions with
+// Eq, Ne, Gt/Lt, In, Like/ILike, IsNull, Or, …). Filter and Where are
+// ANDed together; columns are validated against the entity (an unknown
+// column is rejected, which is also the injection guard).
 type ListQuery struct {
-	Filter  map[string]any // column = value, ANDed
-	OrderBy string         // column name, optionally " DESC"
+	// Filter: column = value, ANDed. Equivalent to a Where of Eq's; kept
+	// for the common case.
+	Filter map[string]any
+	// Where: operator conditions, ANDed (and ANDed with Filter).
+	Where []Cond
+	// OrderBy: a column, optionally suffixed " DESC". Empty orders by id.
+	OrderBy string
 	Limit   int
 	Offset  int
 }

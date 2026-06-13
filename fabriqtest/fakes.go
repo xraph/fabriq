@@ -269,24 +269,54 @@ func (r *FakeRelational) List(ctx context.Context, entity string, q query.ListQu
 		return err
 	}
 
+	if err := query.ValidateConds(q.Where, ent.Binding.HasColumn); err != nil {
+		return err
+	}
+
 	r.db.mu.RLock()
 	rows := r.db.rows[tid][entity]
 	ids := make([]string, 0, len(rows))
 	for id, row := range rows {
 		match := true
 		for col, want := range q.Filter {
-			if !reflect.DeepEqual(row.vals[col], want) {
+			if !valuesEqual(row.vals[col], want) {
 				match = false
 				break
 			}
 		}
 		if match {
+			ok, evErr := evalConds(row.vals, q.Where)
+			if evErr != nil {
+				r.db.mu.RUnlock()
+				return evErr
+			}
+			match = ok
+		}
+		if match {
 			ids = append(ids, id)
 		}
 	}
+	// Order by the requested column (ties and the default break by id) so
+	// the fake mirrors the adapter's deterministic ordering.
+	orderCol, desc := parseOrderBy(q.OrderBy)
+	if orderCol != "" && !ent.Binding.HasColumn(orderCol) {
+		r.db.mu.RUnlock()
+		return fmt.Errorf("fabriq: entity %q has no order column %q", entity, orderCol)
+	}
+	sort.SliceStable(ids, func(i, j int) bool {
+		if orderCol != "" {
+			cmp, ok := compareVals(rows[ids[i]].vals[orderCol], rows[ids[j]].vals[orderCol])
+			if ok && cmp != 0 {
+				if desc {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+		}
+		return ids[i] < ids[j]
+	})
 	r.db.mu.RUnlock()
 
-	sort.Strings(ids)
 	if q.Offset > 0 {
 		if q.Offset >= len(ids) {
 			return nil
