@@ -56,7 +56,7 @@ func (e *workerExtension) reconcileAll(ctx context.Context) {
 	if stores == nil {
 		return
 	}
-	tenants, err := stores.Postgres.ProjectionState().Tenants(ctx)
+	tenants, err := stores.AllTenants(ctx) // union across shards; reconcilers route per tenant
 	if err != nil {
 		return
 	}

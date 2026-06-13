@@ -47,13 +47,19 @@ func pollGauges(ctx context.Context, stores *fabriq.Stores, m *metrics.Metrics, 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			row := stores.Postgres.Driver().QueryRow(ctx,
-				`SELECT count(*) FROM fabriq_outbox WHERE published_at IS NULL`)
-			var backlog int64
-			if err := row.Scan(&backlog); err == nil {
-				m.OutboxBacklog.Set(float64(backlog))
+			// Outbox backlog and backstop trips sum across every shard.
+			var backlog, trips int64
+			for _, sp := range stores.ShardPGs() {
+				row := sp.PG.Driver().QueryRow(ctx,
+					`SELECT count(*) FROM fabriq_outbox WHERE published_at IS NULL`)
+				var n int64
+				if err := row.Scan(&n); err == nil {
+					backlog += n
+				}
+				trips += sp.PG.BackstopTrips()
 			}
-			if trips := stores.Postgres.BackstopTrips(); trips > lastTrips {
+			m.OutboxBacklog.Set(float64(backlog))
+			if trips > lastTrips {
 				m.TenantHookTrips.Add(float64(trips - lastTrips))
 				lastTrips = trips
 			}

@@ -3,7 +3,7 @@ title: Configuration
 description: Configure Fabriq in library code with the Config struct and functional options, or via the environment variables the binary reads.
 ---
 
-Fabriq takes its configuration two ways: library code passes a `fabriq.Config` value (plus functional `Option`s) to `fabriq.Open`, and the `fabriq` binary reads the same shape from environment variables. This page is task-oriented — the exhaustive field-by-field reference lives at [Reference: Configuration](/docs/reference/configuration).
+Fabriq takes its configuration two ways: library code passes a `fabriq.Config` value (plus functional `Option`s) to `fabriq.Open`, and the `fabriq` binary loads the same shape through Forge's config manager — a `config.yaml` file plus `FABRIQ_*` environment overrides. This page is task-oriented — the exhaustive field-by-field reference lives at [Reference: Configuration](/docs/reference/configuration).
 
 ## The Config shape
 
@@ -34,7 +34,7 @@ type SubscriptionsConfig struct {
 
 ### Library vs binary
 
-<Tabs items={['Library (Go)', 'Binary (env)']}>
+<Tabs items={['Library (Go)', 'Binary (env)', 'Binary (config.yaml)']}>
 <Tab value="Library (Go)">
 
 ```go
@@ -71,7 +71,33 @@ export FABRIQ_HTTP_ADDR=":8081"
 fabriq serve
 ```
 
-The binary builds the equivalent `Config` from these variables in its `setup` path. Subscription-plane knobs and projection toggles are not env-driven in the binary today — tune them in library wiring when embedding the facade.
+The binary loads its `Config` through Forge's config manager: it auto-discovers `config.yaml` (and `config.local.yaml`) in the working directory and `/etc/fabriq`, then overlays `FABRIQ_*` environment variables on top — **env wins over the file**. So a container can bake the static shape into `config.yaml` and inject endpoints and secrets via env. Every key maps to an env var under the `FABRIQ_` prefix with `_` joining nested keys, so `postgres.dsn` ↔ `FABRIQ_POSTGRES_DSN`, `redis.addr` ↔ `FABRIQ_REDIS_ADDR`, `elasticsearch.addrs` ↔ `FABRIQ_ELASTICSEARCH_ADDRS` (comma-separated).
+
+</Tab>
+<Tab value="Binary (config.yaml)">
+
+```yaml
+# config.yaml — discovered from the working directory or /etc/fabriq.
+postgres:
+  dsn: postgres://user:pass@pg:5432/fabriq?sslmode=require
+  pool_size: 16
+redis:
+  addr: redis:6379
+falkordb:
+  addr: falkordb:6379          # enables the graph projection
+elasticsearch:
+  addrs:
+    - https://es:9200          # enables the search projection
+projections:
+  graph: true
+  search: true
+subscriptions:
+  conflation_window: 150ms
+  stream_max_len: 1024
+  subscribe_buffer: 64
+```
+
+Unlike the env path, `config.yaml` can set the subscription-plane knobs and projection toggles directly. A starter file ships at [`config.example.yaml`](https://github.com/xraph/fabriq/blob/main/config.example.yaml). The operator commands (`migrate`, `inspect`, `rebuild`, `reconcile`) still take their connection from `--dsn`/`FABRIQ_*` rather than the config file — only `serve` reads the full config.
 
 </Tab>
 </Tabs>
@@ -128,7 +154,7 @@ func (c Config) Options() []Option {
 
 ## Environment variables
 
-The `fabriq` binary reads these. `--dsn` is a global flag that overrides `FABRIQ_POSTGRES_DSN` for ad-hoc operator commands.
+Forge's config manager reads these, overlaying them on any `config.yaml` (env wins). `--dsn` is a global flag that overrides `FABRIQ_POSTGRES_DSN` for ad-hoc operator commands.
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |

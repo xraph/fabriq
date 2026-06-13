@@ -1,0 +1,56 @@
+# fabriq — example configuration
+#
+# The `fabriq` binary loads this file through forge's config manager. By
+# default it auto-discovers `config.yaml` (and `config.local.yaml` for local
+# overrides) in the working directory and /etc/fabriq, then overlays
+# environment variables on top — env wins over the file.
+#
+# Every key maps to a FABRIQ_* environment variable (prefix FABRIQ_, nested
+# keys joined by _): postgres.dsn -> FABRIQ_POSTGRES_DSN,
+# redis.addr -> FABRIQ_REDIS_ADDR, elasticsearch.addrs ->
+# FABRIQ_ELASTICSEARCH_ADDRS (comma-separated), and so on. So a container can
+# ship this file for the static shape and inject secrets/endpoints via env.
+#
+# Copy to config.yaml and edit, or rely entirely on FABRIQ_* env.
+
+# Postgres — the source of truth (required, unless `shards` is set).
+postgres:
+  dsn: "postgres://fabriq_app:CHANGE_ME@localhost:5432/fabriq?sslmode=require"
+  pool_size: 16
+
+# Sharded source of truth (ADR 0007). When set, tenants route across these
+# and `postgres` above is ignored; leave empty for a single-database deploy.
+# shards:
+#   - id: "shard-a"
+#     dsn: "postgres://fabriq_app:...@pg-a:5432/fabriq?sslmode=require"
+#   - id: "shard-b"
+#     dsn: "postgres://fabriq_app:...@pg-b:5432/fabriq?sslmode=require"
+
+# Redis — event fan-out (required for the relay, projections, subscriptions).
+redis:
+  addr: "localhost:6379"
+  # db: 0
+  # username: ""
+  # password: ""
+
+# FalkorDB — graph projection engine (optional; enables the graph plane).
+falkordb:
+  addr: ""
+
+# Elasticsearch — search projection engine (optional; enables the search plane).
+elasticsearch:
+  addrs: []
+  # addrs:
+  #   - "https://localhost:9200"
+
+# Projection planes. The worker runs a plane whenever its engine address is
+# present above; these toggles document intent.
+projections:
+  graph: false
+  search: false
+
+# Subscription / delta-plane tuning (optional; sensible defaults apply).
+subscriptions:
+  conflation_window: 150ms
+  stream_max_len: 1024
+  subscribe_buffer: 64

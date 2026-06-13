@@ -27,12 +27,10 @@ package main
 
 import (
 	"os"
-	"strings"
 
 	"github.com/xraph/forge"
 	"github.com/xraph/forge/cli"
 
-	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/domain"
 )
@@ -72,21 +70,24 @@ func setup(ctx cli.CommandContext) (forge.App, error) {
 		addr = ":8081"
 	}
 
-	cfg := fabriq.Config{
-		Postgres: fabriq.PostgresConfig{DSN: dsnFromEnvOrFlag(ctx)},
-		Redis:    fabriq.RedisConfig{Addr: os.Getenv("FABRIQ_REDIS_ADDR")},
-		FalkorDB: fabriq.FalkorDBConfig{Addr: os.Getenv("FABRIQ_FALKORDB_ADDR")},
-	}
-	if es := os.Getenv("FABRIQ_ELASTICSEARCH_ADDRS"); es != "" {
-		cfg.Elasticsearch.Addrs = strings.Split(es, ",")
-	}
-
+	// Forge loads the datastore config: it auto-discovers config.yaml (+
+	// config.local.yaml) from the search paths and overlays FABRIQ_*
+	// environment variables (env wins). EnvPrefix is pinned to FABRIQ_
+	// rather than derived from the app name (which would yield
+	// FABRIQ-WORKER_) so the documented FABRIQ_POSTGRES_DSN-style contract —
+	// and the Helm chart that injects it — keeps working. The worker
+	// extension reads the resulting config from app.Config() in Start.
 	app := forge.NewApp(forge.AppConfig{
-		Name:        "fabriq-worker",
-		Version:     "0.1.0",
-		HTTPAddress: addr,
+		Name:                      "fabriq-worker",
+		Version:                   "0.1.0",
+		HTTPAddress:               addr,
+		EnableConfigAutoDiscovery: true,
+		EnableEnvConfig:           true,
+		EnvOverridesFile:          true,
+		EnvPrefix:                 "FABRIQ_",
+		ConfigSearchPaths:         []string{".", "/etc/fabriq"},
 	})
-	if err := app.RegisterExtension(newWorkerExtension(reg, cfg)); err != nil {
+	if err := app.RegisterExtension(newWorkerExtension(reg)); err != nil {
 		return nil, err
 	}
 	return app, nil
