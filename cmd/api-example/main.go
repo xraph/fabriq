@@ -57,7 +57,11 @@ func main() {
 		HTTPAddress: addr,
 	})
 
-	srv := &server{fabric: f, auth: newAuthenticator([]byte(secret))}
+	assets, err := fabriq.RepoFor[domain.Asset](f)
+	if err != nil {
+		log.Fatalf("api-example: %v", err)
+	}
+	srv := &server{fabric: f, auth: newAuthenticator([]byte(secret)), assets: assets}
 	srv.routes(app.Router())
 
 	runErr := app.Run()

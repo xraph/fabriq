@@ -64,7 +64,11 @@ func bootAPI(t *testing.T) *server {
 	t.Cleanup(stop)
 	go func() { _ = elector.Run(runCtx, relay.Run) }()
 
-	return &server{fabric: f, auth: newAuthenticator([]byte(testSecret))}
+	assets, err := fabriq.RepoFor[domain.Asset](f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &server{fabric: f, auth: newAuthenticator([]byte(testSecret)), assets: assets}
 }
 
 func token(t *testing.T, tenantID string) string {

@@ -89,6 +89,20 @@ func New(reg *registry.Registry, ports Ports, opts ...Option) (*Fabriq, error) {
 // Registry exposes the schema registry (read-only use).
 func (f *Fabriq) Registry() *registry.Registry { return f.reg }
 
+// RepoFor returns a type-safe repository over the entity whose grove model
+// is T — the typed counterpart to f.Relational(). The entity is resolved
+// from T (no string), and reads return *T / []*T:
+//
+//	repo, _ := fabriq.RepoFor[domain.Asset](f)
+//	asset, err := repo.Get(ctx, id)          // *domain.Asset
+//	pump, err := repo.One(ctx, query.ListQuery{Where: []query.Cond{query.Eq("serial", sn)}})
+//
+// It is a free function, not a method, because Go methods cannot introduce
+// type parameters.
+func RepoFor[T any](f *Fabriq) (*query.Repo[T], error) {
+	return query.For[T](f.reg, f.Relational())
+}
+
 // Upcasters exposes the registered payload upcaster chain (nil when none)
 // — the worker hands it to projection engines.
 func (f *Fabriq) Upcasters() *event.UpcasterChain { return f.settings.upcasters }
