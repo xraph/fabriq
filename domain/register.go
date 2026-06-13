@@ -42,6 +42,16 @@ func RegisterAll(reg *registry.Registry) error {
 			Search:    registry.SearchSpec{Index: "tags", Fields: []string{"name", "unit"}},
 			Subscribe: []registry.Scope{registry.ByID, registry.ByField("asset", "asset_id"), registry.ByTenant},
 		},
+		{
+			Name:  "link",
+			Kind:  registry.KindAggregate,
+			Model: (*Link)(nil),
+			GraphEdge: &registry.GraphEdgeSpec{
+				TypeField: "kind", SourceField: "source_id", TargetField: "target_id",
+				SourceLabel: "Asset", TargetLabel: "Asset", PropFields: []string{"note"},
+			},
+			Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},
+		},
 	}...)
 	specs = append(specs, registry.EntitySpec{
 		Name:  "page",
