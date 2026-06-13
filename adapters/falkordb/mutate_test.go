@@ -212,6 +212,48 @@ func TestCypherFor_NodeUpsertRejectsBadExtraLabel(t *testing.T) {
 	}
 }
 
+func TestCypherFor_RelUpsert(t *testing.T) {
+	cy, params, err := cypherFor(projection.RelUpsert{
+		ID: "e1", Type: "SIMILAR", FromLabel: "Node", FromID: "a", ToLabel: "Node", ToID: "b",
+		Props: map[string]any{"confidence": "0.9"}, Version: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cy, "MERGE (from)-[r:SIMILAR {id: $rel_id}]->(to)") {
+		t.Fatalf("must MERGE the specific relationship keyed on id:\n%s", cy)
+	}
+	if !strings.Contains(cy, "r.confidence = $p_confidence") {
+		t.Fatalf("must set rel props:\n%s", cy)
+	}
+	if params["rel_id"] != "e1" {
+		t.Fatalf("rel_id param = %v", params["rel_id"])
+	}
+	if !strings.Contains(cy, "WHERE coalesce(r.version, 0) <= $version") {
+		t.Fatalf("RelUpsert must version-gate the relationship:\n%s", cy)
+	}
+}
+
+func TestCypherFor_RelUpsertRejectsBadType(t *testing.T) {
+	_, _, err := cypherFor(projection.RelUpsert{ID: "e1", Type: "bad-type", FromLabel: "Node", FromID: "a", ToLabel: "Node", ToID: "b", Version: 1})
+	if err == nil {
+		t.Fatal("invalid rel type must error")
+	}
+}
+
+func TestCypherFor_RelDelete(t *testing.T) {
+	cy, params, err := cypherFor(projection.RelDelete{ID: "e1", Version: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cy, "[r {id: $rel_id}]") || !strings.Contains(cy, "DELETE r") {
+		t.Fatalf("must delete the relationship by id:\n%s", cy)
+	}
+	if params["rel_id"] != "e1" {
+		t.Fatalf("rel_id param = %v", params["rel_id"])
+	}
+}
+
 func BenchmarkCypherFor_NodeUpsert(b *testing.B) {
 	mut := projection.NodeUpsert{
 		Label: "Asset", ID: "A1",
