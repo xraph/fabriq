@@ -68,9 +68,35 @@ type DocDeindex struct {
 	Version int64
 }
 
+// RelUpsert creates or refreshes ONE specific relationship of a reified-edge
+// entity, identified by its own id (stored as r.id). Unlike EdgeUpsert
+// (foreign-key semantics) it does not prune sibling edges and carries scalar
+// properties. Endpoints are merged by id under their identity labels.
+type RelUpsert struct {
+	ID        string
+	Type      string
+	FromLabel string
+	FromID    string
+	ToLabel   string
+	ToID      string
+	Props     map[string]any
+	Version   int64
+}
+
+// RelDelete removes the relationship whose r.id matches ID. Keyed on id alone
+// so payload-less delete events (which still carry AggID) can address it. A
+// bare {id}-only relationship left by a stale/out-of-order upsert that missed
+// its SET is also correctly swept.
+type RelDelete struct {
+	ID      string
+	Version int64
+}
+
 func (NodeUpsert) isMutation() {}
 func (EdgeUpsert) isMutation() {}
 func (NodeDelete) isMutation() {}
 func (EdgeDelete) isMutation() {}
 func (DocIndex) isMutation()   {}
 func (DocDeindex) isMutation() {}
+func (RelUpsert) isMutation()  {}
+func (RelDelete) isMutation()  {}

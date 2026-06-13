@@ -100,6 +100,37 @@ WHERE coalesce(from.version, 0) <= $version
 DELETE r`, mut.FromLabel, mut.Rel)
 		return cy, map[string]any{"from_id": mut.FromID, "version": mut.Version}, nil
 
+	case projection.RelUpsert:
+		if !validIdent(mut.Type) || !validIdent(mut.FromLabel) || !validIdent(mut.ToLabel) {
+			return "", nil, fmt.Errorf("fabriq: invalid rel identifiers %q/%q/%q", mut.Type, mut.FromLabel, mut.ToLabel)
+		}
+		params = map[string]any{"rel_id": mut.ID, "from_id": mut.FromID, "to_id": mut.ToID, "version": mut.Version}
+		keys := make([]string, 0, len(mut.Props))
+		for k := range mut.Props {
+			if validIdent(k) && k != "id" && k != "version" {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		sets := []string{"r.version = $version"}
+		for _, k := range keys {
+			params["p_"+k] = mut.Props[k]
+			sets = append(sets, fmt.Sprintf("r.%s = $p_%s", k, k))
+		}
+		cy := fmt.Sprintf(`MERGE (from:%[1]s {id: $from_id})
+MERGE (to:%[3]s {id: $to_id})
+MERGE (from)-[r:%[2]s {id: $rel_id}]->(to)
+WITH r
+WHERE coalesce(r.version, 0) <= $version
+SET %[4]s`, mut.FromLabel, mut.Type, mut.ToLabel, strings.Join(sets, ", "))
+		return cy, params, nil
+
+	case projection.RelDelete:
+		cy := `MATCH ()-[r {id: $rel_id}]->()
+WHERE coalesce(r.version, 0) <= $version
+DELETE r`
+		return cy, map[string]any{"rel_id": mut.ID, "version": mut.Version}, nil
+
 	default:
 		return "", nil, fmt.Errorf("fabriq: mutation %T is not a graph mutation", m)
 	}
