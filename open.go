@@ -3,6 +3,7 @@ package fabriq
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -37,27 +38,59 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		return nil, nil, err
 	}
 
-	pg, err := postgres.Open(ctx, cfg.Postgres.DSN, reg,
-		postgres.WithPoolSize(cfg.Postgres.PoolSize),
-		postgres.WithGuardedTables(cfg.guardedTables()...),
-	)
-	if err != nil {
-		return nil, nil, err
+	// Dial the source-of-truth shard(s). Config.Shards routes tenants across
+	// several Postgres databases (ADR 0007); a bare Postgres.DSN is the
+	// degenerate one-shard deployment. The facade ports route through the
+	// resulting shard.Set, so call sites are identical for 1 or N shards.
+	shardCfgs := cfg.Shards
+	if len(shardCfgs) == 0 {
+		shardCfgs = []ShardConfig{{ID: "0", DSN: cfg.Postgres.DSN, PoolSize: cfg.Postgres.PoolSize}}
+	}
+	shardPG := make(map[string]*postgres.Adapter, len(shardCfgs))
+	closeDialed := func() {
+		for _, a := range shardPG {
+			_ = a.Close()
+		}
+	}
+	ids := make([]string, 0, len(shardCfgs))
+	shardList := make([]shard.Shard, 0, len(shardCfgs))
+	for _, sc := range shardCfgs {
+		a, oerr := postgres.Open(ctx, sc.DSN, reg,
+			postgres.WithPoolSize(sc.PoolSize),
+			postgres.WithGuardedTables(cfg.guardedTables()...),
+		)
+		if oerr != nil {
+			closeDialed()
+			return nil, nil, oerr
+		}
+		shardPG[sc.ID] = a
+		ids = append(ids, sc.ID)
+		shardList = append(shardList, shard.Shard{ID: sc.ID, Store: a, Relational: a, Vector: a, Timeseries: a})
+	}
+	sort.Strings(ids)
+	pg := shardPG[ids[0]] // primary: health, migrations CLI, document plane
+
+	var set *shard.Set
+	if len(shardList) == 1 {
+		set = shard.Single(shardList[0])
+	} else {
+		var serr error
+		set, serr = shard.New(shard.Cached(shard.HashDirectory(ids...), 30*time.Second), shardList...)
+		if serr != nil {
+			closeDialed()
+			return nil, nil, serr
+		}
 	}
 
-	// Source-of-truth ports route through a shard.Set. Single-Postgres
-	// deployments use the degenerate one-shard set, so routing is a no-op
-	// (ADR 0007); multi-shard Open will hand New() a directory + N shards
-	// without touching the facade or call sites.
-	shards := shard.Single(shard.Shard{ID: "0", Store: pg, Relational: pg, Vector: pg, Timeseries: pg})
-	stores := &Stores{Postgres: pg, Shards: shards}
+	stores := &Stores{Postgres: pg, Shards: set, shardPG: shardPG}
+	stores.state = routingState{stores: stores}
 	ports := Ports{
-		Store:           shard.NewStore(shards),
-		Relational:      shard.NewRelational(shards),
-		Timeseries:      shard.NewTimeseries(shards),
-		Vector:          shard.NewVector(shards),
+		Store:           shard.NewStore(set),
+		Relational:      shard.NewRelational(set),
+		Timeseries:      shard.NewTimeseries(set),
+		Vector:          shard.NewVector(set),
 		Documents:       pg.Documents(),
-		ProjectionState: pg.ProjectionState(),
+		ProjectionState: stores.state,
 	}
 
 	allOpts := append(cfg.Options(), opts...)
@@ -68,19 +101,23 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			Username: cfg.Redis.Username, Password: cfg.Redis.Password,
 		}, redis.WithChannelMaxLen(cfg.Subscriptions.StreamMaxLen))
 		if rerr != nil {
-			_ = pg.Close()
+			closeDialed()
 			return nil, nil, rerr
 		}
 		stores.Redis = rd
 		allOpts = append(allOpts, withTailer(rd))
-		// With a transport available, document updates fan out live.
+		// With a transport available, document updates fan out live. The
+		// document plane stays on the primary shard (ADR 0007 step 2).
 		ports.Documents = &syncingDocStore{DocStore: pg.Documents(), pub: rd, reg: reg}
 	}
 
 	if cfg.FalkorDB.Addr != "" {
+		// Graph hydration (TraverseAndHydrate) routes by tenant, so it reads
+		// each tenant's rows from its own shard; the live-target resolver
+		// reads projection_state from the tenant's shard too.
 		fk, ferr := falkordb.Open(ctx, falkordb.Config{
 			Addr: cfg.FalkorDB.Addr, Username: cfg.FalkorDB.Username, Password: cfg.FalkorDB.Password,
-		}, reg, pg, falkordb.WithLiveTargetResolver(liveGraphResolver(pg.ProjectionState())))
+		}, reg, ports.Relational, falkordb.WithLiveTargetResolver(liveGraphResolver(stores.state)))
 		if ferr != nil {
 			_ = stores.Close()
 			return nil, nil, ferr
@@ -92,7 +129,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 	if len(cfg.Elasticsearch.Addrs) > 0 {
 		es, eerr := elastic.Open(ctx, elastic.Config{
 			Addrs: cfg.Elasticsearch.Addrs, Username: cfg.Elasticsearch.Username, Password: cfg.Elasticsearch.Password,
-		}, reg, elastic.WithModelVersionResolver(liveSearchModelVersion(pg.ProjectionState())))
+		}, reg, elastic.WithModelVersionResolver(liveSearchModelVersion(stores.state)))
 		if eerr != nil {
 			_ = stores.Close()
 			return nil, nil, eerr
@@ -116,18 +153,28 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 // Stores exposes the opened adapters for worker-plane wiring (relay,
 // electors, projection consumers) and shutdown.
 type Stores struct {
+	// Postgres is the PRIMARY shard: health checks, the migrations CLI, and
+	// the document plane (which stays single-shard in step 2) use it. For
+	// per-tenant work use Shards / ShardPGs.
 	Postgres *postgres.Adapter
 	Redis    *redis.Adapter
 	Falkor   *falkordb.Adapter
 	Elastic  *elastic.Adapter
 	// Shards is the tenant -> source-of-truth routing table backing the
-	// facade's relational/command/vector/timeseries ports. Single-shard
-	// today (ADR 0007); the worker plane will start a per-shard relay and
-	// reconciler over Shards.All() once multi-shard Open lands.
+	// facade's relational/command/vector/timeseries ports (ADR 0007).
 	Shards *shard.Set
+
+	// shardPG is the concrete per-shard adapter behind each Shards id, for
+	// the worker plane (per-shard relay, tenant-routed reconcile/snapshot).
+	shardPG map[string]*postgres.Adapter
+	// state is the tenant-routed projection bookkeeping the engines,
+	// rebuilder and WaitForProjection read through. The concrete type
+	// satisfies StateReader, StateRepo AND AppliedRecorder, which the
+	// various consumers each require a different subset of.
+	state routingState
 }
 
-// Close releases every opened adapter.
+// Close releases every opened adapter (every shard, plus the projections).
 func (s *Stores) Close() error {
 	var firstErr error
 	if s.Falkor != nil {
@@ -140,7 +187,12 @@ func (s *Stores) Close() error {
 			firstErr = err
 		}
 	}
-	if s.Postgres != nil {
+	for _, a := range s.shardPG {
+		if err := a.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if len(s.shardPG) == 0 && s.Postgres != nil {
 		if err := s.Postgres.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -152,7 +204,7 @@ func (s *Stores) Close() error {
 // the engines consult state per consumed EVENT, which must not cost a
 // Postgres round-trip each. 2s staleness only widens the dual-apply
 // window at a rebuild's edges; version gating keeps that safe.
-func cachedState(repo *postgres.StateRepo, proj string) func(ctx context.Context, tenantID string) (projection.State, error) {
+func cachedState(repo projection.StateRepo, proj string) func(ctx context.Context, tenantID string) (projection.State, error) {
 	type entry struct {
 		st  projection.State
 		exp time.Time
@@ -187,7 +239,7 @@ func (s *Stores) GraphEngine(reg *registry.Registry, upcasters *event.UpcasterCh
 	if s.Redis == nil || s.Falkor == nil || s.Postgres == nil {
 		return nil, fmt.Errorf("fabriq: graph engine needs postgres, redis and falkordb configured")
 	}
-	repo := s.Postgres.ProjectionState()
+	repo := s.state
 	stateFor := cachedState(repo, "graph")
 	return &projection.Engine{
 		Projection: "graph",
@@ -219,10 +271,10 @@ func (s *Stores) GraphRebuilder(reg *registry.Registry) (*projection.Rebuilder, 
 	}
 	return &projection.Rebuilder{
 		Projection: "graph",
-		State:      s.Postgres.ProjectionState(),
+		State:      s.state,
 		Sink:       s.Falkor,
 		Applier:    projection.GraphApplier(reg),
-		Snapshot:   s.Postgres,
+		Snapshot:   routingSnapshot{stores: s},
 		TargetName: registry.GraphNameVersioned,
 	}, nil
 }
@@ -234,7 +286,7 @@ func (s *Stores) SearchEngine(reg *registry.Registry, upcasters *event.UpcasterC
 	if s.Redis == nil || s.Elastic == nil || s.Postgres == nil {
 		return nil, fmt.Errorf("fabriq: search engine needs postgres, redis and elasticsearch configured")
 	}
-	repo := s.Postgres.ProjectionState()
+	repo := s.state
 	stateFor := cachedState(repo, "search")
 	return &projection.Engine{
 		Projection: "search",
@@ -265,10 +317,10 @@ func (s *Stores) SearchRebuilder(reg *registry.Registry) (*projection.Rebuilder,
 	}
 	return &projection.Rebuilder{
 		Projection: "search",
-		State:      s.Postgres.ProjectionState(),
+		State:      s.state,
 		Sink:       s.Elastic,
 		Applier:    projection.SearchApplier(reg),
-		Snapshot:   s.Postgres,
+		Snapshot:   routingSnapshot{stores: s},
 		TargetName: elastic.SearchTargetName,
 		OnFlip:     s.Elastic.FlipAliases,
 	}, nil
@@ -284,9 +336,9 @@ func (s *Stores) GraphReconciler(reg *registry.Registry) (*projection.Reconciler
 		Projection: "graph",
 		Registry:   reg,
 		Include:    func(ent *registry.Entity) bool { return ent.Spec.GraphNode != "" },
-		Truth:      s.Postgres.AggregateVersions,
+		Truth:      s.truthVersions, // tenant-routed to the owning shard
 		Projected:  s.Falkor.AggregateVersions,
-		Repair:     s.Postgres.Repair,
+		Repair:     s.repair, // synthetic event lands on the tenant's shard outbox
 	}, nil
 }
 
@@ -300,16 +352,16 @@ func (s *Stores) SearchReconciler(reg *registry.Registry) (*projection.Reconcile
 		Projection: "search",
 		Registry:   reg,
 		Include:    func(ent *registry.Entity) bool { return ent.Spec.Search.Index != "" },
-		Truth:      s.Postgres.AggregateVersions,
+		Truth:      s.truthVersions, // tenant-routed to the owning shard
 		Projected:  s.Elastic.AggregateVersions,
-		Repair:     s.Postgres.Repair,
+		Repair:     s.repair, // synthetic event lands on the tenant's shard outbox
 	}, nil
 }
 
 // liveSearchModelVersion resolves the live search model version through
 // projection_state, with a small TTL cache (same pattern as the graph
 // resolver).
-func liveSearchModelVersion(repo *postgres.StateRepo) elastic.ModelVersionResolver {
+func liveSearchModelVersion(repo projection.StateRepo) elastic.ModelVersionResolver {
 	type entry struct {
 		version int
 		exp     time.Time
@@ -344,7 +396,7 @@ func liveSearchModelVersion(repo *postgres.StateRepo) elastic.ModelVersionResolv
 // liveGraphResolver resolves a tenant's live graph through
 // projection_state (blue-green pointer), with a small TTL cache so graph
 // reads don't pay a Postgres round-trip each.
-func liveGraphResolver(repo *postgres.StateRepo) falkordb.TargetResolver {
+func liveGraphResolver(repo projection.StateRepo) falkordb.TargetResolver {
 	type entry struct {
 		name string
 		exp  time.Time

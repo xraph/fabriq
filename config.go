@@ -11,6 +11,7 @@ import (
 // configured here — they are registered in code via the registry.
 type Config struct {
 	Postgres      PostgresConfig      `yaml:"postgres" json:"postgres"`
+	Shards        []ShardConfig       `yaml:"shards" json:"shards"`
 	Redis         RedisConfig         `yaml:"redis" json:"redis"`
 	FalkorDB      FalkorDBConfig      `yaml:"falkordb" json:"falkordb"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
@@ -18,8 +19,20 @@ type Config struct {
 	Subscriptions SubscriptionsConfig `yaml:"subscriptions" json:"subscriptions"`
 }
 
-// PostgresConfig locates the source of truth (always required).
+// PostgresConfig locates the source of truth. Required unless Shards is set
+// (it is the one-shard shorthand).
 type PostgresConfig struct {
+	DSN      string `yaml:"dsn" json:"dsn"`
+	PoolSize int    `yaml:"pool_size" json:"pool_size"`
+}
+
+// ShardConfig locates one source-of-truth shard. When Config.Shards is
+// non-empty, tenants are routed across these by the directory (ADR 0007);
+// each shard should be its own Postgres database so its advisory-lock
+// leadership (relay) is independent. Leaving Shards empty and setting
+// Postgres is the degenerate one-shard deployment.
+type ShardConfig struct {
+	ID       string `yaml:"id" json:"id"`
 	DSN      string `yaml:"dsn" json:"dsn"`
 	PoolSize int    `yaml:"pool_size" json:"pool_size"`
 }
@@ -61,8 +74,22 @@ type SubscriptionsConfig struct {
 
 // Validate checks cross-field consistency. It does not dial anything.
 func (c Config) Validate() error {
-	if c.Postgres.DSN == "" {
-		return fmt.Errorf("fabriq: config: postgres.dsn is required (postgres is the source of truth)")
+	if len(c.Shards) > 0 {
+		seen := map[string]struct{}{}
+		for i, s := range c.Shards {
+			if s.ID == "" {
+				return fmt.Errorf("fabriq: config: shards[%d].id is required", i)
+			}
+			if s.DSN == "" {
+				return fmt.Errorf("fabriq: config: shards[%d].dsn is required (shard %q)", i, s.ID)
+			}
+			if _, dup := seen[s.ID]; dup {
+				return fmt.Errorf("fabriq: config: duplicate shard id %q", s.ID)
+			}
+			seen[s.ID] = struct{}{}
+		}
+	} else if c.Postgres.DSN == "" {
+		return fmt.Errorf("fabriq: config: postgres.dsn (or shards) is required (postgres is the source of truth)")
 	}
 	if c.Projections.Graph && c.FalkorDB.Addr == "" {
 		return fmt.Errorf("fabriq: config: projections.graph enabled but falkordb.addr is empty")
