@@ -24,6 +24,9 @@ const (
 	OpUpdate
 	// OpDelete removes the row; the deletion is still a versioned event.
 	OpDelete
+	// OpUpsert inserts when the aggregate is absent (version 1, "created")
+	// or updates when present (version+1, "updated"); idempotent by AggID.
+	OpUpsert
 )
 
 // Verb returns the event verb for the operation.
@@ -35,6 +38,8 @@ func (o Op) Verb() string {
 		return registry.VerbUpdated
 	case OpDelete:
 		return registry.VerbDeleted
+	case OpUpsert:
+		return "upsert" // error/log label only; the event verb is resolved at apply time
 	default:
 		return "unknown"
 	}
@@ -48,8 +53,8 @@ type Command struct {
 	// Op selects create/update/delete.
 	Op Op
 
-	// AggID identifies the aggregate. Required for update/delete; optional
-	// for create (a ULID is minted when empty).
+	// AggID identifies the aggregate. Required for update/delete/upsert;
+	// optional for create (a ULID is minted when empty).
 	AggID string
 
 	// Payload is the entity's grove model instance for create/update. The

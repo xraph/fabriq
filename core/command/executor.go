@@ -93,6 +93,19 @@ func (x *Executor) ExecBatch(ctx context.Context, cmds []Command) ([]Result, err
 	return results, nil
 }
 
+// resolveOp maps the command op and the stored version to the effective
+// write op and the event verb. OpUpsert becomes create (absent) or update
+// (present); every other op is unchanged.
+func resolveOp(op Op, current int64) (Op, string) {
+	if op == OpUpsert {
+		if current == 0 {
+			return OpCreate, registry.VerbCreated
+		}
+		return OpUpdate, registry.VerbUpdated
+	}
+	return op, op.Verb()
+}
+
 // apply runs one prepared command inside the transaction: version check,
 // row write, exactly one outbox envelope.
 func (x *Executor) apply(ctx context.Context, tx Tx, p *preparedCommand) (Result, error) {
@@ -104,13 +117,14 @@ func (x *Executor) apply(ctx context.Context, tx Tx, p *preparedCommand) (Result
 		return Result{}, vErr
 	}
 	next := current + 1
+	op, verb := resolveOp(p.cmd.Op, current)
 
 	vals := p.stampedValues(next)
-	if aErr := tx.ApplyChange(ctx, p.entity, p.cmd.Op, p.aggID, next, vals); aErr != nil {
+	if aErr := tx.ApplyChange(ctx, p.entity, op, p.aggID, next, vals); aErr != nil {
 		return Result{}, aErr
 	}
 
-	env, err := newEnvelope(p, next, vals, x.now(), x.traceparent(ctx))
+	env, err := newEnvelope(p, next, vals, verb, x.now(), x.traceparent(ctx))
 	if err != nil {
 		return Result{}, err
 	}

@@ -42,7 +42,7 @@ func (x *Executor) prepare(ctx context.Context, cmd Command) (*preparedCommand, 
 		if p.aggID == "" {
 			p.aggID = event.NewID()
 		}
-	case OpUpdate, OpDelete:
+	case OpUpdate, OpDelete, OpUpsert:
 		if p.aggID == "" {
 			return nil, fmt.Errorf("fabriq: %s requires AggID", cmd.Op.Verb())
 		}

@@ -427,6 +427,98 @@ func TestExec_TraceparentPropagates(t *testing.T) {
 	}
 }
 
+func TestExec_UpsertCreatesWhenAbsent(t *testing.T) {
+	store := newFakeStore()
+	x := newExecutor(t, store)
+	res, err := x.Exec(acmeCtx(t), command.Command{
+		Entity: "site", Op: command.OpUpsert, AggID: "01HSITEUPSERT000000000001",
+		Payload: &cmdSite{Name: "A"},
+	})
+	if err != nil {
+		t.Fatalf("upsert(absent): %v", err)
+	}
+	if res.Version != 1 {
+		t.Fatalf("Version = %d, want 1", res.Version)
+	}
+	if store.outbox[0].Type != "site.created" {
+		t.Fatalf("absent upsert must emit created, got %q", store.outbox[0].Type)
+	}
+}
+
+func TestExec_UpsertUpdatesWhenPresent(t *testing.T) {
+	store := newFakeStore()
+	x := newExecutor(t, store)
+	ctx := acmeCtx(t)
+	id := "01HSITEUPSERT000000000002"
+	if _, err := x.Exec(ctx, command.Command{Entity: "site", Op: command.OpUpsert, AggID: id, Payload: &cmdSite{Name: "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := x.Exec(ctx, command.Command{Entity: "site", Op: command.OpUpsert, AggID: id, Payload: &cmdSite{Name: "B"}})
+	if err != nil {
+		t.Fatalf("upsert(present): %v", err)
+	}
+	if res.Version != 2 || store.outbox[1].Type != "site.updated" {
+		t.Fatalf("present upsert: version=%d type=%q, want 2/site.updated", res.Version, store.outbox[1].Type)
+	}
+}
+
+func TestExec_UpsertRequiresAggID(t *testing.T) {
+	x := newExecutor(t, newFakeStore())
+	_, err := x.Exec(acmeCtx(t), command.Command{Entity: "site", Op: command.OpUpsert, Payload: &cmdSite{Name: "A"}})
+	if err == nil || !strings.Contains(err.Error(), "AggID") {
+		t.Fatalf("upsert without AggID must error, got %v", err)
+	}
+}
+
+func TestExec_UpsertRespectsExpectedVersion(t *testing.T) {
+	store := newFakeStore()
+	x := newExecutor(t, store)
+	ctx := acmeCtx(t)
+	id := "01HSITEUPSERT000000000003"
+	if _, err := x.Exec(ctx, command.Command{Entity: "site", Op: command.OpUpsert, AggID: id, Payload: &cmdSite{Name: "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	stale := int64(9)
+	_, err := x.Exec(ctx, command.Command{Entity: "site", Op: command.OpUpsert, AggID: id, Payload: &cmdSite{Name: "B"}, ExpectedVersion: &stale})
+	if !errors.Is(err, fabriqerr.ErrVersionConflict) {
+		t.Fatalf("want ErrVersionConflict, got %v", err)
+	}
+}
+
+func TestExec_UpsertExpectedVersionZeroOnAbsentSucceeds(t *testing.T) {
+	store := newFakeStore()
+	x := newExecutor(t, store)
+	zero := int64(0)
+	res, err := x.Exec(acmeCtx(t), command.Command{
+		Entity: "site", Op: command.OpUpsert, AggID: "01HSITEUPSERT000000000004",
+		Payload: &cmdSite{Name: "A"}, ExpectedVersion: &zero,
+	})
+	if err != nil {
+		t.Fatalf("upsert with ExpectedVersion=0 on absent aggregate must succeed: %v", err)
+	}
+	if res.Version != 1 {
+		t.Fatalf("Version = %d, want 1", res.Version)
+	}
+}
+
+func TestExec_UpsertExpectedVersionZeroOnPresentConflicts(t *testing.T) {
+	store := newFakeStore()
+	x := newExecutor(t, store)
+	ctx := acmeCtx(t)
+	id := "01HSITEUPSERT000000000005"
+	if _, err := x.Exec(ctx, command.Command{Entity: "site", Op: command.OpUpsert, AggID: id, Payload: &cmdSite{Name: "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	zero := int64(0)
+	_, err := x.Exec(ctx, command.Command{
+		Entity: "site", Op: command.OpUpsert, AggID: id,
+		Payload: &cmdSite{Name: "B"}, ExpectedVersion: &zero,
+	})
+	if !errors.Is(err, fabriqerr.ErrVersionConflict) {
+		t.Fatalf("upsert with ExpectedVersion=0 on present aggregate must conflict, got %v", err)
+	}
+}
+
 func BenchmarkExec_Fake(b *testing.B) {
 	store := newFakeStore()
 	x, err := command.NewExecutor(cmdRegistry(b), store)
