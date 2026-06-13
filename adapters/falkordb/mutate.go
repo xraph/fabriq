@@ -33,6 +33,11 @@ func cypherFor(m projection.Mutation) (cypher string, params map[string]any, err
 		if !validIdent(mut.Label) {
 			return "", nil, fmt.Errorf("fabriq: invalid graph label %q", mut.Label)
 		}
+		for _, l := range mut.ExtraLabels {
+			if !validIdent(l) {
+				return "", nil, fmt.Errorf("fabriq: invalid extra label %q", l)
+			}
+		}
 		params = map[string]any{"id": mut.ID, "version": mut.Version}
 		// Per-property SET with scalar params (map-valued parameters are
 		// not portable across engines). Keys are registry column names;
@@ -44,10 +49,13 @@ func cypherFor(m projection.Mutation) (cypher string, params map[string]any, err
 			}
 		}
 		sort.Strings(keys)
-		sets := make([]string, 0, len(keys))
+		sets := make([]string, 0, len(keys)+len(mut.ExtraLabels))
 		for _, k := range keys {
 			params["p_"+k] = mut.Props[k]
 			sets = append(sets, fmt.Sprintf("n.%s = $p_%s", k, k))
+		}
+		for _, l := range mut.ExtraLabels {
+			sets = append(sets, "n:"+l)
 		}
 		cy := fmt.Sprintf(`MERGE (n:%s {id: $id})
 WITH n

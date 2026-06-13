@@ -186,6 +186,32 @@ func TestCypherParams_EmptyIsEmpty(t *testing.T) {
 	}
 }
 
+func TestCypherFor_NodeUpsertExtraLabels(t *testing.T) {
+	cy, _, err := cypherFor(projection.NodeUpsert{
+		Label: "Node", ExtraLabels: []string{"Dataset"}, ID: "n1",
+		Props: map[string]any{"name": "x"}, Version: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cy, "MERGE (n:Node {id: $id})") {
+		t.Fatalf("must MERGE on identity label only:\n%s", cy)
+	}
+	if !strings.Contains(cy, "n:Dataset") {
+		t.Fatalf("must SET the extra label:\n%s", cy)
+	}
+	if strings.Index(cy, "WHERE coalesce(n.version, 0) <= $version") > strings.Index(cy, "n:Dataset") {
+		t.Fatalf("extra label SET must appear after the version gate:\n%s", cy)
+	}
+}
+
+func TestCypherFor_NodeUpsertRejectsBadExtraLabel(t *testing.T) {
+	_, _, err := cypherFor(projection.NodeUpsert{Label: "Node", ExtraLabels: []string{"bad-label"}, ID: "n1"})
+	if err == nil {
+		t.Fatal("invalid extra label must error")
+	}
+}
+
 func BenchmarkCypherFor_NodeUpsert(b *testing.B) {
 	mut := projection.NodeUpsert{
 		Label: "Asset", ID: "A1",
