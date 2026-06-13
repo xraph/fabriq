@@ -25,6 +25,9 @@ type syncingDocStore struct {
 	*postgres.DocStore
 	pub *redis.Adapter
 	reg *registry.Registry
+	// authz is the document-plane hook (WithDocumentAuthz), set by Open
+	// after the facade assembles its settings.
+	authz func(ctx context.Context, docID string) error
 }
 
 var _ document.Store = (*syncingDocStore)(nil)
@@ -33,6 +36,11 @@ var _ document.Store = (*syncingDocStore)(nil)
 // the log is the truth and clients heal gaps via Sync (frames carry the
 // log seq as Version for gap detection).
 func (s *syncingDocStore) ApplyUpdate(ctx context.Context, docID string, update []byte) error {
+	if s.authz != nil {
+		if err := s.authz(ctx, docID); err != nil {
+			return err
+		}
+	}
 	seq, err := s.ApplyUpdateWithSeq(ctx, docID, update)
 	if err != nil {
 		return err
@@ -68,6 +76,11 @@ func (f *Fabriq) SubscribeDocument(ctx context.Context, docID string) (<-chan qu
 	ent, found := f.reg.Get(entity)
 	if !found || ent.Spec.Kind != registry.KindDocument {
 		return nil, fmt.Errorf("fabriq: %q is not a registered document entity", entity)
+	}
+	if f.settings.docAuthz != nil {
+		if authzErr := f.settings.docAuthz(ctx, docID); authzErr != nil {
+			return nil, authzErr
+		}
 	}
 	if f.settings.authz != nil {
 		if authzErr := f.settings.authz(ctx, query.SubscribeScope{Entity: entity, Scope: "doc", ID: docID}); authzErr != nil {

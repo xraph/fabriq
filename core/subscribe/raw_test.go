@@ -85,3 +85,31 @@ func TestHub_SubscribeRawRejectsMixedModes(t *testing.T) {
 		t.Fatal("conflated subscribe on a raw channel must fail")
 	}
 }
+
+func TestHub_RawOverflowClosesSubscriber(t *testing.T) {
+	h := subscribe.NewHub()
+	defer h.Close()
+
+	// Buffer of 1, nobody reading: the raw contract is "complete and in
+	// order, or nothing" — overflow must CLOSE the channel (forcing a
+	// re-Sync), never silently drop a frame.
+	ch, cancel, err := h.SubscribeRaw(context.Background(), "doc:acme:page/D9", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	for v := int64(1); v <= 3; v++ {
+		h.Publish("doc:acme:page/D9", delta("page", "D9", v))
+	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return // closed — correct
+			}
+		case <-deadline:
+			t.Fatal("overflowed raw subscriber was not closed")
+		}
+	}
+}

@@ -103,6 +103,10 @@ type updateRow struct {
 	UpdateData []byte `grove:"update_data"`
 }
 
+// syncPageLimit bounds one Sync response; clients loop until an empty
+// page (the returned Seq advances their vector each round).
+const syncPageLimit = 500
+
 // syncPayload is the wire shape Sync exchanges with grove-crdt clients.
 type syncPayload struct {
 	Seq      int64             `json:"seq"`
@@ -143,10 +147,12 @@ func (d *DocStore) Sync(ctx context.Context, docID string, stateVector []byte) (
 			payload.Seq = snapSeq
 			since = snapSeq
 		}
+		// Pages are bounded: a client behind by more than syncPageLimit
+		// updates loops (vector advances each call) until an empty page.
 		var rows []updateRow
 		if err := tx.NewRaw(
-			`SELECT seq, update_data FROM fabriq_crdt_updates WHERE doc_id = $1 AND seq > $2 ORDER BY seq`,
-			docID, since).Scan(ctx, &rows); err != nil {
+			`SELECT seq, update_data FROM fabriq_crdt_updates WHERE doc_id = $1 AND seq > $2 ORDER BY seq LIMIT $3`,
+			docID, since, syncPageLimit).Scan(ctx, &rows); err != nil {
 			return err
 		}
 		for _, r := range rows {
@@ -391,9 +397,14 @@ func (d *DocStore) materializeOne(ctx context.Context, tenantID, docID string, e
 		}
 	}
 
-	// One transactional write: row + ONE versioned event, exactly like a
-	// command — through the same Store primitives.
-	err = d.a.InTenantTx(tctx, func(txCtx context.Context, tx command.Tx) error {
+	// One transactional write: row + ONE versioned event + the
+	// materialization watermark, all in the same transaction — a crash
+	// can never re-materialize (no duplicate events). storeTx gives the
+	// command primitives; the raw watermark update rides the same PgTx
+	// (the bookkeeping table has no RLS, so any tx may write it).
+	err = d.a.inTenantTx(tctx, func(ptx *pgdriver.PgTx) error {
+		var tx command.Tx = &storeTx{ptx: ptx}
+		txCtx := tctx
 		current, cvErr := tx.CurrentVersion(txCtx, ent, docID)
 		if cvErr != nil {
 			return cvErr
@@ -419,16 +430,16 @@ func (d *DocStore) materializeOne(ctx context.Context, tenantID, docID string, e
 		if mErr != nil {
 			return mErr
 		}
-		return tx.AppendOutbox(txCtx, event.Envelope{
+		if obErr := tx.AppendOutbox(txCtx, event.Envelope{
 			ID: event.NewID(), TenantID: tenantID, Aggregate: ent.Spec.Name, AggID: docID,
 			Version: next, Type: registry.EventType(ent.Spec.Name, registry.VerbUpdated),
 			At: time.Now().UTC(), PayloadSchemaVersion: 1, Payload: payload,
-		})
+		}); obErr != nil {
+			return obErr
+		}
+		_, wmErr := ptx.NewRaw(
+			`UPDATE fabriq_crdt_docs SET last_seq_materialized = $2 WHERE doc_id = $1`, docID, maxSeq).Exec(txCtx)
+		return wmErr
 	})
-	if err != nil {
-		return false, err
-	}
-	_, err = d.a.pg.Exec(ctx,
-		`UPDATE fabriq_crdt_docs SET last_seq_materialized = $2 WHERE doc_id = $1`, docID, maxSeq)
 	return err == nil, err
 }

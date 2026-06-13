@@ -138,6 +138,10 @@ func (e *workerExtension) Run(ctx context.Context) error {
 		}
 	}
 
+	var logger forge.Logger
+	if app != nil {
+		logger = app.Logger()
+	}
 	relay := postgres.NewRelay(stores.Postgres, e.reg, stores.Redis, relayOpts...)
 	elector := postgres.NewElector(stores.Postgres, lockKeyRelay)
 
@@ -145,7 +149,7 @@ func (e *workerExtension) Run(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = elector.Run(runCtx, relay.Run)
+		supervise(runCtx, logger, "relay", func(c context.Context) error { return elector.Run(c, relay.Run) })
 	}()
 
 	// Document plane: quiet-window materializer + compactor (leader 1003).
@@ -153,9 +157,11 @@ func (e *workerExtension) Run(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = docElector.Run(runCtx, func(leadCtx context.Context) error {
-			e.runDocumentPlane(leadCtx, time.Second)
-			return leadCtx.Err()
+		supervise(runCtx, logger, "document-plane", func(c context.Context) error {
+			return docElector.Run(c, func(leadCtx context.Context) error {
+				e.runDocumentPlane(leadCtx, time.Second)
+				return leadCtx.Err()
+			})
 		})
 	}()
 
@@ -165,9 +171,11 @@ func (e *workerExtension) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = reconElector.Run(runCtx, func(leadCtx context.Context) error {
-				e.runReconciler(leadCtx, e.reconcileInterval)
-				return leadCtx.Err()
+			supervise(runCtx, logger, "reconciler", func(c context.Context) error {
+				return reconElector.Run(c, func(leadCtx context.Context) error {
+					e.runReconciler(leadCtx, e.reconcileInterval)
+					return leadCtx.Err()
+				})
 			})
 		}()
 	}
@@ -175,7 +183,7 @@ func (e *workerExtension) Run(ctx context.Context) error {
 	// Projection consumers scale by replica count — no election needed.
 	consumer := consumerName()
 	if stores.Falkor != nil {
-		engine, err := stores.GraphEngine(e.reg, nil)
+		engine, err := stores.GraphEngine(e.reg, e.fab.Upcasters())
 		if err != nil {
 			cancel()
 			return err
@@ -183,11 +191,11 @@ func (e *workerExtension) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = engine.Run(runCtx, consumer)
+			supervise(runCtx, logger, "proj:graph", func(c context.Context) error { return engine.Run(c, consumer) })
 		}()
 	}
 	if stores.Elastic != nil {
-		engine, err := stores.SearchEngine(e.reg, nil)
+		engine, err := stores.SearchEngine(e.reg, e.fab.Upcasters())
 		if err != nil {
 			cancel()
 			return err
@@ -195,7 +203,7 @@ func (e *workerExtension) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = engine.Run(runCtx, consumer)
+			supervise(runCtx, logger, "proj:search", func(c context.Context) error { return engine.Run(c, consumer) })
 		}()
 	}
 

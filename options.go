@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/subscribe"
 	"github.com/xraph/fabriq/internal/otel"
 )
@@ -16,6 +17,8 @@ type settings struct {
 	waitPollInterval time.Duration
 	streamMaxLen     int64
 	authz            subscribe.AuthzFunc
+	docAuthz         func(ctx context.Context, docID string) error
+	upcasters        *event.UpcasterChain
 	tailer           subscribe.Tailer
 	executorOptions  []command.ExecutorOption
 }
@@ -79,6 +82,21 @@ func WithStreamMaxLen(n int64) Option {
 // WithAuthz installs the subscribe-time authorization hook.
 func WithAuthz(fn subscribe.AuthzFunc) Option {
 	return func(s *settings) { s.authz = fn }
+}
+
+// WithDocumentAuthz installs the document-plane authorization hook,
+// consulted for BOTH ApplyUpdate (writes) and SubscribeDocument (reads).
+// Without it, any authenticated member of the tenant may touch any of
+// the tenant's documents.
+func WithDocumentAuthz(fn func(ctx context.Context, docID string) error) Option {
+	return func(s *settings) { s.docAuthz = fn }
+}
+
+// WithUpcasters registers the event payload upcaster chain. Projection
+// engines apply it at decode, so appliers only ever see the latest
+// payload shape; register one vN->vN+1 step per evolved event type.
+func WithUpcasters(chain *event.UpcasterChain) Option {
+	return func(s *settings) { s.upcasters = chain }
 }
 
 // WithTraceparent supplies the W3C traceparent extractor stamped into
