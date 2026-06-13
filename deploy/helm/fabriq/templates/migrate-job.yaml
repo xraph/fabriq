@@ -1,0 +1,49 @@
+{{- if .Values.migrate.enabled -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "fabriq.fullname" . }}-migrate
+  labels:
+    {{- include "fabriq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    # Run before the worker rolls; advisory-locked so it's safe under
+    # concurrency. Cleaned up on success and re-created each release.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": {{ .Values.migrate.hookWeight | quote }}
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "fabriq.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+      {{- with .Values.migrate.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "fabriq.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.worker.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "fabriq.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/fabriq", "migrate", "up"]
+          envFrom:
+            - secretRef:
+                name: {{ include "fabriq.secretName" . }}
+          securityContext:
+            {{- toYaml .Values.worker.containerSecurityContext | nindent 12 }}
+          {{- with .Values.migrate.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

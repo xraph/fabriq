@@ -35,5 +35,29 @@ fmt:
 tidy:
 	$(GO) mod tidy
 
+# --- Container image + Helm -------------------------------------------------
+IMAGE ?= ghcr.io/xraph/fabriq
+TAG   ?= dev
+CHART := deploy/helm/fabriq
+
+# Vendor first so the build is hermetic despite the local grove `replace`
+# directives (they point outside this tree until grove is tagged).
+.PHONY: vendor docker-build docker-push helm-lint helm-template
+vendor:
+	$(GO) mod vendor
+
+docker-build: vendor
+	docker build -f deploy/docker/Dockerfile -t $(IMAGE):$(TAG) .
+
+docker-push:
+	docker push $(IMAGE):$(TAG)
+
+helm-lint:
+	helm lint $(CHART) --set secret.postgresDSN=postgres://u:p@pg:5432/fabriq
+
+helm-template:
+	helm template fabriq $(CHART) --set secret.postgresDSN=postgres://u:p@pg:5432/fabriq
+
 clean:
 	rm -f coverage.out coverage.html
+	rm -rf vendor

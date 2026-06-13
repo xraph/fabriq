@@ -6,3 +6,6 @@ coverage.html
 .idea/
 .vscode/
 config.local.yaml
+
+# Build artifacts
+/vendor/

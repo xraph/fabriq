@@ -1,0 +1,130 @@
+# fabriq Helm chart — values
+#
+# Deploys the fabriq-worker (relay, projection consumers, reconciler,
+# document materializer) and a Helm-hook schema migration Job. Datastores
+# are EXTERNAL: point the chart at managed Postgres+Timescale, Redis, and
+# (optionally) FalkorDB + Elasticsearch. The chart bundles no databases.
+
+image:
+  repository: ghcr.io/xraph/fabriq
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# --- Datastore connections (sensitive) --------------------------------
+# Either reference a pre-created Secret (recommended for production) or
+# let the chart create one from the literals below (dev/CI only).
+#
+# Keys the worker + migrate Job read:
+#   FABRIQ_POSTGRES_DSN          (required)  postgres://user:pass@host:5432/db?sslmode=require
+#   FABRIQ_REDIS_ADDR            (required for projections/subscriptions) host:6379
+#   FABRIQ_FALKORDB_ADDR         (optional)  host:6379  — enables the graph projection
+#   FABRIQ_ELASTICSEARCH_ADDRS   (optional)  https://host:9200 (comma-separated) — enables search
+secret:
+  # When set, the chart uses this Secret and creates none of its own.
+  existingSecret: ""
+  # Used only when existingSecret is empty:
+  postgresDSN: ""
+  redisAddr: ""
+  falkordbAddr: ""
+  elasticsearchAddrs: ""
+
+# --- Non-secret tuning (ConfigMap) ------------------------------------
+config:
+  # Bind address for health (/_/livez,/_/readyz,/_/health) + /metrics.
+  httpAddr: ":8081"
+  # Scheduled reconciler cadence (Go duration). "0" disables; empty uses
+  # the binary default (5m).
+  reconcileInterval: ""
+  # Extra plain (non-secret) env vars merged into worker + migrate.
+  extraEnv: {}
+
+# --- Schema migrations (Helm hook Job) --------------------------------
+migrate:
+  enabled: true
+  # pre-install + pre-upgrade: the schema is current before the worker
+  # rolls. grove holds an advisory migration lock, so parallel hook runs
+  # across releases are safe.
+  hookWeight: "-5"
+  backoffLimit: 3
+  podAnnotations: {}
+  resources: {}
+
+# --- Worker Deployment -------------------------------------------------
+worker:
+  # Safe to scale: singletons (relay/reconciler/materializer) are
+  # leader-elected via Postgres advisory locks — exactly one active
+  # across replicas — while projection consumers share Redis consumer
+  # groups and scale freely.
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  # The worker drains on SIGTERM (~10s); give the pod headroom.
+  terminationGracePeriodSeconds: 30
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  # /tmp writable scratch (root filesystem is read-only).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+service:
+  # Health + /metrics. ClusterIP; not internet-facing.
+  port: 8081
+
+# --- Disruption budget -------------------------------------------------
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# --- Autoscaling (CPU; optional) --------------------------------------
+# For lag-driven scaling of projection consumers, prefer KEDA on Redis
+# stream lag / the fabriq_projection_lag_events metric — see README.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+# --- Metrics -----------------------------------------------------------
+metrics:
+  # Add prometheus.io/scrape pod annotations.
+  podAnnotations: true
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Optional: restrict egress to your datastores (you supply the peers).
+networkPolicy:
+  enabled: false
+  egress: []

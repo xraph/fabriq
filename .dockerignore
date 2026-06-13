@@ -1,0 +1,13 @@
+# Keep the build context lean. vendor/ is REQUIRED (hermetic build) — do
+# not exclude it.
+.git
+.github
+.idea
+.vscode
+deploy
+docs
+*.md
+coverage.out
+coverage.html
+*.test
+bin
