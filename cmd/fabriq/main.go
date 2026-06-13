@@ -35,10 +35,14 @@ import (
 	"github.com/xraph/fabriq/domain"
 )
 
+// version is the build version, stamped by goreleaser via
+// -ldflags "-X main.version=...". It defaults to "dev" for local builds.
+var version = "dev"
+
 func main() {
 	cli.RunApp(setup,
 		cli.WithCLIName("fabriq"),
-		cli.WithCLIVersion("0.1.0"),
+		cli.WithCLIVersion(version),
 		cli.WithCLIDescription("TWINOS data fabric: worker + operations"),
 		cli.WithGlobalFlags(
 			cli.NewStringFlag("dsn", "", "Postgres DSN (overrides FABRIQ_POSTGRES_DSN)", ""),
@@ -59,7 +63,7 @@ func main() {
 // operator commands open their own stores and never serve. Store
 // validation and connection happen in the worker extension's Start, which
 // only the serve path triggers.
-func setup(ctx cli.CommandContext) (forge.App, error) {
+func setup(_ cli.CommandContext) (forge.App, error) {
 	reg := registry.New()
 	if err := domain.RegisterAll(reg); err != nil {
 		return nil, err
@@ -79,7 +83,7 @@ func setup(ctx cli.CommandContext) (forge.App, error) {
 	// extension reads the resulting config from app.Config() in Start.
 	app := forge.NewApp(forge.AppConfig{
 		Name:                      "fabriq-worker",
-		Version:                   "0.1.0",
+		Version:                   version,
 		HTTPAddress:               addr,
 		EnableConfigAutoDiscovery: true,
 		EnableEnvConfig:           true,
