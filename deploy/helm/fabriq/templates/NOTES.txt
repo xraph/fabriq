@@ -1,0 +1,31 @@
+fabriq {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}".
+
+Worker:   {{ include "fabriq.fullname" . }}  ({{ .Values.worker.replicaCount }} replica(s); singletons are advisory-lock leader-elected)
+Image:    {{ include "fabriq.image" . }}
+{{- if .Values.migrate.enabled }}
+Migrations ran as a pre-upgrade hook ("fabriq migrate up", advisory-locked).
+{{- else }}
+Migrations are DISABLED — run "fabriq migrate up" yourself before the worker serves traffic.
+{{- end }}
+
+Health & metrics (port {{ .Values.service.port }}):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "fabriq.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl localhost:{{ .Values.service.port }}/_/readyz
+  curl localhost:{{ .Values.service.port }}/metrics
+
+Datastores are EXTERNAL. The worker reads (from the {{ if .Values.secret.existingSecret }}existing{{ else }}chart-created{{ end }} Secret "{{ include "fabriq.secretName" . }}"):
+  FABRIQ_POSTGRES_DSN          (required)
+  FABRIQ_REDIS_ADDR            (projections + live subscriptions)
+  FABRIQ_FALKORDB_ADDR         (set to enable the graph projection)
+  FABRIQ_ELASTICSEARCH_ADDRS   (set to enable the search projection)
+{{- if not .Values.secret.redisAddr }}
+{{- if not .Values.secret.existingSecret }}
+
+NOTE: no Redis address set — the worker runs the relay only; projection
+consumers and live subscriptions need FABRIQ_REDIS_ADDR.
+{{- end }}
+{{- end }}
+
+Watch it come up:
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "fabriq.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=worker -f

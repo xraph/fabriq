@@ -1,0 +1,15 @@
+{{- if .Values.pdb.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "fabriq.fullname" . }}
+  labels:
+    {{- include "fabriq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "fabriq.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+{{- end }}
