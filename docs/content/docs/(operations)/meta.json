@@ -1,0 +1,11 @@
+{
+  "title": "Operations",
+  "pages": [
+    "deployment",
+    "cli",
+    "migrations",
+    "rebuild-and-reconcile",
+    "observability",
+    "runbooks"
+  ]
+}

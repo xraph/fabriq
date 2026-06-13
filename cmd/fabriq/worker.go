@@ -72,8 +72,13 @@ func (e *workerExtension) Register(app forge.App) error {
 	return nil
 }
 
-// Start implements forge.Extension: open the stores.
+// Start implements forge.Extension: open the stores. This is the serve
+// path's first real I/O — the env guard the worker's main once held lives
+// here now, so operator commands (which never Start) stay store-agnostic.
 func (e *workerExtension) Start(ctx context.Context) error {
+	if e.cfg.Postgres.DSN == "" || e.cfg.Redis.Addr == "" {
+		return fmt.Errorf("fabriq-worker: FABRIQ_POSTGRES_DSN and FABRIQ_REDIS_ADDR are required to serve")
+	}
 	fab, stores, err := fabriq.Open(ctx, e.reg, e.cfg)
 	if err != nil {
 		return err

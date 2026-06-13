@@ -1,0 +1,131 @@
+---
+title: Runbooks
+description: Incident procedures for the fabriq worker — outbox backlog, projection lag, tenant hook trips, conflation depth, and SSE buffering behind proxies.
+---
+
+Each procedure keys off a metric from
+[Observability](/docs/observability). Metric names are exact.
+
+## Outbox backlog grows
+
+Metric: `fabriq_outbox_backlog`. Cause: the relay is not draining — the worker
+is down, no replica holds leadership, or Redis is unreachable.
+
+<Steps>
+<Step>
+Confirm worker replicas are running and ready.
+
+```bash
+kubectl get pods -l app.kubernetes.io/component=worker
+kubectl exec <pod> -- wget -qO- localhost:8081/_/readyz
+```
+</Step>
+<Step>
+Confirm exactly one relay leads (advisory lock `1001`). Check worker logs for
+election churn; a flapping Postgres connection abdicates leadership by design
+(the session watchdog), so persistent flapping points at the Postgres
+connection, not the relay.
+</Step>
+<Step>
+Check Redis reachability from the worker. The relay is at-least-once: once Redis
+returns, the backlog drains in ULID order. Downstream consumers are
+version-gated and idempotent, so the duplicates this can produce are harmless.
+</Step>
+</Steps>
+
+<Callout type="info">
+Commands never fail because the relay is down — the outbox **is** the buffer, so
+writes still commit. This is a latency incident, not a data-loss incident.
+</Callout>
+
+## Projection lag
+
+Metric: `fabriq_projection_lag_events{projection,tenant}`.
+
+<Steps>
+<Step>
+Identify the lagging consumer group on the Redis event stream.
+
+```bash
+XINFO GROUPS fabriq:events
+```
+</Step>
+<Step>
+Consumers scale by replica count (Redis consumer groups, no election) — add
+worker replicas if apply throughput is the limit.
+</Step>
+<Step>
+Look for a poisoned event: a handler error loop leaves an entry pending, which
+is XAUTOCLAIMed between consumers. The same stream id cycling in logs is the
+tell. Because appliers are pure and version-gated, the usual cause is an engine
+outage, not the event itself — check the target engine.
+</Step>
+<Step>
+If a projection fell off the stream's `MAXLEN` horizon, replay from the stream
+is no longer possible. Rebuild from Postgres — always safe, always possible.
+See [Rebuild & Reconcile](/docs/rebuild-and-reconcile).
+</Step>
+</Steps>
+
+## Tenant hook trips
+
+Metric: `fabriq_tenant_hook_trips_total`.
+
+<Callout type="error">
+**Any non-zero value is a fabriq bug — page the owning team.** It means a query
+reached an engine without tenant scoping: pool-path access to a tenant table,
+or raw SQL touching the readings table without a tenant predicate. RLS
+contained the blast radius (stamped transactions see only their tenant;
+unstamped see nothing), but the call site must be found and fixed. The error
+carries the offending table and operation.
+</Callout>
+
+This is a correctness alarm, not a capacity one — do not "wait for it to drain."
+
+## Conflation depth grows
+
+Metric: `fabriq_conflation_depth`. Subscribers are not draining.
+
+Hub delivery is non-blocking: a full buffer drops, and clients refetch and
+resume via `Last-Event-ID`. So this self-heals at the cost of client
+refetches.
+
+<Steps>
+<Step>
+Investigate slow SSE consumers — a stuck client that holds a subscription
+without reading backs up its conflation window.
+</Step>
+<Step>
+If depth is broadly elevated rather than per-client, raise the hub buffer
+(`WithSubscribeBuffer`) and redeploy.
+</Step>
+</Steps>
+
+## SSE batched behind a proxy
+
+Symptom: clients receive events in batches instead of as they happen — a proxy
+is buffering the stream.
+
+The SSE bridge sets `X-Accel-Buffering: no`, flushes after every event, and
+writes periodic heartbeat comments to keep intermediaries from idling the
+connection. If events still arrive batched:
+
+<Steps>
+<Step>
+Check nginx honors the header — `proxy_buffering off` is the effect of
+`X-Accel-Buffering: no`. Confirm no intermediate proxy strips it.
+</Step>
+<Step>
+Check the load-balancer idle timeout is greater than the heartbeat interval,
+or the connection is closed between events (ALB and similar).
+</Step>
+</Steps>
+
+<Cards>
+  <Card title="Observability" href="/docs/observability">
+    The full metric catalog and what each signals.
+  </Card>
+  <Card title="Rebuild & Reconcile" href="/docs/rebuild-and-reconcile">
+    Rebuild recovers a projection that fell off the stream horizon.
+  </Card>
+</Cards>

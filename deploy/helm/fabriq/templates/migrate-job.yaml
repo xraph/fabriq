@@ -37,9 +37,10 @@ spec:
           image: {{ include "fabriq.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/usr/local/bin/fabriq", "migrate", "up"]
-          envFrom:
-            - secretRef:
-                name: {{ include "fabriq.secretName" . }}
+          # migrate only needs the Postgres DSN; the optional addresses are
+          # harmless and keep one connection-env code path with the worker.
+          env:
+            {{- include "fabriq.connectionEnv" . | trim | nindent 12 }}
           securityContext:
             {{- toYaml .Values.worker.containerSecurityContext | nindent 12 }}
           {{- with .Values.migrate.resources }}

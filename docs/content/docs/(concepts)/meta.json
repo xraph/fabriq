@@ -1,0 +1,11 @@
+{
+  "title": "Core Concepts",
+  "pages": [
+    "architecture",
+    "registry",
+    "tenancy",
+    "commands-and-events",
+    "projections",
+    "subscriptions"
+  ]
+}

@@ -1,0 +1,111 @@
+---
+title: Installation
+description: Prerequisites, getting the module, and the migrate-then-serve startup order for a Fabriq service.
+---
+
+Fabriq is both a Go library you import (`github.com/xraph/fabriq`) and a single binary (`fabriq`) that runs the background worker plane and the operator commands. This page covers what you need installed, how to pull the module, and the order to bring a service up.
+
+## Prerequisites
+
+- **Go 1.25.7 or newer.** The module declares `go 1.25.7` in `go.mod`. The hermetic Docker build (below) uses the `golang:1.26` toolchain image.
+- **PostgreSQL** — the source of truth. The command store, relational/timeseries/vector ports, and projection bookkeeping all live here, so Postgres is the one store Fabriq cannot run without.
+  - **TimescaleDB** extension for hypertable telemetry (the `TSQuerier` bulk-write path).
+  - **pgvector** extension for the embedding port (`VectorQuerier`, HNSW similarity search).
+  - Both extensions degrade gracefully when absent: a Postgres without them still serves commands, relational reads, projections, and subscriptions. Only the timeseries and vector planes require them.
+- **Redis** — required for live subscriptions and for running projections. The outbox relay publishes change channels to Redis Streams; the subscription hub tails them. Without Redis, commands and relational reads still work, but `Subscribe` and the graph/search projections do not.
+
+Optional, enabled per data plane:
+
+- **FalkorDB** — backs the graph projection (`GraphQuerier`, openCypher). Without it, `Graph()` returns a not-configured port.
+- **Elasticsearch** — backs the search projection (`SearchQuerier`). Without it, `Search()` returns a not-configured port.
+
+<Callout type="info">
+Every optional store degrades to a typed `ErrStoreNotConfigured` rather than a nil panic. A minimal deployment is Postgres plus Redis; add FalkorDB and Elasticsearch only when you turn on the graph and search projections. See [Configuration](/docs/configuration) for the toggles.
+</Callout>
+
+## Getting the module
+
+```bash
+go get github.com/xraph/fabriq
+```
+
+To install the operator and worker binary:
+
+```bash
+go install github.com/xraph/fabriq/cmd/fabriq@latest
+```
+
+### The grove replace caveat
+
+`go.mod` carries local `replace` directives pointing at out-of-tree grove checkouts:
+
+```text
+replace github.com/xraph/grove => ../../xraph/forgery/grove
+replace github.com/xraph/grove/drivers/pgdriver => ../../xraph/forgery/grove/drivers/pgdriver
+```
+
+These exist until grove cuts a tagged release. They resolve fine inside the development checkout layout but not for an arbitrary `go build` elsewhere. Hermetic Docker builds avoid the problem by vendoring first: `make docker-build` runs `go mod vendor`, then the Dockerfile builds with `GOFLAGS=-mod=vendor` and needs no network and no out-of-tree paths. Vendoring stays harmless once the replaces are dropped, so the same build path keeps working after grove is tagged.
+
+## First steps
+
+Bring a service up in two distinct phases: apply migrations once as an operator step, then start serving. Never fold schema migration into request-path startup.
+
+<Steps>
+
+<Step>
+**Apply migrations.** Run grove's migrations against the database before anything serves. This is advisory-locked, so it is safe to run from a one-shot Job even with multiple replicas waiting.
+
+```bash
+fabriq migrate up --dsn "postgres://user:pass@localhost:5432/fabriq?sslmode=disable"
+```
+
+The DSN can also come from `FABRIQ_POSTGRES_DSN`; `--dsn` overrides it. See [Migrations](/docs/migrations) for the full `up`/`down`/`status` workflow.
+</Step>
+
+<Step>
+**Register your domain and assemble the facade.** In library code, build a registry, register an entity pack, then call `fabriq.Open`. Postgres is mandatory; Redis is what turns on subscriptions and projections.
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+
+	"github.com/xraph/fabriq"
+	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/domain"
+)
+
+func main() {
+	reg := registry.New()
+	if err := domain.RegisterAll(reg); err != nil {
+		log.Fatalf("register domain: %v", err)
+	}
+
+	f, stores, err := fabriq.Open(context.Background(), reg, fabriq.Config{
+		Postgres: fabriq.PostgresConfig{DSN: "postgres://user:pass@localhost:5432/fabriq?sslmode=disable"},
+		Redis:    fabriq.RedisConfig{Addr: "localhost:6379"},
+	})
+	if err != nil {
+		log.Fatalf("open fabriq: %v", err)
+	}
+	defer f.Close()
+
+	_ = stores // worker-plane wiring (relay, electors, projection consumers)
+}
+```
+
+`Open` returns the `*fabriq.Fabriq` facade application code holds, plus a `*fabriq.Stores` handle the worker plane uses for relay, leader election, and projection consumers. Application services hold only the facade.
+</Step>
+
+</Steps>
+
+`domain.RegisterAll` registers the TWINOS pack (site, asset, tag, page). To model your own entities, register your own `registry.EntitySpec` set against a fresh `registry.New()` instead.
+
+## Next steps
+
+<Cards>
+  <Card title="Quickstart" href="/docs/quickstart">Write and read your first aggregate end to end, then subscribe to its change stream.</Card>
+  <Card title="Configuration" href="/docs/configuration">Config shape, functional options, and the environment variables the binary reads.</Card>
+</Cards>

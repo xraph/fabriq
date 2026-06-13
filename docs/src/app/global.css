@@ -1,6 +1,105 @@
-@import 'tailwindcss';
-@import 'fumadocs-ui/css/neutral.css';
-@import 'fumadocs-ui/css/preset.css';
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/* Landing semantic surfaces — warm in both themes, flipped by .dark.
+   Components use bg-surface / text-ink-* / text-accent so a single set of
+   tokens drives both light and dark. */
+@theme inline {
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-hairline: var(--hairline);
+  --color-ink-strong: var(--ink-strong);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+}
+
+:root {
+  --surface: #fbf7f1; /* warm paper */
+  --surface-raised: #ffffff; /* cards */
+  --surface-sunken: #f3ece2; /* insets */
+  --hairline: #e8dfd3; /* warm border */
+  --ink-strong: #1f1813; /* headings */
+  --ink: #443c35; /* body */
+  --ink-muted: #6f655c; /* secondary */
+  --ink-faint: #9a8d80; /* labels */
+  --accent: #65a30d; /* lime-600 — reads on light */
+  --accent-strong: #4d7c0f; /* lime-700 */
+}
+
+.dark {
+  --surface: #0a0908; /* night-950 */
+  --surface-raised: #131110; /* night-900 */
+  --surface-sunken: #0c0a09; /* deeper */
+  --hairline: #2a2421; /* warm dark border */
+  --ink-strong: #fafaf9; /* stone-50 */
+  --ink: #d6d3d1; /* stone-300 */
+  --ink-muted: #a8a29e; /* stone-400 */
+  --ink-faint: #78716c; /* stone-500 */
+  --accent: #a3e635; /* lime-400 — reads on dark */
+  --accent-strong: #bef264; /* lime-300 */
+}
+
+@theme {
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  /* display headings share Geist — kept as a token for heading-level overrides */
+  --font-display: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", monospace;
+
+  /* Primary — shadcn lime scale (the ember-* utilities now resolve to lime) */
+  --color-ember-50: #f7fee7;
+  --color-ember-100: #ecfccb;
+  --color-ember-200: #d9f99d;
+  --color-ember-300: #bef264;
+  --color-ember-400: #a3e635;
+  --color-ember-500: #84cc16;
+  --color-ember-600: #65a30d;
+  --color-ember-700: #4d7c0f;
+  --color-ember-800: #3f6212;
+  --color-ember-900: #365314;
+  --color-ember-950: #1a2e05;
+
+  /* Night — warm near-black surfaces */
+  --color-night-950: #0a0908;
+  --color-night-900: #131110;
+  --color-night-850: #181412;
+  --color-night-800: #1f1a17;
+
+  --animate-rail-pulse: rail-pulse 4.5s ease-in-out infinite;
+  --animate-caret: caret 1.06s infinite;
+
+  @keyframes caret {
+    0%,
+    50% {
+      opacity: 1;
+    }
+    50.01%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes rail-pulse {
+    0% {
+      left: 0%;
+      opacity: 0;
+    }
+    8% {
+      opacity: 1;
+    }
+    92% {
+      opacity: 1;
+    }
+    100% {
+      left: 100%;
+      opacity: 0;
+    }
+  }
+}
 
 html {
   scrollbar-gutter: stable;
@@ -9,4 +108,25 @@ html {
 html > body[data-scroll-locked] {
   margin-right: 0px !important;
   --removed-body-scroll-bar-size: 0px !important;
+}
+
+.landing ::selection {
+  background-color: var(--color-ember-500);
+  color: var(--color-night-950);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rail-pulse,
+  .animate-caret {
+    animation: none !important;
+  }
+}
+
+/* film grain overlay used across landing sections */
+.grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.8 0 0 0 0 0.7 0 0 0 0 0.6 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }

@@ -1,0 +1,82 @@
+---
+title: Search
+description: The full-text search port over Elasticsearch — multi_match over declared fields, lazy per-tenant indexes, and version-gated bulk writes.
+---
+
+The search plane is a full-text projection of searchable entities. You query it with `query.SearchQuerier.Search`; you do not write to it directly — projection consumers and rebuilds index documents through `ApplyMutations`. The port is implemented in `adapters/elastic` on `go-elasticsearch/v9`.
+
+```go
+type SearchQuerier interface {
+	Search(ctx context.Context, q SearchQuery, into any) error
+	ApplyMutations(ctx context.Context, target string, muts []projection.Mutation) error
+}
+```
+
+Reach it through `f.Search()`. Every operation is tenant-routed through index naming derived from the registry — there is no shared index across tenants.
+
+## What gets indexed
+
+`SearchSpec` declares an entity's search mapping. The zero value (empty `Index`) means the entity is not indexed.
+
+```go
+type SearchSpec struct {
+	Index  string   // logical index base name; tenant routing is derived
+	Fields []string // columns included in the indexed document
+}
+```
+
+`Index` is the logical base name (e.g. `"asset"`); tenant and version routing are derived from it. `Fields` lists the columns that land in the indexed document and that `Search` queries. See [Registry](/docs/registry).
+
+## Search
+
+`Search` runs a `multi_match` over the entity's declared `Fields` against the tenant's alias. Results scan into `*[]map[string]any` — each element is an indexed document's `_source`, which you map into your own model slice.
+
+```go
+type SearchQuery struct {
+	Entity string
+	Query  string
+	Limit  int
+}
+```
+
+```go
+var hits []map[string]any
+err := f.Search().Search(ctx, query.SearchQuery{
+	Entity: "asset",
+	Query:  "centrifugal pump",
+	Limit:  20,
+}, &hits)
+if err != nil {
+	return err
+}
+// Each hit is the indexed _source (the declared Search.Fields). Map into a model:
+assets := make([]domain.Asset, 0, len(hits))
+for _, h := range hits {
+	assets = append(assets, domain.Asset{
+		Name: h["name"].(string),
+		Kind: h["kind"].(string),
+	})
+}
+```
+
+`Limit` defaults to 25 when unset. A tenant that has never indexed a document for this entity has no alias yet — that is an empty result, not an error.
+
+## Elasticsearch specifics
+
+The adapter encodes tenancy and blue-green routing entirely in index naming, derived only from the registry:
+
+- **Lazy per-tenant index + alias provisioning.** Reads hit the per-tenant alias `fabriq_{tenant}_{base}`; writes hit the versioned index `fabriq_{tenant}_{base}_v{N}` behind it. Both the versioned index and the alias are created on first write (idempotent, memoized) — no upfront provisioning per tenant.
+- **Bulk writes with `external_gte` version gating.** `ApplyMutations` issues one `_bulk` request per batch (`DocIndex` → index op, `DocDeindex` → delete op), and every op carries the aggregate version with `version_type=external_gte`. A stale replay comes back as a version conflict, which the adapter treats as success — that is the idempotency gate working, not an error.
+- **`multi_match` over declared fields.** `Search` queries exactly the `SearchSpec.Fields`, no more.
+- **Atomic alias-swap rebuild.** A rebuild builds `_v{N+1}` indexes, then repoints every searchable entity's tenant alias in a single `_aliases` call (`FlipAliases`, wired as the rebuilder's `OnFlip`). The cutover is atomic; readers flip the instant the alias moves.
+
+See [Rebuild and Reconcile](/docs/rebuild-and-reconcile) for the rebuild and drift-repair flow.
+
+## ApplyMutations (projection write path)
+
+`ApplyMutations` is the search projection's write path — projection consumers and rebuilds only. A `target` of `""` routes to the tenant's live versioned indexes (with the alias kept pointing at them); a `"vN"` target routes to a rebuild's building indexes. Application code never calls it; writes originate from domain events flowing through the projection consumer.
+
+<Cards>
+  <Card title="Registry" href="/docs/registry">SearchSpec — declaring an entity's index base name and searchable fields.</Card>
+  <Card title="Rebuild and Reconcile" href="/docs/rebuild-and-reconcile">Blue-green index rebuilds and atomic alias swaps.</Card>
+</Cards>

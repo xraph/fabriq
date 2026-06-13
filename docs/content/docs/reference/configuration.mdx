@@ -1,0 +1,137 @@
+---
+title: Configuration Reference
+description: Exhaustive reference for the Fabriq Config struct, functional Options, environment variables, and validation rules.
+---
+
+This is the exhaustive reference for every `Config` field, functional `Option`, and `FABRIQ_*` environment variable. For the task-oriented walkthrough of how to assemble and pass configuration, see [Getting Started · Configuration](/docs/configuration).
+
+`Config` is Fabriq's declarative configuration: which stores exist and which projections run. It carries `yaml` and `json` struct tags (the same schema a standalone `fabriqd` would load from YAML). Entities are **not** configured here — they are registered in code via the registry.
+
+```go
+type Config struct {
+	Postgres      PostgresConfig
+	Redis         RedisConfig
+	FalkorDB      FalkorDBConfig
+	Elasticsearch ElasticsearchConfig
+	Projections   ProjectionsConfig
+	Subscriptions SubscriptionsConfig
+}
+```
+
+## PostgresConfig
+
+Locates the source of truth (always required). YAML/JSON key: `postgres`.
+
+| Field | Type | yaml/json key | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `DSN` | `string` | `dsn` | `""` | Postgres connection string. Required — Postgres is the source of truth. |
+| `PoolSize` | `int` | `pool_size` | `0` | Connection pool size passed to the adapter via `postgres.WithPoolSize`. Zero leaves the adapter default. |
+
+## RedisConfig
+
+Locates the event fan-out / cache store. YAML/JSON key: `redis`. Required when any projection is enabled and for live subscriptions.
+
+| Field | Type | yaml/json key | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `Addr` | `string` | `addr` | `""` | Redis address. Empty disables Redis (no live subscriptions, no projection event stream). |
+| `DB` | `int` | `db` | `0` | Redis logical database number. |
+| `Username` | `string` | `username` | `""` | Redis ACL username. |
+| `Password` | `string` | `password` | `""` | Redis password. |
+
+## FalkorDBConfig
+
+Locates the graph projection engine. YAML/JSON key: `falkordb`. Required when `projections.graph` is enabled.
+
+| Field | Type | yaml/json key | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `Addr` | `string` | `addr` | `""` | FalkorDB address. Empty leaves `Graph()` returning `ErrStoreNotConfigured`. |
+| `Username` | `string` | `username` | `""` | FalkorDB username. |
+| `Password` | `string` | `password` | `""` | FalkorDB password. |
+
+## ElasticsearchConfig
+
+Locates the search projection engine. YAML/JSON key: `elasticsearch`. Required when `projections.search` is enabled.
+
+| Field | Type | yaml/json key | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `Addrs` | `[]string` | `addrs` | `nil` | Elasticsearch node addresses. Empty leaves `Search()` returning `ErrStoreNotConfigured`. |
+| `Username` | `string` | `username` | `""` | Elasticsearch username. |
+| `Password` | `string` | `password` | `""` | Elasticsearch password. |
+
+## ProjectionsConfig
+
+Switches projection planes on. YAML/JSON key: `projections`.
+
+| Field | Type | yaml/json key | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `Graph` | `bool` | `graph` | `false` | Enable the graph projection. Requires `falkordb.addr` and `redis.addr`. |
+| `Search` | `bool` | `search` | `false` | Enable the search projection. Requires `elasticsearch.addrs` and `redis.addr`. |
+
+## SubscriptionsConfig
+
+Tunes the delta plane. YAML/JSON key: `subscriptions`. Each non-zero field is translated into a functional `Option` by `Config.Options()` (see below).
+
+| Field | Type | yaml/json key | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `ConflationWindow` | `time.Duration` | `conflation_window` | `0` (unset → option default `150ms`) | Hub last-write-wins flush window. When `> 0`, applied via `WithConflationWindow`. Must be `>= 0` (validated). |
+| `StreamMaxLen` | `int64` | `stream_max_len` | `0` (unset → option default `500`) | Approximate `MAXLEN` for per-channel Redis streams. When `> 0`, applied via `WithStreamMaxLen`; also passed to the Redis adapter as `redis.WithChannelMaxLen`. |
+| `SubscribeBuffer` | `int` | `subscribe_buffer` | `0` (unset → option default `64`) | Per-subscriber delta buffer. When `> 0`, applied via `WithSubscribeBuffer`. |
+
+<Callout type="info">
+A zero value in `SubscriptionsConfig` means "leave the default". `Config.Options()` only emits an `Option` for a field that is strictly greater than zero, so the option defaults in `defaultSettings()` apply otherwise.
+</Callout>
+
+## Functional Options
+
+`Option` values customize a `Fabriq` and are passed to `Open` or `New`. They mutate the internal `settings` struct. Defaults below come from `defaultSettings()`.
+
+| Option | Signature | Default | Effect |
+| --- | --- | --- | --- |
+| `WithConflationWindow` | `WithConflationWindow(d time.Duration) Option` | `150ms` | Tunes the hub's LWW flush window (spec range 100–250ms). Ignored when `d <= 0`. |
+| `WithSubscribeBuffer` | `WithSubscribeBuffer(n int) Option` | `64` | Sets the per-subscriber delta buffer; full buffers drop (clients refetch + resume by `Last-Event-ID`). Ignored when `n <= 0`. |
+| `WithWaitPollInterval` | `WithWaitPollInterval(d time.Duration) Option` | `25ms` | Tunes `WaitForProjection`'s poll cadence. Ignored when `d <= 0`. |
+| `WithStreamMaxLen` | `WithStreamMaxLen(n int64) Option` | `500` | Approximate `MAXLEN` for per-channel Redis streams (catch-up depth before clients must refetch). Ignored when `n <= 0`. |
+| `WithAuthz` | `WithAuthz(fn subscribe.AuthzFunc) Option` | none | Installs the subscribe-time authorization hook. |
+| `WithDocumentAuthz` | `WithDocumentAuthz(fn func(ctx context.Context, docID string) error) Option` | none | Installs the document-plane authorization hook, consulted for both `ApplyUpdate` (writes) and `SubscribeDocument` (reads). Without it, any authenticated member of the tenant may touch any of the tenant's documents. |
+| `WithUpcasters` | `WithUpcasters(chain *event.UpcasterChain) Option` | `nil` | Registers the event payload upcaster chain. Projection engines apply it at decode, so appliers only see the latest payload shape. |
+| `WithTraceparent` | `WithTraceparent(fn func(context.Context) string) Option` | `otel.TraceparentFromContext` | Supplies the W3C traceparent extractor stamped into event envelopes. Appended to the executor options. |
+| `WithClock` | `WithClock(now func() time.Time) Option` | system clock | Overrides the command-plane clock (tests). Appended to the executor options. |
+
+<Callout type="info">
+`withTailer` is an internal option (wires the hub pump from the Redis transport) and is not part of the public `Option` surface — `Open` selects it automatically when `redis.addr` is set. By default the executor is configured with `command.WithTraceparent(otel.TraceparentFromContext)` so one trace spans command → outbox → relay → projection apply.
+</Callout>
+
+## Environment Variables
+
+The `fabriq` binary (`cmd/fabriq`) is environment-first: the deployment injects a secret plus configmap. The `--dsn` global flag overrides `FABRIQ_POSTGRES_DSN` for ad-hoc operator use.
+
+| Variable | Read by | Default | Meaning |
+| --- | --- | --- | --- |
+| `FABRIQ_POSTGRES_DSN` | serve + every operator command | none | Postgres DSN. Required to serve. Overridden by `--dsn`. |
+| `FABRIQ_REDIS_ADDR` | serve | none | Redis address. Required to serve. |
+| `FABRIQ_FALKORDB_ADDR` | serve, rebuild, reconcile (inspect) | `""` | FalkorDB address. Optional: enables the graph projection. |
+| `FABRIQ_ELASTICSEARCH_ADDRS` | serve, rebuild, reconcile (inspect) | `""` | Comma-separated Elasticsearch addresses. Optional: enables the search projection. |
+| `FABRIQ_HTTP_ADDR` | serve | `:8081` | HTTP listen address for the worker (health, metrics). |
+| `FABRIQ_RECONCILE_INTERVAL` | serve | `5m` | Go duration string for the reconcile loop cadence. `"0"` disables it. Unparseable values are ignored (default kept). |
+
+<Callout type="warn">
+To serve, both `FABRIQ_POSTGRES_DSN` and `FABRIQ_REDIS_ADDR` must be set — the worker extension fails its start otherwise. Operator commands (`migrate`, `inspect`, `rebuild`, `reconcile`) need only the DSN (via `--dsn` or `FABRIQ_POSTGRES_DSN`), plus the relevant store flag/env for graph or search work.
+</Callout>
+
+## Validation Rules
+
+`Config.Validate()` checks cross-field consistency only — it does **not** dial any store. `Open` calls it before opening adapters. The rules:
+
+- `postgres.dsn` must be non-empty (Postgres is the source of truth).
+- If `projections.graph` is enabled, `falkordb.addr` must be non-empty.
+- If `projections.search` is enabled, `elasticsearch.addrs` must be non-empty.
+- If either projection is enabled, `redis.addr` must be non-empty (projections need the event stream).
+- `subscriptions.conflation_window` must be `>= 0`.
+
+Each failed rule returns a `fmt.Errorf` with a `fabriq: config: ...` prefix; none are typed sentinels.
+
+<Cards>
+<Card title="Configuration Guide" href="/docs/configuration">Task-oriented walkthrough of assembling and passing configuration.</Card>
+<Card title="Errors" href="/docs/reference/errors">The typed and sentinel errors Fabriq returns, including ErrStoreNotConfigured.</Card>
+<Card title="Decisions" href="/docs/reference/decisions">Architecture decision records behind these knobs.</Card>
+</Cards>

@@ -1,0 +1,117 @@
+---
+title: Architecture
+description: The facade, the engine-agnostic kernel, the adapter dialects, and the capability-port principle that ties them together.
+---
+
+Fabriq is the only module in the TWINOS platform allowed to talk to a datastore. Application code holds a single facade object and reaches every engine through typed capability ports — never a connection, never raw SQL against a foreign tenant, never a direct Redis call. This page describes the shape of that facade, the layering beneath it, and the design rules that keep the kernel swappable.
+
+## The facade
+
+`fabriq.Fabriq` is the struct application code holds. It implements `query.Fabric`, the interface that defines the whole application-facing surface: the write path (`Exec`, `ExecBatch`), one accessor per capability port (`Relational`, `Graph`, `Search`, `Timeseries`, `Vector`, `Document`), the delta plane (`Subscribe`), and the read-your-writes helper (`WaitForProjection`).
+
+```go
+type Fabric interface {
+	Exec(ctx context.Context, cmd command.Command) (command.Result, error)
+	ExecBatch(ctx context.Context, cmds []command.Command) ([]command.Result, error)
+
+	Relational() RelationalQuerier
+	Graph() GraphQuerier
+	Search() SearchQuerier
+	Timeseries() TSQuerier
+	Vector() VectorQuerier
+	Document() document.Store
+
+	Subscribe(ctx context.Context, scope SubscribeScope) (<-chan Delta, error)
+	WaitForProjection(ctx context.Context, projection, aggregate, aggID string, version int64) error
+}
+```
+
+A `Fabriq` is assembled from a `Ports` bundle. `Open` fills it from configured adapters; tests and embedders can supply `fabriqtest` fakes or custom implementations directly through `New`.
+
+```go
+type Ports struct {
+	Store           command.Store
+	Relational      query.RelationalQuerier
+	Graph           query.GraphQuerier
+	Search          query.SearchQuerier
+	Timeseries      query.TSQuerier
+	Vector          query.VectorQuerier
+	Documents       document.Store
+	ProjectionState projection.StateReader
+}
+```
+
+There are two ways in. `fabriq.Open(ctx, reg, cfg, opts...)` is config-driven: it dials the adapters named in the `Config`, wires the ports, and returns the `*Fabriq` facade plus a `*Stores` handle that the worker plane uses for the relay, leader election, and projection consumers. `fabriq.New(reg, ports, opts...)` is the seam for tests, embedding, and partial deployments — you hand it the ports directly.
+
+```go
+f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
+	Postgres: fabriq.PostgresConfig{DSN: dsn},
+	Redis:    fabriq.RedisConfig{Addr: redisAddr},
+})
+```
+
+## Mandatory vs optional ports
+
+Postgres is the source of truth, so two ports are mandatory: `Store` (the command plane's write surface) and `Relational` (the read surface). `New` returns an error if either is nil — there is no fabric without Postgres.
+
+Every other port is optional. When a store was not configured, its accessor returns a not-configured stub whose every method fails with the typed `ErrStoreNotConfigured` rather than panicking on a nil interface:
+
+```go
+func (f *Fabriq) Graph() query.GraphQuerier {
+	if f.ports.Graph == nil {
+		return notConfiguredGraph{}
+	}
+	return f.ports.Graph
+}
+```
+
+A minimal deployment is Postgres plus Redis; calling `f.Graph().Query(...)` on it returns `ErrStoreNotConfigured`, never a crash. This makes degraded deployments a first-class, testable state — see [Tenancy](/docs/tenancy) and [Projections](/docs/projections) for what each optional plane adds.
+
+## Three layers: core, adapters, domain
+
+```text
+        commands                queries (capability ports)        deltas
+           │                            │                           ▲
+           ▼                            ▼                           │
+┌──────────────────────────────────────────────────────────────────┴─────┐
+│ fabriq (facade)                                                         │
+│  core/registry  core/command  core/event  core/projection  core/subscribe
+│  ─────────────────────────── ports ──────────────────────────────────  │
+│  adapters/postgres (grove)  adapters/redis  adapters/falkordb  adapters/elastic
+└─────────────────────────────────────────────────────────────────────────┘
+     Postgres+Timescale+pgvector   Redis Streams   FalkorDB    Elasticsearch
+        (source of truth)           (fan-out)      (projection) (projection)
+```
+
+**`core/` is the kernel: domain-agnostic and engine-agnostic.** It holds the declarative schema registry (`core/registry`), the command plane and transactional outbox (`core/command`), the versioned event envelope and upcaster chain (`core/event`), the projection engine and its rebuild/reconcile machinery (`core/projection`), the subscription hub and authz gate (`core/subscribe`), and the capability-port definitions (`core/query`). No engine type — no `pgx`, no grove handle, no FalkorDB client, no `go-elasticsearch` — appears in any `core/` signature.
+
+**`adapters/` holds the engine dialects.** `adapters/postgres` implements the command store and the relational, timeseries, and vector ports on grove's pg driver. `adapters/redis`, `adapters/falkordb`, and `adapters/elastic` back the fan-out and the graph and search projections. Each adapter translates engine-neutral mutations into its own dialect (FalkorDB `MERGE`, Elasticsearch bulk ops) behind a port interface.
+
+**`domain/` is the only TWINOS-aware package.** It registers the entity pack (site, asset, tag, page) as `registry.EntitySpec` values. Swap it for your own pack against a fresh `registry.New()` to model a different domain; the kernel and adapters do not change.
+
+## No unified query language
+
+There is deliberately no single query DSL bolted across the engines. Each storage capability has its own explicit, engine-typed port. Relational work speaks SQL through grove; graph work speaks openCypher; search runs queries over an entity's declared fields. Because no engine type leaks into a port signature, an adapter can be replaced without touching application code — the openCypher conformance suite in `adapters/graphtest` is the gate that proves a graph-engine swap.
+
+This is a conscious rejection of the lowest-common-denominator query layer. A capability port exposes exactly what its engine does well (graph traversal, full-text match, nearest-neighbour) instead of flattening every engine to a shared subset.
+
+## Architecture boundaries are enforced
+
+The layering above is not a convention — it is linted. The build runs `depguard` (via `make lint`) to fence imports: grove driver imports are confined to `adapters/`, so `core/` cannot accidentally reach an engine type, and application code cannot reach a driver. When an ADR says a component "moved to `adapters/postgres` because depguard fences grove driver imports," this is the rule it is obeying.
+
+## One binary
+
+The whole fabric ships as a single `fabriq` binary built on forge/cli. It is both the worker and the operator CLI:
+
+- `fabriq serve` (the default with no args) runs the worker plane as a forge app — the outbox relay, the projection consumers, the reconciler scheduler, and the document plane.
+- `fabriq migrate up|down|status`, `fabriq rebuild`, `fabriq reconcile`, and `fabriq inspect` are the operator commands.
+
+See [Deployment](/docs/deployment) and the [CLI reference](/docs/cli) for how the binary is run in each role.
+
+## Where to go next
+
+<Cards>
+  <Card title="Registry" href="/docs/registry">How entities are declared once as specs and everything else is derived.</Card>
+  <Card title="Commands and Events" href="/docs/commands-and-events">The single write path, the transactional outbox, and the versioned event envelope.</Card>
+  <Card title="Tenancy" href="/docs/tenancy">The three enforcement layers that make every access tenant-scoped.</Card>
+</Cards>

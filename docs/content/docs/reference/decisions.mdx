@@ -1,0 +1,59 @@
+---
+title: Architecture Decisions
+description: Index of Fabriq's architecture decision records, each summarized and linked to its source.
+---
+
+Fabriq's significant architecture choices are recorded as ADRs under `docs/decisions/`. Each is summarized below and linked to its source on GitHub. All six are **accepted**, dated 2026-06-12.
+
+## ADR 0001 — Fabriq is a Standalone Forge-Ecosystem Repo
+
+**Status:** accepted · 2026-06-12
+
+The fabric was originally specced inside the twinos monorepo as `<monorepo>/fabric`; it was renamed **fabriq** and moved to its own repository, built as its own module following the Forge ecosystem convention. Module path is `github.com/xraph/fabriq` (Go 1.25.7, matching grove/forge), and twinos consumes it like any other xraph dependency (a local `replace` during co-development). The strict `core/` / `adapters/` / `domain/` boundaries are enforced from day one by depguard. The facade interface keeps the conceptual name `query.Fabric`, while binaries, tables (`fabriq_*`), streams (`fabriq:events`) and env vars (`FABRIQ_*`) use the product name.
+
+[Source: 0001-standalone-repo.md](https://github.com/xraph/fabriq/blob/main/docs/decisions/0001-standalone-repo.md)
+
+## ADR 0002 — Tenancy Enforcement Layers
+
+**Status:** accepted · 2026-06-12
+
+Tenancy is enforced in three layers, strongest first. (1) **Stamped transactions + RLS** — every tenant-table operation, reads included, runs in a transaction stamped with `SELECT set_config('app.tenant_id', $1, true)`; `FORCE` RLS policies key on that setting, so even raw SQL cannot cross tenants, and applications must connect as a non-superuser role. (2) **Structural stamping** — the command executor forces `id`, `tenant_id`, `version` from context, and all derived names (channels, graphs, indexes, cache keys) come from one place (`core/registry/derive.go`). (3) **Grove hook backstop** — a pre-query hook allows the transaction path (where RLS already enforces isolation) and denies any pool-path query against a tenant table with `ErrTenantHookTripped` plus a metric trip, because any pool-path tenant-table access is a bug. The `tag_readings` Timescale hypertable is the one RLS exception (see ADR 0006); the raw-SQL guard requires a literal `tenant_id` reference there.
+
+[Source: 0002-tenancy-layers.md](https://github.com/xraph/fabriq/blob/main/docs/decisions/0002-tenancy-layers.md)
+
+## ADR 0003 — go-redis Directly in `adapters/redis`
+
+**Status:** accepted · 2026-06-12
+
+Grove ships a kv abstraction with a thin Redis stream surface, but Fabriq's fan-out plane needs more: approximate `MAXLEN ~` trimming on `XADD` (part of the catch-up contract), `XAUTOCLAIM` for crashed-consumer recovery, pipelined multi-stream publishes (event stream plus N change channels per envelope), and exclusive `XRANGE (` reads for `Last-Event-ID` resume. The spec allows `go-redis/v9`, and depguard fences it to `adapters/` so no other package can import it. The cache and presence surfaces reuse the same client and connection pool; if grove's kv stream API grows these capabilities, swapping is contained to `adapters/redis`.
+
+[Source: 0003-redis-client.md](https://github.com/xraph/fabriq/blob/main/docs/decisions/0003-redis-client.md)
+
+## ADR 0004 — Advisory-Lock Leadership on Grove Dedicated Connections
+
+**Status:** accepted · 2026-06-12
+
+Singleton runners (outbox relay, reconciler) need exactly-one-active semantics across worker replicas. Session-level `pg_advisory_lock` is used: grove's pgdriver implements `driver.ConnAcquirer`, so the elector takes a dedicated pooled connection, acquires `pg_try_advisory_lock` on it, and keeps every later operation on that session. Because the lock dies with the session, a liveness watchdog (`SELECT 1` per heartbeat) abdicates by cancelling the leader's context the moment the session is gone, and a replica wins the next campaign; Postgres lock semantics exclude split-brain. The elector lives in `adapters/postgres` (not `internal/leader`) because depguard fences grove driver imports to `adapters/`. Lock keys are stable and never reused: **1001** relay, **1002** reconciler.
+
+[Source: 0004-leadership.md](https://github.com/xraph/fabriq/blob/main/docs/decisions/0004-leadership.md)
+
+## ADR 0005 — Relay Wake-Up via Grove Listener (LISTEN/NOTIFY)
+
+**Status:** accepted · 2026-06-12 (revised 2026-06-12)
+
+The outbox relay polls with `FOR UPDATE SKIP LOCKED` and is woken by `pg_notify('fabriq_outbox', id)` issued inside the command transaction, so the wake-up can never outrun the committed data. Receiving notifications needs a connection parked in `WaitForNotification`; an earlier connection-ordering race in grove's `pgdriver.Listener` forced a single direct `pgx.Conn` workaround, but grove fixed the race (`Listen`/`Unlisten` now queue commands executed by the connection-owning goroutine), so `listen.go` uses the supported `db.Listen(ctx, channel, handler)` flow and Fabriq has no direct pgx usage. The wrapper still adds reconnect/backoff (rebuild a fresh Listener with 1s backoff, since a stopped Listener cannot restart) and a 15s liveness probe re-issuing `Listen`. The wake-up is an optimization only — the interval poll is the correctness mechanism, so a broken listener degrades latency, never delivery.
+
+[Source: 0005-relay-listen-notify.md](https://github.com/xraph/fabriq/blob/main/docs/decisions/0005-relay-listen-notify.md)
+
+## ADR 0006 — No RLS on the Telemetry Hypertable
+
+**Status:** accepted · 2026-06-12
+
+TimescaleDB's columnstore refuses tables with row security (`columnstore cannot be used on table with row security`), and compressed telemetry is the entire reason Timescale is in the stack, so `tag_readings` keeps compression and drops RLS. Compensating controls: the readings table is reachable only through the `TSQuerier` (`BulkWrite`/`Range`), which stamps `tenant_id` structurally and validates the series name; it is not a registry entity, so the generic relational port cannot name it; the raw-SQL escape hatch rejects any SQL referencing an unprotected tenant table without a literal `tenant_id` (`ErrTenantHookTripped`, counted and alertable); and cross-tenant isolation is integration-tested. Revisiting is one `CREATE POLICY` away if Timescale lifts the restriction.
+
+[Source: 0006-timescale-rls.md](https://github.com/xraph/fabriq/blob/main/docs/decisions/0006-timescale-rls.md)
+
+<Cards>
+<Card title="Tenancy" href="/docs/tenancy">How the tenancy layers from ADR 0002 and 0006 work in practice.</Card>
+<Card title="Errors" href="/docs/reference/errors">ErrTenantHookTripped and the rest of the error taxonomy.</Card>
+</Cards>

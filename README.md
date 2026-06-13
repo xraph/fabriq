@@ -1,19 +1,26 @@
-# Fabriq — the TWINOS data fabric
+# Fabriq
+
+**One write path. Every engine, in step.**
 
 [![Go Version](https://img.shields.io/badge/go-1.25+-blue)](https://go.dev)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-Fabriq is the only module in the TWINOS platform allowed to talk to a datastore.
-It implements the invariants between stores:
+Fabriq is a standalone data fabric for Go. Every command commits once through a
+transactional outbox, then fans out to relational, time-series, vector, graph,
+and search engines — versioned, tenant-scoped, and always rebuildable.
+
+It gives an application a single write path and typed read ports across multiple
+storage engines while enforcing three structural invariants:
 
 - **Every write emits exactly one versioned event** — commands run in a Postgres
   transaction that appends to a transactional outbox; a leader-elected relay
-  publishes to Redis Streams.
-- **Every access is tenant-scoped** — tenant rides on `context.Context`, is
-  stamped structurally into every engine (Postgres `SET LOCAL` + RLS, FalkorDB
-  graph-per-tenant, ES index routing, Redis key prefixes), with a grove
-  pre-query hook as a loud backstop.
-- **Projections are always rebuildable from Postgres** — the knowledge graph
-  and the search index are derived projections, never written directly.
+  publishes the event to Redis Streams.
+- **Every access is tenant-scoped** — tenant rides on `context.Context` and is
+  stamped structurally into every engine (Postgres `SET LOCAL` + row-level
+  security, FalkorDB graph-per-tenant, Elasticsearch index routing, Redis key
+  prefixes), with a pre-query hook as a loud backstop.
+- **Projections are always rebuildable from Postgres** — the knowledge graph and
+  the search index are derived projections, never written directly.
 
 ## Architecture
 
@@ -22,20 +29,22 @@ It implements the invariants between stores:
            │                            │                           ▲
            ▼                            ▼                           │
 ┌──────────────────────────────────────────────────────────────────┴─────┐
-│ fabriq (facade)                                                        │
+│ fabriq (facade)                                                          │
 │  core/registry  core/command  core/event  core/projection  core/subscribe
 │  ─────────────────────────── ports ──────────────────────────────────  │
-│  adapters/postgres (grove)  adapters/redis  adapters/falkordb  adapters/elastic
-└─────────────────────────────────────────────────────────────────────────┘
+│  adapters/postgres  adapters/redis  adapters/falkordb  adapters/elastic  │
+└──────────────────────────────────────────────────────────────────────────┘
      Postgres+Timescale+pgvector   Redis Streams   FalkorDB    Elasticsearch
         (source of truth)           (fan-out)      (projection) (projection)
 ```
 
 Binaries:
 
-- `cmd/fabriq` — CLI (forge/cli): `migrate up|down|status`, `rebuild`, `reconcile`, `inspect`.
-- `cmd/fabriq-worker` — outbox relay, projection consumers, reconciler (forge app).
-- `cmd/api-example` — demo API: commands, queries, SSE fetch-then-subscribe (forge app).
+- `cmd/fabriq` — the data fabric in one binary. `serve` runs the worker (outbox
+  relay, projection consumers, reconciler, document plane); `migrate up|down|status`,
+  `rebuild`, `reconcile`, and `inspect` are the operator commands. The default
+  (no args) is `serve`.
+- `cmd/api-example` — a demo API: commands, queries, and SSE fetch-then-subscribe.
 
 ## Quick start
 
@@ -54,49 +63,45 @@ res, err := f.Exec(tenantCtx, command.Command{
     Payload: &domain.Asset{Name: "Pump 7", SiteID: siteID},
 })
 
-// Reads: capability ports.
+// Reads: typed capability ports.
 var a domain.Asset
 err = f.Relational().Get(tenantCtx, "asset", res.AggID, &a)
 
-// Live deltas: server-resolved channel, conflated, resumable.
+// Live deltas: server-resolved channel, conflated and resumable.
 deltas, err := f.Subscribe(tenantCtx, query.SubscribeScope{Entity: "asset", Scope: "site", ID: siteID})
 ```
 
-Every call requires a tenant-stamped context (`tenant.WithTenant`), set
-only by auth middleware from validated claims.
+Every call requires a tenant-stamped context (`tenant.WithTenant`), set only by
+auth middleware from validated claims.
 
-## Status
+## Capabilities
 
-**Implemented & integration-tested (phases 1–6):**
+All of the following are implemented and covered by integration tests:
 
-- Registry, command plane + transactional outbox, optimistic concurrency,
-  atomic batches; Postgres adapter on grove (RLS verified as
-  non-superuser, Timescale bulk telemetry, pgvector HNSW), migrations +
-  registry-conformance test.
-- Redis streams fan-out: leader-elected outbox relay (LISTEN/NOTIFY
-  wake), consumer groups with XAUTOCLAIM recovery, subscription hub
-  (conflation, SSE, Last-Event-ID resume).
-- **Graph projection** on FalkorDB: openCypher dialect (conformance suite
-  in `adapters/graphtest` — the engine-swap gate, green on a real
-  FalkorDB), projection engine, `TraverseAndHydrate` (one batched
-  hydration), blue-green rebuild verified to produce an identical graph.
-- **Search projection** on Elasticsearch: bulk writes with `external_gte`
-  version gating, multi_match over declared fields, lazy per-tenant
-  index+alias provisioning, atomic alias-swap rebuild.
-- **Reconciler**: per-aggregate drift detection (missing/stale/zombie)
-  between Postgres and each projection, repair through the ordinary
-  outbox (never direct engine writes) — integration-tested healing.
-- Observability: W3C traceparent stamped on every envelope by default,
-  Prometheus metrics + pollers in `fabriq-worker` (`/metrics`).
-- Binaries: `fabriq` CLI (`migrate`, `rebuild` incl. `finalize`,
-  `reconcile`, `inspect`), `fabriq-worker`, `api-example`.
-
-- **CRDT document plane** (phase 7): append-only update log folded
-  through grove's merge engine, seq-vector Sync, compaction, and
-  quiet-window materialization emitting ONE ordinary versioned event —
-  CRDT docs are normal entities downstream (integration-tested end to
-  end, including post-merge validation flagging). Remaining: the live
-  sync transport endpoint (Hub.PublishRaw seam in place).
+- **Command plane & outbox** — registry-driven commands, optimistic concurrency,
+  atomic batches, and a transactional outbox in Postgres.
+- **Postgres source of truth** — row-level security verified as a non-superuser,
+  Timescale hypertables for bulk telemetry, and pgvector (HNSW) for similarity
+  search, with migrations and a registry-conformance test.
+- **Redis Streams fan-out** — a leader-elected outbox relay (LISTEN/NOTIFY wake),
+  consumer groups with `XAUTOCLAIM` recovery, and a subscription hub (delta
+  conflation, SSE, Last-Event-ID resume).
+- **Graph projection (FalkorDB)** — an openCypher dialect behind a conformance
+  suite (the engine-swap gate), a batched `TraverseAndHydrate`, and blue-green
+  rebuilds verified to produce an identical graph.
+- **Search projection (Elasticsearch)** — version-gated bulk writes,
+  multi-field full-text search, lazy per-tenant index + alias provisioning, and
+  atomic alias-swap rebuilds.
+- **Reconciler** — per-aggregate drift detection (missing / stale / zombie)
+  between Postgres and each projection, healed through the ordinary outbox rather
+  than direct engine writes.
+- **CRDT document plane** — an append-only update log folded through a merge
+  engine, with sequence-vector sync, compaction, and quiet-window materialization
+  that emits a single ordinary versioned event, so collaborative documents are
+  normal entities downstream.
+- **Observability** — a W3C `traceparent` stamped on every event envelope by
+  default, plus Prometheus metrics exposed by the worker (`fabriq serve`,
+  `/metrics`).
 
 ## Development
 
@@ -107,13 +112,21 @@ make bench             # benchmarks
 make lint              # incl. depguard architecture boundaries
 ```
 
-Decisions live in [docs/decisions](docs/decisions); runbooks in
-[docs/OPERATIONS.md](docs/OPERATIONS.md); schema discipline in
+Architecture decisions live in [docs/decisions](docs/decisions), operational
+runbooks in [docs/OPERATIONS.md](docs/OPERATIONS.md), and schema discipline in
 [docs/MIGRATIONS.md](docs/MIGRATIONS.md).
 
-Built on the Forge ecosystem: [grove](https://github.com/xraph/grove) (storage),
-[forge](https://github.com/xraph/forge) (apps + CLI).
+Fabriq builds on [grove](https://github.com/xraph/grove) for storage and
+[forge](https://github.com/xraph/forge) for application and CLI scaffolding.
 
 ## License
 
-Part of the Forge ecosystem.
+Licensed under the Apache License, Version 2.0. You may obtain a copy of the
+License in the [LICENSE](LICENSE) file or at
+<http://www.apache.org/licenses/LICENSE-2.0>.
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied.
+
+Copyright 2026 xraph.

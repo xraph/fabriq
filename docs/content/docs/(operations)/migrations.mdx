@@ -1,0 +1,130 @@
+---
+title: Migrations
+description: The migrations package is fabriq's DDL authority — grove Go-code migrations run as a discrete deploy step by the schema owner, with CI-enforced conformance against the registry.
+---
+
+The `migrations/` package is fabriq's **DDL authority**: grove Go-code
+migrations in group `fabriq` (`migrations.GroupName`). Everything
+Postgres-side lives in one ordered stream. The registry never generates DDL —
+it declares the shape application code expects, and a CI test proves the schema
+matches it.
+
+<Callout type="info">
+The **registry-conformance integration test** (in the migrations package)
+diffs `information_schema` against every registered entity spec in **both
+directions** and fails CI on drift. A column the registry expects but the DDL
+lacks fails; a column the DDL has but the registry never declared fails too.
+The two cannot silently diverge.
+</Callout>
+
+## Running
+
+Migrations are a **discrete deploy step**, never run at app startup. In
+Kubernetes the Helm chart runs them as a `pre-install,pre-upgrade` hook
+(`fabriq migrate up`); elsewhere, run them yourself before the worker serves.
+
+```bash
+fabriq migrate up      # apply pending (grove holds the advisory migration lock)
+fabriq migrate status  # applied/pending per group
+fabriq migrate down    # roll back the most recent migration
+```
+
+`fabriq migrate` connects as the schema **owner**; applications connect as a
+non-superuser role. This split matters: **RLS does not constrain superusers or
+table owners**, so the application role must not own the schema. The
+integration harness provisions a `fabriq_app` role exactly this way, and the
+RLS policies `FORCE` row security so even the owner is constrained when reached
+through the application path.
+
+grove acquires its migration lock on a dedicated connection, so concurrent
+`fabriq migrate` runs (for example, parallel Helm hooks across releases) are
+safe.
+
+## Expand / contract discipline
+
+Every schema change ships across two or three releases so old and new code
+overlap without breaking:
+
+<Steps>
+<Step>
+**Expand** — add the new column, table, or index, nullable or defaulted. Old
+and new code both run against it.
+</Step>
+<Step>
+**Migrate** — deploy code that reads and writes the new shape. Backfill in
+batches if needed; a migration may do this, keeping batches under 5k rows.
+</Step>
+<Step>
+**Contract** — once nothing reads the old shape, drop it in a later migration.
+</Step>
+</Steps>
+
+<Callout type="error">
+Never: rename a column in place, change a column type in place, or add
+`NOT NULL` without a default in one step. Each breaks in-flight readers of the
+old shape.
+</Callout>
+
+## What lives in the stream
+
+One ordered group holds everything Postgres-side. By migration:
+
+| Version | Contents |
+| --- | --- |
+| `0001` | `fabriq_outbox` — transactional outbox + unpublished partial index. |
+| `0002` | `fabriq_projection_state` — per-tenant projection pointers. |
+| `0003` | Domain tables (`sites`, `assets`, `tags`) + `tag_readings`. |
+| `0004` | RLS policies on the tenant-data tables. |
+| `0005` | Timescale hypertable + compression on `tag_readings`. |
+| `0006` | pgvector extension, `fabriq_embeddings` table, HNSW cosine index. |
+| `0007` | CRDT plane: `fabriq_crdt_updates` log + `fabriq_crdt_snapshots`. |
+| `0008` | Document registry `fabriq_crdt_docs` + the `pages` demo entity. |
+
+Grove migration executors run statements **outside an explicit transaction
+(autocommit)**, so `CREATE INDEX CONCURRENTLY` is usable in this stream when a
+large-table index lands.
+
+### RLS coverage
+
+- **Tenant-data tables** (`sites`, `assets`, `tags`, and the CRDT
+  update/snapshot tables) carry RLS. Policies key on
+  `current_setting('app.tenant_id', true)`, which the Postgres adapter sets
+  with `SET LOCAL` inside every tenant transaction. Outside a stamped
+  transaction the setting is NULL and no rows are visible. `FORCE` row security
+  applies the policy to the table owner too.
+- **`tag_readings` deliberately has no RLS.** TimescaleDB's columnstore refuses
+  tables with row security, and compressed telemetry is the reason Timescale is
+  here. Tenancy there is structural: the TSQuerier stamps `tenant_id` into
+  every statement, backed by the adapter's raw-SQL guard. See
+  [Tenancy](/docs/tenancy) and decision
+  [0006](/docs/reference/decisions).
+- **Worker-plane tables** (`fabriq_outbox`, `fabriq_projection_state`,
+  `fabriq_crdt_docs`) have no RLS by design: they are read across tenants by
+  the relay, consumers, and materializer, and are unreachable through the
+  application ports.
+
+### Extensions skip quietly
+
+The Timescale (`0005`) and pgvector (`0006`) migrations check
+`extensionAvailable` first and return without error when the extension is
+absent. Plain-Postgres dev environments still migrate cleanly — the TSQuerier
+then runs on a plain table, and the vector port is simply unavailable.
+
+## Embedding in a host app
+
+Host applications that embed fabriq alongside their own grove migration groups
+compose them through one orchestrator. Depend on `migrations.GroupName`
+(`"fabriq"`) so host migrations order after fabriq's:
+
+```go
+migrate.DependsOn(migrations.GroupName)
+```
+
+<Cards>
+  <Card title="CLI" href="/docs/cli">
+    The migrate subcommands and the owner-vs-app DSN distinction.
+  </Card>
+  <Card title="Deployment" href="/docs/deployment">
+    Running migrations as the Helm pre-upgrade hook.
+  </Card>
+</Cards>

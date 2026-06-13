@@ -1,0 +1,106 @@
+---
+title: Errors Reference
+description: Fabriq's typed and sentinel errors, when each occurs, and how callers detect them.
+---
+
+Fabriq exposes a typed error taxonomy. Sentinel values are matched with `errors.Is`; rich struct variants carry detail, satisfy `errors.As`, and still match their sentinel through a custom `Is` method.
+
+The canonical values live in core packages (`core/fabriqerr`, `core/tenant`) — the root `fabriq` package imports core, never the reverse — and are **aliased** at the root so application code uniformly writes `fabriq.ErrX` and `fabriq.XError`.
+
+## Sentinel errors
+
+Match these with `errors.Is`. They survive wrapping (`fmt.Errorf("...: %w", err)`).
+
+| Error | Root alias of | Message | When it occurs |
+| --- | --- | --- | --- |
+| `ErrNoTenant` | `tenant.ErrNoTenant` | `fabriq: no tenant in context` | Any fabric call whose context was not stamped with a tenant by auth middleware. |
+| `ErrTenantHookTripped` | `tenant.ErrTenantHookTripped` | `fabriq: tenant guard tripped` | The grove pre-query/raw-SQL backstop detects a pool-path relational query (or unguarded `tag_readings` access) without a tenant predicate. Its firing indicates a bug in Fabriq — structural stamping was bypassed. |
+| `ErrNotFound` | `fabriqerr.ErrNotFound` | `fabriq: not found` | An aggregate or row does not exist within the calling tenant's scope. |
+| `ErrVersionConflict` | `fabriqerr.ErrVersionConflict` | `fabriq: version conflict` | A command's expected version does not match the stored aggregate version (optimistic concurrency). |
+| `ErrProjectionLag` | `fabriqerr.ErrProjectionLag` | `fabriq: projection lagging` | `WaitForProjection` deadline expires before the projection catches up to the requested version. |
+| `ErrStoreNotConfigured` | `fabriqerr.ErrStoreNotConfigured` | `fabriq: store not configured` | A capability port whose backing store was not configured on `Open` is invoked (e.g. `Graph()` without FalkorDB, `CatchUp` without a tailer). |
+
+```go
+delta, err := f.WaitForProjection(ctx, "search", "asset", id, 7)
+if errors.Is(err, fabriq.ErrProjectionLag) {
+	// deadline expired before the projection reached v7
+}
+
+if errors.Is(err, fabriq.ErrStoreNotConfigured) {
+	// the backing store for this port was not opened
+}
+```
+
+<Callout type="warn">
+`ErrTenantHookTripped` firing in production is a defect signal, not an expected control-flow error: it means a query reached the engine without the structural tenant stamping. It is counted as a metric trip and should be alerted on. See [ADR 0002](/docs/reference/decisions).
+</Callout>
+
+## Struct errors
+
+These carry fields. Recover them with `errors.As`; they also match their sentinel with `errors.Is` via a custom `Is` method. Both are aliased at the root (`fabriq.VersionConflictError`, `fabriq.NotFoundError`).
+
+### VersionConflictError
+
+Reports an optimistic-concurrency failure. Matches `errors.Is(err, ErrVersionConflict)`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `Aggregate` | `string` | Aggregate/entity name. |
+| `AggID` | `string` | Aggregate instance ID. |
+| `Expected` | `int64` | Version the command expected. |
+| `Actual` | `int64` | Version actually stored. |
+
+Message format: `fabriq: version conflict on <Aggregate>/<AggID>: expected <Expected>, actual <Actual>`.
+
+```go
+_, err := f.Exec(ctx, cmd)
+var vc *fabriq.VersionConflictError
+if errors.As(err, &vc) {
+	// vc.Expected, vc.Actual carry the mismatch — reload and retry
+	log.Printf("conflict on %s/%s: had v%d, wanted v%d",
+		vc.Aggregate, vc.AggID, vc.Actual, vc.Expected)
+}
+// Still matches the sentinel, even when wrapped:
+if errors.Is(err, fabriq.ErrVersionConflict) { /* ... */ }
+```
+
+### NotFoundError
+
+Reports a missing aggregate within the tenant's scope. Matches `errors.Is(err, ErrNotFound)`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `Entity` | `string` | Entity name. |
+| `ID` | `string` | Missing instance ID. |
+
+Message format: `fabriq: <Entity> "<ID>" not found`.
+
+```go
+var nf *fabriq.NotFoundError
+if errors.As(err, &nf) {
+	// nf.Entity, nf.ID identify what was missing
+}
+if errors.Is(err, fabriq.ErrNotFound) { /* ... */ }
+```
+
+## Detection summary
+
+| Error | Detect with |
+| --- | --- |
+| `ErrNoTenant` | `errors.Is` |
+| `ErrTenantHookTripped` | `errors.Is` |
+| `ErrNotFound` | `errors.Is`; `errors.As(&*NotFoundError)` for fields |
+| `ErrVersionConflict` | `errors.Is`; `errors.As(&*VersionConflictError)` for fields |
+| `ErrProjectionLag` | `errors.Is` |
+| `ErrStoreNotConfigured` | `errors.Is` |
+| `VersionConflictError` | `errors.As`; `errors.Is(err, ErrVersionConflict)` |
+| `NotFoundError` | `errors.As`; `errors.Is(err, ErrNotFound)` |
+
+<Callout type="info">
+The sentinels are guaranteed distinct: `errors.Is(a, b)` is false for any two different sentinels. A wrapped `VersionConflictError` still satisfies `errors.Is(err, ErrVersionConflict)` and `errors.As` recovers the struct with its fields intact.
+</Callout>
+
+<Cards>
+<Card title="Configuration" href="/docs/reference/configuration">Config validation and the store toggles behind ErrStoreNotConfigured.</Card>
+<Card title="Decisions" href="/docs/reference/decisions">ADR 0002 explains ErrTenantHookTripped and the tenancy backstop.</Card>
+</Cards>
