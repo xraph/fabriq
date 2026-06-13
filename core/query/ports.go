@@ -111,11 +111,44 @@ type SearchQuerier interface {
 	ApplyMutations(ctx context.Context, target string, muts []projection.Mutation) error
 }
 
-// SearchQuery is a match query over an entity's declared fields.
+// SearchQuery is a full-text query over an entity's declared fields,
+// optionally narrowed by structured non-scoring filters, ordered and
+// paginated. Filter and Sort are validated against the INDEXED fields (the
+// declared search fields plus id/tenant_id/version) — you can only filter
+// or sort on what the index holds.
+//
+// There is deliberately no raw engine-DSL field. Unlike relational (raw
+// SQL) and graph (raw openCypher common subset), full-text search has no
+// portable raw language — an Elasticsearch query body could not be honored
+// by a Postgres-FTS or Typesense adapter — so a raw DSL would break the
+// swappable-port contract. Everything expressible stays in this neutral
+// struct; genuinely engine-specific needs belong on a dedicated adapter
+// method, outside the port.
 type SearchQuery struct {
 	Entity string
 	Query  string
+	// Filter narrows results with the same Cond vocabulary as relational
+	// List (Eq/In/Gt/…/Or), applied by engines in non-scoring filter
+	// context. Columns must be indexed fields.
+	Filter Where
+	// Sort is an indexed column, optionally suffixed " DESC". Empty sorts
+	// by relevance score.
+	Sort string
+	// Limit caps the page size (adapter default when <= 0); Offset skips
+	// that many leading hits.
 	Limit  int
+	Offset int
+}
+
+// SearchRequest is the call-site form of a structured search over a typed
+// Repo: SearchQuery without Entity, which the Repo supplies from T. Build
+// Filter with the same constructors as relational filters (query.Eq, …).
+type SearchRequest struct {
+	Query  string
+	Filter Where
+	Sort   string
+	Limit  int
+	Offset int
 }
 
 // TSQuerier is the telemetry port (TimescaleDB hypertables). BulkWrite is

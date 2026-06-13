@@ -261,6 +261,77 @@ func TestRepo_GraphWalkValidation(t *testing.T) {
 	}
 }
 
+func TestRepo_SearchWith(t *testing.T) {
+	w, x := repoWorld(t)
+	ctx := ftCtx(t, "acme")
+
+	// Seed relational rows + index a search doc per row (id, name, version).
+	type seed struct {
+		name    string
+		version int64
+	}
+	ids := make(map[string]string)
+	for _, s := range []seed{{"Main Pump", 1}, {"Backup Pump", 2}, {"Inlet Valve", 3}} {
+		res, err := x.Exec(ctx, command.Command{Entity: "asset", Op: command.OpCreate, Payload: &ftAsset{Name: s.name, SiteID: "S1"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[s.name] = res.AggID
+		if err := w.Search.ApplyMutations(ctx, "assets", []projection.Mutation{
+			projection.DocIndex{Index: "assets", ID: res.AggID, Version: s.version,
+				Doc: map[string]any{"id": res.AggID, "tenant_id": "acme", "name": s.name, "version": s.version}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	repo, err := query.For[ftAsset](w.Registry, w.Rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo = repo.WithSearch(w.Search)
+
+	// Free text + sort by name: both pumps, ascending.
+	pumps, err := repo.SearchWith(ctx, query.SearchRequest{Query: "pump", Sort: "name"})
+	if err != nil {
+		t.Fatalf("SearchWith text+sort: %v", err)
+	}
+	if len(pumps) != 2 || pumps[0].Name != "Backup Pump" || pumps[1].Name != "Main Pump" {
+		t.Fatalf("text+sort = %+v", pumps)
+	}
+
+	// No text + structured filter (version >= 2) + numeric sort: all docs
+	// matched, then narrowed and ordered by version.
+	recent, err := repo.SearchWith(ctx, query.SearchRequest{
+		Filter: query.Where{query.Gte("version", 2)},
+		Sort:   "version",
+	})
+	if err != nil {
+		t.Fatalf("SearchWith filter: %v", err)
+	}
+	if len(recent) != 2 || recent[0].Name != "Backup Pump" || recent[1].Name != "Inlet Valve" {
+		t.Fatalf("filter+sort = %+v", recent)
+	}
+
+	// Pagination: sort by name, skip 1, take 1 -> the middle row.
+	page, err := repo.SearchWith(ctx, query.SearchRequest{Sort: "name", Offset: 1, Limit: 1})
+	if err != nil {
+		t.Fatalf("SearchWith page: %v", err)
+	}
+	if len(page) != 1 || page[0].Name != "Inlet Valve" {
+		t.Fatalf("page = %+v", page)
+	}
+
+	// Filter/sort may only reference INDEXED fields. site_id is a column
+	// but not in the search index -> rejected, both as a filter and a sort.
+	if _, err := repo.SearchWith(ctx, query.SearchRequest{Filter: query.Where{query.Eq("site_id", "S1")}}); err == nil {
+		t.Fatal("filter on a non-indexed field must be rejected")
+	}
+	if _, err := repo.SearchWith(ctx, query.SearchRequest{Sort: "site_id"}); err == nil {
+		t.Fatal("sort on a non-indexed field must be rejected")
+	}
+}
+
 func TestRepo_CapabilityNotConfigured(t *testing.T) {
 	w, _ := repoWorld(t)
 	ctx := ftCtx(t, "acme")

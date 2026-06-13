@@ -567,7 +567,11 @@ func (s *FakeSearch) ApplyMutations(_ context.Context, _ string, muts []projecti
 	return nil
 }
 
-// Search implements substring match over the entity's declared fields.
+// Search implements substring match over the entity's declared fields,
+// narrowed by the structured Filter, ordered by Sort (id when empty, since
+// the fake has no relevance score) and paginated by Offset/Limit. It
+// mirrors the ES adapter's neutral contract closely enough for unit tests;
+// the integration suite is the source of truth for scoring and analysis.
 func (s *FakeSearch) Search(ctx context.Context, q query.SearchQuery, into any) error {
 	tid, err := tenant.Require(ctx)
 	if err != nil {
@@ -581,31 +585,66 @@ func (s *FakeSearch) Search(ctx context.Context, q query.SearchQuery, into any) 
 	if !ok {
 		return fmt.Errorf("fabriq: FakeSearch scans into *[]map[string]any, got %T", into)
 	}
+	if err := query.ValidateSearchQuery(q, ent.Spec.Search.Fields); err != nil {
+		return err
+	}
 	needle := strings.ToLower(q.Query)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	ids := make([]string, 0)
-	docs := s.indexes[ent.Spec.Search.Index]
-	for id, d := range docs {
+	matched := make([]map[string]any, 0)
+	for _, d := range s.indexes[ent.Spec.Search.Index] {
 		if d.doc[registry.ColumnTenant] != tid {
 			continue
 		}
-		for _, f := range ent.Spec.Search.Fields {
-			if sv, isStr := d.doc[f].(string); isStr && strings.Contains(strings.ToLower(sv), needle) {
-				ids = append(ids, id)
-				break
+		if needle != "" && !matchesText(d.doc, ent.Spec.Search.Fields, needle) {
+			continue
+		}
+		if len(q.Filter) > 0 {
+			pass, err := evalConds(d.doc, q.Filter)
+			if err != nil {
+				return err
+			}
+			if !pass {
+				continue
 			}
 		}
+		matched = append(matched, d.doc)
 	}
-	sort.Strings(ids)
-	if q.Limit > 0 && len(ids) > q.Limit {
-		ids = ids[:q.Limit]
+
+	sortCol, desc := query.SortField(q.Sort)
+	if sortCol == "" {
+		sortCol = registry.ColumnID // no score in the fake: stable id order
 	}
-	for _, id := range ids {
-		*dest = append(*dest, docs[id].doc)
+	sort.SliceStable(matched, func(i, j int) bool {
+		cmp, _ := compareVals(matched[i][sortCol], matched[j][sortCol])
+		if desc {
+			return cmp > 0
+		}
+		return cmp < 0
+	})
+
+	if q.Offset > 0 {
+		if q.Offset >= len(matched) {
+			return nil
+		}
+		matched = matched[q.Offset:]
 	}
+	if q.Limit > 0 && len(matched) > q.Limit {
+		matched = matched[:q.Limit]
+	}
+	*dest = append(*dest, matched...)
 	return nil
+}
+
+// matchesText reports whether any declared field contains the needle.
+func matchesText(doc map[string]any, fields []string, needle string) bool {
+	for _, f := range fields {
+		if sv, isStr := doc[f].(string); isStr && strings.Contains(strings.ToLower(sv), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- FakeTS (query.TSQuerier) ----------------------------------------------------

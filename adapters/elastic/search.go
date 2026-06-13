@@ -11,8 +11,10 @@ import (
 )
 
 // Search implements query.SearchQuerier: a multi_match over the entity's
-// DECLARED search fields against the tenant's alias. An absent alias (no
-// document ever indexed for this tenant) is an empty result, not an error.
+// DECLARED search fields against the tenant's alias, optionally narrowed by
+// a structured Filter (non-scoring bool filter context), ordered by Sort
+// and paginated by Offset. An absent alias (no document ever indexed for
+// this tenant) is an empty result, not an error.
 func (a *Adapter) Search(ctx context.Context, q query.SearchQuery, into any) error {
 	tenantID, err := tenantFrom(ctx)
 	if err != nil {
@@ -26,19 +28,45 @@ func (a *Adapter) Search(ctx context.Context, q query.SearchQuery, into any) err
 	if !ok {
 		return fmt.Errorf("fabriq: Search scans into *[]map[string]any, got %T", into)
 	}
+	if verr := query.ValidateSearchQuery(q, ent.Spec.Search.Fields); verr != nil {
+		return verr
+	}
 	size := q.Limit
 	if size <= 0 {
 		size = 25
 	}
 
+	// must: the full-text component (match_all when no text, so a
+	// filter-only search still works); filter: the non-scoring narrowing.
+	var must map[string]any
+	if q.Query != "" {
+		must = map[string]any{"multi_match": map[string]any{"query": q.Query, "fields": ent.Spec.Search.Fields}}
+	} else {
+		must = map[string]any{"match_all": map[string]any{}}
+	}
+	boolQuery := map[string]any{"must": []any{must}}
+	if len(q.Filter) > 0 {
+		clauses, ferr := esFilterClauses(q.Filter)
+		if ferr != nil {
+			return ferr
+		}
+		boolQuery["filter"] = clauses
+	}
+
 	req := map[string]any{
-		"size": size,
-		"query": map[string]any{
-			"multi_match": map[string]any{
-				"query":  q.Query,
-				"fields": ent.Spec.Search.Fields,
-			},
-		},
+		"size":  size,
+		"query": map[string]any{"bool": boolQuery},
+	}
+	if q.Offset > 0 {
+		req["from"] = q.Offset
+	}
+	if q.Sort != "" {
+		col, desc := query.SortField(q.Sort)
+		order := "asc"
+		if desc {
+			order = "desc"
+		}
+		req["sort"] = []any{map[string]any{esSortField(col): map[string]any{"order": order}}}
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
