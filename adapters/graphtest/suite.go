@@ -65,6 +65,23 @@ func Cases() []Case {
 			WantIDs: []string{"A1", "A2"},
 		},
 		{
+			// Source-anchored forward and reverse hops are the shapes the
+			// bounded Repo.Out / Repo.In helpers emit; gate both arrow
+			// directions so those helpers stay portable across engines.
+			Name:    "source-anchored forward hop",
+			Seed:    seed,
+			Cypher:  `MATCH (n:Asset {id: $id})-[:CHILD_OF]->(m:Asset) RETURN m.id ORDER BY m.id`,
+			Params:  map[string]any{"id": "A2"},
+			WantIDs: []string{"A1"},
+		},
+		{
+			Name:    "reverse hop traversal",
+			Seed:    seed,
+			Cypher:  `MATCH (n:Asset {id: $id})<-[:CHILD_OF]-(m:Asset) RETURN m.id ORDER BY m.id`,
+			Params:  map[string]any{"id": "A1"},
+			WantIDs: []string{"A2"},
+		},
+		{
 			Name:    "variable length path",
 			Seed:    seed,
 			Cypher:  `MATCH (a:Asset)-[:CHILD_OF*1..3]->(root:Asset {id: $root}) RETURN a.id`,

@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"regexp"
+	"sort"
+	"strings"
 
 	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/registry"
@@ -22,11 +25,13 @@ import (
 // It adds no query capability beyond the ports — just typing. The graph,
 // search and vector queriers are optional; the relational one is required.
 type Repo[T any] struct {
-	rel    RelationalQuerier
-	graph  GraphQuerier
-	search SearchQuerier
-	vector VectorQuerier
-	entity string
+	rel      RelationalQuerier
+	graph    GraphQuerier
+	search   SearchQuerier
+	vector   VectorQuerier
+	entity   string
+	node     string              // graph label (EntitySpec.GraphNode); "" = not graphed
+	selfRels map[string]struct{} // declared edges whose Target is this entity
 }
 
 // For builds a typed Repo by resolving T's registered entity. T is the
@@ -45,7 +50,13 @@ func For[T any](reg *registry.Registry, rel RelationalQuerier) (*Repo[T], error)
 	if !ok {
 		return nil, fmt.Errorf("fabriq: no registered entity for model type %s", t)
 	}
-	return &Repo[T]{rel: rel, entity: ent.Spec.Name}, nil
+	selfRels := make(map[string]struct{})
+	for _, e := range ent.Spec.Edges {
+		if e.Target == ent.Spec.Name {
+			selfRels[e.Rel] = struct{}{}
+		}
+	}
+	return &Repo[T]{rel: rel, entity: ent.Spec.Name, node: ent.Spec.GraphNode, selfRels: selfRels}, nil
 }
 
 // WithGraph attaches the graph querier (enables Traverse).
@@ -173,4 +184,134 @@ func idsFromHits(hits []map[string]any) []string {
 		}
 	}
 	return ids
+}
+
+// graphHopCap bounds variable-length expansion so a typo can't ask the
+// engine to walk the whole graph.
+const graphHopCap = 16
+
+// relIdent is the portable relationship-type / label identifier grammar
+// (matches the adapter's validIdent) — the syntactic injection guard for
+// the one place a traversal interpolates an identifier into Cypher.
+var relIdent = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+
+// Out returns the same-type neighbours one hop out along a self-edge,
+// typed and hydrated from Postgres:
+//
+//	MATCH (n:Asset {id:$id})-[:CHILD_OF]->(m:Asset) RETURN m.id
+//
+//	parents, err := repo.Out(ctx, assetID, "CHILD_OF") // []*domain.Asset
+//
+// rel must be an edge this entity declares whose Target is the entity
+// itself (a self-edge) — that is what makes the []*T result sound. Edges
+// to other entity types, and anything outside MATCH/edge/RETURN, drop to
+// the raw Traverse escape hatch. These helpers emit only the openCypher
+// common subset the graphtest conformance suite gates, so they stay
+// portable across graph engines.
+func (r *Repo[T]) Out(ctx context.Context, id, rel string) ([]*T, error) {
+	return r.walk(ctx, id, rel, dirOut, 0, 0)
+}
+
+// In is Out with the edge reversed: same-type neighbours one hop in along
+// a self-edge — MATCH (n:L {id:$id})<-[:REL]-(m:L) RETURN m.id.
+func (r *Repo[T]) In(ctx context.Context, id, rel string) ([]*T, error) {
+	return r.walk(ctx, id, rel, dirIn, 0, 0)
+}
+
+// Reachable returns the same-type nodes reachable from id by following a
+// self-edge between minHops and maxHops times (a variable-length path) —
+// the typed ancestors/descendants walk:
+//
+//	MATCH (n:Asset {id:$id})-[:CHILD_OF*1..3]->(m:Asset) RETURN m.id
+//
+//	ancestors, err := repo.Reachable(ctx, assetID, "CHILD_OF", 1, 5)
+//
+// minHops must be >= 1 and maxHops within [minHops, 16]. Ids are deduped
+// (multiple paths may reach the same node) before hydration. For the
+// reverse direction or richer shapes, use raw Traverse.
+func (r *Repo[T]) Reachable(ctx context.Context, id, rel string, minHops, maxHops int) ([]*T, error) {
+	return r.walk(ctx, id, rel, dirOut, minHops, maxHops)
+}
+
+type walkDir int
+
+const (
+	dirOut walkDir = iota
+	dirIn
+)
+
+// walk validates the traversal, runs the id-returning Cypher, dedupes and
+// hydrates in one batched query.
+func (r *Repo[T]) walk(ctx context.Context, id, rel string, dir walkDir, minHops, maxHops int) ([]*T, error) {
+	cypher, err := r.walkCypher(rel, dir, minHops, maxHops)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	if err := r.graph.Query(ctx, cypher, map[string]any{"id": id}, &ids); err != nil {
+		return nil, fmt.Errorf("fabriq: graph walk: %w", err)
+	}
+	return r.GetMany(ctx, dedupeStrings(ids))
+}
+
+// walkCypher validates the relationship and builds the common-subset
+// Cypher. The label comes from the registry (GraphNode); the relationship
+// is checked against the entity's declared self-edges and the identifier
+// grammar — so the one interpolation point is injection-safe.
+func (r *Repo[T]) walkCypher(rel string, dir walkDir, minHops, maxHops int) (string, error) {
+	if r.graph == nil {
+		return "", fmt.Errorf("fabriq: graph traversal: graph %w (build via fabriq.For)", fabriqerr.ErrStoreNotConfigured)
+	}
+	if r.node == "" {
+		return "", fmt.Errorf("fabriq: entity %q is not projected to the graph (no GraphNode)", r.entity)
+	}
+	if !relIdent.MatchString(rel) {
+		return "", fmt.Errorf("fabriq: invalid relationship type %q", rel)
+	}
+	if _, ok := r.selfRels[rel]; !ok {
+		return "", fmt.Errorf("fabriq: %q is not a self-edge on %q; declared self-edges: [%s] (use raw Traverse for cross-type)",
+			rel, r.entity, strings.Join(r.selfRelNames(), ", "))
+	}
+	hop := ""
+	if minHops != 0 || maxHops != 0 {
+		if minHops < 1 || maxHops < minHops || maxHops > graphHopCap {
+			return "", fmt.Errorf("fabriq: hop range %d..%d invalid (need 1 <= min <= max <= %d)", minHops, maxHops, graphHopCap)
+		}
+		hop = fmt.Sprintf("*%d..%d", minHops, maxHops)
+	}
+	switch dir {
+	case dirIn:
+		return fmt.Sprintf("MATCH (n:%[1]s {id: $id})<-[:%[2]s%[3]s]-(m:%[1]s) RETURN m.id ORDER BY m.id", r.node, rel, hop), nil
+	default: // dirOut
+		return fmt.Sprintf("MATCH (n:%[1]s {id: $id})-[:%[2]s%[3]s]->(m:%[1]s) RETURN m.id ORDER BY m.id", r.node, rel, hop), nil
+	}
+}
+
+// selfRelNames returns the declared self-edge relationship types, sorted,
+// for error messages.
+func (r *Repo[T]) selfRelNames() []string {
+	names := make([]string, 0, len(r.selfRels))
+	for rel := range r.selfRels {
+		names = append(names, rel)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// dedupeStrings drops repeats while preserving first-seen order — a
+// variable-length path can reach the same node by several routes.
+func dedupeStrings(in []string) []string {
+	if len(in) < 2 {
+		return in
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := in[:0:0]
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }

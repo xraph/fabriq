@@ -169,6 +169,98 @@ func TestRepo_TypedTraverseSearchSimilar(t *testing.T) {
 	}
 }
 
+// The bounded traversal helpers emit a fixed common-subset Cypher string;
+// these are pinned here (the fake graph matches Cypher exactly) so any
+// change to the emitted query is a conscious, conformance-reviewed edit.
+func TestRepo_TypedGraphWalk(t *testing.T) {
+	w, x := repoWorld(t)
+	ctx := ftCtx(t, "acme")
+
+	// A small CHILD_OF hierarchy: g(rand) <- p(arent) <- c(hild).
+	ids := make(map[string]string)
+	for _, name := range []string{"grand", "parent", "child"} {
+		res, err := x.Exec(ctx, command.Command{Entity: "asset", Op: command.OpCreate, Payload: &ftAsset{Name: name, SiteID: "S1"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[name] = res.AggID
+	}
+
+	repo, err := query.For[ftAsset](w.Registry, w.Rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo = repo.WithGraph(w.Graph)
+
+	// Out: child -[:CHILD_OF]-> parent.
+	w.Graph.Cann("MATCH (n:Asset {id: $id})-[:CHILD_OF]->(m:Asset) RETURN m.id ORDER BY m.id", []string{ids["parent"]})
+	parents, err := repo.Out(ctx, ids["child"], "CHILD_OF")
+	if err != nil {
+		t.Fatalf("Out: %v", err)
+	}
+	if len(parents) != 1 || parents[0].Name != "parent" {
+		t.Fatalf("Out = %+v", parents)
+	}
+
+	// In: parent <-[:CHILD_OF]- child.
+	w.Graph.Cann("MATCH (n:Asset {id: $id})<-[:CHILD_OF]-(m:Asset) RETURN m.id ORDER BY m.id", []string{ids["child"]})
+	children, err := repo.In(ctx, ids["parent"], "CHILD_OF")
+	if err != nil {
+		t.Fatalf("In: %v", err)
+	}
+	if len(children) != 1 || children[0].Name != "child" {
+		t.Fatalf("In = %+v", children)
+	}
+
+	// Reachable: ancestors of child within 1..3 hops — duplicate ids from
+	// multiple paths must be deduped before hydration.
+	w.Graph.Cann("MATCH (n:Asset {id: $id})-[:CHILD_OF*1..3]->(m:Asset) RETURN m.id ORDER BY m.id",
+		[]string{ids["parent"], ids["grand"], ids["grand"]})
+	ancestors, err := repo.Reachable(ctx, ids["child"], "CHILD_OF", 1, 3)
+	if err != nil {
+		t.Fatalf("Reachable: %v", err)
+	}
+	if len(ancestors) != 2 || ancestors[0].Name != "parent" || ancestors[1].Name != "grand" {
+		t.Fatalf("Reachable = %+v", ancestors)
+	}
+}
+
+func TestRepo_GraphWalkValidation(t *testing.T) {
+	w, _ := repoWorld(t)
+	ctx := ftCtx(t, "acme")
+	repo, err := query.For[ftAsset](w.Registry, w.Rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Graph not attached -> ErrStoreNotConfigured.
+	if _, err := repo.Out(ctx, "x", "CHILD_OF"); !errors.Is(err, fabriqerr.ErrStoreNotConfigured) {
+		t.Fatalf("Out without graph: want ErrStoreNotConfigured, got %v", err)
+	}
+
+	repo = repo.WithGraph(w.Graph)
+
+	// Cross-type edge (LOCATED_AT -> site) is not a self-edge: rejected,
+	// not silently empty.
+	if _, err := repo.Out(ctx, "x", "LOCATED_AT"); err == nil || errors.Is(err, fabriqerr.ErrStoreNotConfigured) {
+		t.Fatalf("Out(LOCATED_AT): want a 'not a self-edge' error, got %v", err)
+	}
+	// Undeclared / injection-y relationship type is rejected before any query.
+	if _, err := repo.Out(ctx, "x", "CHILD_OF]->() DETACH DELETE n //"); err == nil {
+		t.Fatal("Out with an invalid relationship identifier must fail")
+	}
+	// Bad hop ranges.
+	if _, err := repo.Reachable(ctx, "x", "CHILD_OF", 0, 3); err == nil {
+		t.Fatal("Reachable with minHops < 1 must fail")
+	}
+	if _, err := repo.Reachable(ctx, "x", "CHILD_OF", 3, 1); err == nil {
+		t.Fatal("Reachable with max < min must fail")
+	}
+	if _, err := repo.Reachable(ctx, "x", "CHILD_OF", 1, 999); err == nil {
+		t.Fatal("Reachable beyond the hop cap must fail")
+	}
+}
+
 func TestRepo_CapabilityNotConfigured(t *testing.T) {
 	w, _ := repoWorld(t)
 	ctx := ftCtx(t, "acme")
