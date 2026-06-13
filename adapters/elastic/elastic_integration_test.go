@@ -96,6 +96,65 @@ func TestES_IndexSearchVersionGateDeindex(t *testing.T) {
 	}
 }
 
+// TestES_StructuredQuery exercises the engine-neutral Filter/Sort/Offset
+// translation against a live cluster. It stays on mapping-safe ground: a
+// numeric version range filter, a numeric version sort, and from/size
+// pagination — none depend on the text/keyword sub-field mapping.
+func TestES_StructuredQuery(t *testing.T) {
+	a, _ := openES(t)
+	ctx := esCtx(t, "acme")
+
+	if err := a.ApplyMutations(ctx, "", []projection.Mutation{
+		doc("A1", "Main Pump", 1),
+		doc("A2", "Backup Pump", 2),
+		doc("A3", "Inlet Valve", 3),
+	}); err != nil {
+		t.Fatalf("ApplyMutations: %v", err)
+	}
+
+	structured := func(q query.SearchQuery) []map[string]any {
+		t.Helper()
+		var hits []map[string]any
+		if err := a.Search(ctx, q, &hits); err != nil {
+			t.Fatalf("Search(%+v): %v", q, err)
+		}
+		return hits
+	}
+
+	// Filter-only (no text): version >= 2, sorted ascending by version.
+	hits := structured(query.SearchQuery{
+		Entity: "asset",
+		Filter: query.Where{query.Gte("version", 2)},
+		Sort:   "version",
+	})
+	if len(hits) != 2 || hits[0]["id"] != "A2" || hits[1]["id"] != "A3" {
+		t.Fatalf("filter+sort = %v", hits)
+	}
+
+	// Text + filter: pumps with version >= 2 -> only A2.
+	hits = structured(query.SearchQuery{
+		Entity: "asset", Query: "pump",
+		Filter: query.Where{query.Gte("version", 2)},
+	})
+	if len(hits) != 1 || hits[0]["id"] != "A2" {
+		t.Fatalf("text+filter = %v", hits)
+	}
+
+	// Pagination: all three by version, skip 1, take 1 -> A2.
+	hits = structured(query.SearchQuery{
+		Entity: "asset", Sort: "version", Offset: 1, Limit: 1,
+	})
+	if len(hits) != 1 || hits[0]["id"] != "A2" {
+		t.Fatalf("paginated = %v", hits)
+	}
+
+	// Validation: a non-indexed column is rejected before any ES call.
+	var sink []map[string]any
+	if err := a.Search(ctx, query.SearchQuery{Entity: "asset", Filter: query.Where{query.Eq("site_id", "S1")}}, &sink); err == nil {
+		t.Fatal("filter on a non-indexed column must be rejected")
+	}
+}
+
 func TestES_AliasSwapCutover(t *testing.T) {
 	a, _ := openES(t)
 	ctx := esCtx(t, "acme")

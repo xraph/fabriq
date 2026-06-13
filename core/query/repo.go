@@ -143,14 +143,39 @@ func (r *Repo[T]) Traverse(ctx context.Context, cypher string, params map[string
 
 // Search runs a full-text query against the entity's declared search
 // fields, then hydrates the matching rows from Postgres in one batched
-// query — typed entities in relevance order, never N+1. For raw hits
-// (highlighting, scores) use f.Search() directly.
+// query — typed entities in relevance order, never N+1. It is the one-line
+// form of SearchWith; reach for SearchWith when you need filters, sort or
+// pagination. For raw hits (highlighting, scores) use f.Search() directly.
 func (r *Repo[T]) Search(ctx context.Context, text string, limit int) ([]*T, error) {
+	return r.SearchWith(ctx, SearchRequest{Query: text, Limit: limit})
+}
+
+// SearchWith runs a structured full-text query — free text plus optional
+// non-scoring Filter (the same Cond vocabulary as List), Sort and
+// pagination — and hydrates the matches from Postgres in one batched
+// query, typed:
+//
+//	hits, _ := repo.SearchWith(ctx, query.SearchRequest{
+//	    Query:  "centrifugal",
+//	    Filter: query.Where{query.Eq("kind", "pump"), query.Gte("version", 3)},
+//	    Sort:   "name",
+//	    Limit:  20,
+//	})
+//
+// Filter and Sort may reference only indexed fields (the declared search
+// fields plus id/tenant_id/version). There is no raw engine-DSL form by
+// design — full-text search has no portable raw language, so the structured
+// query is the whole surface, which keeps the port swappable.
+func (r *Repo[T]) SearchWith(ctx context.Context, req SearchRequest) ([]*T, error) {
 	if r.search == nil {
 		return nil, fmt.Errorf("fabriq: Search: search %w (build via fabriq.For)", fabriqerr.ErrStoreNotConfigured)
 	}
+	q := SearchQuery{
+		Entity: r.entity, Query: req.Query, Filter: req.Filter,
+		Sort: req.Sort, Limit: req.Limit, Offset: req.Offset,
+	}
 	var hits []map[string]any
-	if err := r.search.Search(ctx, SearchQuery{Entity: r.entity, Query: text, Limit: limit}, &hits); err != nil {
+	if err := r.search.Search(ctx, q, &hits); err != nil {
 		return nil, err
 	}
 	return r.GetMany(ctx, idsFromHits(hits))
