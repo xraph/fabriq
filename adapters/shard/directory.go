@@ -29,7 +29,8 @@ func (h hashDirectory) Shard(_ context.Context, tenantID string) (string, error)
 	}
 	sum := fnv.New32a()
 	_, _ = sum.Write([]byte(tenantID))
-	return h.ids[sum.Sum32()%uint32(len(h.ids))], nil
+	// uint32 -> int widens (never negative), so the modulo is a safe index.
+	return h.ids[int(sum.Sum32())%len(h.ids)], nil
 }
 
 // Cached memoizes a directory's tenant→shard answers for ttl, so the hot
