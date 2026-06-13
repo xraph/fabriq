@@ -40,14 +40,14 @@ type workerExtension struct {
 	done    chan struct{}
 }
 
-func newWorkerExtension(reg *registry.Registry, cfg fabriq.Config) *workerExtension {
+func newWorkerExtension(reg *registry.Registry) *workerExtension {
 	interval := 5 * time.Minute
 	if raw := os.Getenv("FABRIQ_RECONCILE_INTERVAL"); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil {
 			interval = d // "0" disables
 		}
 	}
-	return &workerExtension{reg: reg, cfg: cfg, reconcileInterval: interval}
+	return &workerExtension{reg: reg, reconcileInterval: interval}
 }
 
 // Name implements forge.Extension.
@@ -72,19 +72,34 @@ func (e *workerExtension) Register(app forge.App) error {
 	return nil
 }
 
-// Start implements forge.Extension: open the stores. This is the serve
-// path's first real I/O — the env guard the worker's main once held lives
-// here now, so operator commands (which never Start) stay store-agnostic.
+// Start implements forge.Extension: load the datastore config from forge's
+// config manager (config.yaml + FABRIQ_* env) and open the stores. This is
+// the serve path's first real I/O — the env guard the worker's main once
+// held lives here now, so operator commands (which never Start) stay
+// store-agnostic.
 func (e *workerExtension) Start(ctx context.Context) error {
-	if e.cfg.Postgres.DSN == "" || e.cfg.Redis.Addr == "" {
-		return fmt.Errorf("fabriq-worker: FABRIQ_POSTGRES_DSN and FABRIQ_REDIS_ADDR are required to serve")
+	e.mu.Lock()
+	app := e.app
+	e.mu.Unlock()
+	var cm forge.ConfigManager
+	if app != nil {
+		cm = app.Config()
 	}
-	fab, stores, err := fabriq.Open(ctx, e.reg, e.cfg)
+	cfg := loadFabriqConfig(cm)
+
+	if cfg.Postgres.DSN == "" && len(cfg.Shards) == 0 {
+		return fmt.Errorf("fabriq-worker: a Postgres source of truth is required to serve (set postgres.dsn / FABRIQ_POSTGRES_DSN, or shards)")
+	}
+	if cfg.Redis.Addr == "" {
+		return fmt.Errorf("fabriq-worker: a Redis address is required to serve (set redis.addr / FABRIQ_REDIS_ADDR)")
+	}
+
+	fab, stores, err := fabriq.Open(ctx, e.reg, cfg)
 	if err != nil {
 		return err
 	}
 	e.mu.Lock()
-	e.fab, e.stores = fab, stores
+	e.cfg, e.fab, e.stores = cfg, fab, stores
 	e.mu.Unlock()
 	return nil
 }
@@ -147,15 +162,25 @@ func (e *workerExtension) Run(ctx context.Context) error {
 	if app != nil {
 		logger = app.Logger()
 	}
-	relay := postgres.NewRelay(stores.Postgres, e.reg, stores.Redis, relayOpts...)
-	elector := postgres.NewElector(stores.Postgres, lockKeyRelay)
-
+	// Outbox relay: one per shard. The outbox is shard-local, and advisory
+	// locks are per-database, so each shard elects its own relay leader
+	// independently — relay throughput scales with shard count (ADR 0007).
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		supervise(runCtx, logger, "relay", func(c context.Context) error { return elector.Run(c, relay.Run) })
-	}()
+	shardPGs := stores.ShardPGs()
+	for _, sp := range shardPGs {
+		sp := sp
+		relay := postgres.NewRelay(sp.PG, e.reg, stores.Redis, relayOpts...)
+		elector := postgres.NewElector(sp.PG, lockKeyRelay)
+		label := "relay"
+		if len(shardPGs) > 1 {
+			label = "relay:" + sp.ID
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, label, func(c context.Context) error { return elector.Run(c, relay.Run) })
+		}()
+	}
 
 	// Document plane: quiet-window materializer + compactor (leader 1003).
 	docElector := postgres.NewElector(stores.Postgres, lockKeyDocumentPlane)

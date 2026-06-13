@@ -135,7 +135,7 @@ func rebuildCommand() cli.Command {
 
 		tenants := []string{ctx.String("tenant")}
 		if ctx.Bool("all-tenants") {
-			tenants, err = stores.Postgres.ProjectionState().Tenants(ctx.Context())
+			tenants, err = stores.AllTenants(ctx.Context())
 			if err != nil {
 				return err
 			}

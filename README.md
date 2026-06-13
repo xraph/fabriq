@@ -112,9 +112,8 @@ make bench             # benchmarks
 make lint              # incl. depguard architecture boundaries
 ```
 
-Architecture decisions live in [docs/decisions](docs/decisions), operational
-runbooks in [docs/OPERATIONS.md](docs/OPERATIONS.md), and schema discipline in
-[docs/MIGRATIONS.md](docs/MIGRATIONS.md).
+Operational runbooks live in [docs/OPERATIONS.md](docs/OPERATIONS.md), and
+schema discipline in [docs/MIGRATIONS.md](docs/MIGRATIONS.md).
 
 Fabriq builds on [grove](https://github.com/xraph/grove) for storage and
 [forge](https://github.com/xraph/forge) for application and CLI scaffolding.

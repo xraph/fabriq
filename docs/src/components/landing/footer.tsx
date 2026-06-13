@@ -7,10 +7,6 @@ const repoUrl = `https://github.com/${gitConfig.user}/${gitConfig.repo}`;
 const exploreLinks = [
   { text: "Documentation", href: docsRoute },
   {
-    text: "Architecture decisions",
-    href: `${repoUrl}/tree/main/docs/decisions`,
-  },
-  {
     text: "Operations runbook",
     href: `${repoUrl}/blob/main/docs/OPERATIONS.md`,
   },
