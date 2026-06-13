@@ -93,4 +93,10 @@ type EntitySpec struct {
 	Search    SearchSpec
 	Subscribe []Scope
 	CRDT      *CRDTSpec
+
+	// Validate, when set, runs after structural validation on every
+	// create/update/upsert with the column-keyed payload. Fabriq attaches
+	// no meaning to the values; consumers enforce their own invariants
+	// (enum membership, checksums, cross-field rules).
+	Validate func(vals map[string]any) error
 }
