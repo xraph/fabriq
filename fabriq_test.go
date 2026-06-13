@@ -251,7 +251,7 @@ func TestFabriq_For_Typed(t *testing.T) {
 		t.Fatalf("Get = %+v", site)
 	}
 
-	one, err := repo.One(ctx, query.ListQuery{Where: []query.Cond{query.Eq("name", "Plant A")}})
+	one, err := repo.One(ctx, query.Eq("name", "Plant A"))
 	if err != nil || one.ID != res.AggID {
 		t.Fatalf("One = (%+v, %v)", one, err)
 	}

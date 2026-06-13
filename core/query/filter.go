@@ -31,15 +31,19 @@ const (
 )
 
 // Cond is one engine-neutral predicate on a column — or, when Or is set,
-// an OR group of sub-predicates. A flat []Cond is ANDed; an Or group lets
-// you express "(a OR b)" without a full expression tree. Build them with
-// the constructors (Eq, In, Like, Or, …) rather than by hand.
+// an OR group of sub-predicates. Build them with the constructors (Eq, In,
+// Like, Or, …) rather than by hand.
 type Cond struct {
 	Column string
 	Op     Op
 	Value  any    // a slice for In/NotIn; ignored for IsNull/IsNotNull
 	Or     []Cond // when non-empty, an OR group (Column/Op/Value ignored)
 }
+
+// Where is a conjunction (AND) of conditions — the assignable filter type
+// carried by ListQuery and accepted across the query API. Build it as a
+// literal (query.Where{Eq(...), Like(...)}), from Eqs(map), or by append.
+type Where []Cond
 
 // Eq builds column = value.
 func Eq(column string, value any) Cond { return Cond{Column: column, Op: OpEq, Value: value} }
@@ -81,10 +85,10 @@ func IsNotNull(column string) Cond { return Cond{Column: column, Op: OpIsNotNull
 func Or(conds ...Cond) Cond { return Cond{Or: conds} }
 
 // Eqs is the terse equality shorthand: it turns a column=value map into a
-// slice of Eq conditions, sorted by column for deterministic SQL. Use it
+// Where of Eq conditions, sorted by column for deterministic SQL. Use it
 // when you just want "match these columns": ListQuery{Where: Eqs(m)}; mix
 // with other conditions via append(Eqs(m), Like(...)).
-func Eqs(equalities map[string]any) []Cond {
+func Eqs(equalities map[string]any) Where {
 	if len(equalities) == 0 {
 		return nil
 	}
@@ -93,7 +97,7 @@ func Eqs(equalities map[string]any) []Cond {
 		cols = append(cols, c)
 	}
 	sort.Strings(cols)
-	conds := make([]Cond, len(cols))
+	conds := make(Where, len(cols))
 	for i, c := range cols {
 		conds[i] = Eq(c, equalities[c])
 	}
