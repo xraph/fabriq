@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/fabriq/adapters/falkordb"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
+	"github.com/xraph/fabriq/adapters/shard"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/registry"
@@ -44,12 +45,17 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		return nil, nil, err
 	}
 
-	stores := &Stores{Postgres: pg}
+	// Source-of-truth ports route through a shard.Set. Single-Postgres
+	// deployments use the degenerate one-shard set, so routing is a no-op
+	// (ADR 0007); multi-shard Open will hand New() a directory + N shards
+	// without touching the facade or call sites.
+	shards := shard.Single(shard.Shard{ID: "0", Store: pg, Relational: pg, Vector: pg, Timeseries: pg})
+	stores := &Stores{Postgres: pg, Shards: shards}
 	ports := Ports{
-		Store:           pg,
-		Relational:      pg,
-		Timeseries:      pg,
-		Vector:          pg,
+		Store:           shard.NewStore(shards),
+		Relational:      shard.NewRelational(shards),
+		Timeseries:      shard.NewTimeseries(shards),
+		Vector:          shard.NewVector(shards),
 		Documents:       pg.Documents(),
 		ProjectionState: pg.ProjectionState(),
 	}
@@ -114,6 +120,11 @@ type Stores struct {
 	Redis    *redis.Adapter
 	Falkor   *falkordb.Adapter
 	Elastic  *elastic.Adapter
+	// Shards is the tenant -> source-of-truth routing table backing the
+	// facade's relational/command/vector/timeseries ports. Single-shard
+	// today (ADR 0007); the worker plane will start a per-shard relay and
+	// reconciler over Shards.All() once multi-shard Open lands.
+	Shards *shard.Set
 }
 
 // Close releases every opened adapter.
