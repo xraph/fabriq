@@ -42,6 +42,7 @@ func Group() *migrate.Group {
 			migration0006PGVector,
 			migration0007CRDTUpdates,
 			migration0008CRDTDocs,
+			migration0009Link,
 		)
 	})
 	return group
