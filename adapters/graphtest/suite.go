@@ -113,6 +113,34 @@ func Cases() []Case {
 			Params:  map[string]any{"id": "A1", "name": "Pump"},
 			WantIDs: []string{"A1"},
 		},
+		{
+			Name: "extra label is matchable",
+			Seed: append(append([]projection.Mutation{}, seed...),
+				projection.NodeUpsert{Label: "Asset", ExtraLabels: []string{"Pump"}, ID: "A3", Props: map[string]any{"id": "A3", "name": "Pumpy", "version": int64(1)}, Version: 1},
+			),
+			Cypher:  `MATCH (n:Pump {id: $id}) RETURN n.id`,
+			Params:  map[string]any{"id": "A3"},
+			WantIDs: []string{"A3"},
+		},
+		{
+			Name: "reified edge upsert and traverse",
+			Seed: append(append([]projection.Mutation{}, seed...),
+				projection.RelUpsert{ID: "E1", Type: "SIMILAR", FromLabel: "Asset", FromID: "A1", ToLabel: "Asset", ToID: "A2", Props: map[string]any{"status": "tentative"}, Version: 1},
+			),
+			Cypher:  `MATCH (:Asset {id: $from})-[:SIMILAR]->(b:Asset) RETURN b.id`,
+			Params:  map[string]any{"from": "A1"},
+			WantIDs: []string{"A2"},
+		},
+		{
+			Name: "reified edge delete by id",
+			Seed: append(append([]projection.Mutation{}, seed...),
+				projection.RelUpsert{ID: "E1", Type: "SIMILAR", FromLabel: "Asset", FromID: "A1", ToLabel: "Asset", ToID: "A2", Version: 1},
+				projection.RelDelete{ID: "E1", Version: 2},
+			),
+			Cypher:  `MATCH (:Asset {id: $from})-[:SIMILAR]->(b:Asset) RETURN b.id`,
+			Params:  map[string]any{"from": "A1"},
+			WantIDs: []string{},
+		},
 	}
 }
 

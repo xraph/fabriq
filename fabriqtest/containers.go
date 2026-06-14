@@ -18,7 +18,7 @@ import (
 const (
 	PostgresImage      = "timescale/timescaledb-ha:pg16-all"
 	RedisImage         = "redis:7-alpine"
-	FalkorDBImage      = "falkordb/falkordb:latest"
+	FalkorDBImage      = "falkordb/falkordb:v4.2.2" // pinned: multi-label + SET n:Label
 	ElasticsearchImage = "elasticsearch:9.4.1"
 )
 
