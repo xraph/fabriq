@@ -3,6 +3,8 @@ package fabriq
 import (
 	"fmt"
 	"time"
+
+	"github.com/xraph/fabriq/core/projection"
 )
 
 // Config is fabriq's declarative configuration: which stores exist and
@@ -17,6 +19,11 @@ type Config struct {
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
 	Projections   ProjectionsConfig   `yaml:"projections" json:"projections"`
 	Subscriptions SubscriptionsConfig `yaml:"subscriptions" json:"subscriptions"`
+	// CustomAppliers are consumer-supplied projection appliers, unioned after
+	// the built-in declarative applier for their Target. They MUST be pure (see
+	// projection.CustomApplier). The same set feeds both the live engines and
+	// the rebuilders, so live and rebuilt projections stay identical.
+	CustomAppliers []projection.CustomApplier `yaml:"-" json:"-"`
 }
 
 // PostgresConfig locates the source of truth. Required unless Shards is set

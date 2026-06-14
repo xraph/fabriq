@@ -82,7 +82,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		}
 	}
 
-	stores := &Stores{Postgres: pg, Shards: set, shardPG: shardPG}
+	stores := &Stores{Postgres: pg, Shards: set, shardPG: shardPG, customAppliers: cfg.CustomAppliers}
 	stores.state = routingState{stores: stores}
 	ports := Ports{
 		Store:           shard.NewStore(set),
@@ -172,6 +172,10 @@ type Stores struct {
 	// satisfies StateReader, StateRepo AND AppliedRecorder, which the
 	// various consumers each require a different subset of.
 	state routingState
+	// customAppliers are consumer-supplied projection appliers passed in via
+	// Config.CustomAppliers. They are forwarded to all four engine/rebuilder
+	// constructors so live and rebuilt projections stay identical.
+	customAppliers []projection.CustomApplier
 }
 
 // Close releases every opened adapter (every shard, plus the projections).
@@ -249,6 +253,7 @@ func (s *Stores) GraphEngine(reg *registry.Registry, upcasters *event.UpcasterCh
 		Applier:    projection.GraphApplier(reg),
 		Upcasters:  upcasters,
 		State:      repo,
+		Custom:     s.customAppliers,
 		TargetsFor: func(ctx context.Context, tenantID string) ([]string, error) {
 			st, err := stateFor(ctx, tenantID)
 			if err != nil {
@@ -276,6 +281,7 @@ func (s *Stores) GraphRebuilder(reg *registry.Registry) (*projection.Rebuilder, 
 		Applier:    projection.GraphApplier(reg),
 		Snapshot:   routingSnapshot{stores: s},
 		TargetName: registry.GraphNameVersioned,
+		Custom:     s.customAppliers,
 	}, nil
 }
 
@@ -296,6 +302,7 @@ func (s *Stores) SearchEngine(reg *registry.Registry, upcasters *event.UpcasterC
 		Applier:    projection.SearchApplier(reg),
 		Upcasters:  upcasters,
 		State:      repo,
+		Custom:     s.customAppliers,
 		TargetsFor: func(ctx context.Context, tenantID string) ([]string, error) {
 			st, err := stateFor(ctx, tenantID)
 			if err != nil {
@@ -323,6 +330,7 @@ func (s *Stores) SearchRebuilder(reg *registry.Registry) (*projection.Rebuilder,
 		Snapshot:   routingSnapshot{stores: s},
 		TargetName: elastic.SearchTargetName,
 		OnFlip:     s.Elastic.FlipAliases,
+		Custom:     s.customAppliers,
 	}, nil
 }
 
