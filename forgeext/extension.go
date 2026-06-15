@@ -32,6 +32,14 @@ type Extension struct {
 	metrics *metrics.Metrics
 }
 
+// Compile-time interface assertions: if Extension drifts from any of these
+// contracts the build fails immediately rather than at runtime.
+var (
+	_ forge.Extension           = (*Extension)(nil)
+	_ forge.RunnableExtension   = (*Extension)(nil)
+	_ forge.MigratableExtension = (*Extension)(nil)
+)
+
 // New creates a new Extension with the given registry and options.
 func New(reg *registry.Registry, opts ...Option) *Extension {
 	var cfg Config
@@ -77,7 +85,10 @@ func (e *Extension) Register(app forge.App) error {
 // Start implements forge.Extension. Opens the fabriq facade.
 func (e *Extension) Start(ctx context.Context) error {
 	if e.cfg.Fabriq.Postgres.DSN == "" && len(e.cfg.Fabriq.Shards) == 0 {
-		return fmt.Errorf("fabriq: a Postgres source of truth is required (WithConfig or extensions.fabriq.postgres.dsn)")
+		return fmt.Errorf("fabriq: a Postgres source of truth is required to serve (set postgres.dsn / FABRIQ_POSTGRES_DSN, or shards)")
+	}
+	if e.cfg.RunWorker && e.cfg.Fabriq.Redis.Addr == "" {
+		return fmt.Errorf("fabriq: a Redis address is required to serve (set redis.addr / FABRIQ_REDIS_ADDR)")
 	}
 	fab, stores, err := fabriq.Open(ctx, e.reg, e.cfg.Fabriq)
 	if err != nil {
