@@ -21,8 +21,18 @@ export function LandingHero() {
   // Copper core in both; fades to cream in light, to night in dark.
   // Light: bright lime wash. Dark: deep lime → black so white text stays legible.
   const shader = isLight
-    ? { color1: "#84cc16", color2: "#bef264", color3: "#f7fee7", brightness: 1.2 }
-    : { color1: "#4d7c0f", color2: "#365314", color3: "#0a0908", brightness: 1.15 };
+    ? {
+        color1: "#84cc16",
+        color2: "#bef264",
+        color3: "#f7fee7",
+        brightness: 1.2,
+      }
+    : {
+        color1: "#4d7c0f",
+        color2: "#365314",
+        color3: "#0a0908",
+        brightness: 1.15,
+      };
   // In light mode the sphere is a muted wash so cream shows through (readable).
   const shaderOpacity = isLight ? 0.5 : 1;
 
