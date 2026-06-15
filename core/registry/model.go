@@ -3,9 +3,13 @@ package registry
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 
 	"github.com/xraph/grove/schema"
 )
+
+// dynIdent is the identifier pattern accepted for dynamic table and column names.
+var dynIdent = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 
 // Structural columns every fabriq-managed table must carry. They are what
 // make the fabric invariants enforceable: tenancy is a column (RLS), and
@@ -17,7 +21,7 @@ const (
 )
 
 // Binding is the compiled relational shape of an entity, derived from its
-// grove-tagged model at registration time.
+// grove-tagged model at registration time, or from a DynamicSchema.
 type Binding struct {
 	Table         string
 	Columns       []string
@@ -27,10 +31,19 @@ type Binding struct {
 
 	modelType reflect.Type
 	fields    map[string]*schema.Field
+
+	// dynamic is true when the binding was built from a DynamicSchema rather
+	// than a Go struct model.
+	dynamic bool
+	dynCols map[string]DynamicColumn
 }
 
 // HasColumn reports whether the bound table has the given column.
 func (b *Binding) HasColumn(col string) bool {
+	if b.dynamic {
+		_, ok := b.dynCols[col]
+		return ok
+	}
 	_, ok := b.fields[col]
 	return ok
 }
@@ -38,6 +51,19 @@ func (b *Binding) HasColumn(col string) bool {
 // Required returns the non-structural columns that must be provided on
 // create/update: NOT NULL, no default, not auto-generated.
 func (b *Binding) Required() []string {
+	if b.dynamic {
+		var out []string
+		for _, col := range b.Columns {
+			if col == ColumnID || col == ColumnTenant || col == ColumnVersion {
+				continue
+			}
+			dc := b.dynCols[col]
+			if dc.NotNull && dc.Default == "" {
+				out = append(out, col)
+			}
+		}
+		return out
+	}
 	var out []string
 	for _, col := range b.Columns {
 		if col == ColumnID || col == ColumnTenant || col == ColumnVersion {
@@ -55,12 +81,37 @@ func (b *Binding) Required() []string {
 func (b *Binding) ModelType() reflect.Type { return b.modelType }
 
 // NewModel returns a pointer to a fresh zero value of the bound model type.
-func (b *Binding) NewModel() any { return reflect.New(b.modelType).Interface() }
+func (b *Binding) NewModel() any {
+	if b.dynamic {
+		panic(fmt.Sprintf("fabriq: NewModel is not supported for dynamic entity %s (dynamic entities use map-native values)", b.Table))
+	}
+	return reflect.New(b.modelType).Interface()
+}
 
 // ValuesByColumn extracts the model's field values keyed by column name.
 // This is the canonical payload shape: event payloads, graph node props and
 // search documents are all column-keyed.
+// For dynamic entities model must be a map[string]any; unknown keys are dropped.
 func (b *Binding) ValuesByColumn(model any) (map[string]any, error) {
+	if b.dynamic {
+		if model == nil {
+			return nil, fmt.Errorf("fabriq: dynamic entity %s: nil payload", b.Table)
+		}
+		m, ok := model.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("fabriq: dynamic entity %s expects a map[string]any payload, got %T", b.Table, model)
+		}
+		if m == nil {
+			return nil, fmt.Errorf("fabriq: dynamic entity %s: nil payload", b.Table)
+		}
+		out := make(map[string]any, len(m))
+		for k, v := range m {
+			if _, known := b.dynCols[k]; known {
+				out[k] = v
+			}
+		}
+		return out, nil
+	}
 	v := reflect.ValueOf(model)
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
@@ -83,6 +134,9 @@ func (b *Binding) ValuesByColumn(model any) (map[string]any, error) {
 // of ValuesByColumn). Numeric JSON widening (float64 -> int64 etc.) is
 // converted; incompatible types error.
 func (b *Binding) Populate(model any, vals map[string]any) error {
+	if b.dynamic {
+		return fmt.Errorf("fabriq: Populate is not supported for dynamic entity %s (dynamic entities use map-native values)", b.Table)
+	}
 	v := reflect.ValueOf(model)
 	if v.Kind() != reflect.Pointer || v.IsNil() {
 		return fmt.Errorf("fabriq: Populate target must be a non-nil pointer, got %T", model)
@@ -112,9 +166,15 @@ func (b *Binding) Populate(model any, vals map[string]any) error {
 	return nil
 }
 
-// bind compiles the spec's grove model into a Binding and enforces the
-// structural-column contract.
+// bind compiles the spec into a Binding. For dynamic entities it routes to
+// bindDynamic; for Go-model entities it uses reflection via grove/schema.
 func bind(spec EntitySpec) (*Binding, error) {
+	if spec.Schema != nil {
+		if spec.Model != nil {
+			return nil, fmt.Errorf("fabriq: entity %q: Model and Schema are mutually exclusive", spec.Name)
+		}
+		return bindDynamic(spec)
+	}
 	if spec.Model == nil {
 		return nil, fmt.Errorf("fabriq: entity %q: model is required", spec.Name)
 	}
@@ -152,5 +212,65 @@ func bind(spec EntitySpec) (*Binding, error) {
 	}
 	b.VersionColumn = ColumnVersion
 
+	return b, nil
+}
+
+// bindDynamic builds a Binding from a DynamicSchema without reflection.
+// Structural columns (id, tenant_id, version) are injected automatically;
+// callers must not redeclare them.
+func bindDynamic(spec EntitySpec) (*Binding, error) {
+	s := spec.Schema
+	if s.Table == "" || !dynIdent.MatchString(s.Table) {
+		return nil, fmt.Errorf("fabriq: entity %q: dynamic schema needs a valid Table identifier, got %q", spec.Name, s.Table)
+	}
+	b := &Binding{
+		Table:   s.Table,
+		dynamic: true,
+		dynCols: make(map[string]DynamicColumn),
+	}
+
+	add := func(c DynamicColumn) error {
+		if _, dup := b.dynCols[c.Name]; dup {
+			return fmt.Errorf("fabriq: entity %q: duplicate column %q", spec.Name, c.Name)
+		}
+		b.dynCols[c.Name] = c
+		b.Columns = append(b.Columns, c.Name)
+		return nil
+	}
+
+	// Inject structural columns first.
+	for _, c := range []DynamicColumn{
+		{Name: ColumnID, Type: ColText, NotNull: true},
+		{Name: ColumnTenant, Type: ColText, NotNull: true},
+		{Name: ColumnVersion, Type: ColInt, NotNull: true},
+	} {
+		_ = add(c) // structural names are distinct; cannot fail
+	}
+
+	// Zero domain columns is valid (e.g. a junction/lookup table): the entity
+	// still carries the injected structural columns.
+	// Register domain columns.
+	for _, c := range s.Columns {
+		if c.Name == ColumnID || c.Name == ColumnTenant || c.Name == ColumnVersion {
+			return nil, fmt.Errorf("fabriq: entity %q: column %q is structural and injected automatically", spec.Name, c.Name)
+		}
+		if !dynIdent.MatchString(c.Name) {
+			return nil, fmt.Errorf("fabriq: entity %q: invalid column identifier %q", spec.Name, c.Name)
+		}
+		if err := add(c); err != nil {
+			return nil, err
+		}
+	}
+
+	// Validate index column references.
+	for _, idx := range s.Indexes {
+		for _, col := range idx.Columns {
+			if _, ok := b.dynCols[col]; !ok {
+				return nil, fmt.Errorf("fabriq: entity %q: index %q references unknown column %q", spec.Name, idx.Name, col)
+			}
+		}
+	}
+
+	b.PK, b.TenantColumn, b.VersionColumn = ColumnID, ColumnTenant, ColumnVersion
 	return b, nil
 }
