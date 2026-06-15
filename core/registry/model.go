@@ -77,6 +77,10 @@ func (b *Binding) Required() []string {
 	return out
 }
 
+// IsDynamic reports whether this binding describes a runtime-defined entity
+// (declared via DynamicSchema rather than a Go Model).
+func (b *Binding) IsDynamic() bool { return b.dynamic }
+
 // ModelType returns the bound struct type (not pointer).
 func (b *Binding) ModelType() reflect.Type { return b.modelType }
 
