@@ -48,11 +48,32 @@ func (a *Adapter) execDDL(ctx context.Context, stmt string) error {
 	return nil
 }
 
-// EnsureDynamic creates (idempotently) the Postgres table for a dynamic
-// entity from its descriptor: structural columns (id, tenant_id, version),
-// declared domain columns, a tenant index, any descriptor-declared
+// EnsureDynamic creates or ADDITIVELY EVOLVES the Postgres table for a
+// dynamic entity from its descriptor: structural columns (id, tenant_id,
+// version), declared domain columns, a tenant index, any descriptor-declared
 // secondary indexes, and tenant-isolation RLS — mirroring the patterns in
 // migrations/0003_site_asset_tag.go and migrations/0004_rls_policies.go.
+//
+// # Additive-evolution policy
+//
+// When called on an already-existing table (e.g. because the consumer changed
+// the descriptor by adding columns or indexes), EnsureDynamic reconciles the
+// schema ADDITIVELY:
+//
+//   - Each domain column is emitted as "ALTER TABLE … ADD COLUMN IF NOT
+//     EXISTS …", so new columns appear and existing ones are left untouched.
+//   - Each index is emitted as "CREATE INDEX IF NOT EXISTS …", so new indexes
+//     are created and existing ones are left untouched.
+//
+// DROPS, RENAMES, and TYPE CHANGES are NOT auto-applied. If a column or
+// index is removed from the descriptor, the physical column/index remains —
+// evolution is strictly additive. Consumers that need destructive changes must
+// write an explicit migration.
+//
+// Attempting to add a NOT-NULL column (without a DEFAULT) to a table that
+// already has rows will fail at the Postgres level. This is intentional: the
+// consumer must either supply a Default expression in the descriptor or add
+// the column as nullable. fabriq does not work around this safety boundary.
 //
 // This is the FENCED managed-DDL lane: fabriq manages DDL ONLY for dynamic
 // entities. Static entities keep migrations as the authority; calling
@@ -73,6 +94,13 @@ func (a *Adapter) EnsureDynamic(ctx context.Context, ent *registry.Entity) error
 		return fmt.Errorf("fabriq: invalid dynamic table name %q", s.Table)
 	}
 
+	// Validate all domain column names up-front before building any SQL.
+	for _, c := range s.Columns {
+		if !ddlValid(c.Name) {
+			return fmt.Errorf("fabriq: invalid dynamic column name %q in table %q", c.Name, s.Table)
+		}
+	}
+
 	// Build column definitions. Structural columns are injected first;
 	// the descriptor lists only domain columns.
 	cols := []string{
@@ -81,19 +109,7 @@ func (a *Adapter) EnsureDynamic(ctx context.Context, ent *registry.Entity) error
 		`version BIGINT NOT NULL`,
 	}
 	for _, c := range s.Columns {
-		if !ddlValid(c.Name) {
-			return fmt.Errorf("fabriq: invalid dynamic column name %q in table %q", c.Name, s.Table)
-		}
-		def := fmt.Sprintf("%s %s", c.Name, sqlType(c.Type))
-		if c.NotNull {
-			def += " NOT NULL"
-		}
-		if c.Default != "" {
-			// The Default literal is descriptor-controlled; it is the
-			// consumer's responsibility to supply a valid SQL expression.
-			def += " DEFAULT " + c.Default
-		}
-		cols = append(cols, def)
+		cols = append(cols, domainColumnDef(c))
 	}
 
 	stmts := []string{
@@ -101,6 +117,18 @@ func (a *Adapter) EnsureDynamic(ctx context.Context, ent *registry.Entity) error
 		fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n%s\n)", s.Table, strings.Join(cols, ",\n")),
 		// Mandatory tenant index (mirrors the static migration pattern).
 		fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s_tenant_idx ON %s (tenant_id)", s.Table, s.Table),
+	}
+
+	// Additive column evolution: emit ADD COLUMN IF NOT EXISTS for each domain
+	// column. On a fresh table all of these are no-ops (the columns already
+	// exist from the CREATE above). On an existing table only truly new columns
+	// are added; existing columns — even if their definition in the descriptor
+	// has changed — are left untouched (see policy in the doc comment).
+	for _, c := range s.Columns {
+		stmts = append(stmts, fmt.Sprintf(
+			"ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s",
+			s.Table, domainColumnDef(c),
+		))
 	}
 
 	// Descriptor-declared secondary indexes.
@@ -137,4 +165,22 @@ func (a *Adapter) EnsureDynamic(ctx context.Context, ent *registry.Entity) error
 		}
 	}
 	return nil
+}
+
+// domainColumnDef returns the SQL column-definition fragment for a domain
+// column: "<name> <type> [NOT NULL] [DEFAULT <expr>]".
+//
+// This is the single source of truth shared by both the CREATE TABLE column
+// list and the ALTER TABLE ADD COLUMN statements, so the two can never drift.
+// The Default expression is interpolated verbatim and must be a trusted,
+// control-plane value (see DynamicColumn.Default for the contract).
+func domainColumnDef(c registry.DynamicColumn) string {
+	def := fmt.Sprintf("%s %s", c.Name, sqlType(c.Type))
+	if c.NotNull {
+		def += " NOT NULL"
+	}
+	if c.Default != "" {
+		def += " DEFAULT " + c.Default
+	}
+	return def
 }
