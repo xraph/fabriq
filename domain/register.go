@@ -30,6 +30,7 @@ func RegisterAll(reg *registry.Registry) error {
 			},
 			Search:    registry.SearchSpec{Index: "assets", Fields: []string{"name", "kind", "serial"}},
 			Subscribe: []registry.Scope{registry.ByID, registry.ByField("site", "site_id"), registry.ByTenant},
+			Live:      &registry.LiveSpec{Filterable: []string{"name", "kind", "site_id"}, Sortable: []string{"name", "kind"}, MaxWindow: 500},
 		},
 		{
 			Name:      "tag",
