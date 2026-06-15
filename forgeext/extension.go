@@ -10,6 +10,7 @@ import (
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/internal/metrics"
 )
 
 // Version is the fabriq forge extension version.
@@ -23,10 +24,12 @@ type Extension struct {
 	reg *registry.Registry
 	cfg Config
 
-	mu     sync.Mutex
-	app    forge.App
-	fab    *fabriq.Fabriq
-	stores *fabriq.Stores
+	mu      sync.Mutex
+	fab     *fabriq.Fabriq
+	stores  *fabriq.Stores
+	cancel  context.CancelFunc
+	done    chan struct{}
+	metrics *metrics.Metrics
 }
 
 // New creates a new Extension with the given registry and options.
@@ -48,9 +51,6 @@ func (e *Extension) Register(app forge.App) error {
 	if err := e.BaseExtension.Register(app); err != nil {
 		return err
 	}
-	e.mu.Lock()
-	e.app = app
-	e.mu.Unlock()
 
 	// Overlay extensions.fabriq.* when no explicit datastore config was given.
 	if cm := app.Config(); cm != nil && e.cfg.Fabriq.Postgres.DSN == "" && len(e.cfg.Fabriq.Shards) == 0 {
@@ -95,11 +95,12 @@ func (e *Extension) Stop(_ context.Context) error {
 	e.mu.Lock()
 	fab := e.fab
 	e.mu.Unlock()
-	e.MarkStopped()
+	var err error
 	if fab != nil {
-		return fab.Close()
+		err = fab.Close()
 	}
-	return nil
+	e.MarkStopped()
+	return err
 }
 
 // Health implements forge.Extension. Pings the Postgres store.
