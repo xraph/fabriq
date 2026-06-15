@@ -5,6 +5,10 @@ description: The delta plane — server-resolved channels, conflated live delive
 
 The delta plane turns committed events into live change notifications. A client requests a *scope*; the channel is always resolved server-side from the validated scope plus the context tenant, so clients never name a channel or a tenant. Deltas are conflated within a short window, delivered over a buffered Go channel, and resumable across reconnects via Last-Event-ID. This page covers the subscribe request, the delta shape, conflation, catch-up, and the SSE bridge.
 
+<Callout type="info">
+  Scope subscriptions answer "tell me when anything in this scope changed." When a client instead wants a **maintained, ordered, filtered result set** — a window it can bind to a list UI, with `enter`/`leave`/`move`/`update` deltas — reach for a [live query](/docs/live-queries), which builds on this plane.
+</Callout>
+
 ## Subscribe scope, never a channel
 
 A subscription request names an entity, a declared scope, and an id:
@@ -111,6 +115,7 @@ The full fetch-then-subscribe pattern, heartbeat cadence, and proxy configuratio
 ## Where to go next
 
 <Cards>
+  <Card title="Live Queries" href="/docs/live-queries">Maintained, filtered, ordered result sets built on this plane.</Card>
   <Card title="Registry" href="/docs/registry">How subscription scopes are declared per entity.</Card>
   <Card title="Commands and Events" href="/docs/commands-and-events">The committed events that become live deltas.</Card>
   <Card title="Runbooks" href="/docs/runbooks">Proxy behavior, heartbeats, and the fetch-then-subscribe pattern.</Card>

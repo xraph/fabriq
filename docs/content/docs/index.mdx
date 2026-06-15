@@ -93,6 +93,15 @@ err = f.Relational().Get(tenantCtx, "asset", res.AggID, &a)
 deltas, err := f.Subscribe(tenantCtx, query.SubscribeScope{
     Entity: "asset", Scope: "site", ID: siteID,
 })
+
+// Live query: a maintained, ordered, filtered window with
+// enter/leave/move/update deltas and exact top-N.
+snap, live, cancel, err := f.LiveQuery(tenantCtx, livequery.LiveQuery{
+    Entity: "asset",
+    Where:  query.Where{query.Eq("kind", "pump")},
+    Sort:   []livequery.SortKey{{Column: "name"}},
+    Limit:  50,
+})
 ```
 
 <Callout type="warn">
