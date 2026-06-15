@@ -1,0 +1,286 @@
+package forgeext
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/xraph/forge"
+
+	"github.com/xraph/fabriq/adapters/postgres"
+)
+
+// Advisory lock keys per singleton role. Stable across versions; never reuse
+// a key for a different role.
+const (
+	lockKeyRelay         = int64(1001)
+	lockKeyReconciler    = int64(1002)
+	lockKeyDocumentPlane = int64(1003)
+)
+
+// Run implements forge.RunnableExtension: supervise the leader-elected relay
+// until shutdown. If RunWorker is false this is a no-op.
+func (e *Extension) Run(ctx context.Context) error {
+	if !e.cfg.RunWorker {
+		return nil
+	}
+
+	e.mu.Lock()
+	stores := e.stores
+	e.mu.Unlock()
+	if stores == nil {
+		return fmt.Errorf("fabriq: Run called before Start")
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	e.mu.Lock()
+	e.cancel, e.done = cancel, done
+	e.mu.Unlock()
+
+	// Observability: /metrics + gauge pollers.
+	app := e.BaseExtension.App()
+	var relayOpts []postgres.RelayOption
+	if app != nil {
+		if m, err := wireObservability(app, stores); err == nil {
+			e.mu.Lock()
+			e.metrics = m
+			e.mu.Unlock()
+			relayOpts = append(relayOpts, postgres.WithRelayOnPublish(func(n int) {
+				m.RelayPublished.Add(float64(n))
+			}))
+			go pollGauges(runCtx, stores, m, 15*time.Second)
+		}
+	}
+
+	var logger forge.Logger
+	if app != nil {
+		logger = app.Logger()
+	}
+
+	// Outbox relay: one per shard. The outbox is shard-local, and advisory
+	// locks are per-database, so each shard elects its own relay leader
+	// independently — relay throughput scales with shard count (ADR 0007).
+	var wg sync.WaitGroup
+	shardPGs := stores.ShardPGs()
+	for _, sp := range shardPGs {
+		sp := sp
+		relay := postgres.NewRelay(sp.PG, e.reg, stores.Redis, relayOpts...)
+		elector := postgres.NewElector(sp.PG, lockKeyRelay)
+		label := "relay"
+		if len(shardPGs) > 1 {
+			label = "relay:" + sp.ID
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, label, func(c context.Context) error { return elector.Run(c, relay.Run) })
+		}()
+	}
+
+	// Document plane: quiet-window materializer + compactor (leader 1003).
+	docElector := postgres.NewElector(stores.Postgres, lockKeyDocumentPlane)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		supervise(runCtx, logger, "document-plane", func(c context.Context) error {
+			return docElector.Run(c, func(leadCtx context.Context) error {
+				e.runDocumentPlane(leadCtx, time.Second)
+				return leadCtx.Err()
+			})
+		})
+	}()
+
+	// Scheduled reconciler: leader-elected, one scanner across replicas.
+	reconcileInterval := e.cfg.ReconcileInterval
+	if reconcileInterval > 0 && (stores.Falkor != nil || stores.Elastic != nil) {
+		reconElector := postgres.NewElector(stores.Postgres, lockKeyReconciler)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "reconciler", func(c context.Context) error {
+				return reconElector.Run(c, func(leadCtx context.Context) error {
+					e.runReconciler(leadCtx, reconcileInterval)
+					return leadCtx.Err()
+				})
+			})
+		}()
+	}
+
+	// Projection consumers scale by replica count — no election needed.
+	consumer := consumerName()
+	e.mu.Lock()
+	fab := e.fab
+	e.mu.Unlock()
+	if stores.Falkor != nil {
+		engine, err := stores.GraphEngine(e.reg, fab.Upcasters())
+		if err != nil {
+			cancel()
+			return err
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "proj:graph", func(c context.Context) error { return engine.Run(c, consumer) })
+		}()
+	}
+	if stores.Elastic != nil {
+		engine, err := stores.SearchEngine(e.reg, fab.Upcasters())
+		if err != nil {
+			cancel()
+			return err
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "proj:search", func(c context.Context) error { return engine.Run(c, consumer) })
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	_ = ctx
+	return nil
+}
+
+// Shutdown implements forge.RunnableExtension: SIGTERM drain.
+// If RunWorker is false (or Run was never called), this is a no-op.
+func (e *Extension) Shutdown(ctx context.Context) error {
+	e.mu.Lock()
+	cancel, done := e.cancel, e.done
+	e.mu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("fabriq: worker did not drain in time")
+	}
+}
+
+// consumerName identifies this replica within the consumer groups.
+func consumerName() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "fabriq-worker"
+	}
+	return fmt.Sprintf("%s-%d", host, os.Getpid())
+}
+
+// supervise keeps a runner alive for the worker's lifetime: every exit is
+// logged (never swallowed) and restarted with exponential backoff
+// (1s -> 30s cap), resetting after a healthy stretch.
+func supervise(ctx context.Context, log forge.Logger, name string, run func(ctx context.Context) error) {
+	const (
+		baseBackoff  = time.Second
+		maxBackoff   = 30 * time.Second
+		healthyReset = 5 * time.Minute
+	)
+	backoff := baseBackoff
+	for {
+		started := time.Now()
+		err := run(ctx)
+		if ctx.Err() != nil {
+			return // orderly shutdown
+		}
+		if time.Since(started) >= healthyReset {
+			backoff = baseBackoff
+		}
+		if log != nil {
+			log.Error("fabriq: runner exited; restarting",
+				forge.String("runner", name),
+				forge.Duration("backoff", backoff),
+				forge.Error(err),
+			)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
+// runReconciler is the scheduled drift healer: leader-elected (lock 1002)
+// so exactly one replica scans, iterating every tenant that ever emitted an event.
+// Interval 0 disables it.
+func (e *Extension) runReconciler(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.reconcileAll(ctx)
+		}
+	}
+}
+
+// runDocumentPlane is the materializer + compactor: every interval it
+// materializes quiet documents (one ordinary versioned event each) and
+// compacts logs past their SnapshotEvery budget. Leader-elected (1003).
+func (e *Extension) runDocumentPlane(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.mu.Lock()
+			stores := e.stores
+			e.mu.Unlock()
+			if stores == nil {
+				continue
+			}
+			_, _ = stores.Postgres.Documents().MaterializeQuiet(ctx, nil)
+		}
+	}
+}
+
+func (e *Extension) reconcileAll(ctx context.Context) {
+	e.mu.Lock()
+	stores := e.stores
+	e.mu.Unlock()
+	if stores == nil {
+		return
+	}
+	tenants, err := stores.AllTenants(ctx)
+	if err != nil {
+		return
+	}
+	for _, tenantID := range tenants {
+		if stores.Falkor != nil {
+			if rec, err := stores.GraphReconciler(e.reg); err == nil {
+				_, _ = rec.Reconcile(ctx, tenantID, true)
+			}
+		}
+		if stores.Elastic != nil {
+			if rec, err := stores.SearchReconciler(e.reg); err == nil {
+				_, _ = rec.Reconcile(ctx, tenantID, true)
+			}
+		}
+	}
+}
