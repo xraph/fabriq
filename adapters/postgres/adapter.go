@@ -16,6 +16,13 @@
 //     in this architecture is always a bug, returning
 //     ErrTenantHookTripped and counting the trip. See
 //     docs/decisions/0002-tenancy-layers.md.
+//
+// Dynamic-entity reads (IsDynamic() == true) scan rows into
+// *[]map[string]any rather than typed structs. Grove's schema-aware Scan
+// only handles struct/slice-of-struct destinations, so dynamic reads use the
+// PgTx.QueryRows path: a driver.Rows cursor iterated manually with
+// Columns()+Scan into individual any destinations, then assembled into maps.
+// Static reads are byte-unchanged.
 package postgres
 
 import (
@@ -138,6 +145,33 @@ func (a *Adapter) inTenantTx(ctx context.Context, fn func(tx *pgdriver.PgTx) err
 	return nil
 }
 
+// inDynamicTenantTx runs fn inside a tenant-stamped transaction, giving fn
+// direct access to a driver.Tx so it can call Query() to obtain driver.Rows
+// for map-native scanning. This is the dynamic-entity read path; the grove
+// query builder (NewSelect) is not used because it only scans struct types.
+func (a *Adapter) inDynamicTenantTx(ctx context.Context, fn func(tid string, tx driver.Tx) error) error {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return err
+	}
+	tx, err := a.pg.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("fabriq: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tid); err != nil {
+		return fmt.Errorf("fabriq: stamp tenant: %w", err)
+	}
+	if err := fn(tid, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("fabriq: commit: %w", err)
+	}
+	return nil
+}
+
 // entity resolves a registry entity and checks the scan target type.
 func (a *Adapter) entity(name string) (*registry.Entity, error) {
 	ent, ok := a.reg.Get(name)
@@ -152,6 +186,28 @@ func (a *Adapter) Get(ctx context.Context, entity, id string, into any) error {
 	ent, err := a.entity(entity)
 	if err != nil {
 		return err
+	}
+	if ent.Binding.IsDynamic() {
+		if !ddlValid(ent.Binding.Table) {
+			return fmt.Errorf("fabriq: dynamic table name %q failed ddl validation", ent.Binding.Table)
+		}
+		return a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
+			sql := fmt.Sprintf(
+				`SELECT * FROM %s WHERE tenant_id = $1 AND id = $2 LIMIT 1`,
+				quoteIdent(ent.Binding.Table))
+			rows, qerr := tx.Query(ctx, sql, tid, id)
+			if qerr != nil {
+				return qerr
+			}
+			maps, serr := scanMaps(rows)
+			if serr != nil {
+				return serr
+			}
+			if len(maps) == 0 {
+				return &fabriqerr.NotFoundError{Entity: ent.Spec.Name, ID: id}
+			}
+			return assignMapDest(into, maps[0])
+		})
 	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
@@ -177,6 +233,25 @@ func (a *Adapter) GetMany(ctx context.Context, entity string, ids []string, into
 	if len(ids) == 0 {
 		return nil
 	}
+	if ent.Binding.IsDynamic() {
+		if !ddlValid(ent.Binding.Table) {
+			return fmt.Errorf("fabriq: dynamic table name %q failed ddl validation", ent.Binding.Table)
+		}
+		return a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
+			sql := fmt.Sprintf(
+				`SELECT * FROM %s WHERE tenant_id = $1 AND id = ANY($2) ORDER BY array_position($2, id)`,
+				quoteIdent(ent.Binding.Table))
+			rows, qerr := tx.Query(ctx, sql, tid, ids)
+			if qerr != nil {
+				return qerr
+			}
+			maps, serr := scanMaps(rows)
+			if serr != nil {
+				return serr
+			}
+			return assignMapsDest(into, maps)
+		})
+	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
 		sql := fmt.Sprintf(
@@ -201,6 +276,64 @@ func (a *Adapter) List(ctx context.Context, entity string, q query.ListQuery, in
 	if err := query.ValidateConds(q.Where, ent.Binding.HasColumn); err != nil {
 		return err
 	}
+	if ent.Binding.IsDynamic() {
+		// Build parameterized SQL for the dynamic entity. The table name and
+		// order column are ddlValid-checked identifiers that are quoted and
+		// interpolated; all filter values travel as $N bound parameters.
+		if !ddlValid(ent.Binding.Table) {
+			return fmt.Errorf("fabriq: dynamic table name %q failed ddl validation", ent.Binding.Table)
+		}
+		var sb strings.Builder
+		var sqlArgs []any
+		argN := 1
+		return a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
+			// Reset sb and args for each call (closure captures them by reference
+			// but inDynamicTenantTx only calls the closure once).
+			sb.Reset()
+			sqlArgs = sqlArgs[:0]
+			argN = 1
+
+			fmt.Fprintf(&sb, `SELECT * FROM %s WHERE %s = $%d`,
+				quoteIdent(ent.Binding.Table), quoteIdent(registry.ColumnTenant), argN)
+			sqlArgs = append(sqlArgs, tid)
+			argN++
+
+			for _, c := range q.Where {
+				frag, fargs, cerr := condSQLPositional(c, &argN)
+				if cerr != nil {
+					return cerr
+				}
+				sb.WriteString(` AND `)
+				sb.WriteString(frag)
+				sqlArgs = append(sqlArgs, fargs...)
+			}
+
+			if orderCol != "" {
+				if !ddlValid(orderCol) {
+					return fmt.Errorf("fabriq: order column %q failed ddl validation", orderCol)
+				}
+				fmt.Fprintf(&sb, ` ORDER BY %s %s`, quoteIdent(orderCol), orderDir)
+			} else {
+				fmt.Fprintf(&sb, ` ORDER BY %s ASC`, quoteIdent(registry.ColumnID))
+			}
+			if q.Limit > 0 {
+				fmt.Fprintf(&sb, ` LIMIT %d`, q.Limit)
+			}
+			if q.Offset > 0 {
+				fmt.Fprintf(&sb, ` OFFSET %d`, q.Offset)
+			}
+
+			rows, qerr := tx.Query(ctx, sb.String(), sqlArgs...)
+			if qerr != nil {
+				return qerr
+			}
+			maps, serr := scanMaps(rows)
+			if serr != nil {
+				return serr
+			}
+			return assignMapsDest(into, maps)
+		})
+	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
 		sel := tx.NewSelect(into).Where(registry.ColumnTenant+" = ?", tid)
@@ -224,6 +357,66 @@ func (a *Adapter) List(ctx context.Context, entity string, q query.ListQuery, in
 		}
 		return sel.Scan(ctx)
 	})
+}
+
+// scanMaps iterates a driver.Rows cursor and assembles each row into a
+// map[string]any keyed by column name. It closes the rows on return.
+func scanMaps(rows driver.Rows) ([]map[string]any, error) {
+	defer func() { _ = rows.Close() }()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: scanMaps columns: %w", err)
+	}
+
+	var out []map[string]any
+	for rows.Next() {
+		// Allocate one *any per column so Scan can write into it.
+		ptrs := make([]any, len(cols))
+		vals := make([]any, len(cols))
+		for i := range cols {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("fabriq: scanMaps scan: %w", err)
+		}
+		m := make(map[string]any, len(cols))
+		for i, col := range cols {
+			m[col] = vals[i]
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fabriq: scanMaps rows.Err: %w", err)
+	}
+	return out, nil
+}
+
+// assignMapDest writes a single map into the destination, which must be
+// either *map[string]any or **map[string]any (or any pointer thereto).
+func assignMapDest(into any, m map[string]any) error {
+	switch dst := into.(type) {
+	case *map[string]any:
+		*dst = m
+		return nil
+	case **map[string]any:
+		*dst = &m
+		return nil
+	default:
+		return fmt.Errorf("fabriq: dynamic Get: destination must be *map[string]any, got %T", into)
+	}
+}
+
+// assignMapsDest writes a slice of maps into the destination, which must be
+// *[]map[string]any.
+func assignMapsDest(into any, maps []map[string]any) error {
+	switch dst := into.(type) {
+	case *[]map[string]any:
+		*dst = maps
+		return nil
+	default:
+		return fmt.Errorf("fabriq: dynamic read: destination must be *[]map[string]any, got %T", into)
+	}
 }
 
 // Query is the raw SQL escape hatch for reads. It still runs inside a
