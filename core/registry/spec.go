@@ -28,7 +28,12 @@ type DynamicColumn struct {
 	Name    string
 	Type    ColumnType
 	NotNull bool
-	Default string // optional SQL default literal
+	// Default is an optional SQL default EXPRESSION (e.g. "now()", "'pending'",
+	// "0"). It is interpolated verbatim into DDL and is intentionally NOT
+	// identifier-validated (it is an expression, not an identifier), so it must
+	// be a trusted, control-plane value — never a user-supplied string. Same
+	// trust level as hand-written migration SQL.
+	Default string
 }
 
 // DynamicIndex is an optional secondary index on a dynamic entity.
