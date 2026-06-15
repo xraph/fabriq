@@ -92,6 +92,13 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		Documents:       pg.Documents(),
 		ProjectionState: stores.state,
 	}
+	if len(shardList) == 1 {
+		// Live queries read snapshots/refills straight from the single shard's
+		// adapter (Postgres is the exact-top-N oracle). Multi-shard live
+		// routing lands in a later phase; until then LiveQuery returns a typed
+		// not-configured error on sharded deployments rather than wrong reads.
+		ports.Live = pg.NewLiveStore()
+	}
 
 	allOpts := append(cfg.Options(), opts...)
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/subscribe"
 	"github.com/xraph/fabriq/internal/otel"
 )
@@ -21,6 +22,8 @@ type settings struct {
 	upcasters        *event.UpcasterChain
 	tailer           subscribe.Tailer
 	executorOptions  []command.ExecutorOption
+	liveAuthz        livequery.AuthzFunc
+	liveCushion      int
 }
 
 func defaultSettings() settings {
@@ -29,6 +32,7 @@ func defaultSettings() settings {
 		subscribeBuffer:  64,
 		waitPollInterval: 25 * time.Millisecond,
 		streamMaxLen:     500,
+		liveCushion:      16,
 		// One trace spans command -> outbox -> relay -> projection apply:
 		// the executor stamps the active W3C traceparent by default.
 		executorOptions: []command.ExecutorOption{
@@ -56,6 +60,24 @@ func WithSubscribeBuffer(n int) Option {
 	return func(s *settings) {
 		if n > 0 {
 			s.subscribeBuffer = n
+		}
+	}
+}
+
+// WithLiveAuthz installs the authorization hook run before a live query's
+// snapshot. It may also be used (in later phases) to inject mandatory
+// row-visibility predicates into the query's filter.
+func WithLiveAuthz(fn livequery.AuthzFunc) Option {
+	return func(s *settings) { s.liveAuthz = fn }
+}
+
+// WithLiveCushion sets how many extra rows beyond the visible window each
+// maintained live query buffers, to absorb boundary churn before a Postgres
+// refill is needed (default 16).
+func WithLiveCushion(n int) Option {
+	return func(s *settings) {
+		if n > 0 {
+			s.liveCushion = n
 		}
 	}
 }

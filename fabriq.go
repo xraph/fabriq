@@ -8,12 +8,21 @@ import (
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/subscribe"
 	"github.com/xraph/fabriq/core/tenant"
 )
+
+// LiveReader is the snapshot + boundary-refill oracle the live query engine
+// reads from (implemented by adapters/postgres LiveStore). Postgres stays
+// authoritative for ordering and exact top-N.
+type LiveReader interface {
+	livequery.Snapshotter
+	livequery.Refiller
+}
 
 // Ports bundles the port implementations a Fabriq is assembled from.
 // Open() fills them from configured adapters; tests and embedders may
@@ -29,6 +38,10 @@ type Ports struct {
 	Vector          query.VectorQuerier
 	Documents       document.Store
 	ProjectionState projection.StateReader
+
+	// Live is the snapshot/refill oracle for live queries; when set (and a
+	// tailer is configured) the facade exposes LiveQuery.
+	Live LiveReader
 }
 
 // Fabriq is the facade implementing query.Fabric: the single object
@@ -41,6 +54,9 @@ type Fabriq struct {
 	gate     *subscribe.Gate
 	settings settings
 	stores   *Stores // set by Open; nil when assembled from explicit ports
+
+	liveEngine *livequery.Engine  // nil when live queries are not configured
+	liveAuthz  livequery.AuthzFunc // optional authz hook for live queries
 }
 
 var _ query.Fabric = (*Fabriq)(nil)
@@ -76,13 +92,31 @@ func New(reg *registry.Registry, ports Ports, opts ...Option) (*Fabriq, error) {
 	if s.tailer != nil {
 		hubOpts = append(hubOpts, subscribe.WithTailer(s.tailer))
 	}
+
+	// Live queries need both a snapshot/refill oracle and a change feed; absent
+	// either, LiveQuery returns a typed not-configured error.
+	var liveEngine *livequery.Engine
+	if ports.Live != nil && s.tailer != nil {
+		feed := livequery.NewRedisFeed(s.tailer, func(ctx context.Context, q livequery.LiveQuery) (string, error) {
+			tid, terr := tenant.Require(ctx)
+			if terr != nil {
+				return "", terr
+			}
+			return registry.ChannelName(tid, registry.ByTenant, tid), nil
+		})
+		liveEngine = livequery.NewEngine(ports.Live, ports.Live, feed,
+			livequery.EngineOptions{Cushion: s.liveCushion, Buffer: s.subscribeBuffer})
+	}
+
 	return &Fabriq{
-		reg:      reg,
-		exec:     exec,
-		ports:    ports,
-		hub:      subscribe.NewHub(hubOpts...),
-		gate:     subscribe.NewGate(reg, s.authz),
-		settings: s,
+		reg:        reg,
+		exec:       exec,
+		ports:      ports,
+		hub:        subscribe.NewHub(hubOpts...),
+		gate:       subscribe.NewGate(reg, s.authz),
+		settings:   s,
+		liveEngine: liveEngine,
+		liveAuthz:  s.liveAuthz,
 	}, nil
 }
 
@@ -213,6 +247,50 @@ func (f *Fabriq) Subscribe(ctx context.Context, scope query.SubscribeScope) (<-c
 		return nil, err
 	}
 	return ch, nil
+}
+
+// LiveQuery registers a maintained-result-set subscription: it validates the
+// query against the entity's LiveSpec, takes an RLS-enforced snapshot, and
+// returns the snapshot plus a live channel of enter/leave/move/update deltas.
+// Cancel the returned func to tear the subscription down.
+func (f *Fabriq) LiveQuery(ctx context.Context, q livequery.LiveQuery) (livequery.Snapshot, <-chan livequery.LiveDelta, func(), error) {
+	if f.liveEngine == nil {
+		return livequery.Snapshot{}, nil, nil, fmt.Errorf("fabriq: live queries require a relational oracle and a tailer: %w", ErrStoreNotConfigured)
+	}
+	ent, ok := f.reg.Get(q.Entity)
+	if !ok {
+		return livequery.Snapshot{}, nil, nil, fmt.Errorf("fabriq: unknown entity %q", q.Entity)
+	}
+	if ent.Spec.Live == nil {
+		return livequery.Snapshot{}, nil, nil, fmt.Errorf("fabriq: entity %q does not declare a LiveSpec", q.Entity)
+	}
+	if err := q.Validate(ent.Binding.HasColumn, sortableFunc(ent)); err != nil {
+		return livequery.Snapshot{}, nil, nil, err
+	}
+	if f.liveAuthz != nil {
+		if err := f.liveAuthz(ctx, q); err != nil {
+			return livequery.Snapshot{}, nil, nil, err
+		}
+	}
+	snap, deltas, cancel, err := f.liveEngine.Subscribe(ctx, q)
+	if err != nil {
+		return livequery.Snapshot{}, nil, nil, err
+	}
+	snap.SubID = event.NewID()
+	return snap, deltas, cancel, nil
+}
+
+// sortableFunc returns the predicate deciding which columns a live query may
+// sort on: the LiveSpec's Sortable allowlist, or any column when unset.
+func sortableFunc(ent *registry.Entity) func(string) bool {
+	if ent.Spec.Live == nil || len(ent.Spec.Live.Sortable) == 0 {
+		return ent.Binding.HasColumn
+	}
+	set := make(map[string]bool, len(ent.Spec.Live.Sortable))
+	for _, c := range ent.Spec.Live.Sortable {
+		set[c] = true
+	}
+	return func(c string) bool { return set[c] }
 }
 
 // WaitForProjection implements query.Fabric by polling the projection
