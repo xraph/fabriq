@@ -103,12 +103,18 @@ func (r *Registry) Register(spec EntitySpec) error {
 	if _, dup := r.entities[spec.Name]; dup {
 		return fmt.Errorf("fabriq: entity %q registered twice", spec.Name)
 	}
-	if prev, dup := r.byModel[binding.ModelType()]; dup {
-		return fmt.Errorf("fabriq: model type %s already bound to entity %q", binding.ModelType(), prev.Spec.Name)
+	// Dynamic entities have no Go model type; skip the byModel index.
+	if mt := binding.ModelType(); mt != nil {
+		if prev, dup := r.byModel[mt]; dup {
+			return fmt.Errorf("fabriq: model type %s already bound to entity %q", mt, prev.Spec.Name)
+		}
+		ent := &Entity{Spec: spec, Binding: binding}
+		r.entities[spec.Name] = ent
+		r.byModel[mt] = ent
+		return nil
 	}
 	ent := &Entity{Spec: spec, Binding: binding}
 	r.entities[spec.Name] = ent
-	r.byModel[binding.ModelType()] = ent
 	return nil
 }
 

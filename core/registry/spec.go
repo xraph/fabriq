@@ -10,6 +10,43 @@ package registry
 
 import "time"
 
+// ColumnType is the neutral column type set for dynamic entities; adapters map
+// it to engine SQL types.
+type ColumnType int
+
+const (
+	ColText  ColumnType = iota
+	ColInt
+	ColFloat
+	ColBool
+	ColTime
+	ColJSON
+)
+
+// DynamicColumn is one domain column of a runtime-defined entity.
+type DynamicColumn struct {
+	Name    string
+	Type    ColumnType
+	NotNull bool
+	Default string // optional SQL default literal
+}
+
+// DynamicIndex is an optional secondary index on a dynamic entity.
+type DynamicIndex struct {
+	Name    string
+	Columns []string
+	Unique  bool
+}
+
+// DynamicSchema describes an entity defined at runtime instead of by a Go
+// Model. Mutually exclusive with EntitySpec.Model. fabriq injects the
+// structural columns (id, tenant_id, version); declare only domain columns.
+type DynamicSchema struct {
+	Table   string
+	Columns []DynamicColumn
+	Indexes []DynamicIndex
+}
+
 // Kind classifies how an entity is written.
 type Kind int
 
@@ -101,12 +138,16 @@ type EntitySpec struct {
 	Name      string
 	Kind      Kind
 	Model     any
-	GraphNode string     // graph label; empty = not projected to the graph
+	GraphNode string         // graph label; empty = not projected to the graph
 	GraphEdge *GraphEdgeSpec // when set, the entity projects as a relationship
 	Edges     []EdgeSpec
 	Search    SearchSpec
 	Subscribe []Scope
 	CRDT      *CRDTSpec
+
+	// Schema declares a runtime-defined ("dynamic") entity instead of Model.
+	// Exactly one of Model or Schema must be set.
+	Schema *DynamicSchema
 
 	// Validate, when set, runs after structural validation on every
 	// create/update/upsert with the column-keyed payload. Fabriq attaches
