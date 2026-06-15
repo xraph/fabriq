@@ -32,6 +32,9 @@ func (s *server) routes(r forge.Router) {
 	_ = api.GET("/assets", s.listAssets)
 	// SSE uses a raw stdlib handler: the bridge needs the Flusher.
 	_ = api.GET("/subscribe", s.subscribe)
+	// Maintained-result-set live queries (filter + sort + limit → snapshot +
+	// enter/leave/move/update). POST because the query body needs JSON.
+	_ = api.POST("/live", s.live)
 	// Document plane: fetch-then-subscribe for collaborative docs.
 	_ = api.POST("/docs/update", s.docUpdate)
 	_ = api.POST("/docs/sync", s.docSync)
