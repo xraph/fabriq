@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/xraph/grove/drivers/pgdriver"
 
@@ -51,6 +52,9 @@ func (t *storeTx) ApplyChange(ctx context.Context, ent *registry.Entity, op comm
 		}
 		return nil
 	case command.OpCreate:
+		if ent.Binding.IsDynamic() {
+			return t.dynInsert(ctx, ent, vals)
+		}
 		model := ent.Binding.NewModel()
 		if err := ent.Binding.Populate(model, vals); err != nil {
 			return err
@@ -60,6 +64,9 @@ func (t *storeTx) ApplyChange(ctx context.Context, ent *registry.Entity, op comm
 		}
 		return nil
 	case command.OpUpdate:
+		if ent.Binding.IsDynamic() {
+			return t.dynUpdate(ctx, ent, aggID, vals)
+		}
 		model := ent.Binding.NewModel()
 		if err := ent.Binding.Populate(model, vals); err != nil {
 			return err
@@ -87,6 +94,75 @@ func (t *storeTx) AppendOutbox(ctx context.Context, env event.Envelope) error {
 	}
 	if _, err := t.ptx.NewRaw(`SELECT pg_notify('fabriq_outbox', $1)`, env.ID).Exec(ctx); err != nil {
 		return fmt.Errorf("fabriq: notify outbox: %w", err)
+	}
+	return nil
+}
+
+// dynInsert builds a parameterized INSERT from the column-keyed vals map.
+// Column order follows ent.Binding.Columns so the SQL is deterministic.
+// Every interpolated identifier is validated with ddlValid at the SQL boundary.
+func (t *storeTx) dynInsert(ctx context.Context, ent *registry.Entity, vals map[string]any) error {
+	if !ddlValid(ent.Binding.Table) {
+		return fmt.Errorf("fabriq: invalid dynamic table %q", ent.Binding.Table)
+	}
+	cols := make([]string, 0, len(vals))
+	args := make([]any, 0, len(vals))
+	ph := make([]string, 0, len(vals))
+	for _, c := range ent.Binding.Columns {
+		v, ok := vals[c]
+		if !ok {
+			continue
+		}
+		if !ddlValid(c) {
+			return fmt.Errorf("fabriq: invalid column %q for %s", c, ent.Binding.Table)
+		}
+		cols = append(cols, quoteIdent(c))
+		args = append(args, v)
+		ph = append(ph, fmt.Sprintf("$%d", len(args)))
+	}
+	if len(cols) == 0 {
+		return fmt.Errorf("fabriq: dynInsert %s: no columns to insert", ent.Binding.Table)
+	}
+	sql := fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`,
+		quoteIdent(ent.Binding.Table), strings.Join(cols, ", "), strings.Join(ph, ", "))
+	if _, err := t.ptx.NewRaw(sql, args...).Exec(ctx); err != nil {
+		return fmt.Errorf("fabriq: insert %s: %w", ent.Binding.Table, err)
+	}
+	return nil
+}
+
+// dynUpdate builds a parameterized UPDATE from the column-keyed vals map.
+// The id column is excluded from the SET clause and used only in the WHERE.
+// Column order follows ent.Binding.Columns so the SQL is deterministic.
+// Every interpolated identifier is validated with ddlValid at the SQL boundary.
+func (t *storeTx) dynUpdate(ctx context.Context, ent *registry.Entity, aggID string, vals map[string]any) error {
+	if !ddlValid(ent.Binding.Table) {
+		return fmt.Errorf("fabriq: invalid dynamic table %q", ent.Binding.Table)
+	}
+	sets := make([]string, 0, len(vals))
+	args := make([]any, 0, len(vals)+1)
+	for _, c := range ent.Binding.Columns {
+		if c == registry.ColumnID {
+			continue
+		}
+		v, ok := vals[c]
+		if !ok {
+			continue
+		}
+		if !ddlValid(c) {
+			return fmt.Errorf("fabriq: invalid column %q for %s", c, ent.Binding.Table)
+		}
+		args = append(args, v)
+		sets = append(sets, fmt.Sprintf("%s = $%d", quoteIdent(c), len(args)))
+	}
+	if len(sets) == 0 {
+		return fmt.Errorf("fabriq: dynUpdate %s: no columns to update", ent.Binding.Table)
+	}
+	args = append(args, aggID)
+	sql := fmt.Sprintf(`UPDATE %s SET %s WHERE id = $%d`,
+		quoteIdent(ent.Binding.Table), strings.Join(sets, ", "), len(args))
+	if _, err := t.ptx.NewRaw(sql, args...).Exec(ctx); err != nil {
+		return fmt.Errorf("fabriq: update %s: %w", ent.Binding.Table, err)
 	}
 	return nil
 }
