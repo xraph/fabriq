@@ -159,4 +159,17 @@ type EntitySpec struct {
 	// no meaning to the values; consumers enforce their own invariants
 	// (enum membership, checksums, cross-field rules).
 	Validate func(vals map[string]any) error
+
+	// Live opts the entity into the maintained-result-set live query engine.
+	// Nil (the zero value) means live queries are disabled for this entity.
+	Live *LiveSpec
+}
+
+// LiveSpec opts an entity into the live query engine (nil = disabled).
+// Filterable/Sortable default to all columns when empty; columns are validated
+// against the model at registration.
+type LiveSpec struct {
+	Filterable []string // columns allowed in Where (empty = all)
+	Sortable   []string // columns allowed in Sort (empty = all)
+	MaxWindow  int      // cap on Limit (0 = engine default)
 }
