@@ -55,7 +55,7 @@ type Fabriq struct {
 	settings settings
 	stores   *Stores // set by Open; nil when assembled from explicit ports
 
-	liveEngine *livequery.Engine  // nil when live queries are not configured
+	liveEngine *livequery.Engine   // nil when live queries are not configured
 	liveAuthz  livequery.AuthzFunc // optional authz hook for live queries
 }
 

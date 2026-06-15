@@ -86,6 +86,12 @@ All of the following are implemented and covered by integration tests:
 - **Redis Streams fan-out** — a leader-elected outbox relay (LISTEN/NOTIFY wake),
   consumer groups with `XAUTOCLAIM` recovery, and a subscription hub (delta
   conflation, SSE, Last-Event-ID resume).
+- **Live queries** — maintained result sets: a `filter + sort + limit/cursor`
+  subscription returns a snapshot, then exact `enter/leave/move/update` deltas as
+  data changes (changefeed-style). The in-engine window stays an exact prefix of
+  the Postgres-ordered result via a cushion + keyset boundary refill, so top-N is
+  exact at all times. (P1: single-node maintained mode; sharding, a streamed mode,
+  and a predicate index are on the roadmap.)
 - **Graph projection (FalkorDB)** — an openCypher dialect behind a conformance
   suite (the engine-swap gate), a batched `TraverseAndHydrate`, and blue-green
   rebuilds verified to produce an identical graph.
