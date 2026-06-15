@@ -97,6 +97,18 @@ func (r *Registry) Register(spec EntitySpec) error {
 			return fmt.Errorf("fabriq: entity %q: scope %q field %q is not a column of %s", spec.Name, s.Name, s.Field, binding.Table)
 		}
 	}
+	if spec.Live != nil {
+		for _, c := range spec.Live.Sortable {
+			if !binding.HasColumn(c) {
+				return fmt.Errorf("fabriq: entity %q: live sortable column %q is not a column of %s", spec.Name, c, binding.Table)
+			}
+		}
+		for _, c := range spec.Live.Filterable {
+			if !binding.HasColumn(c) {
+				return fmt.Errorf("fabriq: entity %q: live filterable column %q is not a column of %s", spec.Name, c, binding.Table)
+			}
+		}
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
