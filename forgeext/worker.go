@@ -143,6 +143,9 @@ func (e *Extension) Run(ctx context.Context) error {
 		wg.Wait()
 		close(done)
 	}()
+	// Run returns immediately; the worker's lifetime is bound to runCtx and
+	// torn down by Shutdown, not by this call's ctx — so ctx is intentionally
+	// not propagated to the background loops.
 	_ = ctx
 	return nil
 }

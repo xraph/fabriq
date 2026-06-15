@@ -7,13 +7,15 @@ import (
 	"time"
 
 	"github.com/xraph/forge"
+
+	"github.com/xraph/fabriq/forgeext"
 )
 
 // appConfigForTest mirrors the config-loading fields setup() puts on the
 // forge app, pointed at a temp search dir.
 func appConfigForTest(dir string) forge.AppConfig {
 	return forge.AppConfig{
-		Name:                      "fabriq-worker",
+		Name:                      "fabriq",
 		Version:                   "0.0.0",
 		EnableConfigAutoDiscovery: true,
 		EnableEnvConfig:           true,
@@ -54,7 +56,7 @@ subscriptions:
 	t.Setenv("FABRIQ_ELASTICSEARCH_ADDRS", "https://es-env1:9200,https://es-env2:9200")
 
 	app := forge.NewApp(appConfigForTest(dir))
-	cfg := loadFabriqConfig(app.Config())
+	cfg := forgeext.LoadConfig(app.Config(), "")
 
 	if got, want := cfg.Postgres.DSN, "postgres://env@pg:5432/fabriq?sslmode=require"; got != want {
 		t.Errorf("postgres.dsn = %q, want env override %q", got, want)
@@ -92,7 +94,7 @@ func TestLoadFabriqConfig_EnvOnly(t *testing.T) {
 	t.Setenv("FABRIQ_FALKORDB_ADDR", "falkor:6379")
 
 	app := forge.NewApp(appConfigForTest(dir))
-	cfg := loadFabriqConfig(app.Config())
+	cfg := forgeext.LoadConfig(app.Config(), "")
 
 	if cfg.Postgres.DSN != "postgres://only@pg/db" {
 		t.Errorf("postgres.dsn = %q, want env-only value", cfg.Postgres.DSN)
@@ -106,7 +108,7 @@ func TestLoadFabriqConfig_EnvOnly(t *testing.T) {
 }
 
 func TestLoadFabriqConfig_NilManager(t *testing.T) {
-	if cfg := loadFabriqConfig(nil); cfg.Postgres.DSN != "" || cfg.Redis.Addr != "" {
+	if cfg := forgeext.LoadConfig(nil, ""); cfg.Postgres.DSN != "" || cfg.Redis.Addr != "" {
 		t.Errorf("nil config manager should yield a zero Config, got %+v", cfg)
 	}
 }

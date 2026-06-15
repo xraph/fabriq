@@ -27,12 +27,14 @@ package main
 
 import (
 	"os"
+	"time"
 
 	"github.com/xraph/forge"
 	"github.com/xraph/forge/cli"
 
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/domain"
+	"github.com/xraph/fabriq/forgeext"
 )
 
 // version is the build version, stamped by goreleaser via
@@ -77,12 +79,11 @@ func setup(_ cli.CommandContext) (forge.App, error) {
 	// Forge loads the datastore config: it auto-discovers config.yaml (+
 	// config.local.yaml) from the search paths and overlays FABRIQ_*
 	// environment variables (env wins). EnvPrefix is pinned to FABRIQ_
-	// rather than derived from the app name (which would yield
-	// FABRIQ-WORKER_) so the documented FABRIQ_POSTGRES_DSN-style contract —
-	// and the Helm chart that injects it — keeps working. The worker
-	// extension reads the resulting config from app.Config() in Start.
+	// explicitly so the documented FABRIQ_POSTGRES_DSN-style contract —
+	// and the Helm chart that injects it — keeps working regardless of
+	// how forge derives a default prefix from the app name.
 	app := forge.NewApp(forge.AppConfig{
-		Name:                      "fabriq-worker",
+		Name:                      "fabriq",
 		Version:                   version,
 		HTTPAddress:               addr,
 		EnableConfigAutoDiscovery: true,
@@ -91,7 +92,25 @@ func setup(_ cli.CommandContext) (forge.App, error) {
 		EnvPrefix:                 "FABRIQ_",
 		ConfigSearchPaths:         []string{".", "/etc/fabriq"},
 	})
-	if err := app.RegisterExtension(newWorkerExtension(reg)); err != nil {
+
+	// Load the datastore config from forge's config manager. Config is loaded
+	// here (not in Start) so that the extension receives the top-level key
+	// contract (FABRIQ_POSTGRES_DSN, etc.) rather than the extensions.fabriq.*
+	// prefix that a host-app would use. Store validation (Postgres + Redis
+	// required) runs in the extension's Start, which is only reached on serve.
+	cm := app.Config()
+	cfg := forgeext.LoadConfig(cm, "") // top-level keys + FABRIQ_* — unchanged serve contract
+	interval := 5 * time.Minute
+	if raw := os.Getenv("FABRIQ_RECONCILE_INTERVAL"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil {
+			interval = d // "0" disables
+		}
+	}
+	if err := app.RegisterExtension(forgeext.New(reg,
+		forgeext.WithConfig(cfg),
+		forgeext.WithWorker(true),
+		forgeext.WithReconcileInterval(interval),
+	)); err != nil {
 		return nil, err
 	}
 	return app, nil
