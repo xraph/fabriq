@@ -100,7 +100,7 @@ jobs:
         run: helm push "${{ steps.pkg.outputs.chart }}" "oci://ghcr.io/${{ github.repository_owner }}/charts"
 
       - name: Attach chart to the GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           files: ${{ steps.pkg.outputs.chart }}
