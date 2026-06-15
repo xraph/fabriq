@@ -3,7 +3,7 @@ title: Registry
 description: How an entity is declared once as an EntitySpec and the projection mappings, channel names, and tenant-scoped store names are all derived from it.
 ---
 
-The registry is fabriq's declarative schema. Each entity is described once as an `EntitySpec` — its relational shape via a grove-tagged model, plus the fabric-only concerns layered on top (graph mapping, search mapping, subscription scopes, the CRDT plane) — and everything else is derived: projection mappings, channel names, tenant-scoped store names, conformance checks. The registry never generates DDL.
+The registry is fabriq's declarative schema. Each entity is described once as an `EntitySpec` — its relational shape via a grove-tagged model, plus the fabric-only concerns layered on top (graph mapping, search mapping, subscription scopes, the CRDT plane) — and everything else is derived: projection mappings, channel names, tenant-scoped store names, conformance checks. For static (Go-struct) entities the registry never generates DDL; the one fenced exception is [dynamic entities](/docs/dynamic-entities), declared from a runtime descriptor.
 
 ## EntitySpec
 
@@ -157,11 +157,14 @@ The registry is the single place names and mappings are minted, so they are cons
 
 ## The registry never generates DDL
 
-This is a hard boundary. grove migrations are the schema authority — they create and alter tables. The registry only *reads* the grove-tagged model to learn the relational shape it must conform to. The bridge between the two is the registry-conformance integration test, which asserts that every registered entity's bound columns match what the migrations actually created. If a migration and a spec disagree, that test fails. See [Migrations](/docs/migrations) for the full schema-discipline workflow.
+This is a hard boundary **for static entities**. grove migrations are the schema authority — they create and alter tables. The registry only *reads* the grove-tagged model to learn the relational shape it must conform to. The bridge between the two is the registry-conformance integration test, which asserts that every registered entity's bound columns match what the migrations actually created. If a migration and a spec disagree, that test fails. See [Migrations](/docs/migrations) for the full schema-discipline workflow.
+
+The one fenced exception is [dynamic entities](/docs/dynamic-entities) — entities declared from a runtime `Schema` descriptor instead of a Go `Model`. For *those*, fabriq does manage DDL (`CREATE`/additive `ALTER`), because there is no compile-time migration to author. It is additive and opt-in, and leaves the static lane's discipline above completely intact.
 
 ## Where to go next
 
 <Cards>
+  <Card title="Dynamic Entities" href="/docs/dynamic-entities">Runtime-defined entities with fabriq-managed DDL.</Card>
   <Card title="Commands and Events" href="/docs/commands-and-events">How aggregate specs drive validation and the single write path.</Card>
   <Card title="Subscriptions" href="/docs/subscriptions">How Subscribe scopes resolve to channels server-side.</Card>
   <Card title="Migrations" href="/docs/migrations">grove migrations as the schema authority and the conformance bridge.</Card>
