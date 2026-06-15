@@ -84,6 +84,14 @@ func (w *Window) insert(ctx context.Context, ch Change) []LiveDelta {
 	if pos >= len(w.rows) && len(w.rows) >= w.cap() && !w.complete {
 		return nil
 	}
+	// Capture the row at the visible boundary before splicing: an insert into
+	// a full visible window pushes it into the cushion, so it must LEAVE.
+	var evicted *Row
+	if pos < w.n && len(w.rows) >= w.n {
+		ev := w.rows[w.n-1]
+		evicted = &ev
+	}
+
 	w.rows = append(w.rows, Row{})
 	copy(w.rows[pos+1:], w.rows[pos:])
 	w.rows[pos] = r
@@ -91,6 +99,9 @@ func (w *Window) insert(ctx context.Context, ch Change) []LiveDelta {
 	var deltas []LiveDelta
 	if pos < w.n {
 		deltas = append(deltas, w.delta(OpEnter, r, -1, pos))
+		if evicted != nil {
+			deltas = append(deltas, w.delta(OpLeave, *evicted, w.n, -1))
+		}
 	}
 	w.trimTail()
 	deltas = append(deltas, w.maybeRefill(ctx)...)
