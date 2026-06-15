@@ -3,6 +3,7 @@
   "pages": [
     "architecture",
     "registry",
+    "dynamic-entities",
     "tenancy",
     "sharding",
     "commands-and-events",

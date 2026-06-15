@@ -1,0 +1,192 @@
+---
+title: Dynamic Entities
+description: Runtime-defined entities — register a schema descriptor instead of a Go struct, and fabriq runs the whole data plane (managed DDL, writes, reads, projections) over real typed Postgres columns.
+---
+
+A normal fabriq entity is a compile-time Go struct, bound by reflection, with its table owned by a migration. A **dynamic entity** is defined at *runtime* from a **schema descriptor** instead — fabriq generates and manages its table (`CREATE`/additive `ALTER`), and the entire data plane (validated writes → versioned events → outbox, map-native reads, and every projection) flows over **real typed columns**, exactly like a static entity.
+
+This is the capability a **control plane** needs: a low-code platform, headless CMS, multi-tenant app builder, or dataset product authors schemas at runtime and lets fabriq run the storage, eventing, and derived features. The division of responsibility:
+
+- **Your control plane** owns authoring, schema versioning, and the catalog.
+- **fabriq** owns the data plane — writes, reads, graph/search/vector projections, reconcile, rebuild, CRDT, [live queries](/docs/live-queries), and structural tenancy/RLS.
+
+<Callout type="info">
+  Dynamic entities are **additive and fenced**. Static entities are untouched and keep the rule *"migrations are the authority."* Dynamic entities are a separate, opt-in lane with their own rule: **the descriptor is the authority**, and fabriq manages their DDL.
+</Callout>
+
+## The descriptor
+
+A dynamic entity is described by a `DynamicSchema` (in `core/registry`). You declare only **domain** columns — fabriq injects the structural columns (`id`, `tenant_id`, `version`).
+
+```go
+type DynamicSchema struct {
+	Table   string           // physical table name; identifier-validated
+	Columns []DynamicColumn  // domain columns only
+	Indexes []DynamicIndex   // optional secondary indexes
+}
+
+type DynamicColumn struct {
+	Name    string
+	Type    ColumnType // neutral type, mapped to SQL by the adapter
+	NotNull bool
+	Default string     // optional SQL default EXPRESSION (e.g. "now()", "'pending'", "0")
+}
+
+type DynamicIndex struct {
+	Name    string
+	Columns []string
+	Unique  bool
+}
+```
+
+`ColumnType` is a neutral set the Postgres adapter maps to SQL:
+
+| `ColumnType` | Postgres type |
+|---|---|
+| `ColText` | `TEXT` |
+| `ColInt` | `BIGINT` |
+| `ColFloat` | `DOUBLE PRECISION` |
+| `ColBool` | `BOOLEAN` |
+| `ColTime` | `TIMESTAMPTZ` |
+| `ColJSON` | `JSONB` |
+
+<Callout type="warn">
+  `DynamicColumn.Default` is interpolated **verbatim** into DDL — it is an SQL *expression*, not an identifier, so it is **not** identifier-validated. It must be a trusted, control-plane value, never a user-supplied string. Same trust level as hand-written migration SQL. (Table, column, and index *names* are identifier-validated against `^[A-Za-z_][A-Za-z0-9_]{0,63}$` — the injection guard.)
+</Callout>
+
+## Declaring a dynamic entity
+
+Set `EntitySpec.Schema` instead of `Model` (the two are **mutually exclusive** — exactly one must be set):
+
+```go
+reg.MustRegister(registry.EntitySpec{
+	Name: "orders",
+	Kind: registry.KindAggregate,
+	Schema: &registry.DynamicSchema{
+		Table: "ds_orders",
+		Columns: []registry.DynamicColumn{
+			{Name: "sku", Type: registry.ColText, NotNull: true},
+			{Name: "qty", Type: registry.ColInt},
+			{Name: "meta", Type: registry.ColJSON},
+		},
+		Indexes: []registry.DynamicIndex{
+			{Name: "ds_orders_sku_idx", Columns: []string{"sku"}},
+		},
+	},
+})
+```
+
+Registration validates the descriptor: the table and column names must be valid identifiers, a domain column may not redeclare a structural column (`id`/`tenant_id`/`version`), duplicate columns are rejected, and every index column must exist. A dynamic entity carries the **same** `GraphNode` / `GraphEdge` / `Search` / `Subscribe` / `Validate` / `Live` fields as a static one — they reference column names, which the descriptor provides.
+
+## Managed DDL: `EnsureDynamic`
+
+fabriq owns the physical table for a dynamic entity. `(*postgres.Adapter).EnsureDynamic` is a **create-or-evolve** operation, run as the **schema owner** (not the RLS-constrained app role):
+
+```go
+func (a *Adapter) EnsureDynamic(ctx context.Context, ent *registry.Entity) error
+```
+
+It emits, idempotently (`IF NOT EXISTS` throughout):
+
+- `CREATE TABLE` with the structural columns (`id TEXT PRIMARY KEY`, `tenant_id TEXT NOT NULL`, `version BIGINT NOT NULL`) plus the descriptor's domain columns,
+- a mandatory `tenant_id` index and any descriptor-declared secondary indexes,
+- the **`tenant_isolation` RLS policy** (`ENABLE` + `FORCE ROW LEVEL SECURITY`), identical to the static-table policy — so tenancy holds the same way.
+
+```go
+ent, _ := reg.Get("orders")
+if err := owner.EnsureDynamic(ctx, ent); err != nil { /* ... */ }
+```
+
+The setup order matters: **migrate → `EnsureDynamic` → provision the app role**, so the role's `DEFAULT PRIVILEGES` grant the new table to `fabriq_app`. Register the entity *before* opening the adapter, so the pool-path tenant backstop includes the dynamic table in its guarded set.
+
+This is the **fenced** managed-DDL lane: fabriq manages DDL *only* for dynamic entities. Calling `EnsureDynamic` for a static entity (`Schema == nil`) is an error, and the static model↔DDL conformance test does not apply to dynamic tables — their descriptor *is* the schema authority, so drift is impossible by construction.
+
+## Writing rows
+
+Writes go through the ordinary command plane — the only difference is that `Payload` is a `map[string]any` keyed by column name:
+
+```go
+res, err := f.Exec(ctx, command.Command{
+	Entity:  "orders",
+	Op:      command.OpUpsert, // OpCreate / OpUpdate / OpUpsert / OpDelete all supported
+	AggID:   "order-123",
+	Payload: map[string]any{"sku": "A1", "qty": 3},
+})
+```
+
+Everything downstream is identical to a static entity: optimistic concurrency, the version bump, **exactly one** column-keyed outbox event (`orders.created` / `orders.updated` / `orders.deleted`), and the transactional outbox. Keys not in the descriptor are dropped; the structural columns are stamped by the executor; a payload `tenant_id` that differs from the context tenant is rejected (the forgery check). The adapter builds a parameterized map-native `INSERT`/`UPDATE` — every interpolated identifier is re-validated at the SQL boundary.
+
+## Reading rows
+
+The relational port returns dynamic-entity rows as **maps** instead of structs. `Get` fills a `*map[string]any`; `GetMany` and `List` fill a `*[]map[string]any`:
+
+```go
+// One row.
+var order map[string]any
+err := f.Relational().Get(ctx, "orders", "order-123", &order)
+
+// Filtered + ordered page — the SAME query.Where filter AST as static List.
+var rows []map[string]any
+err = f.Relational().List(ctx, "orders", query.ListQuery{
+	Where:   query.Where{query.Eq("sku", "A1")},
+	OrderBy: "qty DESC",
+	Limit:   50,
+}, &rows)
+
+// Batch hydration in ids order.
+var many []map[string]any
+err = f.Relational().GetMany(ctx, "orders", []string{"r3", "r1"}, &many)
+```
+
+`List` filters and orders over descriptor columns with the full [`query.Where`](/docs/relational) vocabulary (`Eq`/`In`/`Gt`/`Like`/`Or`/…); unknown columns are rejected (the injection guard). Every read runs inside a tenant-stamped transaction, so **RLS scopes results to the context tenant** — a cross-tenant read returns nothing.
+
+## The rest of the plane comes free
+
+Because fabriq's event payloads, projection appliers, and filters are *already* column-keyed, a dynamic entity gets the **entire feature set with no special code**. Declare the same capability fields you would on a static entity and they just work:
+
+```go
+registry.EntitySpec{
+	Name:      "widget",
+	Schema:    &registry.DynamicSchema{Table: "ds_widgets", Columns: /* … */},
+	GraphNode: "Widget",                                              // → graph projection
+	Search:    registry.SearchSpec{Index: "widgets", Fields: []string{"name", "kind"}}, // → search
+	Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},   // → delta subscriptions
+	Live:      &registry.LiveSpec{Sortable: []string{"name"}},       // → live queries
+}
+```
+
+An end-to-end test verifies a dynamic `widget` projects to **FalkorDB** (a `MATCH (n:Widget {id})` returns its scalar columns as node properties) and to **Elasticsearch** (full-text `Search`) through the ordinary relay/projection pipeline — using the **same built-in appliers** as static entities, with no applier changes or projection mutations. Reconcile, blue-green rebuild, CRDT, and the delta/live-query planes apply equally.
+
+## Schema evolution
+
+`EnsureDynamic` is also the evolution path. Called again with a changed descriptor on an existing table, it reconciles **additively**:
+
+- new domain columns → `ALTER TABLE … ADD COLUMN IF NOT EXISTS …`
+- new indexes → `CREATE INDEX IF NOT EXISTS …`
+- existing columns/indexes → left untouched.
+
+| Operation | Behavior |
+|---|---|
+| Add nullable column | applied (existing rows get `NULL`) |
+| Add column with `Default` | applied (default backfills) |
+| Add index (incl. `Unique`) | applied |
+| Re-run with same descriptor | no-op (idempotent) |
+| **Drop / rename / type-change** | **not** auto-applied — write an explicit migration |
+| Add `NOT NULL` column **without** `Default` to a **populated** table | **fails** (Postgres error, by design) |
+
+Evolution is **strictly additive**: destructive changes are never applied automatically, and the unsafe `NOT NULL`-without-default-on-populated-table case is surfaced as an error rather than worked around. A consumer that needs a destructive change supplies a `Default` (for new required columns) or authors a migration.
+
+## Invariants
+
+- **The static lane is untouched** — compile-time entities keep migrations-as-authority and the model↔DDL conformance test.
+- **The descriptor is the dynamic authority** — fabriq creates/alters only dynamic tables, only from their descriptors, additively.
+- **Identifiers are guarded** — table/column/index names are validated against the identifier regex at both registration and the SQL boundary; only `Default` is trusted-verbatim.
+- **Tenancy is structural** — `tenant_id` + the `tenant_isolation` RLS policy are injected on every dynamic table; reads/writes run tenant-stamped, identical to static entities.
+
+## Where to go next
+
+<Cards>
+  <Card title="Registry" href="/docs/registry">How entities — static and dynamic — are declared and bound.</Card>
+  <Card title="Commands and Events" href="/docs/commands-and-events">The write path map payloads flow through.</Card>
+  <Card title="Projections" href="/docs/projections">The graph/search/vector pipeline dynamic entities reuse for free.</Card>
+</Cards>

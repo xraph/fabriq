@@ -83,6 +83,11 @@ All of the following are implemented and covered by integration tests:
 - **Postgres source of truth** — row-level security verified as a non-superuser,
   Timescale hypertables for bulk telemetry, and pgvector (HNSW) for similarity
   search, with migrations and a registry-conformance test.
+- **Dynamic entities** — entities defined at runtime from a schema descriptor
+  instead of a Go struct, with fabriq-managed DDL (`CREATE` + additive `ALTER`),
+  map-native writes/reads over real typed columns, and the full projection
+  pipeline — a fenced, opt-in lane that leaves the static migrations-as-authority
+  discipline intact.
 - **Redis Streams fan-out** — a leader-elected outbox relay (LISTEN/NOTIFY wake),
   consumer groups with `XAUTOCLAIM` recovery, and a subscription hub (delta
   conflation, SSE, Last-Event-ID resume).
