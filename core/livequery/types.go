@@ -83,6 +83,27 @@ const (
 	OpUnmatch                // ModeStreamed: row no longer matches (P2)
 )
 
+// String returns the SSE event name for a delta op.
+func (op DeltaOp) String() string {
+	switch op {
+	case OpEnter:
+		return "enter"
+	case OpLeave:
+		return "leave"
+	case OpMove:
+		return "move"
+	case OpUpdate:
+		return "update"
+	case OpReset:
+		return "reset"
+	case OpMatch:
+		return "match"
+	case OpUnmatch:
+		return "unmatch"
+	}
+	return "delta"
+}
+
 // LiveDelta is one change to a maintained window.
 type LiveDelta struct {
 	Op       DeltaOp         `json:"op"`
