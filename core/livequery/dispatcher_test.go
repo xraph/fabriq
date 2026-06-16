@@ -51,16 +51,16 @@ func TestDispatcher_IndexRoutesToMatchingSubsOnly(t *testing.T) {
 	qA := livequery.LiveQuery{Entity: "asset", Sort: sortKeys, Limit: 10, Where: query.Where{query.Eq("status", "active")}}
 	qB := livequery.LiveQuery{Entity: "asset", Sort: sortKeys, Limit: 10, Where: query.Where{query.Eq("kind", "pump")}}
 
-	_, dA, cancelA, err := eng.Subscribe(context.Background(), qA)
+	_, dA, hA, err := eng.Subscribe(context.Background(), qA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancelA()
-	_, dB, cancelB, err := eng.Subscribe(context.Background(), qB)
+	defer hA.Close()
+	_, dB, hB, err := eng.Subscribe(context.Background(), qB)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancelB()
+	defer hB.Close()
 
 	// matches A only (active, not pump)
 	pushChange(feed, "x", "Xray", "active", "valve", 2)
@@ -106,11 +106,11 @@ func TestDispatcher_StreamedMatchUnmatchUpdate(t *testing.T) {
 		Entity: "asset", Sort: sortKeys, Limit: 5, Mode: livequery.ModeStreamed,
 		Where: query.Where{query.Eq("status", "active")},
 	}
-	_, deltas, cancel, err := eng.Subscribe(context.Background(), q)
+	_, deltas, h, err := eng.Subscribe(context.Background(), q)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancel()
+	defer h.Close()
 
 	// A fresh row that matches → OpMatch.
 	pushChange(feed, "m", "Mike", "active", "pump", 2)
@@ -163,7 +163,7 @@ func TestDispatcher_ConcurrentSubscribeCancel(t *testing.T) {
 			defer subs.Done()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			_, deltas, release, err := eng.Subscribe(ctx, q)
+			_, deltas, h, err := eng.Subscribe(ctx, q)
 			if err != nil {
 				t.Errorf("subscribe: %v", err)
 				return
@@ -174,7 +174,7 @@ func TestDispatcher_ConcurrentSubscribeCancel(t *testing.T) {
 				select {
 				case <-deltas:
 				case <-deadline:
-					release()
+					h.Close()
 					return
 				}
 			}

@@ -42,11 +42,11 @@ func TestEngineSnapshotThenLiveDelta(t *testing.T) {
 
 	q := livequery.LiveQuery{Entity: "asset", Sort: sortKeys, Limit: 2,
 		Where: query.Where{query.Eq("status", "active")}}
-	snap, deltas, cancel, err := eng.Subscribe(context.Background(), q)
+	snap, deltas, h, err := eng.Subscribe(context.Background(), q)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	defer cancel()
+	defer h.Close()
 	if len(snap.Rows) != 2 {
 		t.Fatalf("snapshot rows = %d want 2", len(snap.Rows))
 	}
@@ -76,11 +76,11 @@ func TestEngineGaplessDedup(t *testing.T) {
 	eng := livequery.NewEngine(&fakeSnap{rows: seed}, &fakeRefiller{all: seed, sort: sortKeys}, feed,
 		livequery.EngineOptions{Cushion: 2, Buffer: 16})
 	q := livequery.LiveQuery{Entity: "asset", Sort: sortKeys, Limit: 2, Where: query.Where{query.Eq("status", "active")}}
-	_, deltas, cancel, err := eng.Subscribe(context.Background(), q)
+	_, deltas, h, err := eng.Subscribe(context.Background(), q)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	defer cancel()
+	defer h.Close()
 
 	stale := change("a", "Alpha", 1, "active", false)
 	stale.Version = 3 // older than seeded version 5 → must be ignored
