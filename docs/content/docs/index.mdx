@@ -66,6 +66,7 @@ engine types appear in any signature, so adapters stay swappable.
 | [Search](/docs/search) | Elasticsearch | Full-text projection over declared fields. |
 | [Timeseries](/docs/timeseries) | TimescaleDB | Bulk telemetry ingest and windowed reads (event-bypass). |
 | [Vector](/docs/vector) | pgvector | Embedding upsert and nearest-neighbour search. |
+| [Spatial](/docs/spatial) | PostGIS | Geometry upsert/delete and GiST-accelerated radius search. WKT+SRID, engine-neutral. SRID 4326 → true metres (geography); other SRIDs → planar metres. |
 | [Document](/docs/documents) | Postgres + grove CRDT | Collaborative CRDT documents that materialize into ordinary events. |
 
 ## A first taste

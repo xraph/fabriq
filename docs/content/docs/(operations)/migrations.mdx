@@ -86,6 +86,7 @@ One ordered group holds everything Postgres-side. By migration:
 | `0006` | pgvector extension, `fabriq_embeddings` table, HNSW cosine index. |
 | `0007` | CRDT plane: `fabriq_crdt_updates` log + `fabriq_crdt_snapshots`. |
 | `0008` | Document registry `fabriq_crdt_docs` + the `pages` demo entity. |
+| `0011` | PostGIS extension, `fabriq_geometries` table, GiST index, RLS (skips quietly when PostGIS is absent). |
 
 Grove migration executors run statements **outside an explicit transaction
 (autocommit)**, so `CREATE INDEX CONCURRENTLY` is usable in this stream when a

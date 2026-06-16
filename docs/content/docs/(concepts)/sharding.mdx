@@ -12,7 +12,7 @@ A tenant's entire aggregate history, event log, and outbox live on exactly **one
 - **No scatter-gather reads.** Every port operation carries a tenant on `ctx`, and there are no cross-tenant queries — so a read routes to one shard, full stop.
 - **No distributed transactions.** A command never spans tenants (`ExecBatch` is one tenant's commands), so a write is a route to one shard's local transaction. The aggregate row, its event, and the outbox row still commit atomically in a single Postgres transaction, exactly as in the unsharded case.
 
-Sharding is therefore a **routing adapter behind the existing ports** plus a per-shard worker loop. `core/`, the `Fabric` facade, and every call site (`f.Exec`, `f.Relational().Get`, …) are unchanged — they never learn that shards exist. The `Store`, `Relational`, `Vector`, and `Timeseries` ports resolve the `ctx` tenant to a shard, then delegate unmodified.
+Sharding is therefore a **routing adapter behind the existing ports** plus a per-shard worker loop. `core/`, the `Fabric` facade, and every call site (`f.Exec`, `f.Relational().Get`, …) are unchanged — they never learn that shards exist. The `Store`, `Relational`, `Vector`, `Timeseries`, and `Spatial` ports resolve the `ctx` tenant to a shard, then delegate unmodified.
 
 ## Configuration
 
