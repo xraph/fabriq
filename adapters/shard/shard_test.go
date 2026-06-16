@@ -55,8 +55,27 @@ func (s *stub) Range(_ context.Context, q query.RangeQuery, _ any) error {
 	return nil
 }
 
+// spatialStub implements query.SpatialQuerier, recording into its parent's log.
+// A separate type is needed because query.SpatialQuerier.Upsert collides with
+// query.VectorQuerier.Upsert on a single receiver (different signatures) — the
+// same reason production wires postgres.SpatialAdapter rather than *Adapter.
+type spatialStub struct{ parent *stub }
+
+func (s spatialStub) Upsert(_ context.Context, entity, _ string, _ query.Geometry, _ map[string]any) error {
+	s.parent.calls = append(s.parent.calls, "SpatialUpsert:"+entity)
+	return nil
+}
+func (s spatialStub) Within(_ context.Context, q query.SpatialQuery, _ any) error {
+	s.parent.calls = append(s.parent.calls, "Within:"+q.Entity)
+	return nil
+}
+func (s spatialStub) Delete(_ context.Context, entity, _ string) error {
+	s.parent.calls = append(s.parent.calls, "SpatialDelete:"+entity)
+	return nil
+}
+
 func shardFor(s *stub) shard.Shard {
-	return shard.Shard{ID: s.id, Store: s, Relational: s, Vector: s, Timeseries: s}
+	return shard.Shard{ID: s.id, Store: s, Relational: s, Vector: s, Timeseries: s, Spatial: spatialStub{parent: s}}
 }
 
 // mapDir routes tenant ids to shard ids; an unmapped tenant errors.
@@ -119,8 +138,11 @@ func TestSet_AllPortsDelegate(t *testing.T) {
 	_ = shard.NewVector(set).Similar(ctx, query.VectorQuery{Entity: "asset"}, nil)
 	_ = shard.NewTimeseries(set).BulkWrite(ctx, "tag_readings", nil)
 	_ = shard.NewTimeseries(set).Range(ctx, query.RangeQuery{Series: "tag_readings"}, nil)
+	_ = shard.NewSpatial(set).Upsert(ctx, "asset", "A1", query.Geometry{WKT: "POINT (0 0)"}, nil)
+	_ = shard.NewSpatial(set).Within(ctx, query.SpatialQuery{Entity: "asset"}, nil)
+	_ = shard.NewSpatial(set).Delete(ctx, "asset", "A1")
 
-	want := []string{"InTenantTx", "GetMany:asset", "Query", "Upsert:asset", "Similar:asset", "BulkWrite:tag_readings", "Range:tag_readings"}
+	want := []string{"InTenantTx", "GetMany:asset", "Query", "Upsert:asset", "Similar:asset", "BulkWrite:tag_readings", "Range:tag_readings", "SpatialUpsert:asset", "Within:asset", "SpatialDelete:asset"}
 	if fmt.Sprint(s.calls) != fmt.Sprint(want) {
 		t.Fatalf("calls = %v, want %v", s.calls, want)
 	}
