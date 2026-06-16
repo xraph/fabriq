@@ -161,7 +161,7 @@ export function ArchitectureDiagram() {
   const engines = [
     {
       title: "Postgres",
-      line2: "+ Timescale · pgvector",
+      line2: "+ Timescale · pgvector · PostGIS",
       role: "source of truth · outbox",
       accent: true,
     },

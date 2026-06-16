@@ -1,0 +1,117 @@
+---
+title: Spatial
+description: The geometry port over PostGIS — upsert WKT geometries and run GiST-accelerated radius (nearest-first) searches, with true-metre distances for geographic coordinates.
+---
+
+The spatial plane stores geometries and answers proximity queries — "assets within 500 m of this point, nearest first." It is implemented in `adapters/postgres` on **PostGIS**, backed by a GiST index over the `fabriq_geometries` table. Like [Vector](/docs/vector), it is a **direct-write** port (not event-sourced): you write geometries explicitly and search them.
+
+Geometry is exchanged as **WKT + SRID** — engine-neutral, covering point, line, and polygon. Consumers holding GeoJSON convert to WKT at the boundary.
+
+```go
+type SpatialQuerier interface {
+	Upsert(ctx context.Context, entity, id string, geom Geometry, meta map[string]any) error
+	Within(ctx context.Context, q SpatialQuery, into any) error
+	Delete(ctx context.Context, entity, id string) error
+}
+
+type Geometry struct {
+	WKT  string
+	SRID int
+}
+```
+
+Reach it through `f.Spatial()`. Every operation is tenant-scoped structurally — `SET LOCAL app.tenant_id` plus an explicit `tenant_id` predicate, and `fabriq_geometries` carries an RLS `tenant_isolation` policy — see [Tenancy](/docs/tenancy).
+
+<Callout type="info">
+  The spatial plane requires the **PostGIS** extension. Migration `0011` creates the extension and table only when PostGIS is available in the cluster (it probes first), so a non-PostGIS Postgres still migrates cleanly — `f.Spatial()` simply returns a not-configured port.
+</Callout>
+
+## SRID: geographic vs planar
+
+The `SRID` you store and query with selects the distance metric:
+
+- **`SRID 4326`** (WGS-84 longitude/latitude) — distances and the radius predicate use the `geography` cast, so `RadiusM` and `DistanceM` are **true metres** across the globe.
+- **Any other SRID (including `0`)** — planar geometry in the geometry's own units (treat as local/planar metres).
+
+```go
+// geographic
+p := query.Geometry{WKT: "POINT (-122.4194 37.7749)", SRID: 4326}
+// local/planar (metres)
+q := query.Geometry{WKT: "POINT Z (10 20 3)", SRID: 0}
+```
+
+## Upsert
+
+`Upsert` stores or replaces the geometry for `(entity, id)`, with optional metadata alongside it. An empty WKT is rejected.
+
+```go
+err := f.Spatial().Upsert(ctx, "asset", assetID, query.Geometry{
+	WKT:  "POINT (-122.4194 37.7749)",
+	SRID: 4326,
+}, map[string]any{
+	"site_id": siteID,
+	"kind":    "pump",
+})
+```
+
+The row is keyed on `(tenant_id, entity, id)`: re-upserting the same id replaces the geometry and metadata.
+
+## Within
+
+`Within` returns entities whose geometry lies within `RadiusM` of `Center`, **nearest first**, scanned into `*[]query.SpatialMatch`.
+
+```go
+type SpatialQuery struct {
+	Entity  string
+	Center  Geometry
+	RadiusM float64 // radius in metres
+	K       int     // cap; <= 0 → adapter default
+}
+
+type SpatialMatch struct {
+	ID        string
+	DistanceM float64 // metres
+	Meta      map[string]any
+}
+```
+
+```go
+var hits []query.SpatialMatch
+err := f.Spatial().Within(ctx, query.SpatialQuery{
+	Entity:  "asset",
+	Center:  query.Geometry{WKT: "POINT (-122.42 37.77)", SRID: 4326},
+	RadiusM: 500,
+	K:       20,
+}, &hits)
+if err != nil {
+	return err
+}
+for _, h := range hits {
+	// h.ID is the aggregate id; h.DistanceM is metres from Center (nearest first);
+	// h.Meta is the metadata stored at Upsert.
+}
+```
+
+`ST_DWithin` (GiST-accelerated) bounds the candidate set, then results are ordered by `ST_Distance` — ordering on the true distance rather than the `<->` KNN operator avoids degree-vs-metre disagreement across latitudes for SRID 4326. `K` defaults to the adapter default when unset. Results are scoped to the `(tenant, entity)` pair.
+
+## Delete
+
+`Delete` removes the geometry for `(entity, id)`. It is idempotent — deleting an absent geometry is not an error.
+
+```go
+err := f.Spatial().Delete(ctx, "asset", assetID)
+```
+
+<Callout type="info">
+`h.ID` is the aggregate id you passed to `Upsert`. To get the full row, hydrate from Postgres with `Relational().GetMany("asset", ids, &assets)` — one batched query for the whole match set.
+</Callout>
+
+## Testing
+
+`fabriqtest.FakeSpatial` is an exact in-memory geometry store implementing `SpatialQuerier` (haversine for SRID 4326, Euclidean otherwise), so unit tests get nearest-first `Within` semantics without a PostGIS container.
+
+<Cards>
+  <Card title="Vector" href="/docs/vector">The sibling direct-write port — embedding similarity search over pgvector.</Card>
+  <Card title="Relational" href="/docs/relational">GetMany — batch-hydrate full rows from the ids a radius search returns.</Card>
+  <Card title="Tenancy" href="/docs/tenancy">The structural tenant scoping every Postgres-backed port shares.</Card>
+</Cards>

@@ -26,6 +26,11 @@ const ports = [
     engine: "pgvector",
   },
   {
+    method: "f.Spatial()",
+    body: "Radius and nearest-neighbour search over WKT geometries, true-metre distances.",
+    engine: "PostGIS",
+  },
+  {
     method: "f.Graph()",
     body: "openCypher traversals with one-shot, batched hydration.",
     engine: "FalkorDB",
@@ -44,6 +49,11 @@ const ports = [
     method: "f.Subscribe()",
     body: "Conflated live deltas with Last-Event-ID resume over SSE.",
     engine: "Redis Streams",
+  },
+  {
+    method: "f.LiveQuery()",
+    body: "Maintained, ordered, filtered windows with enter/leave/move/update deltas — exact top-N.",
+    engine: "SSE · WebSocket",
   },
 ];
 
