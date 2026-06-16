@@ -89,20 +89,25 @@ func (s *SpatialAdapter) Within(ctx context.Context, q query.SpatialQuery, into 
 	if k <= 0 {
 		k = 50
 	}
+	// ST_DWithin (GiST-accelerated for planar geometry) bounds the candidate set;
+	// ordering by the computed dist guarantees nearest-first matches the reported
+	// metric. For SRID 4326 dist is geography metres; otherwise planar metres in
+	// the geometry's own units. (Ordering by dist rather than the KNN operator
+	// `<->` avoids degree-vs-metre disagreement across latitudes for 4326.)
 	var sql string
 	if q.Center.SRID == 4326 {
 		sql = `SELECT id, ST_Distance(geom::geography, c::geography) AS dist, meta::text AS meta
 			FROM fabriq_geometries, (SELECT ST_GeomFromText($1, $2) AS c) cc
 			WHERE tenant_id = $3 AND entity = $4
 			  AND ST_DWithin(geom::geography, c::geography, $5)
-			ORDER BY geom <-> c ASC
+			ORDER BY dist ASC
 			LIMIT $6`
 	} else {
 		sql = `SELECT id, ST_Distance(geom, c) AS dist, meta::text AS meta
 			FROM fabriq_geometries, (SELECT ST_GeomFromText($1, $2) AS c) cc
 			WHERE tenant_id = $3 AND entity = $4
 			  AND ST_DWithin(geom, c, $5)
-			ORDER BY geom <-> c ASC
+			ORDER BY dist ASC
 			LIMIT $6`
 	}
 	return s.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
