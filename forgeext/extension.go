@@ -49,9 +49,11 @@ func New(reg *registry.Registry, opts ...Option) *Extension {
 	return &Extension{reg: reg, cfg: cfg}
 }
 
-func (e *Extension) Name() string        { return "fabriq" }
-func (e *Extension) Version() string     { return Version }
-func (e *Extension) Description() string { return "fabriq data fabric: command plane, query ports, projections, worker" }
+func (e *Extension) Name() string    { return "fabriq" }
+func (e *Extension) Version() string { return Version }
+func (e *Extension) Description() string {
+	return "fabriq data fabric: command plane, query ports, projections, worker"
+}
 func (e *Extension) Dependencies() []string { return nil }
 
 // Register implements forge.Extension. It MUST call e.BaseExtension.Register first.
@@ -130,4 +132,12 @@ func (e *Extension) Fabriq() *fabriq.Fabriq {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.fab
+}
+
+// Stores returns the opened adapters (nil before Start). The gateway extension
+// reads Stores().Redis to build the live-query cluster transport.
+func (e *Extension) Stores() *fabriq.Stores {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.stores
 }

@@ -2,8 +2,10 @@ package subscribe
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/xraph/fabriq/core/query"
 )
@@ -63,6 +65,19 @@ func (s *SSEWriter) WriteEvent(id, eventName string, data any) error {
 	}
 	s.f.Flush()
 	return nil
+}
+
+// SetWriteDeadline bounds how long a single event write may block, so a slow
+// or stalled client cannot wedge the streaming goroutine indefinitely. A write
+// that exceeds the deadline fails, which the caller turns into a connection
+// teardown (the client then reconnects to a fresh snapshot). It is a no-op if
+// the underlying writer does not support deadlines.
+func (s *SSEWriter) SetWriteDeadline(t time.Time) error {
+	err := http.NewResponseController(s.w).SetWriteDeadline(t)
+	if errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	return err
 }
 
 // Heartbeat writes an SSE comment to keep intermediaries from idling the
