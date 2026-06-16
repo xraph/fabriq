@@ -29,6 +29,7 @@ type Fabric interface {
 	Search() SearchQuerier
 	Timeseries() TSQuerier
 	Vector() VectorQuerier
+	Spatial() SpatialQuerier
 	Document() document.Store
 
 	// Subscribe resolves the scope to a channel server-side (authz hook

@@ -36,6 +36,7 @@ type Ports struct {
 	Search          query.SearchQuerier
 	Timeseries      query.TSQuerier
 	Vector          query.VectorQuerier
+	Spatial         query.SpatialQuerier
 	Documents       document.Store
 	ProjectionState projection.StateReader
 
@@ -228,6 +229,14 @@ func (f *Fabriq) Vector() query.VectorQuerier {
 		return notConfiguredVector{}
 	}
 	return f.ports.Vector
+}
+
+// Spatial implements query.Fabric.
+func (f *Fabriq) Spatial() query.SpatialQuerier {
+	if f.ports.Spatial == nil {
+		return notConfiguredSpatial{}
+	}
+	return f.ports.Spatial
 }
 
 // Document implements query.Fabric.
