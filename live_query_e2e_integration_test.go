@@ -48,11 +48,11 @@ func TestE2E_LiveQueryExactWindow(t *testing.T) {
 	}
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	snap, deltas, lcancel, err := f.LiveQuery(subCtx, q)
+	snap, deltas, lh, err := f.LiveQuery(subCtx, q)
 	if err != nil {
 		t.Fatalf("LiveQuery: %v", err)
 	}
-	defer lcancel()
+	defer lh.Close()
 
 	if len(snap.Rows) != 2 || snap.Rows[0].AggID != aID || snap.Rows[1].AggID != cID {
 		t.Fatalf("snapshot = %+v want [Alpha(%s), Charlie(%s)]", snap.Rows, aID, cID)

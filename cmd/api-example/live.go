@@ -44,12 +44,12 @@ func (s *server) liveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// tctx derives from r.Context(), so client disconnect cancels the
 	// subscription and the engine goroutine exits.
-	snap, deltas, cancel, err := s.fabric.LiveQuery(tctx, q)
+	snap, deltas, h, err := s.fabric.LiveQuery(tctx, q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
-	defer cancel()
+	defer h.Close()
 
 	sse, err := subscribe.NewSSEWriter(w)
 	if err != nil {

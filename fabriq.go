@@ -255,8 +255,9 @@ func (f *Fabriq) Subscribe(ctx context.Context, scope query.SubscribeScope) (<-c
 // LiveQuery registers a maintained-result-set subscription: it validates the
 // query against the entity's LiveSpec, takes an RLS-enforced snapshot, and
 // returns the snapshot plus a live channel of enter/leave/move/update deltas.
-// Cancel the returned func to tear the subscription down.
-func (f *Fabriq) LiveQuery(ctx context.Context, q livequery.LiveQuery) (livequery.Snapshot, <-chan livequery.LiveDelta, func(), error) {
+// Close the returned *livequery.Handle to tear the subscription down; its
+// Reanchor method slides a maintained window for deep/infinite scroll.
+func (f *Fabriq) LiveQuery(ctx context.Context, q livequery.LiveQuery) (livequery.Snapshot, <-chan livequery.LiveDelta, *livequery.Handle, error) {
 	if f.liveEngine == nil {
 		return livequery.Snapshot{}, nil, nil, fmt.Errorf("fabriq: live queries require a relational oracle and a tailer: %w", ErrStoreNotConfigured)
 	}
@@ -275,12 +276,12 @@ func (f *Fabriq) LiveQuery(ctx context.Context, q livequery.LiveQuery) (livequer
 			return livequery.Snapshot{}, nil, nil, err
 		}
 	}
-	snap, deltas, cancel, err := f.liveEngine.Subscribe(ctx, q)
+	snap, deltas, handle, err := f.liveEngine.Subscribe(ctx, q)
 	if err != nil {
 		return livequery.Snapshot{}, nil, nil, err
 	}
 	snap.SubID = event.NewID()
-	return snap, deltas, cancel, nil
+	return snap, deltas, handle, nil
 }
 
 // ReconcileLiveQueries runs the live query drift backstop: every maintained

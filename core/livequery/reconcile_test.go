@@ -48,11 +48,11 @@ func TestEngine_ReconcileRepairsDrift(t *testing.T) {
 		livequery.EngineOptions{Cushion: 2, Buffer: 8})
 	q := livequery.LiveQuery{Entity: "asset", Sort: sortKeys, Limit: 5, Where: query.Where{query.Eq("status", "active")}}
 
-	snapshot, deltas, cancel, err := eng.Subscribe(context.Background(), q)
+	snapshot, deltas, h, err := eng.Subscribe(context.Background(), q)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancel()
+	defer h.Close()
 	if len(snapshot.Rows) != 1 || snapshot.Rows[0].AggID != "a" {
 		t.Fatalf("initial snapshot = %+v, want [a]", snapshot.Rows)
 	}
