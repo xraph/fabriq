@@ -33,12 +33,12 @@ func (r *LiveSubscriptionRegistry) Put(ctx context.Context, reg livequery.Regist
 	}
 	if _, err := r.db.Exec(ctx, `
 		INSERT INTO fabriq_live_subscriptions
-			(sub_id, tenant_id, entity, mode, query, gateway_id, watermark, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+			(sub_id, tenant_id, entity, partition, mode, query, gateway_id, watermark, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
 		ON CONFLICT (sub_id) DO UPDATE SET
-			tenant_id = $2, entity = $3, mode = $4, query = $5,
-			gateway_id = $6, watermark = $7, updated_at = now()`,
-		reg.SubID, reg.TenantID, reg.Entity, int(reg.Mode), q, reg.GatewayID, reg.Watermark,
+			tenant_id = $2, entity = $3, partition = $4, mode = $5, query = $6,
+			gateway_id = $7, watermark = $8, updated_at = now()`,
+		reg.SubID, reg.TenantID, reg.Entity, reg.Partition, int(reg.Mode), q, reg.GatewayID, reg.Watermark,
 	); err != nil {
 		return fmt.Errorf("fabriq: live registry put %s: %w", reg.SubID, err)
 	}
@@ -56,13 +56,17 @@ func (r *LiveSubscriptionRegistry) ByPartition(ctx context.Context, tenantID, en
 	return r.scan(ctx, `WHERE tenant_id = $1 AND entity = $2`, tenantID, entity)
 }
 
+func (r *LiveSubscriptionRegistry) ByPartitionNum(ctx context.Context, p int) ([]livequery.Registration, error) {
+	return r.scan(ctx, `WHERE partition = $1`, p)
+}
+
 func (r *LiveSubscriptionRegistry) ByGateway(ctx context.Context, gatewayID string) ([]livequery.Registration, error) {
 	return r.scan(ctx, `WHERE gateway_id = $1`, gatewayID)
 }
 
 func (r *LiveSubscriptionRegistry) scan(ctx context.Context, where string, args ...any) ([]livequery.Registration, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT sub_id, tenant_id, entity, mode, query, gateway_id, watermark
+		`SELECT sub_id, tenant_id, entity, partition, mode, query, gateway_id, watermark
 		 FROM fabriq_live_subscriptions `+where+` ORDER BY created_at`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("fabriq: live registry scan: %w", err)
@@ -73,7 +77,7 @@ func (r *LiveSubscriptionRegistry) scan(ctx context.Context, where string, args 
 		var reg livequery.Registration
 		var mode int
 		var qb []byte
-		if err := rows.Scan(&reg.SubID, &reg.TenantID, &reg.Entity, &mode, &qb, &reg.GatewayID, &reg.Watermark); err != nil {
+		if err := rows.Scan(&reg.SubID, &reg.TenantID, &reg.Entity, &reg.Partition, &mode, &qb, &reg.GatewayID, &reg.Watermark); err != nil {
 			return nil, fmt.Errorf("fabriq: live registry scan row: %w", err)
 		}
 		reg.Mode = livequery.Mode(mode)

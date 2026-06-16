@@ -28,6 +28,7 @@ var migration0010LiveSubscriptions = &migrate.Migration{
 				sub_id     TEXT PRIMARY KEY,
 				tenant_id  TEXT NOT NULL,
 				entity     TEXT NOT NULL,
+				partition  INT NOT NULL DEFAULT 0,
 				mode       INT NOT NULL DEFAULT 0,
 				query      JSONB NOT NULL,
 				gateway_id TEXT NOT NULL DEFAULT '',
@@ -35,8 +36,12 @@ var migration0010LiveSubscriptions = &migrate.Migration{
 				created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 				updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 			)`,
-			// Partition lookup: a reassigned shard loads everything it now owns.
+			// Failover rebuild: a reassigned shard loads every subscription in a
+			// data partition (across tenants/entities) in one query.
 			`CREATE INDEX IF NOT EXISTS fabriq_live_subscriptions_partition_idx
+				ON fabriq_live_subscriptions (partition)`,
+			// Per-entity inspection.
+			`CREATE INDEX IF NOT EXISTS fabriq_live_subscriptions_entity_idx
 				ON fabriq_live_subscriptions (tenant_id, entity)`,
 			// Gateway recovery: a restarted gateway reclaims its connections.
 			`CREATE INDEX IF NOT EXISTS fabriq_live_subscriptions_gateway_idx
