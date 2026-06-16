@@ -423,9 +423,9 @@ function Node({
 /** The data lifecycle: every runtime use case from a write to projections and deltas. */
 export function DataLifecycleDiagram() {
   const targets = [
-    { label: "FalkorDB · graph", x: 64 },
-    { label: "Elasticsearch · search", x: 200 },
-    { label: "pgvector · vector", x: 336 },
+    { name: "FalkorDB", role: "graph projection", x: 56 },
+    { name: "Elasticsearch", role: "search projection", x: 206 },
+    { name: "pgvector", role: "vector index", x: 356 },
   ];
   return (
     <figure className="my-6 not-prose">
@@ -502,13 +502,21 @@ export function DataLifecycleDiagram() {
           title="Projection engine"
           sub="version-gated apply"
         />
-        <Arrow x1={160} y1={220} x2={128} y2={250} />
-        <Arrow x1={216} y1={220} x2={264} y2={250} />
-        <Arrow x1={270} y1={220} x2={400} y2={250} />
+        <Arrow x1={216} y1={220} x2={126} y2={248} />
+        <Arrow x1={216} y1={220} x2={276} y2={248} />
+        <Arrow x1={216} y1={220} x2={426} y2={248} />
         {targets.map((t) => (
-          <Chip key={t.label} x={t.x} y={252} w={132} h={34} label={t.label} />
+          <g key={t.name}>
+            <rect x={t.x} y={250} width={140} height={40} rx={9} fill={RAISED} stroke={LINE} />
+            <text x={t.x + 70} y={268} textAnchor="middle" fontFamily={MONO} fontSize="12" fill={INK}>
+              {t.name}
+            </text>
+            <text x={t.x + 70} y={282} textAnchor="middle" fontSize="9.5" fill={INK_FAINT}>
+              {t.role}
+            </text>
+          </g>
         ))}
-        <text x={64} y={312} fontSize="10.5" fill={INK_FAINT}>
+        <text x={56} y={314} fontSize="10.5" fill={INK_FAINT}>
           reconciler · blue-green rebuild keep projections converged
         </text>
 
