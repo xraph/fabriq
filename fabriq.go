@@ -104,8 +104,11 @@ func New(reg *registry.Registry, ports Ports, opts ...Option) (*Fabriq, error) {
 			}
 			return registry.ChannelName(tid, registry.ByTenant, tid), nil
 		})
-		liveEngine = livequery.NewEngine(ports.Live, ports.Live, feed,
-			livequery.EngineOptions{Cushion: s.liveCushion, Buffer: s.subscribeBuffer})
+		liveOpts := livequery.EngineOptions{Cushion: s.liveCushion, Buffer: s.subscribeBuffer}
+		if ml, ok := ports.Live.(livequery.MemberLister); ok {
+			liveOpts.Members = ml // Streamed-mode membership seeding
+		}
+		liveEngine = livequery.NewEngine(ports.Live, ports.Live, feed, liveOpts)
 	}
 
 	return &Fabriq{
