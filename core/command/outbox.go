@@ -24,6 +24,7 @@ func newEnvelope(p *preparedCommand, version int64, vals map[string]any, verb st
 	return event.Envelope{
 		ID:                   event.NewID(),
 		TenantID:             p.tenantID,
+		ScopeID:              p.scopeID,
 		Aggregate:            p.entity.Spec.Name,
 		AggID:                p.aggID,
 		Version:              version,

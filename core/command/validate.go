@@ -15,6 +15,7 @@ type preparedCommand struct {
 	cmd      Command
 	entity   *registry.Entity
 	tenantID string
+	scopeID  string
 	aggID    string
 	vals     map[string]any // nil for deletes
 }
@@ -35,7 +36,7 @@ func (x *Executor) prepare(ctx context.Context, cmd Command) (*preparedCommand, 
 			cmd.Entity, ent.Spec.Kind)
 	}
 
-	p := &preparedCommand{cmd: cmd, entity: ent, tenantID: tenantID, aggID: cmd.AggID}
+	p := &preparedCommand{cmd: cmd, entity: ent, tenantID: tenantID, scopeID: tenant.ScopeOrEmpty(ctx), aggID: cmd.AggID}
 
 	switch cmd.Op {
 	case OpCreate:

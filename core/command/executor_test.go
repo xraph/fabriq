@@ -540,6 +540,42 @@ func TestExec_UpsertExpectedVersionZeroOnPresentConflicts(t *testing.T) {
 	}
 }
 
+func TestExec_ScopeIDStampedOnEnvelope(t *testing.T) {
+	store := newFakeStore()
+	x := newExecutor(t, store)
+
+	// Scoped: envelope must carry the scope.
+	ctx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = tenant.WithScope(ctx, "proj_A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.Exec(ctx, command.Command{Entity: "site", Op: command.OpCreate, Payload: &cmdSite{Name: "Scoped"}}); err != nil {
+		t.Fatalf("scoped exec: %v", err)
+	}
+	env := store.outbox[0]
+	if env.ScopeID != "proj_A" {
+		t.Fatalf("scoped envelope: ScopeID = %q, want %q", env.ScopeID, "proj_A")
+	}
+	if env.TenantID != "acme" {
+		t.Fatalf("scoped envelope: TenantID = %q, want %q", env.TenantID, "acme")
+	}
+
+	// Unscoped: ScopeID must be empty.
+	store2 := newFakeStore()
+	x2 := newExecutor(t, store2)
+	if _, err := x2.Exec(acmeCtx(t), command.Command{Entity: "site", Op: command.OpCreate, Payload: &cmdSite{Name: "Unscoped"}}); err != nil {
+		t.Fatalf("unscoped exec: %v", err)
+	}
+	env2 := store2.outbox[0]
+	if env2.ScopeID != "" {
+		t.Fatalf("unscoped envelope: ScopeID = %q, want empty", env2.ScopeID)
+	}
+}
+
 func BenchmarkExec_Fake(b *testing.B) {
 	store := newFakeStore()
 	x, err := command.NewExecutor(cmdRegistry(b), store)
