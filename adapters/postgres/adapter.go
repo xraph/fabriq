@@ -136,6 +136,9 @@ func (a *Adapter) inTenantTx(ctx context.Context, fn func(tx *pgdriver.PgTx) err
 	if _, err := ptx.NewRaw(`SELECT set_config('app.tenant_id', $1, true)`, tid).Exec(ctx); err != nil {
 		return fmt.Errorf("fabriq: stamp tenant: %w", err)
 	}
+	if _, err := ptx.NewRaw(`SELECT set_config('app.scope_id', $1, true)`, tenant.ScopeOrEmpty(ctx)).Exec(ctx); err != nil {
+		return fmt.Errorf("fabriq: stamp scope: %w", err)
+	}
 	if err := fn(ptx); err != nil {
 		return err
 	}
@@ -162,6 +165,9 @@ func (a *Adapter) inDynamicTenantTx(ctx context.Context, fn func(tid string, tx 
 
 	if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tid); err != nil {
 		return fmt.Errorf("fabriq: stamp tenant: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.scope_id', $1, true)`, tenant.ScopeOrEmpty(ctx)); err != nil {
+		return fmt.Errorf("fabriq: stamp scope: %w", err)
 	}
 	if err := fn(tid, tx); err != nil {
 		return err
