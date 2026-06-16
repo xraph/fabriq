@@ -60,3 +60,45 @@ func FromContext(ctx context.Context) (string, error) {
 	}
 	return id, nil
 }
+
+// scopeKey is the context key for the optional secondary scope (a sub-tenant
+// partition, e.g. a "project" within a "workspace"). Distinct from ctxKey so
+// scope and tenant are independent.
+type scopeKey struct{}
+
+// WithScope returns a context stamped with an optional secondary scope, or an
+// error if the scope is not a well-formed identifier. Scope is OPTIONAL: an
+// unscoped context reads everything in the tenant; a scoped context reads its
+// own scope plus shared (NULL-scope) rows.
+func WithScope(ctx context.Context, scope string) (context.Context, error) {
+	if !Valid(scope) {
+		return nil, fmt.Errorf("fabriq: invalid scope id %q (want %s)", scope, idPattern)
+	}
+	return context.WithValue(ctx, scopeKey{}, scope), nil
+}
+
+// MustWithScope is WithScope for wiring code with static ids; it panics on invalid input.
+func MustWithScope(ctx context.Context, scope string) context.Context {
+	out, err := WithScope(ctx, scope)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
+
+// ScopeFromContext returns the scope stamped on ctx and ok=false when the
+// context is unscoped. Unlike tenant, scope is optional — absence is legal.
+func ScopeFromContext(ctx context.Context) (string, bool) {
+	s, ok := ctx.Value(scopeKey{}).(string)
+	if !ok || s == "" {
+		return "", false
+	}
+	return s, true
+}
+
+// ScopeOrEmpty returns the scope stamped on ctx, or "" when unscoped. Use this
+// for SET LOCAL app.scope_id and SQL arguments (empty = "see all in tenant").
+func ScopeOrEmpty(ctx context.Context) string {
+	s, _ := ScopeFromContext(ctx)
+	return s
+}
