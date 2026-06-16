@@ -150,6 +150,39 @@ The leader-elected relay publishes envelopes to Redis Streams *after* the transa
 
 This is **at-least-once** delivery. The single source stream is consumed by the projection engine and the subscription hub through their own consumer groups. Idempotency is restored downstream by version gating: a consumer skips an event whose version it has already applied. See [Projections](/docs/projections) for the consumer side and [Subscriptions](/docs/subscriptions) for the delta side.
 
+## Lifecycle hooks
+
+For cross-cutting concerns that must run on *every* write — auditing being the canonical one — register a `LifecycleHook`. It fires **inside the write transaction**, once per change, after the row and its outbox event are staged and before commit:
+
+```go
+type LifecycleHook interface {
+	OnChange(ctx context.Context, tx command.Tx, change command.Change) error
+}
+
+type Change struct {
+	Entity   *registry.Entity
+	Op       command.Op     // resolved op: OpCreate / OpUpdate / OpDelete
+	Envelope event.Envelope // the same event written to the outbox
+}
+```
+
+A hook can do two things a post-commit consumer cannot. It can **participate** — write its own rows atomically through `tx.Exec(ctx, sql, args...)`, committed or rolled back *with* the change — and it can **veto**: returning an error aborts the whole command (and any `ExecBatch` it belongs to), rolling back the aggregate write, the outbox event, and the hook's own writes together. Hooks run in registration order; the first error short-circuits. The transaction is already tenant-stamped, so a hook's writes into an RLS-guarded side table are scoped to the calling tenant.
+
+Register globally with `fabriq.WithLifecycleHook(...)`. An auditing/chronicle extension hooks in here to record every change atomically with the data, so the audit trail can never diverge from the source of truth:
+
+```go
+audit := command.HookFunc(func(ctx context.Context, tx command.Tx, ch command.Change) error {
+	return tx.Exec(ctx,
+		`INSERT INTO chronicle_audit (id, tenant_id, entity, agg_id, version, op, payload)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		ch.Envelope.ID, ch.Envelope.TenantID, ch.Envelope.Aggregate, ch.Envelope.AggID,
+		ch.Envelope.Version, ch.Op.Verb(), []byte(ch.Envelope.Payload))
+})
+f, _, _ := fabriq.Open(ctx, reg, cfg, fabriq.WithLifecycleHook(audit))
+```
+
+This is the in-transaction, write-side seam — distinct from the per-entity `Validate` input check (which runs *before* the transaction) and the post-commit projection appliers (which run asynchronously off the outbox). Use `Validate` to reject bad input, a lifecycle hook to record or gate every committed change, and an applier to derive read models.
+
 ## Payload schema evolution: upcasters
 
 When a payload shape changes, register an upcaster instead of rewriting history. An `Upcaster` is a pure function that migrates one event type's payload from `FromVersion` to `FromVersion+1`:
