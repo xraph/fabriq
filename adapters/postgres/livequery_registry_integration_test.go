@@ -38,17 +38,27 @@ func TestPGLiveSubscriptionRegistry(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	mk := func(id, tenant, entity, gw string, where query.Where) livequery.Registration {
+	mk := func(id, tenant, entity, gw string, part int, where query.Where) livequery.Registration {
 		return livequery.Registration{
-			SubID: id, TenantID: tenant, Entity: entity, Mode: livequery.ModeMaintained,
+			SubID: id, TenantID: tenant, Entity: entity, Partition: part, Mode: livequery.ModeMaintained,
 			Query:     livequery.LiveQuery{Entity: entity, Where: where, Sort: []livequery.SortKey{{Column: "name"}}, Limit: 10},
 			GatewayID: gw, Watermark: "0-0",
 		}
 	}
 
-	must(reg.Put(ctx, mk("s1", "acme", "asset", "gw1", query.Where{query.Eq("kind", "pump")})))
-	must(reg.Put(ctx, mk("s2", "acme", "asset", "gw2", query.Where{query.Eq("kind", "valve")})))
-	must(reg.Put(ctx, mk("s3", "acme", "site", "gw1", nil)))
+	must(reg.Put(ctx, mk("s1", "acme", "asset", "gw1", 10, query.Where{query.Eq("kind", "pump")})))
+	must(reg.Put(ctx, mk("s2", "acme", "asset", "gw2", 10, query.Where{query.Eq("kind", "valve")})))
+	must(reg.Put(ctx, mk("s3", "acme", "site", "gw1", 11, nil)))
+
+	// Failover rebuild: a shard claiming partition 10 loads s1 + s2 in one query.
+	byPart, err := reg.ByPartitionNum(ctx, 10)
+	must(err)
+	if len(byPart) != 2 {
+		t.Fatalf("ByPartitionNum(10) = %d rows, want 2 (s1, s2)", len(byPart))
+	}
+	if byPart[0].Partition != 10 {
+		t.Fatalf("partition did not round-trip: %d", byPart[0].Partition)
+	}
 
 	// Partition rebuild query: a shard owning (acme, asset) loads s1 + s2.
 	parts, err := reg.ByPartition(ctx, "acme", "asset")
@@ -77,7 +87,7 @@ func TestPGLiveSubscriptionRegistry(t *testing.T) {
 	}
 
 	// Idempotent update (re-Put same id).
-	must(reg.Put(ctx, mk("s1", "acme", "asset", "gw1", query.Where{query.Eq("kind", "pump")})))
+	must(reg.Put(ctx, mk("s1", "acme", "asset", "gw1", 10, query.Where{query.Eq("kind", "pump")})))
 	parts, _ = reg.ByPartition(ctx, "acme", "asset")
 	if len(parts) != 2 {
 		t.Fatalf("after re-Put = %d rows, want 2 (no duplicate)", len(parts))
