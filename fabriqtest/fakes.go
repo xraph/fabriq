@@ -860,10 +860,8 @@ func (f *FakeDocumentStore) Compact(context.Context, string) error { return f.er
 
 // --- FakeSpatial (query.SpatialQuerier) -------------------------------------
 
-// FakeSpatial is an exact in-memory geometry store for tests. It parses WKT
-// POINT / POINT Z literals and computes exact distance (haversine for SRID
-// 4326, planar Euclidean otherwise). Non-point WKT is stored opaquely (point
-// queries against it never match) — tests use points.
+// geoEntry is one stored point: parsed coordinates, its SRID, and metadata.
+// Non-point WKT is stored with NaN coordinates so point queries never match it.
 type geoEntry struct {
 	x, y, z float64
 	srid    int
