@@ -4,7 +4,7 @@
 // transaction or a scatter-gather read.
 //
 // The router is engine-neutral: it speaks only the fabriq capability ports
-// (command.Store, query.RelationalQuerier/VectorQuerier/TSQuerier) and
+// (command.Store, query.RelationalQuerier/VectorQuerier/TSQuerier/SpatialQuerier) and
 // implements those same ports by delegating to the resolved shard. The
 // facade, executor and every call site are therefore unchanged — sharding
 // is one more adapter behind a port. Single-Postgres deployments use the
@@ -22,7 +22,7 @@ import (
 )
 
 // Shard is one tenant-home: the source-of-truth ports for the tenants that
-// live on it. In production a single Postgres adapter satisfies all four;
+// live on it. In production a single Postgres adapter satisfies all five;
 // tests supply stubs.
 type Shard struct {
 	ID         string
@@ -30,6 +30,7 @@ type Shard struct {
 	Relational query.RelationalQuerier
 	Vector     query.VectorQuerier
 	Timeseries query.TSQuerier
+	Spatial    query.SpatialQuerier
 }
 
 // Directory resolves a tenant to its shard id. Implementations range from a
