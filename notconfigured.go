@@ -55,6 +55,18 @@ func (notConfiguredVector) Similar(context.Context, query.VectorQuery, any) erro
 	return errPort("vector")
 }
 
+type notConfiguredSpatial struct{}
+
+func (notConfiguredSpatial) Upsert(context.Context, string, string, query.Geometry, map[string]any) error {
+	return errPort("spatial")
+}
+func (notConfiguredSpatial) Within(context.Context, query.SpatialQuery, any) error {
+	return errPort("spatial")
+}
+func (notConfiguredSpatial) Delete(context.Context, string, string) error {
+	return errPort("spatial")
+}
+
 type notConfiguredDocs struct{}
 
 func (notConfiguredDocs) ApplyUpdate(context.Context, string, []byte) error {
