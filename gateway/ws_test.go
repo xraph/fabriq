@@ -250,7 +250,9 @@ func TestServeWS_WriteWatchdogTearsDownStalledClient(t *testing.T) {
 	conn.block = make(chan struct{}) // WriteJSON will block forever
 	be := newFakeBackend()
 	done := make(chan error, 1)
-	go func() { done <- ServeWS(context.Background(), conn, be, WSOptions{WriteTimeout: 20 * time.Millisecond}) }()
+	go func() {
+		done <- ServeWS(context.Background(), conn, be, WSOptions{WriteTimeout: 20 * time.Millisecond})
+	}()
 
 	conn.feed(subscribeCmd("asset"))
 	<-be.subscribed
