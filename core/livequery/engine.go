@@ -77,7 +77,7 @@ func (e *Engine) Subscribe(ctx context.Context, q LiveQuery) (Snapshot, <-chan L
 
 	id := fmt.Sprintf("s%d", atomic.AddUint64(&e.subSeq, 1))
 	out := make(chan LiveDelta, e.opts.Buffer)
-	s := &liveSub{id: id, mode: q.Mode, pred: pred, sort: q.Sort, out: out, seen: map[string]int64{}, members: map[string]bool{}}
+	s := &liveSub{id: id, q: q, mode: q.Mode, pred: pred, sort: q.Sort, out: out, seen: map[string]int64{}, members: map[string]bool{}}
 	if q.Mode == ModeStreamed {
 		s.streamMembers = map[string]bool{}
 	}
@@ -170,6 +170,101 @@ func (e *Engine) Subscribe(ctx context.Context, q LiveQuery) (Snapshot, <-chan L
 		return Snapshot{}, nil, nil, err
 	}
 	return snapshot, out, cancel, nil
+}
+
+// Reconcile re-runs every ready Maintained subscription's query against the
+// snapshot oracle (Postgres) and, where the truth diverges from the in-engine
+// window, re-seeds the window and emits OpReset so the client re-snapshots. It
+// is the low-cadence drift backstop — transient predicate-evaluation divergence
+// self-heals rather than accumulating. Run it scheduled from the worker.
+// Returns the number of subscriptions repaired.
+func (e *Engine) Reconcile(ctx context.Context) (int, error) {
+	e.mu.Lock()
+	parts := make([]*partition, 0, len(e.partitions))
+	for _, p := range e.partitions {
+		parts = append(parts, p)
+	}
+	e.mu.Unlock()
+
+	type job struct {
+		id string
+		q  LiveQuery
+	}
+	repaired := 0
+	for _, p := range parts {
+		var jobs []job
+		_ = p.do(func() {
+			for id, s := range p.subs {
+				if s.ready && s.mode == ModeMaintained {
+					jobs = append(jobs, job{id: id, q: s.q})
+				}
+			}
+		})
+		for _, jb := range jobs {
+			limit := jb.q.Limit + e.opts.Cushion
+			seed, err := e.snap.Snapshot(ctx, jb.q, limit)
+			if err != nil {
+				return repaired, err
+			}
+			complete := len(seed) < limit
+			var drifted bool
+			_ = p.do(func() {
+				s := p.subs[jb.id]
+				if s == nil || s.win == nil || !windowDrift(s.win, seed, jb.q.Limit) {
+					return
+				}
+				drifted = true
+				// Drop this sub's old members from the reverse index, then rebuild
+				// the window and member set from the fresh truth.
+				for aggID := range s.members {
+					if ids := p.memberOf[aggID]; ids != nil {
+						delete(ids, s.id)
+						if len(ids) == 0 {
+							delete(p.memberOf, aggID)
+						}
+					}
+				}
+				s.members = map[string]bool{}
+				nw, werr := NewWindow(jb.q, s.pred, seed, complete, e.opts.Cushion, e.refill)
+				if werr != nil {
+					return
+				}
+				s.win = nw
+				s.seen = map[string]int64{}
+				for _, r := range seed {
+					if r.Version > s.seen[r.AggID] {
+						s.seen[r.AggID] = r.Version
+					}
+				}
+				for _, r := range nw.rows {
+					p.setMember(s, r.AggID, true)
+				}
+				s.send(LiveDelta{Op: OpReset})
+			})
+			if drifted {
+				repaired++
+			}
+		}
+	}
+	return repaired, nil
+}
+
+// windowDrift reports whether the window's visible rows disagree with the first
+// `n` rows of the truth snapshot by id or version.
+func windowDrift(win *Window, truth []Row, n int) bool {
+	vis := win.Visible()
+	if len(truth) > n {
+		truth = truth[:n]
+	}
+	if len(vis) != len(truth) {
+		return true
+	}
+	for i := range vis {
+		if vis[i].AggID != truth[i].AggID || vis[i].Version != truth[i].Version {
+			return true
+		}
+	}
+	return false
 }
 
 // memberIDs returns the full matching id set for a Streamed subscription, from

@@ -13,6 +13,7 @@ var errPartitionClosed = errors.New("fabriq: live query partition closed")
 // by the partition's single dispatch goroutine — there are no locks.
 type liveSub struct {
 	id   string
+	q    LiveQuery // retained for the reconcile backstop
 	mode Mode
 	pred match.Predicate
 	sort []SortKey // for Streamed cursors
