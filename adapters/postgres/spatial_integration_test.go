@@ -145,16 +145,6 @@ func TestSpatial_GeographicTrueMetres(t *testing.T) {
 	s := newSpatialHarness(t)
 	ctx := spatialCtx(t, "acme")
 
-	const (
-		sfLon = -122.4194
-		sfLat = 37.7749
-		// ~1.4 km north of SF centre (≈ 0.0127° latitude ≈ 1413 m).
-		nearLat = 37.7876
-		// ~200 km east (out of radius).
-		farLon = -120.6394
-		farLat = 37.7749
-	)
-
 	for _, tc := range []struct {
 		id  string
 		wkt string
