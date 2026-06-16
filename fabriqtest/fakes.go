@@ -12,6 +12,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -40,6 +41,7 @@ type World struct {
 	Search      *FakeSearch
 	TS          *FakeTS
 	Vector      *FakeVector
+	Spatial     *FakeSpatial
 	Docs        *FakeDocumentStore
 	Projections *FakeProjectionState
 }
@@ -56,6 +58,7 @@ func NewWorld(reg *registry.Registry) *World {
 		Search:      NewFakeSearch(reg),
 		TS:          &FakeTS{data: map[string]map[string]map[string][]query.Point{}},
 		Vector:      &FakeVector{data: map[string]map[string]map[string]vecEntry{}},
+		Spatial:     &FakeSpatial{data: map[string]map[string]map[string]geoEntry{}},
 		Docs:        &FakeDocumentStore{},
 		Projections: &FakeProjectionState{applied: map[string]int64{}},
 	}
@@ -854,3 +857,150 @@ func (f *FakeDocumentStore) Snapshot(context.Context, string) (document.Material
 
 // Compact implements document.Store (deferred).
 func (f *FakeDocumentStore) Compact(context.Context, string) error { return f.errDeferred() }
+
+// --- FakeSpatial (query.SpatialQuerier) -------------------------------------
+
+// FakeSpatial is an exact in-memory geometry store for tests. It parses WKT
+// POINT / POINT Z literals and computes exact distance (haversine for SRID
+// 4326, planar Euclidean otherwise). Non-point WKT is stored opaquely (point
+// queries against it never match) — tests use points.
+type geoEntry struct {
+	x, y, z float64
+	srid    int
+	meta    map[string]any
+}
+
+// FakeSpatial is an exact in-memory geometry store that implements
+// query.SpatialQuerier. It is tenant-scoped via ctx and safe for concurrent
+// use. Distance computation is haversine for SRID 4326, planar Euclidean
+// otherwise.
+type FakeSpatial struct {
+	mu   sync.RWMutex
+	data map[string]map[string]map[string]geoEntry // tenant -> entity -> id
+}
+
+var _ query.SpatialQuerier = (*FakeSpatial)(nil)
+
+// Upsert implements query.SpatialQuerier.
+func (f *FakeSpatial) Upsert(ctx context.Context, entity, id string, geom query.Geometry, meta map[string]any) error {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return err
+	}
+	x, y, z, ok := parseWKTPoint(geom.WKT)
+	if !ok {
+		x, y, z = math.NaN(), math.NaN(), math.NaN()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.data[tid] == nil {
+		f.data[tid] = map[string]map[string]geoEntry{}
+	}
+	if f.data[tid][entity] == nil {
+		f.data[tid][entity] = map[string]geoEntry{}
+	}
+	f.data[tid][entity][id] = geoEntry{x: x, y: y, z: z, srid: geom.SRID, meta: meta}
+	return nil
+}
+
+// Delete implements query.SpatialQuerier.
+func (f *FakeSpatial) Delete(ctx context.Context, entity, id string) error {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if m := f.data[tid][entity]; m != nil {
+		delete(m, id)
+	}
+	return nil
+}
+
+// Within implements query.SpatialQuerier. Results are scanned into
+// *[]query.SpatialMatch, nearest-first; ties break by ID.
+func (f *FakeSpatial) Within(ctx context.Context, q query.SpatialQuery, into any) error {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return err
+	}
+	dest, ok := into.(*[]query.SpatialMatch)
+	if !ok {
+		return fmt.Errorf("fabriq: FakeSpatial.Within scans into *[]query.SpatialMatch, got %T", into)
+	}
+	cx, cy, cz, ok := parseWKTPoint(q.Center.WKT)
+	if !ok {
+		return fmt.Errorf("fabriq: FakeSpatial center is not a parseable POINT: %q", q.Center.WKT)
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	var matches []query.SpatialMatch
+	for id, e := range f.data[tid][q.Entity] {
+		if math.IsNaN(e.x) {
+			continue
+		}
+		var d float64
+		if q.Center.SRID == 4326 {
+			d = haversineM(cy, cx, e.y, e.x) // lat=y, lon=x
+		} else {
+			dx, dy, dz := e.x-cx, e.y-cy, e.z-cz
+			d = math.Sqrt(dx*dx + dy*dy + dz*dz)
+		}
+		if d <= q.RadiusM {
+			matches = append(matches, query.SpatialMatch{ID: id, DistanceM: d, Meta: e.meta})
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].DistanceM != matches[j].DistanceM {
+			return matches[i].DistanceM < matches[j].DistanceM
+		}
+		return matches[i].ID < matches[j].ID
+	})
+	k := q.K
+	if k > 0 && len(matches) > k {
+		matches = matches[:k]
+	}
+	*dest = append(*dest, matches...)
+	return nil
+}
+
+// parseWKTPoint parses "POINT (x y)", "POINT Z (x y z)", "POINTZ(x y z)"
+// (case-insensitive, flexible spacing). Returns ok=false for non-point WKT.
+func parseWKTPoint(wkt string) (x, y, z float64, ok bool) {
+	s := strings.ToUpper(strings.TrimSpace(wkt))
+	if !strings.HasPrefix(s, "POINT") {
+		return 0, 0, 0, false
+	}
+	open := strings.IndexByte(s, '(')
+	closeIdx := strings.IndexByte(s, ')')
+	if open < 0 || closeIdx < open {
+		return 0, 0, 0, false
+	}
+	fields := strings.Fields(s[open+1 : closeIdx])
+	if len(fields) < 2 {
+		return 0, 0, 0, false
+	}
+	xf, e1 := strconv.ParseFloat(fields[0], 64)
+	yf, e2 := strconv.ParseFloat(fields[1], 64)
+	if e1 != nil || e2 != nil {
+		return 0, 0, 0, false
+	}
+	zf := 0.0
+	if len(fields) >= 3 {
+		if zz, e3 := strconv.ParseFloat(fields[2], 64); e3 == nil {
+			zf = zz
+		}
+	}
+	return xf, yf, zf, true
+}
+
+// haversineM returns great-circle distance in metres between two lat/lon points.
+func haversineM(lat1, lon1, lat2, lon2 float64) float64 {
+	const R = 6371000.0
+	rad := math.Pi / 180
+	dLat := (lat2 - lat1) * rad
+	dLon := (lon2 - lon1) * rad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return R * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
