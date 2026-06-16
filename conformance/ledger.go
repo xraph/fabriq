@@ -1,4 +1,3 @@
-// conformance/ledger.go
 package conformance
 
 // ledgerEntry documents one capability: which backends support it exactly,

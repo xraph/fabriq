@@ -1,4 +1,3 @@
-// conformance/ledger_test.go
 package conformance
 
 import "testing"
