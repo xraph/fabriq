@@ -283,6 +283,18 @@ func (f *Fabriq) LiveQuery(ctx context.Context, q livequery.LiveQuery) (livequer
 	return snap, deltas, cancel, nil
 }
 
+// ReconcileLiveQueries runs the live query drift backstop: every maintained
+// subscription is re-checked against Postgres truth and re-snapshotted where it
+// diverged. Returns the number of subscriptions repaired. Intended to be called
+// on a low-cadence schedule by the worker. A no-op (0, nil) when live queries
+// are not configured.
+func (f *Fabriq) ReconcileLiveQueries(ctx context.Context) (int, error) {
+	if f.liveEngine == nil {
+		return 0, nil
+	}
+	return f.liveEngine.Reconcile(ctx)
+}
+
 // sortableFunc returns the predicate deciding which columns a live query may
 // sort on: the LiveSpec's Sortable allowlist, or any column when unset.
 func sortableFunc(ent *registry.Entity) func(string) bool {
