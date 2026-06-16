@@ -169,9 +169,16 @@ A **`Shard`** is the single-node `Engine` reused unchanged, wired to its partiti
 
 **Failover is transparent.** When a shard dies its heartbeat expires, `Owner(p)` shifts, and the new owner — detecting the change — rebuilds the partition's subscriptions from the durable registry (`ByPartitionNum`) and re-snapshots them; the client sees an `OpReset` on the same stream and keeps flowing. Reanchored scroll positions survive too (the registry stores the live cursor). This is proven end-to-end by a multi-process harness (shards as goroutines over real Redis/Postgres) that kills the owning shard mid-stream.
 
-## Roadmap
+## The gateway tier
 
-The matcher tier and its failover are built; the remaining piece is a **standalone gateway *process*** — SSE/WebSocket termination, client reconnection, and socket backpressure layered on the same control/delta protocol — turning the in-process `Gateway` into a deployable edge tier.
+The in-process `Gateway` also ships as a **deployable edge tier** (`gateway` package + a Forge extension): it terminates client **SSE** and **WebSocket** connections and forwards the maintained/streamed delta stream over them, layered on the same control/delta protocol — no new live-query logic, just transport.
+
+- **SSE** — `POST /api/v1/live` with a `LiveQuery` body returns a uniform event stream: the snapshot folded in as `reset`+`enter` events, then live `enter`/`leave`/`move`/`update`. A single, stateless endpoint — *reanchor* is a reconnect with a new cursor (a fresh snapshot at the new anchor), *unsubscribe* is a disconnect.
+- **WebSocket** — `GET /api/v1/live/ws` is bidirectional: deltas stream down as frames while the client sends `subscribe`/`reanchor`/`unsubscribe` commands up. Forge owns the upgrade (the gateway carries no third-party WebSocket dependency).
+
+**Reconnection is re-subscribe + fresh snapshot:** the gateway holds no cross-connection state, so a dropped client simply re-sends its query and gets a new `OpReset`+snapshot — the same code path as failover, and a reconnect may land on any gateway instance. **Backpressure** tears a hopelessly slow client down (SSE via a write deadline, WebSocket via a write watchdog) and lets it reconnect to a fresh snapshot, so a slow consumer never consumes unbounded memory or silently diverges.
+
+It is packaged as a Forge extension that builds the `Gateway` over the facade's Redis transport and registers the two controllers; auth and AsyncAPI/OpenAPI schemas are caller-supplied route options, so the gateway stays auth-scheme-agnostic. The controllers are exported, so a host app can also mount them on its own router directly.
 
 ## Where to go next
 
