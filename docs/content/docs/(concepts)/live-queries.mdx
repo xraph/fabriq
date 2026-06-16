@@ -152,20 +152,22 @@ Two things to read from these. Per-subscription maintenance is cheap and grows w
 
 Subscriptions to the same `(tenant, entity)` share one **partition**: one feed, one predicate index, and one lock-free dispatch goroutine (an actor — all state owned by a single goroutine, so it is race-free by construction). On each change the dispatcher selects candidates from the predicate index (the [counting algorithm](https://en.wikipedia.org/wiki/Content-based_publish/subscribe) over conjunctive equality constraints) unioned with the change's current holders, and folds it into only those subscriptions.
 
+Within a partition, **identical query shapes share one view** — one window, one matcher — keyed by shape. A saved view watched by a thousand clients costs one window; the first subscriber seeds it from Postgres and the rest attach to its live state, with deltas fanned out. This is *templated sharing*, and it falls out of the view abstraction for free.
+
 A subscription chooses its delivery mode:
 
-- **Maintained** (default) — the exact ordered window described above.
+- **Maintained** (default) — the exact ordered window described above. `Subscribe` returns a `*Handle` whose **`Reanchor(cursor, limit)`** slides the window to a new anchor for deep/infinite scroll, re-keying onto the new shape's view at `O(window)` server cost.
 - **Streamed** (`ModeStreamed`) — holds a compact membership **ID-set** (seeded from a `MemberLister`) instead of an ordered buffer, and forwards `+match` / `−unmatch` / `update` transitions for the client to order. No boundary refill, no per-row buffer — the variant that scales to enormous or high-cardinality result sets.
 
-A **reconcile backstop** (`f.ReconcileLiveQueries(ctx)`, run on a low cadence by the worker) re-checks each maintained subscription against Postgres truth and re-snapshots any that drifted (emitting `OpReset`), so transient predicate-evaluation divergence self-heals.
+A **reconcile backstop** (`f.ReconcileLiveQueries(ctx)`, run on a low cadence by the worker) re-checks each maintained view against Postgres truth and re-snapshots any that drifted (emitting `OpReset`), so transient predicate-evaluation divergence self-heals.
+
+## Scaling out
+
+Everything above is single-process. The path to many processes is partly in place: a **durable subscription registry** (`fabriq_live_subscriptions`, the `SubscriptionRegistry` port) records each subscription's descriptor so a matcher shard reassigned a `(tenant, entity)` partition — after a node failure or rebalance — rebuilds and re-snapshots the subscriptions it now owns (`ByPartition`), and a restarted gateway reclaims its connections (`ByGateway`). The client experiences a failover as an `OpReset`.
 
 ## Roadmap
 
-Built today: the Maintained and Streamed engines, the predicate-index dispatcher, and the reconcile backstop, all single-node. Still planned:
-
-- **Templated sharing** — identical saved-view queries share one compiled matcher and buffer (ref-counted), instead of one per subscriber.
-- **Virtualized viewport** — a `Reanchor` control frame that slides a maintained window for deep/infinite scroll at `O(window)` server cost.
-- **Sharding & gateway tier** — data-partitioned matcher shards fed by partitioned Redis streams, a durable subscription registry, and failover via re-snapshot — the step from one process to many.
+The remaining step is the cross-node orchestration that consumes the registry above: **partitioned event streams** (`lq:events:{p}` by `hash(tenant, entity)`) so each shard tails only its partitions, a **shard-assignment** ring with heartbeats, a standalone **gateway tier** with per-gateway delta channels, and the **failover loop** that reassigns partitions and triggers the re-snapshot. That tier turns the single-process engine into a horizontally-scaled one; its durable backbone (the registry) and its routing model (the partition key) are already here.
 
 ## Where to go next
 
