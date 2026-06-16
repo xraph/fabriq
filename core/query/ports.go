@@ -196,3 +196,39 @@ type VectorMatch struct {
 	Score float64 // cosine similarity, higher is closer
 	Meta  map[string]any
 }
+
+// SpatialQuerier is the geometry port (PostGIS). Geometry is exchanged as WKT
+// plus an SRID — engine-neutral, covering point/line/polygon. Consumers holding
+// GeoJSON convert to WKT at the boundary. Like Vector, it is direct-write.
+type SpatialQuerier interface {
+	// Upsert stores or replaces the geometry for (tenant, entity, id).
+	Upsert(ctx context.Context, entity, id string, geom Geometry, meta map[string]any) error
+	// Within returns entities whose geometry lies within q.RadiusM of q.Center,
+	// nearest-first, scanned into *[]SpatialMatch.
+	Within(ctx context.Context, q SpatialQuery, into any) error
+	// Delete removes the geometry for (tenant, entity, id).
+	Delete(ctx context.Context, entity, id string) error
+}
+
+// Geometry is an engine-neutral geometry value: WKT plus its SRID.
+// e.g. {WKT: "POINT Z (10 20 3)", SRID: 0} (local/planar, metres) or
+// {WKT: "POINT (-122.4 37.8)", SRID: 4326} (geographic).
+type Geometry struct {
+	WKT  string
+	SRID int
+}
+
+// SpatialQuery is a radius search around a center point.
+type SpatialQuery struct {
+	Entity  string
+	Center  Geometry
+	RadiusM float64 // radius in metres
+	K       int     // cap; <=0 → adapter default
+}
+
+// SpatialMatch is one nearest-neighbour hit, nearest first.
+type SpatialMatch struct {
+	ID        string
+	DistanceM float64 // metres
+	Meta      map[string]any
+}
