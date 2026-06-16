@@ -82,6 +82,17 @@ func (t *storeTx) ApplyChange(ctx context.Context, ent *registry.Entity, op comm
 
 // AppendOutbox appends the envelope and notifies the relay. pg_notify
 // fires on commit, so the wake-up cannot outrun the data.
+// Exec runs a raw statement inside the command transaction — the escape hatch
+// a LifecycleHook uses to write atomically with the aggregate change. The tx is
+// already tenant-stamped (SET LOCAL app.tenant_id), so RLS-guarded side tables
+// are scoped to the calling tenant.
+func (t *storeTx) Exec(ctx context.Context, sql string, args ...any) error {
+	if _, err := t.ptx.NewRaw(sql, args...).Exec(ctx); err != nil {
+		return fmt.Errorf("fabriq: tx exec: %w", err)
+	}
+	return nil
+}
+
 func (t *storeTx) AppendOutbox(ctx context.Context, env event.Envelope) error {
 	const insert = `INSERT INTO fabriq_outbox
 		(id, tenant_id, aggregate, agg_id, version, type, at, payload_schema_version, payload, traceparent)

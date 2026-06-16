@@ -15,6 +15,7 @@ type Executor struct {
 	store       Store
 	now         func() time.Time
 	traceparent func(context.Context) string
+	hooks       []LifecycleHook
 }
 
 // ExecutorOption customizes an Executor.
@@ -29,6 +30,13 @@ func WithClock(now func() time.Time) ExecutorOption {
 // envelopes; internal/otel provides the production implementation.
 func WithTraceparent(fn func(context.Context) string) ExecutorOption {
 	return func(x *Executor) { x.traceparent = fn }
+}
+
+// WithHooks appends lifecycle hooks to the executor's ordered chain. Each runs
+// inside the write transaction after every change is staged; they fire in
+// registration order and the first error aborts the command (and any batch).
+func WithHooks(hooks ...LifecycleHook) ExecutorOption {
+	return func(x *Executor) { x.hooks = append(x.hooks, hooks...) }
 }
 
 // NewExecutor wires the command plane.
@@ -130,6 +138,18 @@ func (x *Executor) apply(ctx context.Context, tx Tx, p *preparedCommand) (Result
 	}
 	if err := tx.AppendOutbox(ctx, env); err != nil {
 		return Result{}, err
+	}
+
+	// Lifecycle hooks run in-transaction after the change is staged: they may
+	// participate (write atomically via tx) or veto (an error rolls the whole
+	// transaction back). They fire in order; the first error short-circuits.
+	if len(x.hooks) > 0 {
+		change := Change{Entity: p.entity, Op: op, Envelope: env}
+		for _, h := range x.hooks {
+			if err := h.OnChange(ctx, tx, change); err != nil {
+				return Result{}, fmt.Errorf("fabriq: lifecycle hook: %w", err)
+			}
+		}
 	}
 
 	return Result{AggID: p.aggID, Version: next, EventID: env.ID}, nil

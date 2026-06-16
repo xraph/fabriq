@@ -56,6 +56,20 @@ type fakeStore struct {
 	outbox   []event.Envelope
 	failOn   func(env event.Envelope) error // injected outbox failure
 	tenants  map[string]string              // "entity/id" -> tenant that owns it
+	execs    []execCall                     // committed raw statements (hook participation)
+}
+
+// execCall records a tx.Exec call so hook participation is assertable.
+type execCall struct {
+	SQL  string
+	Args []any
+}
+
+// Execs returns the raw statements committed via tx.Exec, in order.
+func (s *fakeStore) Execs() []execCall {
+	out := make([]execCall, len(s.execs))
+	copy(out, s.execs)
+	return out
 }
 
 func newFakeStore() *fakeStore {
@@ -73,6 +87,12 @@ type fakeTx struct {
 	rows     map[string]map[string]any
 	tenants  map[string]string
 	outbox   []event.Envelope
+	execs    []execCall
+}
+
+func (t *fakeTx) Exec(_ context.Context, sql string, args ...any) error {
+	t.execs = append(t.execs, execCall{SQL: sql, Args: args})
+	return nil
 }
 
 func (s *fakeStore) InTenantTx(ctx context.Context, fn func(ctx context.Context, tx command.Tx) error) error {
@@ -98,6 +118,7 @@ func (s *fakeStore) InTenantTx(ctx context.Context, fn func(ctx context.Context,
 	s.rows = tx.rows
 	s.tenants = tx.tenants
 	s.outbox = append(s.outbox, tx.outbox...)
+	s.execs = append(s.execs, tx.execs...)
 	return nil
 }
 

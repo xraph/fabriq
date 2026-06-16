@@ -88,6 +88,14 @@ type Tx interface {
 
 	// AppendOutbox appends the event envelope to the transactional outbox.
 	AppendOutbox(ctx context.Context, env event.Envelope) error
+
+	// Exec runs a raw statement inside the command transaction (the tenant is
+	// already stamped via SET LOCAL app.tenant_id). It is the escape hatch a
+	// LifecycleHook uses to write its own rows atomically with the aggregate
+	// change. SQL here is control-plane-trusted — the same level as a migration
+	// or the relational raw Query escape hatch; the command path is Postgres-
+	// bound (the source of truth), so this introduces no engine type into core.
+	Exec(ctx context.Context, sql string, args ...any) error
 }
 
 // Store opens tenant-scoped units of work. Implementations must reject
