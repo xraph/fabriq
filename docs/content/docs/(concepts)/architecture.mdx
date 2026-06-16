@@ -69,25 +69,17 @@ A minimal deployment is Postgres plus Redis; calling `f.Graph().Query(...)` on i
 
 ## Three layers: core, adapters, domain
 
-```text
-        commands                queries (capability ports)        deltas
-           │                            │                           ▲
-           ▼                            ▼                           │
-┌──────────────────────────────────────────────────────────────────┴─────┐
-│ fabriq (facade)                                                         │
-│  core/registry  core/command  core/event  core/projection  core/subscribe
-│  ─────────────────────────── ports ──────────────────────────────────  │
-│  adapters/postgres (grove)  adapters/redis  adapters/falkordb  adapters/elastic
-└─────────────────────────────────────────────────────────────────────────┘
-     Postgres+Timescale+pgvector   Redis Streams   FalkorDB    Elasticsearch
-        (source of truth)           (fan-out)      (projection) (projection)
-```
+<ArchitectureDiagram />
 
 **`core/` is the kernel: domain-agnostic and engine-agnostic.** It holds the declarative schema registry (`core/registry`), the command plane and transactional outbox (`core/command`), the versioned event envelope and upcaster chain (`core/event`), the projection engine and its rebuild/reconcile machinery (`core/projection`), the subscription hub and authz gate (`core/subscribe`), and the capability-port definitions (`core/query`). No engine type — no `pgx`, no grove handle, no FalkorDB client, no `go-elasticsearch` — appears in any `core/` signature.
 
 **`adapters/` holds the engine dialects.** `adapters/postgres` implements the command store and the relational, timeseries, and vector ports on grove's pg driver. `adapters/redis`, `adapters/falkordb`, and `adapters/elastic` back the fan-out and the graph and search projections. Each adapter translates engine-neutral mutations into its own dialect (FalkorDB `MERGE`, Elasticsearch bulk ops) behind a port interface.
 
 **`domain/` is the only domain-aware package.** It registers an example entity pack (site, asset, tag, page) as `registry.EntitySpec` values. Swap it for your own pack against a fresh `registry.New()` to model a different domain; the kernel and adapters do not change.
+
+That layering describes the *structure*. At runtime, every use case is one trip through the same data lifecycle — a write becomes a row and an outbox event in a single transaction, the relay fans it out over Redis Streams, and the projection engine and subscription hub consume it independently, while reads bypass the stream entirely through the capability ports:
+
+<DataLifecycleDiagram />
 
 ## No unified query language
 
