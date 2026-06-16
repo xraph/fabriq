@@ -119,6 +119,7 @@ func RelationalCases() []RelationalCase {
 			Seed:     fleet,
 			Run: func(env *Env, ids map[string]string) ([]*domain.Asset, error) {
 				var got []*domain.Asset
+				// $1 is the Postgres placeholder dialect; Postgres is the only CapRawSQL backend today.
 				err := env.Relational.Query(env.Ctx, &got,
 					`SELECT * FROM assets WHERE kind = $1 ORDER BY name`, "pump")
 				return got, err
