@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/livequery/cluster"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/subscribe"
@@ -36,6 +37,15 @@ func (a *Adapter) Publish(ctx context.Context, env event.Envelope, channels []st
 	pipe := a.client.Pipeline()
 	eventsAdd := pipe.XAdd(ctx, &redis.XAddArgs{
 		Stream: registry.StreamKey(),
+		MaxLen: a.eventsMaxLen,
+		Approx: true,
+		Values: map[string]any{envField: raw},
+	})
+	// Partition stream for the sharded live query matcher tier: every event also
+	// lands on lq:events:{p} keyed by (tenant, entity), so the owning shard tails
+	// only its partitions. Additive; MAXLEN-bounded like the main stream.
+	pipe.XAdd(ctx, &redis.XAddArgs{
+		Stream: cluster.EventStream(cluster.PartitionOf(env.TenantID, env.Aggregate)),
 		MaxLen: a.eventsMaxLen,
 		Approx: true,
 		Values: map[string]any{envField: raw},
