@@ -18,6 +18,7 @@ const (
 	ColumnID      = "id"
 	ColumnTenant  = "tenant_id"
 	ColumnVersion = "version"
+	ColumnScope   = "scope_id"
 )
 
 // Binding is the compiled relational shape of an entity, derived from its

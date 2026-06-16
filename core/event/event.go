@@ -27,6 +27,10 @@ type Envelope struct {
 	// the payload.
 	TenantID string `json:"tenant_id"`
 
+	// ScopeID is the optional secondary scope (sub-tenant partition). Empty when
+	// unscoped. Carried so projections can stamp scope_id on derived rows.
+	ScopeID string `json:"scopeId,omitempty"`
+
 	// Aggregate is the registry entity name, e.g. "asset".
 	Aggregate string `json:"aggregate"`
 
