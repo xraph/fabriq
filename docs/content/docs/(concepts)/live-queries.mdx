@@ -161,13 +161,17 @@ A subscription chooses its delivery mode:
 
 A **reconcile backstop** (`f.ReconcileLiveQueries(ctx)`, run on a low cadence by the worker) re-checks each maintained view against Postgres truth and re-snapshots any that drifted (emitting `OpReset`), so transient predicate-evaluation divergence self-heals.
 
-## Scaling out
+## Scaling out across shards
 
-Everything above is single-process. The path to many processes is partly in place: a **durable subscription registry** (`fabriq_live_subscriptions`, the `SubscriptionRegistry` port) records each subscription's descriptor so a matcher shard reassigned a `(tenant, entity)` partition — after a node failure or rebalance — rebuilds and re-snapshots the subscriptions it now owns (`ByPartition`), and a restarted gateway reclaims its connections (`ByGateway`). The client experiences a failover as an `OpReset`.
+The engine above also runs sharded across many processes (`core/livequery/cluster`). Data maps to one of `Partitions` (256) buckets by `hash(tenant, entity)`; the relay publishes each event to that bucket's stream `lq:events:{p}`. Live shards divide the buckets among themselves by **rendezvous (HRW) hashing** over heartbeat-registered membership — coordinator-free, so every node computes the same `Owner(p)` independently and removing a shard reassigns only *its* partitions.
+
+A **`Shard`** is the single-node `Engine` reused unchanged, wired to its partitions' streams and gated by ownership. It heartbeats, serves `subscribe`/`reanchor`/`unsubscribe` control routed to it over `lq:ctrl:{shard}`, and pumps deltas back to gateways over `lq:delta:{gateway}`. A **`Gateway`** terminates the client, routes control to the owning shard, and demuxes its delta channel.
+
+**Failover is transparent.** When a shard dies its heartbeat expires, `Owner(p)` shifts, and the new owner — detecting the change — rebuilds the partition's subscriptions from the durable registry (`ByPartitionNum`) and re-snapshots them; the client sees an `OpReset` on the same stream and keeps flowing. Reanchored scroll positions survive too (the registry stores the live cursor). This is proven end-to-end by a multi-process harness (shards as goroutines over real Redis/Postgres) that kills the owning shard mid-stream.
 
 ## Roadmap
 
-The remaining step is the cross-node orchestration that consumes the registry above: **partitioned event streams** (`lq:events:{p}` by `hash(tenant, entity)`) so each shard tails only its partitions, a **shard-assignment** ring with heartbeats, a standalone **gateway tier** with per-gateway delta channels, and the **failover loop** that reassigns partitions and triggers the re-snapshot. That tier turns the single-process engine into a horizontally-scaled one; its durable backbone (the registry) and its routing model (the partition key) are already here.
+The matcher tier and its failover are built; the remaining piece is a **standalone gateway *process*** — SSE/WebSocket termination, client reconnection, and socket backpressure layered on the same control/delta protocol — turning the in-process `Gateway` into a deployable edge tier.
 
 ## Where to go next
 
