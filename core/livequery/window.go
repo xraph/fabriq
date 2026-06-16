@@ -206,6 +206,12 @@ func (w *Window) delta(op DeltaOp, r Row, oldIdx, newIdx int) LiveDelta {
 	}
 }
 
+// Contains reports whether aggID is in the maintained buffer (visible or
+// cushion). The dispatcher uses it to maintain its member reverse-index so a
+// change to a row already held is routed to this window even when the row's new
+// state no longer matches the predicate (a leave).
+func (w *Window) Contains(aggID string) bool { return w.indexOf(aggID) >= 0 }
+
 // Visible returns the current visible window rows (for tests / re-snapshot).
 func (w *Window) Visible() []Row {
 	if len(w.rows) < w.n {
