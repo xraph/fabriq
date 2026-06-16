@@ -12,9 +12,9 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.42.0
 	github.com/xraph/confy v0.5.2
-	github.com/xraph/forge v1.7.0
-	github.com/xraph/grove v1.5.3
-	github.com/xraph/grove/drivers/pgdriver v1.5.3
+	github.com/xraph/forge v1.7.1
+	github.com/xraph/grove v1.5.4
+	github.com/xraph/grove/drivers/pgdriver v1.5.4
 	github.com/xraph/vessel v1.0.2
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
