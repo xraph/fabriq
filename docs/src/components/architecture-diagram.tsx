@@ -507,11 +507,32 @@ export function DataLifecycleDiagram() {
         <Arrow x1={216} y1={220} x2={426} y2={248} />
         {targets.map((t) => (
           <g key={t.name}>
-            <rect x={t.x} y={250} width={140} height={40} rx={9} fill={RAISED} stroke={LINE} />
-            <text x={t.x + 70} y={268} textAnchor="middle" fontFamily={MONO} fontSize="12" fill={INK}>
+            <rect
+              x={t.x}
+              y={250}
+              width={140}
+              height={40}
+              rx={9}
+              fill={RAISED}
+              stroke={LINE}
+            />
+            <text
+              x={t.x + 70}
+              y={268}
+              textAnchor="middle"
+              fontFamily={MONO}
+              fontSize="12"
+              fill={INK}
+            >
               {t.name}
             </text>
-            <text x={t.x + 70} y={282} textAnchor="middle" fontSize="9.5" fill={INK_FAINT}>
+            <text
+              x={t.x + 70}
+              y={282}
+              textAnchor="middle"
+              fontSize="9.5"
+              fill={INK_FAINT}
+            >
               {t.role}
             </text>
           </g>
