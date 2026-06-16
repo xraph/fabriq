@@ -48,7 +48,7 @@ domain-agnostic and engine-agnostic; engine dialects live exclusively under
 │  ─────────────────────────── ports ──────────────────────────────────  │
 │  adapters/postgres (grove)  adapters/redis  adapters/falkordb  adapters/elastic
 └─────────────────────────────────────────────────────────────────────────┘
-     Postgres+Timescale+pgvector   Redis Streams   FalkorDB    Elasticsearch
+  Postgres+Timescale+pgvector+PostGIS  Redis Streams   FalkorDB    Elasticsearch
         (source of truth)           (fan-out)      (projection) (projection)
 ```
 
@@ -123,8 +123,8 @@ snap, live, cancel, err := f.LiveQuery(tenantCtx, livequery.LiveQuery{
     projections, and the delta plane.
   </Card>
   <Card title="Data Planes" href="/docs/relational">
-    Per-port guides: relational, graph, search, timeseries, vector, and the
-    CRDT document plane.
+    Per-port guides: relational, graph, search, timeseries, vector, spatial,
+    and the CRDT document plane.
   </Card>
   <Card title="Operations" href="/docs/deployment">
     Deploy the worker, run migrations, rebuild and reconcile projections, and
