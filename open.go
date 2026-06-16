@@ -20,7 +20,7 @@ import (
 
 // Open dials the configured stores and assembles a Fabriq:
 //
-//   - Postgres (required): command store, relational/timeseries/vector
+//   - Postgres (required): command store, relational/timeseries/vector/spatial
 //     ports, projection bookkeeping.
 //   - Redis (optional but required for live subscriptions and
 //     projections): change-channel tailer feeding the hub.
@@ -169,7 +169,7 @@ type Stores struct {
 	Falkor   *falkordb.Adapter
 	Elastic  *elastic.Adapter
 	// Shards is the tenant -> source-of-truth routing table backing the
-	// facade's relational/command/vector/timeseries ports (ADR 0007).
+	// facade's relational/command/vector/timeseries/spatial ports (ADR 0007).
 	Shards *shard.Set
 
 	// shardPG is the concrete per-shard adapter behind each Shards id, for
