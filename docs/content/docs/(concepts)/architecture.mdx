@@ -7,7 +7,7 @@ Fabriq is the single module through which application code reaches every datasto
 
 ## The facade
 
-`fabriq.Fabriq` is the struct application code holds. It implements `query.Fabric`, the interface that defines the whole application-facing surface: the write path (`Exec`, `ExecBatch`), one accessor per capability port (`Relational`, `Graph`, `Search`, `Timeseries`, `Vector`, `Document`), the delta plane (`Subscribe`), and the read-your-writes helper (`WaitForProjection`).
+`fabriq.Fabriq` is the struct application code holds. It implements `query.Fabric`, the interface that defines the whole application-facing surface: the write path (`Exec`, `ExecBatch`), one accessor per capability port (`Relational`, `Graph`, `Search`, `Timeseries`, `Vector`, `Spatial`, `Document`), the delta plane (`Subscribe`), and the read-your-writes helper (`WaitForProjection`).
 
 ```go
 type Fabric interface {
@@ -19,6 +19,7 @@ type Fabric interface {
 	Search() SearchQuerier
 	Timeseries() TSQuerier
 	Vector() VectorQuerier
+	Spatial() SpatialQuerier
 	Document() document.Store
 
 	Subscribe(ctx context.Context, scope SubscribeScope) (<-chan Delta, error)
@@ -36,6 +37,7 @@ type Ports struct {
 	Search          query.SearchQuerier
 	Timeseries      query.TSQuerier
 	Vector          query.VectorQuerier
+	Spatial         query.SpatialQuerier
 	Documents       document.Store
 	ProjectionState projection.StateReader
 }

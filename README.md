@@ -81,8 +81,10 @@ All of the following are implemented and covered by integration tests:
 - **Command plane & outbox** — registry-driven commands, optimistic concurrency,
   atomic batches, and a transactional outbox in Postgres.
 - **Postgres source of truth** — row-level security verified as a non-superuser,
-  Timescale hypertables for bulk telemetry, and pgvector (HNSW) for similarity
-  search, with migrations and a registry-conformance test.
+  Timescale hypertables for bulk telemetry, pgvector (HNSW) for similarity search,
+  and PostGIS for geometry storage (`Upsert`/`Within`/`Delete`, GiST-accelerated,
+  SRID 4326 → true metres, other SRIDs → planar metres), with migrations and a
+  registry-conformance test.
 - **Dynamic entities** — entities defined at runtime from a schema descriptor
   instead of a Go struct, with fabriq-managed DDL (`CREATE` + additive `ALTER`),
   map-native writes/reads over real typed columns, and the full projection
