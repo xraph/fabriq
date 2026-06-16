@@ -12,14 +12,47 @@ var errPartitionClosed = errors.New("fabriq: live query partition closed")
 // liveSub is one subscription's state inside a partition. Every field is owned
 // by the partition's single dispatch goroutine — there are no locks.
 type liveSub struct {
-	id      string
-	pred    match.Predicate
-	out     chan LiveDelta
-	win     *Window
+	id   string
+	mode Mode
+	pred match.Predicate
+	sort []SortKey // for Streamed cursors
+	out  chan LiveDelta
+
+	// Maintained mode:
+	win *Window
+	// Streamed mode: the membership ID-set (no ordered buffer, no payloads).
+	streamMembers map[string]bool
+
 	seen    map[string]int64 // per-aggregate version high-water (gapless dedup)
 	members map[string]bool  // aggIDs this sub currently holds (reverse of memberOf)
 	ready   bool
 	pending []Change
+}
+
+// contains reports whether the subscription currently holds aggID.
+func (s *liveSub) contains(aggID string) bool {
+	if s.mode == ModeStreamed {
+		return s.streamMembers[aggID]
+	}
+	return s.win != nil && s.win.Contains(aggID)
+}
+
+// applyStreamed computes the +match / -unmatch / update transition for a
+// Streamed subscription, mutating its membership set. The client orders.
+func (s *liveSub) applyStreamed(ch Change) []LiveDelta {
+	matches := !ch.Deleted && s.pred.Eval(ch.Vals)
+	was := s.streamMembers[ch.AggID]
+	switch {
+	case matches && !was:
+		s.streamMembers[ch.AggID] = true
+		return []LiveDelta{{Op: OpMatch, AggID: ch.AggID, Version: ch.Version, Row: ch.Raw, Cursor: SortKeyOf(ch.Vals, s.sort, ch.AggID)}}
+	case !matches && was:
+		delete(s.streamMembers, ch.AggID)
+		return []LiveDelta{{Op: OpUnmatch, AggID: ch.AggID, Version: ch.Version}}
+	case matches && was:
+		return []LiveDelta{{Op: OpUpdate, AggID: ch.AggID, Version: ch.Version, Row: ch.Raw, Cursor: SortKeyOf(ch.Vals, s.sort, ch.AggID)}}
+	}
+	return nil
 }
 
 // send delivers a delta without ever blocking the shared dispatch goroutine: a
@@ -49,9 +82,14 @@ func (s *liveSub) applyReady(p *partition, ch Change) {
 		return // already reflected (gapless dedup)
 	}
 	s.seen[ch.AggID] = ch.Version
-	before := s.win.Contains(ch.AggID)
-	deltas := s.win.Apply(p.feedCtx, ch)
-	after := s.win.Contains(ch.AggID)
+	before := s.contains(ch.AggID)
+	var deltas []LiveDelta
+	if s.mode == ModeStreamed {
+		deltas = s.applyStreamed(ch)
+	} else {
+		deltas = s.win.Apply(p.feedCtx, ch)
+	}
+	after := s.contains(ch.AggID)
 	if after != before {
 		p.setMember(s, ch.AggID, after)
 	}

@@ -20,6 +20,9 @@ type Feed interface {
 type EngineOptions struct {
 	Cushion int
 	Buffer  int
+	// Members optionally seeds Streamed subscriptions' membership from the full
+	// matching id set; nil falls back to the snapshot page.
+	Members MemberLister
 }
 
 // Engine runs Maintained live queries. Subscriptions to the same (tenant,
@@ -74,7 +77,10 @@ func (e *Engine) Subscribe(ctx context.Context, q LiveQuery) (Snapshot, <-chan L
 
 	id := fmt.Sprintf("s%d", atomic.AddUint64(&e.subSeq, 1))
 	out := make(chan LiveDelta, e.opts.Buffer)
-	s := &liveSub{id: id, pred: pred, out: out, seen: map[string]int64{}, members: map[string]bool{}}
+	s := &liveSub{id: id, mode: q.Mode, pred: pred, sort: q.Sort, out: out, seen: map[string]int64{}, members: map[string]bool{}}
+	if q.Mode == ModeStreamed {
+		s.streamMembers = map[string]bool{}
+	}
 
 	// Join the stream first, so the partition buffers changes for this sub while
 	// the snapshot is taken.
@@ -86,18 +92,57 @@ func (e *Engine) Subscribe(ctx context.Context, q LiveQuery) (Snapshot, <-chan L
 		return Snapshot{}, nil, nil, err
 	}
 
-	seed, serr := e.snap.Snapshot(ctx, q, q.Limit+e.opts.Cushion)
-	if serr != nil {
+	cancel := func() {
 		e.deregister(p, id)
 		e.release(key)
-		return Snapshot{}, nil, nil, serr
+	}
+	fail := func(err error) (Snapshot, <-chan LiveDelta, func(), error) {
+		e.deregister(p, id)
+		e.release(key)
+		return Snapshot{}, nil, nil, err
+	}
+
+	if q.Mode == ModeStreamed {
+		page, perr := e.snap.Snapshot(ctx, q, max(q.Limit, 1))
+		if perr != nil {
+			return fail(perr)
+		}
+		ids, ierr := e.memberIDs(ctx, q, page)
+		if ierr != nil {
+			return fail(ierr)
+		}
+		if err := p.do(func() {
+			for _, m := range ids {
+				s.streamMembers[m] = true
+				p.setMember(s, m, true)
+			}
+			for _, r := range page {
+				if r.Version > s.seen[r.AggID] {
+					s.seen[r.AggID] = r.Version
+				}
+			}
+			s.ready = true
+			pending := s.pending
+			s.pending = nil
+			for _, ch := range pending {
+				s.applyReady(p, ch)
+			}
+		}); err != nil {
+			e.release(key)
+			return Snapshot{}, nil, nil, err
+		}
+		return Snapshot{Rows: page}, out, cancel, nil
+	}
+
+	// Maintained.
+	seed, serr := e.snap.Snapshot(ctx, q, q.Limit+e.opts.Cushion)
+	if serr != nil {
+		return fail(serr)
 	}
 	complete := len(seed) < q.Limit+e.opts.Cushion
 	win, werr := NewWindow(q, pred, seed, complete, e.opts.Cushion, e.refill)
 	if werr != nil {
-		e.deregister(p, id)
-		e.release(key)
-		return Snapshot{}, nil, nil, werr
+		return fail(werr)
 	}
 	snapshot := Snapshot{Rows: win.Visible()}
 
@@ -124,12 +169,20 @@ func (e *Engine) Subscribe(ctx context.Context, q LiveQuery) (Snapshot, <-chan L
 		e.release(key)
 		return Snapshot{}, nil, nil, err
 	}
-
-	cancel := func() {
-		e.deregister(p, id)
-		e.release(key)
-	}
 	return snapshot, out, cancel, nil
+}
+
+// memberIDs returns the full matching id set for a Streamed subscription, from
+// the MemberLister when configured, else the snapshot page.
+func (e *Engine) memberIDs(ctx context.Context, q LiveQuery, page []Row) ([]string, error) {
+	if e.opts.Members != nil {
+		return e.opts.Members.Members(ctx, q)
+	}
+	ids := make([]string, 0, len(page))
+	for _, r := range page {
+		ids = append(ids, r.AggID)
+	}
+	return ids, nil
 }
 
 func (e *Engine) partitionFor(ctx context.Context, key string, q LiveQuery) (*partition, error) {

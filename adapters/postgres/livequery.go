@@ -26,9 +26,61 @@ type LiveStore struct {
 func (a *Adapter) NewLiveStore() *LiveStore { return &LiveStore{a: a} }
 
 var (
-	_ livequery.Snapshotter = (*LiveStore)(nil)
-	_ livequery.Refiller    = (*LiveStore)(nil)
+	_ livequery.Snapshotter  = (*LiveStore)(nil)
+	_ livequery.Refiller     = (*LiveStore)(nil)
+	_ livequery.MemberLister = (*LiveStore)(nil)
 )
+
+// Members returns every aggregate id currently matching the query's filter
+// (tenant-scoped, RLS-enforced) — the membership seed for a Streamed
+// subscription. No ordering or payloads; just ids.
+func (s *LiveStore) Members(ctx context.Context, q livequery.LiveQuery) ([]string, error) {
+	ent, err := s.a.entity(q.Entity)
+	if err != nil {
+		return nil, err
+	}
+	if err := query.ValidateConds(q.Where, ent.Binding.HasColumn); err != nil {
+		return nil, err
+	}
+	if !ddlValid(ent.Binding.Table) {
+		return nil, fmt.Errorf("fabriq: live: table %q failed ddl validation", ent.Binding.Table)
+	}
+	var ids []string
+	err = s.a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
+		var sb strings.Builder
+		var args []any
+		argN := 1
+		fmt.Fprintf(&sb, `SELECT %s FROM %s WHERE %s = $%d`,
+			quoteIdent(registry.ColumnID), quoteIdent(ent.Binding.Table), quoteIdent(registry.ColumnTenant), argN)
+		args = append(args, tid)
+		argN++
+		for _, c := range q.Where {
+			frag, fargs, cerr := condSQLPositional(c, &argN)
+			if cerr != nil {
+				return cerr
+			}
+			sb.WriteString(" AND ")
+			sb.WriteString(frag)
+			args = append(args, fargs...)
+		}
+		drows, qerr := tx.Query(ctx, sb.String(), args...)
+		if qerr != nil {
+			return qerr
+		}
+		maps, serr := scanMaps(drows)
+		if serr != nil {
+			return serr
+		}
+		ids = make([]string, 0, len(maps))
+		for _, m := range maps {
+			if idv, ok := m[registry.ColumnID].(string); ok {
+				ids = append(ids, idv)
+			}
+		}
+		return nil
+	})
+	return ids, err
+}
 
 // Snapshot returns the first `limit` rows from the anchor in total order.
 func (s *LiveStore) Snapshot(ctx context.Context, q livequery.LiveQuery, limit int) ([]livequery.Row, error) {

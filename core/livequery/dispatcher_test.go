@@ -78,6 +78,59 @@ func TestDispatcher_IndexRoutesToMatchingSubsOnly(t *testing.T) {
 	assertEnter(t, dB, "z")
 }
 
+type fakeMembers struct{ ids []string }
+
+func (f *fakeMembers) Members(_ context.Context, _ livequery.LiveQuery) ([]string, error) {
+	return f.ids, nil
+}
+
+func recvDelta(t *testing.T, ch <-chan livequery.LiveDelta) livequery.LiveDelta {
+	t.Helper()
+	select {
+	case d := <-ch:
+		return d
+	case <-time.After(2 * time.Second):
+		t.Fatal("no delta received")
+		return livequery.LiveDelta{}
+	}
+}
+
+// TestDispatcher_StreamedMatchUnmatchUpdate exercises Streamed mode: a seeded
+// member that unmatches, a fresh row that matches, and an in-set update.
+func TestDispatcher_StreamedMatchUnmatchUpdate(t *testing.T) {
+	sortKeys := []livequery.SortKey{{Column: "name"}}
+	feed := &fakeFeed{ch: make(chan livequery.Change, 16)}
+	eng := livequery.NewEngine(&fakeSnap{}, &fakeRefiller{sort: sortKeys}, feed,
+		livequery.EngineOptions{Buffer: 16, Members: &fakeMembers{ids: []string{"seed1"}}})
+	q := livequery.LiveQuery{
+		Entity: "asset", Sort: sortKeys, Limit: 5, Mode: livequery.ModeStreamed,
+		Where: query.Where{query.Eq("status", "active")},
+	}
+	_, deltas, cancel, err := eng.Subscribe(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	// A fresh row that matches → OpMatch.
+	pushChange(feed, "m", "Mike", "active", "pump", 2)
+	if d := recvDelta(t, deltas); d.Op != livequery.OpMatch || d.AggID != "m" {
+		t.Fatalf("want match(m), got op=%v agg=%s", d.Op, d.AggID)
+	}
+
+	// A seeded member that stops matching → OpUnmatch (caught via the member index).
+	pushChange(feed, "seed1", "Seed", "idle", "pump", 2)
+	if d := recvDelta(t, deltas); d.Op != livequery.OpUnmatch || d.AggID != "seed1" {
+		t.Fatalf("want unmatch(seed1), got op=%v agg=%s", d.Op, d.AggID)
+	}
+
+	// An in-set update → OpUpdate.
+	pushChange(feed, "m", "Mike2", "active", "pump", 3)
+	if d := recvDelta(t, deltas); d.Op != livequery.OpUpdate || d.AggID != "m" {
+		t.Fatalf("want update(m), got op=%v agg=%s", d.Op, d.AggID)
+	}
+}
+
 // TestDispatcher_ConcurrentSubscribeCancel stresses register/activate/
 // deregister against a live dispatch loop — run under -race.
 func TestDispatcher_ConcurrentSubscribeCancel(t *testing.T) {
