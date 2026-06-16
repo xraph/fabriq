@@ -11,9 +11,11 @@ require (
 	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.42.0
+	github.com/xraph/confy v0.5.2
 	github.com/xraph/forge v1.7.0
 	github.com/xraph/grove v1.5.3
 	github.com/xraph/grove/drivers/pgdriver v1.5.3
+	github.com/xraph/vessel v1.0.2
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
 )
@@ -115,9 +117,7 @@ require (
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/uptrace/bunrouter v1.0.23 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	github.com/xraph/confy v0.5.2 // indirect
 	github.com/xraph/go-utils v1.1.1 // indirect
-	github.com/xraph/vessel v1.0.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.60.0 // indirect
