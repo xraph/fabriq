@@ -190,6 +190,13 @@ func (t *fakeTx) AppendOutbox(_ context.Context, env event.Envelope) error {
 	return nil
 }
 
+// Exec implements command.Tx. The in-memory fake has no SQL engine, so raw
+// transactional statements (the LifecycleHook participation escape hatch) are
+// not supported here — they belong to the postgres adapter integration suite.
+func (t *fakeTx) Exec(_ context.Context, _ string, _ ...any) error {
+	return fmt.Errorf("fabriq: FakeStore.Tx does not execute raw SQL; use the postgres adapter integration harness")
+}
+
 // --- FakeRelational (query.RelationalQuerier) --------------------------------
 
 // FakeRelational reads the world's shared memory, tenant-scoped from ctx.

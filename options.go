@@ -82,6 +82,18 @@ func WithLiveCushion(n int) Option {
 	}
 }
 
+// WithLifecycleHook appends data-lifecycle hooks to the command plane. Each
+// hook runs INSIDE the write transaction after every change is staged: it may
+// write its own rows atomically (via the tx handle) or veto the write by
+// returning an error (which rolls the whole command back). Hooks fire in
+// registration order across all WithLifecycleHook calls. This is the in-tx,
+// cross-cutting seam an auditing/chronicle extension hooks into.
+func WithLifecycleHook(hooks ...command.LifecycleHook) Option {
+	return func(s *settings) {
+		s.executorOptions = append(s.executorOptions, command.WithHooks(hooks...))
+	}
+}
+
 // WithWaitPollInterval tunes WaitForProjection's poll cadence.
 func WithWaitPollInterval(d time.Duration) Option {
 	return func(s *settings) {
