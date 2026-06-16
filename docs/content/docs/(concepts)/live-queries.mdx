@@ -146,18 +146,26 @@ The package ships microbenchmarks for the hot path (`go test ./core/livequery/ -
 | `WindowFanout/subs=1000` | routing one change to 1000 subscriptions | ~140 µs |
 | `WindowFanout/subs=10000` | routing one change to 10000 subscriptions | ~1.5 ms |
 
-Two things to read from these. Per-subscription maintenance is cheap and grows with the **window size** (the membership lookup), not the result-set size — deep windows stay affordable. Fan-out, however, is **linear in subscriber count** because P1 evaluates every subscription per event; that linear curve is exactly what the roadmap's content-based predicate index removes.
+Two things to read from these. Per-subscription maintenance is cheap and grows with the **window size** (the membership lookup), not the result-set size — deep windows stay affordable. The `WindowFanout` row measures the cost of applying one change to N windows *unconditionally*; the engine no longer does that — it routes each change only to the subscriptions a content-based predicate index identifies as possible matches (plus current holders, to catch leaves), so a change touches `O(candidates)`, not `O(subscriptions)`.
+
+## Scaling architecture
+
+Subscriptions to the same `(tenant, entity)` share one **partition**: one feed, one predicate index, and one lock-free dispatch goroutine (an actor — all state owned by a single goroutine, so it is race-free by construction). On each change the dispatcher selects candidates from the predicate index (the [counting algorithm](https://en.wikipedia.org/wiki/Content-based_publish/subscribe) over conjunctive equality constraints) unioned with the change's current holders, and folds it into only those subscriptions.
+
+A subscription chooses its delivery mode:
+
+- **Maintained** (default) — the exact ordered window described above.
+- **Streamed** (`ModeStreamed`) — holds a compact membership **ID-set** (seeded from a `MemberLister`) instead of an ordered buffer, and forwards `+match` / `−unmatch` / `update` transitions for the client to order. No boundary refill, no per-row buffer — the variant that scales to enormous or high-cardinality result sets.
+
+A **reconcile backstop** (`f.ReconcileLiveQueries(ctx)`, run on a low cadence by the worker) re-checks each maintained subscription against Postgres truth and re-snapshots any that drifted (emitting `OpReset`), so transient predicate-evaluation divergence self-heals.
 
 ## Roadmap
 
-P1 is the single-node *Maintained* engine described above. Planned phases:
+Built today: the Maintained and Streamed engines, the predicate-index dispatcher, and the reconcile backstop, all single-node. Still planned:
 
-- **Streamed mode** — a `ModeStreamed` policy that forwards matched change events and lets the client order them, with shared per-query state; the variant that scales to enormous/unbounded result sets and very high subscriber counts.
-- **Predicate index** — content-based candidate selection so a change is matched against only the subscriptions it *could* affect, replacing the linear fan-out above.
-- **Templated sharing** — identical saved-view queries share one compiled matcher and buffer.
-- **Sharding & gateway tier** — data-partitioned matcher shards fed by partitioned Redis streams, a durable subscription registry, and failover via re-snapshot.
+- **Templated sharing** — identical saved-view queries share one compiled matcher and buffer (ref-counted), instead of one per subscriber.
 - **Virtualized viewport** — a `Reanchor` control frame that slides a maintained window for deep/infinite scroll at `O(window)` server cost.
-- **Reconcile backstop** — a low-cadence loop that repairs any drift against Postgres truth.
+- **Sharding & gateway tier** — data-partitioned matcher shards fed by partitioned Redis streams, a durable subscription registry, and failover via re-snapshot — the step from one process to many.
 
 ## Where to go next
 
