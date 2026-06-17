@@ -16,7 +16,7 @@ type tinyCache struct {
 
 func newTiny() *tinyCache { return &tinyCache{data: map[string][]byte{}} }
 
-func (c *tinyCache) GetOrLoad(ctx context.Context, ks cache.Keyspace, key string,
+func (c *tinyCache) GetOrLoad(ctx context.Context, _ cache.Keyspace, key string,
 	load func(context.Context) ([]byte, error)) ([]byte, error) {
 	c.mu.Lock()
 	if v, ok := c.data[key]; ok {
@@ -33,19 +33,19 @@ func (c *tinyCache) GetOrLoad(ctx context.Context, ks cache.Keyspace, key string
 	c.mu.Unlock()
 	return v, nil
 }
-func (c *tinyCache) Get(ctx context.Context, ks cache.Keyspace, key string) ([]byte, bool, error) {
+func (c *tinyCache) Get(_ context.Context, _ cache.Keyspace, key string) ([]byte, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	v, ok := c.data[key]
 	return v, ok, nil
 }
-func (c *tinyCache) Set(ctx context.Context, ks cache.Keyspace, key string, val []byte) error {
+func (c *tinyCache) Set(_ context.Context, _ cache.Keyspace, key string, val []byte) error {
 	c.mu.Lock()
 	c.data[key] = val
 	c.mu.Unlock()
 	return nil
 }
-func (c *tinyCache) Invalidate(ctx context.Context, ks cache.Keyspace, keys ...string) error {
+func (c *tinyCache) Invalidate(_ context.Context, _ cache.Keyspace, keys ...string) error {
 	c.mu.Lock()
 	for _, k := range keys {
 		delete(c.data, k)
@@ -53,8 +53,8 @@ func (c *tinyCache) Invalidate(ctx context.Context, ks cache.Keyspace, keys ...s
 	c.mu.Unlock()
 	return nil
 }
-func (c *tinyCache) InvalidateKeyspace(ctx context.Context, ks cache.Keyspace) error { return nil }
-func (c *tinyCache) Close() error                                                    { return nil }
+func (c *tinyCache) InvalidateKeyspace(_ context.Context, _ cache.Keyspace) error { return nil }
+func (c *tinyCache) Close() error                                                 { return nil }
 
 func TestTypedGetOrLoad(t *testing.T) {
 	type asset struct {
