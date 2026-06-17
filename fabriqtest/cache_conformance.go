@@ -263,6 +263,20 @@ func RunCacheConformance(t *testing.T, newCache func(t *testing.T) cache.Cache) 
 		}
 	})
 
+	t.Run("invalidate entity busts empty-scope tenant-scope entries", func(t *testing.T) {
+		c := newCache(t)
+		ks := cache.Keyspace{Name: "asset.byid", Version: 1, Entity: "asset",
+			Partition: cache.TenantScope, Policy: cache.Policy{Mode: cache.Versioned}}
+		tctx := mkTenant(t, "acme") // tenant, NO scope
+		_ = c.Set(tctx, ks, "id", []byte("row"))
+		if err := c.InvalidateEntity(tctx, "asset"); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, _ := c.Get(tctx, ks, "id"); ok {
+			t.Fatal("an unscoped write must bust its own empty-scope TenantScope entry")
+		}
+	})
+
 	t.Run("invalidate entity also busts the global tier", func(t *testing.T) {
 		c := newCache(t)
 		globalKS := cache.Keyspace{Name: "asset.global", Version: 1, Entity: "asset",
