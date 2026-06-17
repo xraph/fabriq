@@ -11,10 +11,6 @@ import (
 // keyspace, then hydrates it through GetMany (the warm, P3a-decorated path).
 // Called only when r.cache != nil. The id-list — not the rows — is what's
 // cached; rows come from the per-id row cache, completing the two-level design.
-// Tasks 2-4 wire call sites; the helper is scaffolded here so the keyspace
-// and fingerprint logic are reviewable independently of the method changes.
-//
-//nolint:unused // scaffolded for Tasks 2-4 which wire the call sites (List, Traverse, Search, Similar)
 func (r *Repo[T]) cachedHydrate(ctx context.Context, fpKey any,
 	idLoader func(context.Context) ([]string, error)) ([]*T, error) {
 	fp, err := cache.Fingerprint(fpKey)
