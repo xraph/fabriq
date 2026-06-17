@@ -54,6 +54,7 @@ func (c *tinyCache) Invalidate(_ context.Context, _ cache.Keyspace, keys ...stri
 	return nil
 }
 func (c *tinyCache) InvalidateKeyspace(_ context.Context, _ cache.Keyspace) error { return nil }
+func (c *tinyCache) InvalidateEntity(_ context.Context, _ string) error           { return nil }
 func (c *tinyCache) Close() error                                                 { return nil }
 
 func TestTypedGetOrLoad(t *testing.T) {

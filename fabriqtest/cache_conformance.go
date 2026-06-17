@@ -204,4 +204,70 @@ func RunCacheConformance(t *testing.T, newCache func(t *testing.T) cache.Cache) 
 			t.Fatal("entry with a long TTL must hit immediately")
 		}
 	})
+
+	t.Run("invalidate entity busts entity-keyed keyspaces across partitions", func(t *testing.T) {
+		c := newCache(t)
+		// Two keyspaces over the SAME entity "asset": a query keyspace (Tenant)
+		// and an entity-by-id keyspace (TenantScope). Both declare Entity.
+		queryKS := cache.Keyspace{Name: "asset.q", Version: 1, Entity: "asset",
+			Partition: cache.Tenant, Policy: cache.Policy{Mode: cache.Versioned}}
+		entityKS := cache.Keyspace{Name: "asset.byid", Version: 1, Entity: "asset",
+			Partition: cache.TenantScope, Policy: cache.Policy{Mode: cache.Versioned}}
+		// An unrelated entity's keyspace must survive.
+		otherKS := cache.Keyspace{Name: "site.q", Version: 1, Entity: "site",
+			Partition: cache.Tenant, Policy: cache.Policy{Mode: cache.Versioned}}
+
+		tctx := mkTenant(t, "acme")
+		sctx := mkScope(t, "acme", "A")
+		_ = c.Set(tctx, queryKS, "fp1", []byte("q"))
+		_ = c.Set(sctx, entityKS, "id1", []byte("row"))
+		_ = c.Set(tctx, otherKS, "fp2", []byte("other"))
+
+		// A write to "asset" in tenant acme, scope A.
+		if err := c.InvalidateEntity(sctx, "asset"); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, ok, _ := c.Get(tctx, queryKS, "fp1"); ok {
+			t.Fatal("asset query keyspace (Tenant) must be busted")
+		}
+		if _, ok, _ := c.Get(sctx, entityKS, "id1"); ok {
+			t.Fatal("asset entity keyspace (TenantScope) must be busted")
+		}
+		if _, ok, _ := c.Get(tctx, otherKS, "fp2"); !ok {
+			t.Fatal("unrelated entity 'site' keyspace must survive")
+		}
+	})
+
+	t.Run("invalidate entity is tenant-isolated", func(t *testing.T) {
+		c := newCache(t)
+		ks := cache.Keyspace{Name: "asset.q", Version: 1, Entity: "asset",
+			Partition: cache.Tenant, Policy: cache.Policy{Mode: cache.Versioned}}
+		_ = c.Set(mkTenant(t, "acme"), ks, "fp", []byte("a"))
+		_ = c.Set(mkTenant(t, "globex"), ks, "fp", []byte("g"))
+
+		// Invalidate asset in acme only.
+		if err := c.InvalidateEntity(mkTenant(t, "acme"), "asset"); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, _ := c.Get(mkTenant(t, "acme"), ks, "fp"); ok {
+			t.Fatal("acme asset cache must be busted")
+		}
+		if _, ok, _ := c.Get(mkTenant(t, "globex"), ks, "fp"); !ok {
+			t.Fatal("globex asset cache must survive (tenant isolation)")
+		}
+	})
+
+	t.Run("invalidate entity also busts the global tier", func(t *testing.T) {
+		c := newCache(t)
+		globalKS := cache.Keyspace{Name: "asset.global", Version: 1, Entity: "asset",
+			Partition: cache.Global, Policy: cache.Policy{Mode: cache.Versioned}}
+		_ = c.Set(mkTenant(t, "acme"), globalKS, "fp", []byte("shared"))
+		if err := c.InvalidateEntity(mkTenant(t, "acme"), "asset"); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, _ := c.Get(context.Background(), globalKS, "fp"); ok {
+			t.Fatal("a write to asset must bust the Global asset keyspace")
+		}
+	})
 }
