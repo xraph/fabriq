@@ -1,10 +1,12 @@
 package falkordb
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/xraph/fabriq/core/projection"
+	"github.com/xraph/fabriq/core/tenant"
 )
 
 // The mutation translator is the ONLY place graph dialect lives. These
@@ -251,6 +253,101 @@ func TestCypherFor_RelDelete(t *testing.T) {
 	}
 	if params["rel_id"] != "e1" {
 		t.Fatalf("rel_id param = %v", params["rel_id"])
+	}
+}
+
+// TestCypherFor_NodeUpsert_ScopeID verifies that scope_id flows through the
+// generic prop renderer automatically (it passes validIdent and is not "id"),
+// so the projection applier's scope_id injection reaches the graph node.
+func TestCypherFor_NodeUpsert_ScopeID(t *testing.T) {
+	cy, params, err := cypherFor(projection.NodeUpsert{
+		Label: "Asset", ID: "A2",
+		Props:   map[string]any{"name": "Tank", "scope_id": "proj_X"},
+		Version: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cy, "n.scope_id = $p_scope_id") {
+		t.Fatalf("scope_id must be SET on the node; cypher:\n%s", cy)
+	}
+	if params["p_scope_id"] != "proj_X" {
+		t.Fatalf("p_scope_id param = %v", params["p_scope_id"])
+	}
+}
+
+// TestCypherFor_NodeUpsert_NoScopeID verifies that a node upsert without
+// scope_id in Props does not emit a scope_id SET clause (unscoped nodes are
+// shared / visible to all scoped and unscoped readers).
+func TestCypherFor_NodeUpsert_NoScopeID(t *testing.T) {
+	cy, params, err := cypherFor(projection.NodeUpsert{
+		Label: "Asset", ID: "A3",
+		Props:   map[string]any{"name": "Valve"},
+		Version: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cy, "scope_id") {
+		t.Fatalf("scope_id must not appear for unscoped node; cypher:\n%s", cy)
+	}
+	if _, ok := params["p_scope_id"]; ok {
+		t.Fatal("p_scope_id must not be in params for unscoped node")
+	}
+}
+
+// --- scopeParams (read-side scope exposure) ---------------------------------
+//
+// Graph reads are raw-Cypher passthrough; fabriq cannot auto-inject a scope
+// predicate. Instead, scopeParams injects the scope from ctx as "$scope" so
+// caller Cypher can reference it: WHERE n.scope_id IS NULL OR n.scope_id = $scope.
+
+func TestScopeParams_Scoped(t *testing.T) {
+	ctx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = tenant.WithScope(ctx, "proj_X")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := scopeParams(ctx, map[string]any{"k": "v"})
+	if got["scope"] != "proj_X" {
+		t.Fatalf("scope param missing or wrong: %v", got)
+	}
+	if got["k"] != "v" {
+		t.Fatal("original params must be preserved")
+	}
+}
+
+func TestScopeParams_Unscoped(t *testing.T) {
+	ctx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := map[string]any{"k": "v"}
+	got := scopeParams(ctx, orig)
+	if _, ok := got["scope"]; ok {
+		t.Fatal("unscoped context must not inject scope param")
+	}
+	// Must be the same map (no copy needed when unscoped).
+	if len(got) != 1 {
+		t.Fatalf("unscoped params = %v", got)
+	}
+}
+
+func TestScopeParams_NilParams_Scoped(t *testing.T) {
+	ctx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = tenant.WithScope(ctx, "proj_Y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := scopeParams(ctx, nil)
+	if got["scope"] != "proj_Y" {
+		t.Fatalf("scope param missing with nil base params: %v", got)
 	}
 }
 
