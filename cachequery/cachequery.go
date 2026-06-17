@@ -6,6 +6,7 @@ package cachequery
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 
 	"github.com/xraph/fabriq/core/cache"
 	"github.com/xraph/fabriq/core/query"
@@ -84,9 +85,65 @@ func (cr *CachedRelational) Get(ctx context.Context, entity, id string, into any
 	return nil
 }
 
-// GetMany delegates for now (cached in the next task).
+// idHolder extracts the id from a cached/loaded row's JSON.
+type idHolder struct {
+	ID string `json:"id"`
+}
+
+// GetMany serves rows per id from cache, batch-loads only the misses, caches
+// each loaded row, and assembles the result into `into` in requested-id order
+// (missing rows skipped). Pass-through for non-opted entities.
 func (cr *CachedRelational) GetMany(ctx context.Context, entity string, ids []string, into any) error {
-	return cr.inner.GetMany(ctx, entity, ids, into)
+	ent, ok := cr.cacheable(entity)
+	if !ok {
+		return cr.inner.GetMany(ctx, entity, ids, into)
+	}
+	ks := EntityRowKeyspace(ent)
+
+	byID := make(map[string]json.RawMessage, len(ids))
+	miss := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if raw, hit, err := cr.c.Get(ctx, ks, id); err == nil && hit {
+			byID[id] = raw
+		} else {
+			miss = append(miss, id)
+		}
+	}
+
+	if len(miss) > 0 {
+		// Fresh slice of into's element type (into is *[]T).
+		tmpPtr := reflect.New(reflect.TypeOf(into).Elem())
+		if err := cr.inner.GetMany(ctx, entity, miss, tmpPtr.Interface()); err != nil {
+			return err
+		}
+		loaded, merr := json.Marshal(tmpPtr.Interface())
+		if merr != nil {
+			return merr
+		}
+		var rawRows []json.RawMessage
+		if uerr := json.Unmarshal(loaded, &rawRows); uerr != nil {
+			return uerr
+		}
+		for _, rr := range rawRows {
+			var h idHolder
+			if json.Unmarshal(rr, &h) == nil && h.ID != "" {
+				byID[h.ID] = rr
+				_ = cr.c.Set(ctx, ks, h.ID, rr) // best-effort
+			}
+		}
+	}
+
+	ordered := make([]json.RawMessage, 0, len(ids))
+	for _, id := range ids {
+		if rr, present := byID[id]; present {
+			ordered = append(ordered, rr)
+		}
+	}
+	arr, err := json.Marshal(ordered)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(arr, into)
 }
 
 // List passes through (result-set caching is P3b).
