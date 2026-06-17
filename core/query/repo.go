@@ -10,6 +10,7 @@ import (
 
 	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/core/tenant"
 )
 
 // Repo is a type-safe view over one entity, parameterised by its grove
@@ -268,7 +269,7 @@ const (
 // walk validates the traversal, runs the id-returning Cypher, dedupes and
 // hydrates in one batched query.
 func (r *Repo[T]) walk(ctx context.Context, id, rel string, dir walkDir, minHops, maxHops int) ([]*T, error) {
-	cypher, err := r.walkCypher(rel, dir, minHops, maxHops)
+	cypher, err := r.walkCypher(ctx, rel, dir, minHops, maxHops)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +284,14 @@ func (r *Repo[T]) walk(ctx context.Context, id, rel string, dir walkDir, minHops
 // Cypher. The label comes from the registry (GraphNode); the relationship
 // is checked against the entity's declared self-edges and the identifier
 // grammar — so the one interpolation point is injection-safe.
-func (r *Repo[T]) walkCypher(rel string, dir walkDir, minHops, maxHops int) (string, error) {
+//
+// Scope-aware traversals: when ctx carries a secondary scope,
+// a WHERE predicate is injected on the matched node (m) so that only
+// shared rows (scope_id IS NULL) and same-scope rows (scope_id = $scope)
+// are returned. The $scope parameter is bound by the adapter's scopeParams
+// at Query time — no explicit param addition is needed here.
+// An unscoped context produces no predicate and sees all nodes in the tenant.
+func (r *Repo[T]) walkCypher(ctx context.Context, rel string, dir walkDir, minHops, maxHops int) (string, error) {
 	if r.graph == nil {
 		return "", fmt.Errorf("fabriq: graph traversal: graph %w (build via fabriq.For)", fabriqerr.ErrStoreNotConfigured)
 	}
@@ -304,11 +312,19 @@ func (r *Repo[T]) walkCypher(rel string, dir walkDir, minHops, maxHops int) (str
 		}
 		hop = fmt.Sprintf("*%d..%d", minHops, maxHops)
 	}
+	// Scope predicate: when a secondary scope is set, filter the returned
+	// node (m) to shared rows (scope_id IS NULL) or same-scope rows.
+	// $scope is injected into params by the adapter's scopeParams at Query
+	// time; no explicit param addition is required here.
+	scopeWhere := ""
+	if _, scoped := tenant.ScopeFromContext(ctx); scoped {
+		scopeWhere = " WHERE (m.scope_id IS NULL OR m.scope_id = $scope)"
+	}
 	switch dir {
 	case dirIn:
-		return fmt.Sprintf("MATCH (n:%[1]s {id: $id})<-[:%[2]s%[3]s]-(m:%[1]s) RETURN m.id ORDER BY m.id", r.node, rel, hop), nil
+		return fmt.Sprintf("MATCH (n:%[1]s {id: $id})<-[:%[2]s%[3]s]-(m:%[1]s)%[4]s RETURN m.id ORDER BY m.id", r.node, rel, hop, scopeWhere), nil
 	default: // dirOut
-		return fmt.Sprintf("MATCH (n:%[1]s {id: $id})-[:%[2]s%[3]s]->(m:%[1]s) RETURN m.id ORDER BY m.id", r.node, rel, hop), nil
+		return fmt.Sprintf("MATCH (n:%[1]s {id: $id})-[:%[2]s%[3]s]->(m:%[1]s)%[4]s RETURN m.id ORDER BY m.id", r.node, rel, hop, scopeWhere), nil
 	}
 }
 
