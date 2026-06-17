@@ -16,7 +16,11 @@ import (
 // the decorator's reads and the invalidator's per-id eviction). EventEvict +
 // keyspace-name generation (NOT entity-keyed), so a sibling-row write never
 // busts it — only an explicit per-id Invalidate does.
+// Precondition: ent.Spec.Cache must be non-nil (call only for entities that opted into caching).
 func EntityRowKeyspace(ent *registry.Entity) cache.Keyspace {
+	if ent.Spec.Cache == nil {
+		panic("cachequery: EntityRowKeyspace called for entity without a CacheSpec: " + ent.Spec.Name)
+	}
 	part := cache.Tenant
 	if ent.Spec.Cache.Scoped {
 		part = cache.TenantScope
