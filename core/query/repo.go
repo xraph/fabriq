@@ -162,11 +162,26 @@ func (r *Repo[T]) Traverse(ctx context.Context, cypher string, params map[string
 	if r.graph == nil {
 		return nil, fmt.Errorf("fabriq: Traverse: graph %w (build via fabriq.For)", fabriqerr.ErrStoreNotConfigured)
 	}
-	var out []*T
-	if err := r.graph.TraverseAndHydrate(ctx, cypher, params, &out); err != nil {
-		return nil, err
+	if r.cache == nil {
+		var out []*T
+		if err := r.graph.TraverseAndHydrate(ctx, cypher, params, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
 	}
-	return out, nil
+	type traverseFP struct {
+		K      string
+		Cypher string
+		Params map[string]any
+	}
+	return r.cachedHydrate(ctx, traverseFP{K: "traverse", Cypher: cypher, Params: params},
+		func(ctx context.Context) ([]string, error) {
+			var ids []string
+			if err := r.graph.Query(ctx, cypher, params, &ids); err != nil {
+				return nil, err
+			}
+			return ids, nil
+		})
 }
 
 // Search runs a full-text query against the entity's declared search
@@ -300,11 +315,29 @@ func (r *Repo[T]) walk(ctx context.Context, id, rel string, dir walkDir, minHops
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
-	if err := r.graph.Query(ctx, cypher, map[string]any{"id": id}, &ids); err != nil {
-		return nil, fmt.Errorf("fabriq: graph walk: %w", err)
+	if r.cache == nil {
+		var ids []string
+		if err := r.graph.Query(ctx, cypher, map[string]any{"id": id}, &ids); err != nil {
+			return nil, fmt.Errorf("fabriq: graph walk: %w", err)
+		}
+		return r.GetMany(ctx, dedupeStrings(ids))
 	}
-	return r.GetMany(ctx, dedupeStrings(ids))
+	type walkFP struct {
+		K   string
+		Rel string
+		Dir walkDir
+		Min int
+		Max int
+		ID  string
+	}
+	return r.cachedHydrate(ctx, walkFP{K: "walk", Rel: rel, Dir: dir, Min: minHops, Max: maxHops, ID: id},
+		func(ctx context.Context) ([]string, error) {
+			var ids []string
+			if err := r.graph.Query(ctx, cypher, map[string]any{"id": id}, &ids); err != nil {
+				return nil, fmt.Errorf("fabriq: graph walk: %w", err)
+			}
+			return dedupeStrings(ids), nil
+		})
 }
 
 // walkCypher validates the relationship and builds the common-subset
