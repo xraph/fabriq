@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/xraph/fabriq/cachequery"
 	"github.com/xraph/fabriq/core/blob"
+	"github.com/xraph/fabriq/core/cache"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/event"
@@ -46,6 +48,10 @@ type Ports struct {
 	// Live is the snapshot/refill oracle for live queries; when set (and a
 	// tailer is configured) the facade exposes LiveQuery.
 	Live LiveReader
+
+	// Cache is the engine cache (nil when not configured); enables result-set
+	// caching at Repo[T] for opted-in entities.
+	Cache cache.Cache
 }
 
 // Fabriq is the facade implementing query.Fabric: the single object
@@ -149,7 +155,13 @@ func For[T any](f *Fabriq) (*query.Repo[T], error) {
 	if err != nil {
 		return nil, err
 	}
-	return repo.WithGraph(f.Graph()).WithSearch(f.Search()).WithVector(f.Vector()), nil
+	repo = repo.WithGraph(f.Graph()).WithSearch(f.Search()).WithVector(f.Vector())
+	if f.ports.Cache != nil {
+		if ent, ok := f.reg.Get(repo.Entity()); ok && ent.Spec.Cache != nil {
+			repo = repo.WithResultCache(f.ports.Cache, cachequery.EntityQueryKeyspace(ent))
+		}
+	}
+	return repo, nil
 }
 
 // Upcasters exposes the registered payload upcaster chain (nil when none)

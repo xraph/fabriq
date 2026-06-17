@@ -38,6 +38,27 @@ func EntityRowKeyspace(ent *registry.Entity) cache.Keyspace {
 	}
 }
 
+// EntityQueryKeyspace is the per-entity RESULT-SET keyspace (id-lists from
+// List/Traverse/Search/etc). Versioned + entity-keyed, so P2's InvalidateEntity
+// busts it on any write to the entity; the TTL bounds cross-entity staleness
+// for projection-backed reads. Precondition: ent.Spec.Cache must be non-nil.
+func EntityQueryKeyspace(ent *registry.Entity) cache.Keyspace {
+	if ent.Spec.Cache == nil {
+		panic("cachequery: EntityQueryKeyspace called for entity without a CacheSpec: " + ent.Spec.Name)
+	}
+	part := cache.Tenant
+	if ent.Spec.Cache.Scoped {
+		part = cache.TenantScope
+	}
+	return cache.Keyspace{
+		Name:      ent.Spec.Name + ":q",
+		Version:   1,
+		Entity:    ent.Spec.Name,
+		Partition: part,
+		Policy:    cache.Policy{Mode: cache.Versioned, TTL: ent.Spec.Cache.TTL},
+	}
+}
+
 // CachedRelational wraps a RelationalQuerier with the row cache.
 type CachedRelational struct {
 	inner query.RelationalQuerier
