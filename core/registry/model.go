@@ -11,14 +11,28 @@ import (
 // dynIdent is the identifier pattern accepted for dynamic table and column names.
 var dynIdent = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 
-// Structural columns every fabriq-managed table must carry. They are what
-// make the fabric invariants enforceable: tenancy is a column (RLS), and
-// optimistic concurrency is a column (version).
+// Structural column names used by fabriq adapters.
+//
+// ColumnID, ColumnTenant, and ColumnVersion are REQUIRED on every
+// fabriq-managed entity table: they make tenancy (RLS) and optimistic
+// concurrency enforceable by construction.
+//
+// ColumnScope is OPTIONAL. When a table carries it, consumers may partition
+// rows within a tenant into a secondary scope (e.g. "project" within a
+// "workspace") by adding the column and applying migrations.ScopeAwareTenantPolicy.
+// Fabriq stamped-write paths detect presence of the column and fill it from
+// the context scope; read paths enforce the soft filter automatically.
 const (
 	ColumnID      = "id"
 	ColumnTenant  = "tenant_id"
 	ColumnVersion = "version"
-	ColumnScope   = "scope_id"
+	// ColumnScope is the optional secondary-scope column. It is nullable: a NULL
+	// scope_id means the row is "shared" and visible in all scoped and unscoped
+	// reads within the tenant. A non-NULL value restricts the row to that scope
+	// (plus unscoped reads). Consumers that want secondary scoping must declare
+	// this column in their entity model (grove tag: `db:"scope_id"`) and apply
+	// migrations.ScopeAwareTenantPolicy to the table.
+	ColumnScope = "scope_id"
 )
 
 // Binding is the compiled relational shape of an entity, derived from its
