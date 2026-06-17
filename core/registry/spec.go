@@ -15,7 +15,7 @@ import "time"
 type ColumnType int
 
 const (
-	ColText  ColumnType = iota
+	ColText ColumnType = iota
 	ColInt
 	ColFloat
 	ColBool
