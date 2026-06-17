@@ -39,3 +39,19 @@ type Change struct {
 	Op       Op // resolved write op: OpCreate / OpUpdate / OpDelete
 	Envelope event.Envelope
 }
+
+// PostCommitHook runs AFTER a command (or batch) transaction commits
+// successfully. It receives every Change the transaction produced. Unlike
+// LifecycleHook it cannot veto or write transactionally — the data is already
+// durable — so it returns nothing and must handle its own errors. The canonical
+// use is cache invalidation: bump generations / evict entries once the write is
+// known-committed (read-your-writes, no before-commit race).
+type PostCommitHook interface {
+	AfterCommit(ctx context.Context, changes []Change)
+}
+
+// PostCommitFunc adapts a function to PostCommitHook.
+type PostCommitFunc func(ctx context.Context, changes []Change)
+
+// AfterCommit implements PostCommitHook.
+func (f PostCommitFunc) AfterCommit(ctx context.Context, changes []Change) { f(ctx, changes) }
