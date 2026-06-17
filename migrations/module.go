@@ -46,6 +46,7 @@ func Group() *migrate.Group {
 			migration0010LiveSubscriptions,
 			migration0011PostGIS,
 			migration0012Scope,
+			migration0013CRDTScope,
 		)
 	})
 	return group
