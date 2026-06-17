@@ -7,15 +7,19 @@
 package fabriqtest
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/event"
@@ -55,6 +59,7 @@ type World struct {
 	Spatial     *FakeSpatial
 	Docs        *FakeDocumentStore
 	Projections *FakeProjectionState
+	Blob        *FakeBlob
 }
 
 // NewWorld builds the linked fake set for a registry.
@@ -72,6 +77,7 @@ func NewWorld(reg *registry.Registry) *World {
 		Spatial:     &FakeSpatial{data: map[string]map[string]map[string]geoEntry{}},
 		Docs:        &FakeDocumentStore{},
 		Projections: &FakeProjectionState{applied: map[string]int64{}},
+		Blob:        NewFakeBlob(),
 	}
 }
 
@@ -1043,4 +1049,130 @@ func haversineM(lat1, lon1, lat2, lon2 float64) float64 {
 	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
 		math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
 	return R * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
+// --- FakeBlob (blob.Store) --------------------------------------------------
+
+// FakeBlob is an in-memory, tenant-scoped blob.Store for tests. It implements
+// only the core Store surface — no capability sub-interfaces — so Caps reports
+// all false and capability-gated conformance cases skip.
+type FakeBlob struct {
+	mu   sync.RWMutex
+	data map[string]map[string]fakeBlobObj // tenant -> key -> object
+}
+
+type fakeBlobObj struct {
+	body        []byte
+	contentType string
+	modifiedAt  time.Time
+}
+
+// NewFakeBlob creates an empty in-memory blob store.
+func NewFakeBlob() *FakeBlob {
+	return &FakeBlob{data: map[string]map[string]fakeBlobObj{}}
+}
+
+var _ blob.Store = (*FakeBlob)(nil)
+
+func (f *FakeBlob) Put(ctx context.Context, key string, r io.Reader, o blob.PutOpts) (blob.ObjectInfo, error) {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return blob.ObjectInfo{}, err
+	}
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return blob.ObjectInfo{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.data[tid] == nil {
+		f.data[tid] = map[string]fakeBlobObj{}
+	}
+	obj := fakeBlobObj{body: body, contentType: o.ContentType, modifiedAt: time.Unix(0, 0).UTC()}
+	f.data[tid][key] = obj
+	return f.info(key, obj), nil
+}
+
+func (f *FakeBlob) Get(ctx context.Context, key string) (io.ReadCloser, blob.ObjectInfo, error) {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return nil, blob.ObjectInfo{}, err
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	obj, ok := f.data[tid][key]
+	if !ok {
+		return nil, blob.ObjectInfo{}, fabriqerr.ErrNotFound
+	}
+	return io.NopCloser(bytes.NewReader(append([]byte(nil), obj.body...))), f.info(key, obj), nil
+}
+
+func (f *FakeBlob) Head(ctx context.Context, key string) (blob.ObjectInfo, error) {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return blob.ObjectInfo{}, err
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	obj, ok := f.data[tid][key]
+	if !ok {
+		return blob.ObjectInfo{}, fabriqerr.ErrNotFound
+	}
+	return f.info(key, obj), nil
+}
+
+func (f *FakeBlob) Delete(ctx context.Context, key string) error {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.data[tid], key)
+	return nil
+}
+
+func (f *FakeBlob) List(ctx context.Context, prefix string) ([]blob.ObjectInfo, error) {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	var out []blob.ObjectInfo
+	for k, obj := range f.data[tid] {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, f.info(k, obj))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
+}
+
+func (f *FakeBlob) Copy(ctx context.Context, srcKey, dstKey string) (blob.ObjectInfo, error) {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return blob.ObjectInfo{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	obj, ok := f.data[tid][srcKey]
+	if !ok {
+		return blob.ObjectInfo{}, fabriqerr.ErrNotFound
+	}
+	cp := fakeBlobObj{body: append([]byte(nil), obj.body...), contentType: obj.contentType, modifiedAt: obj.modifiedAt}
+	f.data[tid][dstKey] = cp
+	return f.info(dstKey, cp), nil
+}
+
+func (f *FakeBlob) Capabilities() blob.Caps { return blob.Caps{} }
+
+func (f *FakeBlob) info(key string, obj fakeBlobObj) blob.ObjectInfo {
+	return blob.ObjectInfo{
+		Key:         key,
+		Size:        int64(len(obj.body)),
+		Checksum:    "",
+		ContentType: obj.contentType,
+		ModifiedAt:  obj.modifiedAt,
+	}
 }
