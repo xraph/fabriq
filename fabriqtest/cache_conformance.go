@@ -219,8 +219,10 @@ func RunCacheConformance(t *testing.T, newCache func(t *testing.T) cache.Cache) 
 
 		tctx := mkTenant(t, "acme")
 		sctx := mkScope(t, "acme", "A")
+		sctxB := mkScope(t, "acme", "B")
 		_ = c.Set(tctx, queryKS, "fp1", []byte("q"))
 		_ = c.Set(sctx, entityKS, "id1", []byte("row"))
+		_ = c.Set(sctxB, entityKS, "id2", []byte("rowB"))
 		_ = c.Set(tctx, otherKS, "fp2", []byte("other"))
 
 		// A write to "asset" in tenant acme, scope A.
@@ -236,6 +238,9 @@ func RunCacheConformance(t *testing.T, newCache func(t *testing.T) cache.Cache) 
 		}
 		if _, ok, _ := c.Get(tctx, otherKS, "fp2"); !ok {
 			t.Fatal("unrelated entity 'site' keyspace must survive")
+		}
+		if _, ok, _ := c.Get(sctxB, entityKS, "id2"); !ok {
+			t.Fatal("a sibling scope (B) entry must survive invalidation scoped to A")
 		}
 	})
 
