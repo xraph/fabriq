@@ -5,10 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/xraph/grove"
+
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
-	"github.com/xraph/grove"
 )
 
 // repoModel is a grove-tagged struct used to register a self-referential

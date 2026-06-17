@@ -103,13 +103,28 @@ func (r *Repo[T]) GetMany(ctx context.Context, ids []string) ([]*T, error) {
 	return out, nil
 }
 
-// List runs a structured query, typed.
+// List runs a structured query, typed. When result-set caching is enabled for
+// the entity, the ordered id-list is cached (Versioned by the entity
+// generation, TTL backstop) and hydrated through GetMany.
 func (r *Repo[T]) List(ctx context.Context, q ListQuery) ([]*T, error) {
-	var out []*T
-	if err := r.rel.List(ctx, r.entity, q, &out); err != nil {
-		return nil, err
+	if r.cache == nil {
+		var out []*T
+		if err := r.rel.List(ctx, r.entity, q, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
 	}
-	return out, nil
+	type listFP struct {
+		K string
+		Q ListQuery
+	}
+	return r.cachedHydrate(ctx, listFP{K: "list", Q: q}, func(ctx context.Context) ([]string, error) {
+		var rows []*T
+		if err := r.rel.List(ctx, r.entity, q, &rows); err != nil {
+			return nil, err
+		}
+		return extractIDs(rows)
+	})
 }
 
 // One fetches the single row matching the given conditions (ANDed) — the
