@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"sort"
 	"testing"
 
 	"github.com/xraph/fabriq/core/blob"
@@ -79,6 +80,9 @@ func BlobCases() []BlobCase {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// List ordering is not part of the blob.Store contract; sort so the
+				// case asserts prefix membership, not an unspecified order.
+				sort.Slice(got, func(i, j int) bool { return got[i].Key < got[j].Key })
 				if len(got) != 2 || got[0].Key != "p/1" || got[1].Key != "p/2" {
 					t.Fatalf("list under p/ = %+v, want p/1,p/2", got)
 				}
