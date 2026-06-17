@@ -7,11 +7,13 @@ import (
 	"sync"
 	"time"
 
+	fcache "github.com/xraph/fabriq/adapters/cache"
 	"github.com/xraph/fabriq/adapters/elastic"
 	"github.com/xraph/fabriq/adapters/falkordb"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
 	"github.com/xraph/fabriq/adapters/shard"
+	corecache "github.com/xraph/fabriq/core/cache"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/registry"
@@ -117,6 +119,18 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		// With a transport available, document updates fan out live. The
 		// document plane stays on the primary shard (ADR 0007 step 2).
 		ports.Documents = &syncingDocStore{DocStore: pg.Documents(), pub: rd, reg: reg}
+
+		ca, cerr := fcache.Open(ctx, fcache.Config{
+			Addr:     cfg.Redis.Addr,
+			DB:       cfg.Redis.DB,
+			Username: cfg.Redis.Username,
+			Password: cfg.Redis.Password,
+		})
+		if cerr != nil {
+			closeDialed()
+			return nil, nil, fmt.Errorf("fabriq: open cache: %w", cerr)
+		}
+		stores.Cache = ca
 	}
 
 	if cfg.FalkorDB.Addr != "" {
@@ -168,6 +182,8 @@ type Stores struct {
 	Redis    *redis.Adapter
 	Falkor   *falkordb.Adapter
 	Elastic  *elastic.Adapter
+	// Cache is the engine cache (nil when Redis is not configured).
+	Cache corecache.Cache
 	// Shards is the tenant -> source-of-truth routing table backing the
 	// facade's relational/command/vector/timeseries/spatial ports (ADR 0007).
 	Shards *shard.Set
@@ -191,6 +207,11 @@ func (s *Stores) Close() error {
 	var firstErr error
 	if s.Falkor != nil {
 		if err := s.Falkor.Close(); err != nil {
+			firstErr = err
+		}
+	}
+	if s.Cache != nil {
+		if err := s.Cache.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
