@@ -217,11 +217,24 @@ func (r *Repo[T]) SearchWith(ctx context.Context, req SearchRequest) ([]*T, erro
 		Entity: r.entity, Query: req.Query, Filter: req.Filter,
 		Sort: req.Sort, Limit: req.Limit, Offset: req.Offset,
 	}
-	var hits []map[string]any
-	if err := r.search.Search(ctx, q, &hits); err != nil {
-		return nil, err
+	if r.cache == nil {
+		var hits []map[string]any
+		if err := r.search.Search(ctx, q, &hits); err != nil {
+			return nil, err
+		}
+		return r.GetMany(ctx, idsFromHits(hits))
 	}
-	return r.GetMany(ctx, idsFromHits(hits))
+	type searchFP struct {
+		K string
+		Q SearchQuery
+	}
+	return r.cachedHydrate(ctx, searchFP{K: "search", Q: q}, func(ctx context.Context) ([]string, error) {
+		var hits []map[string]any
+		if err := r.search.Search(ctx, q, &hits); err != nil {
+			return nil, err
+		}
+		return idsFromHits(hits), nil
+	})
 }
 
 // Similar runs a vector nearest-neighbour search and hydrates the matched
@@ -231,15 +244,30 @@ func (r *Repo[T]) Similar(ctx context.Context, embedding []float32, k int) ([]*T
 	if r.vector == nil {
 		return nil, fmt.Errorf("fabriq: Similar: vector %w (build via fabriq.For)", fabriqerr.ErrStoreNotConfigured)
 	}
-	var matches []VectorMatch
-	if err := r.vector.Similar(ctx, VectorQuery{Entity: r.entity, Embedding: embedding, K: k}, &matches); err != nil {
-		return nil, err
+	loadIDs := func(ctx context.Context) ([]string, error) {
+		var matches []VectorMatch
+		if err := r.vector.Similar(ctx, VectorQuery{Entity: r.entity, Embedding: embedding, K: k}, &matches); err != nil {
+			return nil, err
+		}
+		ids := make([]string, 0, len(matches))
+		for _, m := range matches {
+			ids = append(ids, m.ID)
+		}
+		return ids, nil
 	}
-	ids := make([]string, 0, len(matches))
-	for _, m := range matches {
-		ids = append(ids, m.ID)
+	if r.cache == nil {
+		ids, err := loadIDs(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return r.GetMany(ctx, ids)
 	}
-	return r.GetMany(ctx, ids)
+	type similarFP struct {
+		K   string
+		Emb []float32
+		N   int
+	}
+	return r.cachedHydrate(ctx, similarFP{K: "similar", Emb: embedding, N: k}, loadIDs)
 }
 
 // idsFromHits pulls the id column out of search documents, preserving
