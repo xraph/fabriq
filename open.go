@@ -13,6 +13,7 @@ import (
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
 	"github.com/xraph/fabriq/adapters/shard"
+	"github.com/xraph/fabriq/cachequery"
 	corecache "github.com/xraph/fabriq/core/cache"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/event"
@@ -132,6 +133,8 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			return nil, nil, fmt.Errorf("fabriq: open cache: %w", cerr)
 		}
 		stores.Cache = ca
+		// Route relational reads through the opt-in row cache.
+		ports.Relational = cachequery.New(ports.Relational, ca, reg)
 		// Bust cached reads of any entity a committed write touches.
 		allOpts = append(allOpts, func(s *settings) {
 			s.executorOptions = append(s.executorOptions,
