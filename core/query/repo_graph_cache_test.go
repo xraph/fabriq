@@ -173,3 +173,43 @@ func TestWalk_CachedIDList(t *testing.T) {
 		t.Fatalf("second Out should hit cache: graph queries=%d (want 1)", g.queries)
 	}
 }
+
+// TestWalk_NilCache: with no cache wired, the non-cached walk path runs
+// Query directly — graph is queried on every Out call (no caching).
+func TestWalk_NilCache(t *testing.T) {
+	rel := &relStubWalk{rows: map[string]graphWalkRow{"b1": {ID: "b1"}, "b2": {ID: "b2"}}}
+	g := &graphStub{ids: []string{"b1", "b2"}}
+	reg := registry.New()
+	if err := reg.Register(registry.EntitySpec{
+		Name:      "gwr",
+		Kind:      registry.KindAggregate,
+		Model:     graphWalkRow{},
+		GraphNode: "GWR",
+		Edges: []registry.EdgeSpec{
+			{Field: "id", Rel: "LINKED_TO", Target: "gwr"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := For[graphWalkRow](reg, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo = repo.WithGraph(g)
+	ctx, _ := tenant.WithTenant(context.Background(), "acme")
+
+	// No cache: first Out queries the graph.
+	if _, err := repo.Out(ctx, "root", "LINKED_TO"); err != nil {
+		t.Fatal(err)
+	}
+	if g.queries != 1 {
+		t.Fatalf("first Out: graph queries=%d (want 1)", g.queries)
+	}
+	// Second identical Out also queries the graph (no caching on the nil path).
+	if _, err := repo.Out(ctx, "root", "LINKED_TO"); err != nil {
+		t.Fatal(err)
+	}
+	if g.queries != 2 {
+		t.Fatalf("second Out should re-query (nil cache): graph queries=%d (want 2)", g.queries)
+	}
+}
