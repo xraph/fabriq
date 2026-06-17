@@ -10,6 +10,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/projection"
@@ -31,6 +32,7 @@ type Fabric interface {
 	Vector() VectorQuerier
 	Spatial() SpatialQuerier
 	Document() document.Store
+	Blob() blob.Store
 
 	// Subscribe resolves the scope to a channel server-side (authz hook
 	// included) and returns a conflated delta stream.
