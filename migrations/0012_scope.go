@@ -78,10 +78,25 @@ var migration0012Scope = &migrate.Migration{
 		return nil
 	},
 	Down: func(ctx context.Context, exec migrate.Executor) error {
-		var stmts []string
 		for _, t := range scopeTables {
-			stmts = append(stmts, fmt.Sprintf(`ALTER TABLE IF EXISTS %s DROP COLUMN IF EXISTS scope_id`, t))
+			exists, err := tableExists(ctx, exec, t)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				continue
+			}
+			stmts := []string{
+				fmt.Sprintf(`DROP POLICY IF EXISTS tenant_isolation ON %s`, t),
+				fmt.Sprintf(`CREATE POLICY tenant_isolation ON %s
+					USING ( tenant_id = current_setting('app.tenant_id', true) )
+					WITH CHECK ( tenant_id = current_setting('app.tenant_id', true) )`, t),
+				fmt.Sprintf(`ALTER TABLE IF EXISTS %s DROP COLUMN IF EXISTS scope_id`, t),
+			}
+			if err := execAll(ctx, exec, stmts); err != nil {
+				return err
+			}
 		}
-		return execAll(ctx, exec, stmts)
+		return nil
 	},
 }
