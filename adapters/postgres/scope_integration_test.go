@@ -9,13 +9,11 @@ package postgres_test
 // migrations/0012_scope.go applied on top of the standard tenant_isolation
 // policy created by EnsureDynamic.
 //
-// Write-path finding: Vector/Spatial port Upserts do NOT stamp scope_id — the
-// INSERT for fabriq_embeddings / fabriq_geometries does not include the
-// scope_id column, so every Upsert stores NULL regardless of context scope.
-// The scope_id SET LOCAL in inTenantTx is present only for read-side RLS
-// filtering. This is a port-level gap: scoped Vector/Spatial writes always
-// produce shared (NULL-scope) rows. The test therefore uses the relational
-// command path, which is the only path that stamps scope_id via stampedValues.
+// TestScope_VectorScopeFilter and TestScope_SpatialScopeFilter prove that the
+// Vector/Spatial port Upsert methods now stamp scope_id (via NULLIF($N,'') from
+// tenant.ScopeOrEmpty) so fabriq_embeddings / fabriq_geometries rows are
+// correctly partitioned by scope. Migration 0012 applied the ScopeAwareTenantPolicy
+// to those tables; the write-side fix completes the loop.
 
 import (
 	"context"
@@ -330,4 +328,265 @@ func TestScope_ScopeIDStampedByCommandPath(t *testing.T) {
 	if scopeShared != nil {
 		t.Errorf("unscoped row %s: scope_id = %q, want NULL", idShared, *scopeShared)
 	}
+}
+
+// newPortScopeHarness boots a container, runs all fabriq migrations (which add
+// scope_id to fabriq_embeddings and fabriq_geometries via 0012), and returns
+// an app-role adapter so RLS actually applies. The caller must skip the test if
+// the relevant extension table is absent.
+func newPortScopeHarness(t *testing.T) *postgres.Adapter {
+	t.Helper()
+	ctx := context.Background()
+
+	superDSN := fabriqtest.StartPostgres(t)
+
+	reg := registry.New()
+	owner, err := postgres.Open(ctx, superDSN, reg)
+	if err != nil {
+		t.Fatalf("postgres.Open (owner): %v", err)
+	}
+	orch, err := migrations.NewOrchestrator(owner.Driver())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_ = owner.Close()
+
+	appDSN := fabriqtest.CreateAppRole(t, superDSN)
+	a, err := postgres.Open(ctx, appDSN, reg)
+	if err != nil {
+		t.Fatalf("postgres.Open (app role): %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	return a
+}
+
+// emb768 builds a 768-dimensional embedding with only the first two components
+// set. This matches the column definition in migration 0006 (vector(768)).
+func emb768(x, y float32) []float32 {
+	v := make([]float32, 768)
+	v[0], v[1] = x, y
+	return v
+}
+
+// vectorIDs runs a Similar query and returns the result IDs in a set.
+func vectorIDs(t *testing.T, a *postgres.Adapter, ctx context.Context, entity string, embedding []float32, k int) map[string]bool {
+	t.Helper()
+	var matches []query.VectorMatch
+	if err := a.Similar(ctx, query.VectorQuery{Entity: entity, Embedding: embedding, K: k}, &matches); err != nil {
+		t.Fatalf("Similar: %v", err)
+	}
+	out := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		out[m.ID] = true
+	}
+	return out
+}
+
+// spatialIDs runs a Within query and returns the result IDs in a set.
+func spatialIDs(t *testing.T, s *postgres.SpatialAdapter, ctx context.Context, entity string, center query.Geometry, radiusM float64, k int) map[string]bool {
+	t.Helper()
+	var matches []query.SpatialMatch
+	if err := s.Within(ctx, query.SpatialQuery{Entity: entity, Center: center, RadiusM: radiusM, K: k}, &matches); err != nil {
+		t.Fatalf("Within: %v", err)
+	}
+	out := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		out[m.ID] = true
+	}
+	return out
+}
+
+// TestScope_VectorScopeFilter proves that Vector.Upsert now stamps scope_id so
+// the RLS policy on fabriq_embeddings correctly partitions rows by scope.
+// Scoped Similar returns the caller's scope rows plus shared (NULL-scope) rows
+// but not rows belonging to other scopes. Unscoped Similar returns all rows
+// within the tenant.
+func TestScope_VectorScopeFilter(t *testing.T) {
+	a := newPortScopeHarness(t)
+	ctx := context.Background()
+
+	// Check that fabriq_embeddings exists (pgvector may be absent in the image).
+	// Use a raw query on the owner path (which bypasses RLS) — we need a superuser
+	// check, but since newPortScopeHarness closed the owner we use information_schema
+	// through the app-role connection which can still read it.
+	var tableExists bool
+	row := a.Driver().QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'fabriq_embeddings'
+		)`)
+	if err := row.Scan(&tableExists); err != nil {
+		t.Fatalf("check fabriq_embeddings: %v", err)
+	}
+	if !tableExists {
+		t.Skip("fabriq_embeddings not present: pgvector unavailable in this Postgres image")
+	}
+
+	ws1 := scopedCtx(t, "ws_1", "")
+	ws1A := scopedCtx(t, "ws_1", "proj_A")
+	ws1B := scopedCtx(t, "ws_1", "proj_B")
+
+	// Use distinguishable embeddings so the cosine distance ordering is
+	// deterministic and Similar with K=10 returns all three ws_1 rows.
+	embA := emb768(1, 0)      // proj_A scope
+	embB := emb768(0, 1)      // proj_B scope
+	embShared := emb768(1, 1) // unscoped (shared)
+
+	if err := a.Upsert(ws1A, "sensor", "emb_A", embA, nil); err != nil {
+		t.Fatalf("Upsert emb_A (proj_A): %v", err)
+	}
+	if err := a.Upsert(ws1B, "sensor", "emb_B", embB, nil); err != nil {
+		t.Fatalf("Upsert emb_B (proj_B): %v", err)
+	}
+	if err := a.Upsert(ws1, "sensor", "emb_shared", embShared, nil); err != nil {
+		t.Fatalf("Upsert emb_shared (unscoped): %v", err)
+	}
+
+	// Scoped proj_A: must see emb_A (proj_A) + emb_shared (NULL scope).
+	// Must NOT see emb_B (proj_B).
+	t.Run("scoped_projA", func(t *testing.T) {
+		got := vectorIDs(t, a, ws1A, "sensor", embA, 10)
+		if !got["emb_A"] {
+			t.Errorf("emb_A missing from scoped(proj_A) Similar; got %v", got)
+		}
+		if !got["emb_shared"] {
+			t.Errorf("emb_shared (NULL-scope) missing from scoped(proj_A) Similar; got %v", got)
+		}
+		if got["emb_B"] {
+			t.Errorf("emb_B (proj_B) leaked into scoped(proj_A) Similar; got %v", got)
+		}
+		if len(got) != 2 {
+			t.Errorf("scoped(proj_A) Similar returned %d rows, want 2: %v", len(got), got)
+		}
+	})
+
+	// Scoped proj_B: must see emb_B + emb_shared. Must NOT see emb_A.
+	t.Run("scoped_projB", func(t *testing.T) {
+		got := vectorIDs(t, a, ws1B, "sensor", embB, 10)
+		if !got["emb_B"] {
+			t.Errorf("emb_B missing from scoped(proj_B) Similar; got %v", got)
+		}
+		if !got["emb_shared"] {
+			t.Errorf("emb_shared missing from scoped(proj_B) Similar; got %v", got)
+		}
+		if got["emb_A"] {
+			t.Errorf("emb_A (proj_A) leaked into scoped(proj_B) Similar; got %v", got)
+		}
+		if len(got) != 2 {
+			t.Errorf("scoped(proj_B) Similar returned %d rows, want 2: %v", len(got), got)
+		}
+	})
+
+	// Unscoped (ws_1): must see all three rows.
+	t.Run("unscoped_ws1", func(t *testing.T) {
+		got := vectorIDs(t, a, ws1, "sensor", emb768(1, 1), 10)
+		if !got["emb_A"] {
+			t.Errorf("emb_A missing from unscoped ws_1 Similar; got %v", got)
+		}
+		if !got["emb_B"] {
+			t.Errorf("emb_B missing from unscoped ws_1 Similar; got %v", got)
+		}
+		if !got["emb_shared"] {
+			t.Errorf("emb_shared missing from unscoped ws_1 Similar; got %v", got)
+		}
+		if len(got) != 3 {
+			t.Errorf("unscoped ws_1 Similar returned %d rows, want 3: %v", len(got), got)
+		}
+	})
+}
+
+// TestScope_SpatialScopeFilter proves that Spatial.Upsert now stamps scope_id
+// so the RLS policy on fabriq_geometries correctly partitions rows by scope.
+// Scoped Within returns the caller's scope rows plus shared (NULL-scope) rows
+// but not rows belonging to other scopes.
+func TestScope_SpatialScopeFilter(t *testing.T) {
+	a := newPortScopeHarness(t)
+	ctx := context.Background()
+
+	// Check that fabriq_geometries exists (PostGIS may be absent in the image).
+	var tableExists bool
+	row := a.Driver().QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'fabriq_geometries'
+		)`)
+	if err := row.Scan(&tableExists); err != nil {
+		t.Fatalf("check fabriq_geometries: %v", err)
+	}
+	if !tableExists {
+		t.Skip("fabriq_geometries not present: PostGIS unavailable in this Postgres image")
+	}
+
+	s := postgres.NewSpatialAdapter(a)
+
+	ws1 := scopedCtx(t, "ws_1", "")
+	ws1A := scopedCtx(t, "ws_1", "proj_A")
+	ws1B := scopedCtx(t, "ws_1", "proj_B")
+
+	// Three points all within 100 m of the origin so Within with radius 100 m
+	// returns all that RLS permits. SRID 0 = planar (units are coordinate units).
+	origin := query.Geometry{WKT: "POINT (0 0)", SRID: 0}
+	if err := s.Upsert(ws1A, "site", "geo_A", query.Geometry{WKT: "POINT (1 0)", SRID: 0}, nil); err != nil {
+		t.Fatalf("Upsert geo_A (proj_A): %v", err)
+	}
+	if err := s.Upsert(ws1B, "site", "geo_B", query.Geometry{WKT: "POINT (0 1)", SRID: 0}, nil); err != nil {
+		t.Fatalf("Upsert geo_B (proj_B): %v", err)
+	}
+	if err := s.Upsert(ws1, "site", "geo_shared", query.Geometry{WKT: "POINT (0 0)", SRID: 0}, nil); err != nil {
+		t.Fatalf("Upsert geo_shared (unscoped): %v", err)
+	}
+
+	// Scoped proj_A: must see geo_A + geo_shared. Must NOT see geo_B.
+	t.Run("scoped_projA", func(t *testing.T) {
+		got := spatialIDs(t, s, ws1A, "site", origin, 100, 10)
+		if !got["geo_A"] {
+			t.Errorf("geo_A missing from scoped(proj_A) Within; got %v", got)
+		}
+		if !got["geo_shared"] {
+			t.Errorf("geo_shared (NULL-scope) missing from scoped(proj_A) Within; got %v", got)
+		}
+		if got["geo_B"] {
+			t.Errorf("geo_B (proj_B) leaked into scoped(proj_A) Within; got %v", got)
+		}
+		if len(got) != 2 {
+			t.Errorf("scoped(proj_A) Within returned %d rows, want 2: %v", len(got), got)
+		}
+	})
+
+	// Scoped proj_B: must see geo_B + geo_shared. Must NOT see geo_A.
+	t.Run("scoped_projB", func(t *testing.T) {
+		got := spatialIDs(t, s, ws1B, "site", origin, 100, 10)
+		if !got["geo_B"] {
+			t.Errorf("geo_B missing from scoped(proj_B) Within; got %v", got)
+		}
+		if !got["geo_shared"] {
+			t.Errorf("geo_shared missing from scoped(proj_B) Within; got %v", got)
+		}
+		if got["geo_A"] {
+			t.Errorf("geo_A (proj_A) leaked into scoped(proj_B) Within; got %v", got)
+		}
+		if len(got) != 2 {
+			t.Errorf("scoped(proj_B) Within returned %d rows, want 2: %v", len(got), got)
+		}
+	})
+
+	// Unscoped (ws_1): must see all three rows.
+	t.Run("unscoped_ws1", func(t *testing.T) {
+		got := spatialIDs(t, s, ws1, "site", origin, 100, 10)
+		if !got["geo_A"] {
+			t.Errorf("geo_A missing from unscoped ws_1 Within; got %v", got)
+		}
+		if !got["geo_B"] {
+			t.Errorf("geo_B missing from unscoped ws_1 Within; got %v", got)
+		}
+		if !got["geo_shared"] {
+			t.Errorf("geo_shared missing from unscoped ws_1 Within; got %v", got)
+		}
+		if len(got) != 3 {
+			t.Errorf("unscoped ws_1 Within returned %d rows, want 3: %v", len(got), got)
+		}
+	})
 }

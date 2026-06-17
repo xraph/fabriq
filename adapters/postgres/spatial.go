@@ -41,11 +41,11 @@ func (s *SpatialAdapter) Upsert(ctx context.Context, entity, id string, geom que
 	}
 	return s.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
-		const sql = `INSERT INTO fabriq_geometries (tenant_id, entity, id, geom, srid, meta)
-			VALUES ($1, $2, $3, ST_GeomFromText($4, $5), $5, $6)
+		const sql = `INSERT INTO fabriq_geometries (tenant_id, entity, id, geom, srid, meta, scope_id)
+			VALUES ($1, $2, $3, ST_GeomFromText($4, $5), $5, $6, NULLIF($7, ''))
 			ON CONFLICT (tenant_id, entity, id)
-			DO UPDATE SET geom = EXCLUDED.geom, srid = EXCLUDED.srid, meta = EXCLUDED.meta`
-		if _, err := tx.NewRaw(sql, tid, entity, id, geom.WKT, geom.SRID, metaJSON).Exec(ctx); err != nil {
+			DO UPDATE SET geom = EXCLUDED.geom, srid = EXCLUDED.srid, meta = EXCLUDED.meta, scope_id = EXCLUDED.scope_id`
+		if _, err := tx.NewRaw(sql, tid, entity, id, geom.WKT, geom.SRID, metaJSON, tenant.ScopeOrEmpty(ctx)).Exec(ctx); err != nil {
 			return fmt.Errorf("fabriq: upsert geometry %s/%s: %w", entity, id, err)
 		}
 		return nil
