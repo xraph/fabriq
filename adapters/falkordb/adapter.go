@@ -83,6 +83,14 @@ func (a *Adapter) Close() error { return a.client.Close() }
 // Query implements query.GraphQuerier: a read-only openCypher query
 // against the tenant's live graph. into may be *[]string (single-column
 // traversals) or *[]map[string]any (column-keyed rows).
+//
+// Scope-aware reads: FalkorDB has no RLS; scope is a node property. This
+// adapter operates on raw caller-supplied Cypher, so it CANNOT auto-inject
+// a scope predicate. Instead, when a scope is present on ctx, it is injected
+// into params as "$scope" so callers can reference it directly in their
+// Cypher: WHERE n.scope_id IS NULL OR n.scope_id = $scope. An unscoped
+// context omits "scope" from params (absent key = see all within tenant).
+// The graph consumer (kgkit) adds the predicate in its generated traversals.
 func (a *Adapter) Query(ctx context.Context, cypher string, params map[string]any, into any) error {
 	tid, err := tenant.Require(ctx)
 	if err != nil {
@@ -92,11 +100,29 @@ func (a *Adapter) Query(ctx context.Context, cypher string, params map[string]an
 	if err != nil {
 		return err
 	}
+	params = scopeParams(ctx, params)
 	cols, rows, err := a.run(ctx, "GRAPH.RO_QUERY", graph, cypher, params)
 	if err != nil {
 		return err
 	}
 	return scanRows(cols, rows, into)
+}
+
+// scopeParams returns a copy of params with "scope" injected when the context
+// carries a secondary scope. The caller's Cypher can then use $scope as a
+// predicate: WHERE n.scope_id IS NULL OR n.scope_id = $scope. When the
+// context is unscoped the original params map is returned unchanged.
+func scopeParams(ctx context.Context, params map[string]any) map[string]any {
+	scope, ok := tenant.ScopeFromContext(ctx)
+	if !ok {
+		return params
+	}
+	merged := make(map[string]any, len(params)+1)
+	for k, v := range params {
+		merged[k] = v
+	}
+	merged["scope"] = scope
+	return merged
 }
 
 // TraverseAndHydrate implements query.GraphQuerier: traversal returns ids,
