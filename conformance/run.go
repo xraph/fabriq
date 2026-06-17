@@ -14,6 +14,7 @@ import (
 func RunAll(t *testing.T, b Backend) {
 	t.Helper()
 	RunRelational(t, b)
+	RunBlob(t, b)
 }
 
 // seedAssets creates each asset via the command path and returns a map from
