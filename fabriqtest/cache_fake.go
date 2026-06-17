@@ -170,10 +170,7 @@ func (c *FakeCache) InvalidateKeyspace(ctx context.Context, ks cache.Keyspace) e
 // InvalidateEntity bumps the entity generation for Global + Tenant + (if
 // present) TenantScope partitions, mirroring the adapter.
 func (c *FakeCache) InvalidateEntity(ctx context.Context, entity string) error {
-	parts, err := entityPartitions(ctx)
-	if err != nil {
-		return err
-	}
+	parts := entityPartitions(ctx)
 	c.mu.Lock()
 	for _, part := range parts {
 		c.gen["e|"+entity+"|"+part]++
@@ -187,20 +184,18 @@ func (c *FakeCache) Close() error { return nil }
 // entityPartitions returns the partition segments a write under ctx must bump:
 // always Global; Tenant when a tenant is present; TenantScope when a scope is
 // also present. Segments match cache.Partition.Resolve output.
-//
-//nolint:unparam // error result is by design: reserved for adapter consistency (Task 2)
-func entityPartitions(ctx context.Context) ([]string, error) {
+func entityPartitions(ctx context.Context) []string {
 	parts := []string{"g"}
 	tid, err := tenant.FromContext(ctx)
 	if err != nil {
 		// No tenant: only the global tier can be affected.
-		return parts, nil
+		return parts
 	}
 	parts = append(parts, "t:"+tid)
 	if scope := tenant.ScopeOrEmpty(ctx); scope != "" {
 		parts = append(parts, "t:"+tid+":s:"+scope)
 	}
-	return parts, nil
+	return parts
 }
 
 var _ cache.Cache = (*FakeCache)(nil)
