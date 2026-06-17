@@ -19,6 +19,8 @@ func TestResultSetCacheListWarmAndInvalidate(t *testing.T) {
 	reg, appDSN, redisAddr := setupCacheE2E(t)
 	if ent, ok := reg.Get("asset"); ok {
 		ent.Spec.Cache = &registry.CacheSpec{TTL: time.Minute}
+	} else {
+		t.Fatal("asset entity not registered in setupCacheE2E registry")
 	}
 	f, stores, err := fabriq.Open(context.Background(), reg, fabriq.Config{
 		Postgres: fabriq.PostgresConfig{DSN: appDSN},
