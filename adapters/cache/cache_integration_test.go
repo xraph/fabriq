@@ -42,11 +42,19 @@ func TestRedisCacheTTLExpires(t *testing.T) {
 	if err := a.Set(ctx, ks, "k", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := a.Get(ctx, ks, "k"); !ok {
+	_, ok, err := a.Get(ctx, ks, "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
 		t.Fatal("expected immediate hit")
 	}
 	time.Sleep(1500 * time.Millisecond)
-	if _, ok, _ := a.Get(ctx, ks, "k"); ok {
+	_, ok, err = a.Get(ctx, ks, "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
 		t.Fatal("expected expiry after TTL")
 	}
 }
