@@ -76,12 +76,16 @@ func (d *DocStore) ApplyUpdateWithSeq(ctx context.Context, docID string, update 
 	if err != nil {
 		return 0, err
 	}
+	// scope stamps the optional secondary scope on the update + bookkeeping
+	// rows. NULLIF maps an unscoped write ("") to a true SQL NULL — the shared
+	// sentinel the scope-aware RLS predicate treats as visible to every scope.
+	scope := tenant.ScopeOrEmpty(ctx)
 	var seq int64
 	err = d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		var seqs []updateRow
 		if insErr := tx.NewRaw(
-			`INSERT INTO fabriq_crdt_updates (doc_id, tenant_id, update_data) VALUES ($1, $2, $3) RETURNING seq, update_data`,
-			docID, tid, update).Scan(ctx, &seqs); insErr != nil {
+			`INSERT INTO fabriq_crdt_updates (doc_id, tenant_id, update_data, scope_id) VALUES ($1, $2, $3, NULLIF($4, '')) RETURNING seq, update_data`,
+			docID, tid, update, scope).Scan(ctx, &seqs); insErr != nil {
 			return insErr
 		}
 		if len(seqs) == 1 {
@@ -89,10 +93,12 @@ func (d *DocStore) ApplyUpdateWithSeq(ctx context.Context, docID string, update 
 		}
 		// The bookkeeping row carries the high-water mark so the
 		// worker-plane materializer never has to peek into the RLS'd log.
-		_, upErr := tx.NewRaw(`INSERT INTO fabriq_crdt_docs (doc_id, tenant_id, entity, last_seq)
-			VALUES ($1, $2, $3, $4)
+		// scope_id is stamped on first write (the doc's canonical scope) and
+		// left untouched on conflict so later updates can't repartition it.
+		_, upErr := tx.NewRaw(`INSERT INTO fabriq_crdt_docs (doc_id, tenant_id, entity, last_seq, scope_id)
+			VALUES ($1, $2, $3, $4, NULLIF($5, ''))
 			ON CONFLICT (doc_id) DO UPDATE SET updated_at = now(), last_seq = GREATEST(fabriq_crdt_docs.last_seq, EXCLUDED.last_seq)`,
-			docID, tid, ent.Spec.Name, seq).Exec(ctx)
+			docID, tid, ent.Spec.Name, seq, scope).Exec(ctx)
 		return upErr
 	})
 	return seq, err
@@ -224,9 +230,15 @@ func (d *DocStore) Compact(ctx context.Context, docID string) error {
 		return err
 	}
 	return d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
-		if _, err := tx.NewRaw(`INSERT INTO fabriq_crdt_snapshots (doc_id, tenant_id, snapshot, last_seq, at)
-			VALUES ($1, $2, $3, $4, now())
-			ON CONFLICT (doc_id) DO UPDATE SET snapshot = EXCLUDED.snapshot, last_seq = EXCLUDED.last_seq, at = now()`,
+		// The snapshot inherits the doc's recorded scope (from the bookkeeping
+		// row) rather than the caller's ctx scope: compaction may run from an
+		// unscoped worker/admin context, and a snapshot stamped NULL there would
+		// silently become shared — leaking scoped content to every scope. The
+		// subquery pins it to the doc's canonical scope so the compacted state is
+		// filtered exactly like the raw update log.
+		if _, err := tx.NewRaw(`INSERT INTO fabriq_crdt_snapshots (doc_id, tenant_id, snapshot, last_seq, at, scope_id)
+			VALUES ($1, $2, $3, $4, now(), (SELECT scope_id FROM fabriq_crdt_docs WHERE doc_id = $1))
+			ON CONFLICT (doc_id) DO UPDATE SET snapshot = EXCLUDED.snapshot, last_seq = EXCLUDED.last_seq, scope_id = EXCLUDED.scope_id, at = now()`,
 			docID, tid, raw, maxSeq).Exec(ctx); err != nil {
 			return err
 		}
