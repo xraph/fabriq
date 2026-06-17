@@ -44,9 +44,16 @@ func (b *troveLocalBackend) Setup(t *testing.T) *conformance.Env {
 	if err := tr.CreateBucket(ctx, "conf"); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = tr.Close(context.Background()) })
 	n := b.n.Add(1)
-	primary, _ := tenant.WithTenant(context.Background(), fmt.Sprintf("local%d-a", n))
-	foreign, _ := tenant.WithTenant(context.Background(), fmt.Sprintf("local%d-b", n))
+	primary, err := tenant.WithTenant(context.Background(), fmt.Sprintf("local%d-a", n))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := tenant.WithTenant(context.Background(), fmt.Sprintf("local%d-b", n))
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &conformance.Env{
 		Ctx:        primary,
 		ForeignCtx: foreign,
