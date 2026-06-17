@@ -163,6 +163,9 @@ type EntitySpec struct {
 	// Live opts the entity into the maintained-result-set live query engine.
 	// Nil (the zero value) means live queries are disabled for this entity.
 	Live *LiveSpec
+
+	// Cache opts the entity into the read-through row cache. Nil = not cached.
+	Cache *CacheSpec
 }
 
 // LiveSpec opts an entity into the live query engine (nil = disabled).
@@ -172,4 +175,13 @@ type LiveSpec struct {
 	Filterable []string // columns allowed in Where (empty = all)
 	Sortable   []string // columns allowed in Sort (empty = all)
 	MaxWindow  int      // cap on Limit (0 = engine default)
+}
+
+// CacheSpec opts an entity into the read-through row cache (P3). Nil (the zero
+// value on EntitySpec) means caching is disabled for the entity. Scoped picks
+// the cache partition: true => tenant+scope, false => tenant. TTL bounds each
+// cached row (0 = no expiry; per-id eviction on write still applies).
+type CacheSpec struct {
+	TTL    time.Duration
+	Scoped bool
 }
