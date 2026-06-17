@@ -3,7 +3,9 @@ package fabriq
 import (
 	"context"
 	"fmt"
+	"io"
 
+	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/query"
@@ -81,3 +83,23 @@ func (notConfiguredDocs) Snapshot(context.Context, string) (document.Materialize
 func (notConfiguredDocs) Compact(context.Context, string) error {
 	return errPort("document")
 }
+
+type notConfiguredBlob struct{}
+
+func (notConfiguredBlob) Put(context.Context, string, io.Reader, blob.PutOpts) (blob.ObjectInfo, error) {
+	return blob.ObjectInfo{}, errPort("blob")
+}
+func (notConfiguredBlob) Get(context.Context, string) (io.ReadCloser, blob.ObjectInfo, error) {
+	return nil, blob.ObjectInfo{}, errPort("blob")
+}
+func (notConfiguredBlob) Head(context.Context, string) (blob.ObjectInfo, error) {
+	return blob.ObjectInfo{}, errPort("blob")
+}
+func (notConfiguredBlob) Delete(context.Context, string) error { return errPort("blob") }
+func (notConfiguredBlob) List(context.Context, string) ([]blob.ObjectInfo, error) {
+	return nil, errPort("blob")
+}
+func (notConfiguredBlob) Copy(context.Context, string, string) (blob.ObjectInfo, error) {
+	return blob.ObjectInfo{}, errPort("blob")
+}
+func (notConfiguredBlob) Capabilities() blob.Caps { return blob.Caps{} }

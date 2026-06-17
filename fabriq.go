@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/event"
@@ -30,14 +31,16 @@ type LiveReader interface {
 // Relational are mandatory (Postgres is the source of truth); every other
 // port degrades to a typed ErrStoreNotConfigured.
 type Ports struct {
-	Store           command.Store
-	Relational      query.RelationalQuerier
-	Graph           query.GraphQuerier
-	Search          query.SearchQuerier
-	Timeseries      query.TSQuerier
-	Vector          query.VectorQuerier
-	Spatial         query.SpatialQuerier
-	Documents       document.Store
+	Store      command.Store
+	Relational query.RelationalQuerier
+	Graph      query.GraphQuerier
+	Search     query.SearchQuerier
+	Timeseries query.TSQuerier
+	Vector     query.VectorQuerier
+	Spatial    query.SpatialQuerier
+	Documents  document.Store
+	// Blob is the byte-plane port; nil degrades to ErrStoreNotConfigured.
+	Blob            blob.Store
 	ProjectionState projection.StateReader
 
 	// Live is the snapshot/refill oracle for live queries; when set (and a
@@ -245,6 +248,14 @@ func (f *Fabriq) Document() document.Store {
 		return notConfiguredDocs{}
 	}
 	return f.ports.Documents
+}
+
+// Blob implements query.Fabric.
+func (f *Fabriq) Blob() blob.Store {
+	if f.ports.Blob == nil {
+		return notConfiguredBlob{}
+	}
+	return f.ports.Blob
 }
 
 // Subscribe implements query.Fabric: authz hook, server-side channel
