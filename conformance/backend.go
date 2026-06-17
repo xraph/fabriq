@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/query"
@@ -32,6 +33,12 @@ const (
 	CapRawCypher Capability = "raw-cypher"
 	// CapPersistence: survives a reopen (the fakes are in-memory).
 	CapPersistence Capability = "cross-restart"
+	// CapBlobPresign: the byte store issues presigned client-direct URLs.
+	CapBlobPresign Capability = "blob-presign"
+	// CapBlobMultipart: the byte store supports resumable multipart uploads.
+	CapBlobMultipart Capability = "blob-multipart"
+	// CapBlobRange: the byte store supports byte-range reads.
+	CapBlobRange Capability = "blob-range"
 )
 
 // CapabilitySet is the set of capabilities a backend supports exactly.
@@ -81,7 +88,8 @@ type Env struct {
 	Spatial     query.SpatialQuerier
 	TS          query.TSQuerier
 	Projection  projection.StateReader
-	GraphTarget string // fresh graph/projection target for this case
+	Blob        blob.Store // nil → blob suite skips
+	GraphTarget string     // fresh graph/projection target for this case
 }
 
 // Degradation describes what a backend lacking a case's required capability

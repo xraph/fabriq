@@ -69,6 +69,7 @@ func (b *fakeBackend) Setup(t *testing.T) *conformance.Env {
 		Spatial:     b.world.Spatial,
 		TS:          b.world.TS,
 		Projection:  b.world.Projections,
+		Blob:        b.world.Blob,
 		GraphTarget: registry.GraphName(primary),
 	}
 }
