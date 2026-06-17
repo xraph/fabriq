@@ -23,6 +23,13 @@ require (
 )
 
 require (
+	github.com/gofrs/uuid/v5 v5.3.2 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
+	github.com/zeebo/blake3 v0.2.4 // indirect
+	go.jetify.com/typeid/v2 v2.0.0-alpha.3 // indirect
+)
+
+require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
@@ -122,6 +129,7 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xraph/go-utils v1.1.1 // indirect
+	github.com/xraph/trove v0.0.0
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.60.0 // indirect
@@ -155,3 +163,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/xraph/trove => ../../xraph/forgery/trove

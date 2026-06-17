@@ -61,6 +61,8 @@ linters:
               desc: pgx is only allowed where grove genuinely cannot express something, under adapters (document in docs/decisions/)
             - pkg: github.com/xraph/grove/kv
               desc: grove kv may only be imported under fabriq/adapters
+            - pkg: github.com/xraph/trove
+              desc: trove may only be imported under fabriq/adapters
         # core/ is the extractable kernel: no TWINOS knowledge, no app
         # framework, no driver packages of any kind.
         core-purity:
