@@ -78,6 +78,11 @@ type Keyspace struct {
 	Version   int
 	Partition Partition
 	Policy    Policy
+	// Entity, when set, names the registry entity this keyspace caches reads
+	// of. The generation is then keyed by entity, so a write to that entity
+	// (via Cache.InvalidateEntity) orphans this keyspace. Empty for keyspaces
+	// not tied to a single entity (their generation is keyed by Name).
+	Entity string
 }
 
 // Cache is the byte-level caching port. Typed access is via Typed[T].
@@ -96,6 +101,11 @@ type Cache interface {
 	// InvalidateKeyspace bumps the keyspace generation, orphaning every entry
 	// under it in the current partition at once (no mass deletes).
 	InvalidateKeyspace(ctx context.Context, ks Keyspace) error
+	// InvalidateEntity bumps the generation of `entity` for the Global, Tenant,
+	// and (if a scope is in context) TenantScope partitions — orphaning every
+	// cached entry whose keyspace declares Entity == entity in those partitions.
+	// This is the write-driven invalidation the command plane calls post-commit.
+	InvalidateEntity(ctx context.Context, entity string) error
 	// Close releases resources.
 	Close() error
 }

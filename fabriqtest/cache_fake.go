@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/cache"
+	"github.com/xraph/fabriq/core/tenant"
 )
 
 // FakeCache is an in-memory cache.Cache for unit tests. It implements the same
@@ -41,8 +42,14 @@ func NewFakeCache() *FakeCache {
 	}
 }
 
-func (c *FakeCache) genKey(ks cache.Keyspace, part string) (result string) {
-	return ks.Name + "|" + part
+// genKey is the generation-counter key for ks under partition `part`.
+// Entity-keyed when ks.Entity is set (so InvalidateEntity can bump it), else
+// keyspace-name-keyed (the P1 behavior, for keyspaces not tied to one entity).
+func (c *FakeCache) genKey(ks cache.Keyspace, part string) string {
+	if ks.Entity != "" {
+		return "e|" + ks.Entity + "|" + part
+	}
+	return "k|" + ks.Name + "|" + part
 }
 
 func (c *FakeCache) fullKey(ks cache.Keyspace, part string, gen int64, key string) (result string) {
@@ -160,6 +167,40 @@ func (c *FakeCache) InvalidateKeyspace(ctx context.Context, ks cache.Keyspace) e
 	return nil
 }
 
+// InvalidateEntity bumps the entity generation for Global + Tenant + (if
+// present) TenantScope partitions, mirroring the adapter.
+func (c *FakeCache) InvalidateEntity(ctx context.Context, entity string) error {
+	parts, err := entityPartitions(ctx)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	for _, part := range parts {
+		c.gen["e|"+entity+"|"+part]++
+	}
+	c.mu.Unlock()
+	return nil
+}
+
 func (c *FakeCache) Close() error { return nil }
+
+// entityPartitions returns the partition segments a write under ctx must bump:
+// always Global; Tenant when a tenant is present; TenantScope when a scope is
+// also present. Segments match cache.Partition.Resolve output.
+//
+//nolint:unparam // error result is by design: reserved for adapter consistency (Task 2)
+func entityPartitions(ctx context.Context) ([]string, error) {
+	parts := []string{"g"}
+	tid, err := tenant.FromContext(ctx)
+	if err != nil {
+		// No tenant: only the global tier can be affected.
+		return parts, nil
+	}
+	parts = append(parts, "t:"+tid)
+	if scope := tenant.ScopeOrEmpty(ctx); scope != "" {
+		parts = append(parts, "t:"+tid+":s:"+scope)
+	}
+	return parts, nil
+}
 
 var _ cache.Cache = (*FakeCache)(nil)
