@@ -182,19 +182,23 @@ func (c *FakeCache) InvalidateEntity(ctx context.Context, entity string) error {
 func (c *FakeCache) Close() error { return nil }
 
 // entityPartitions returns the partition segments a write under ctx must bump:
-// always Global; Tenant when a tenant is present; TenantScope when a scope is
-// also present. Segments match cache.Partition.Resolve output.
+// always Global; Tenant when a tenant is present; TenantScope always when a
+// tenant is present (scope may be empty), matching cache.Partition.Resolve
+// exactly.
 func entityPartitions(ctx context.Context) []string {
-	parts := []string{"g"}
+	parts := make([]string, 0, 3)
+	parts = append(parts, "g")
 	tid, err := tenant.FromContext(ctx)
 	if err != nil {
 		// No tenant: only the global tier can be affected.
 		return parts
 	}
-	parts = append(parts, "t:"+tid)
-	if scope := tenant.ScopeOrEmpty(ctx); scope != "" {
-		parts = append(parts, "t:"+tid+":s:"+scope)
-	}
+	// Match cache.Partition.Resolve exactly: Tenant => "t:{tid}"; TenantScope
+	// => "t:{tid}:s:{scope}" (scope may be empty). NOTE (P2 coarse model): an
+	// unscoped write bumps its OWN empty-scope partition but does NOT bust other
+	// scopes' per-scope caches (soft-scope cross) — that precision is P3; TTL
+	// backstops it.
+	parts = append(parts, "t:"+tid, "t:"+tid+":s:"+tenant.ScopeOrEmpty(ctx))
 	return parts
 }
 

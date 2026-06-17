@@ -17,12 +17,6 @@ import (
 	"github.com/xraph/fabriq/migrations"
 )
 
-// cacheE2EAsset is a minimal asset payload for the cache invalidation test.
-type cacheE2EAsset struct {
-	Name   string `grove:"name,notnull" json:"name"`
-	SiteID string `grove:"site_id" json:"site_id"`
-}
-
 // setupCacheE2E boots Postgres+Redis containers, runs migrations, and
 // provisions the app role. It mirrors the setup used in e2e_integration_test.go.
 func setupCacheE2E(t *testing.T) (*registry.Registry, string, string) {
