@@ -30,6 +30,17 @@ import (
 // canonical fabriq ErrNotFound so errors.Is works either way.
 var ErrFakeNotFound = fabriqerr.ErrNotFound
 
+// scopeVisible reports whether a stored row with rowScope is visible to ctx
+// under the soft scope rule: an unscoped reader sees all; a scoped reader sees
+// its own scope plus shared ("") rows.
+func scopeVisible(ctx context.Context, rowScope string) bool {
+	s, ok := tenant.ScopeFromContext(ctx)
+	if !ok {
+		return true
+	}
+	return rowScope == "" || rowScope == s
+}
+
 // World wires all fakes over one shared in-memory store, so a command
 // executed against Store is immediately visible through Rel, and graph /
 // search fakes can hydrate from the same rows.
@@ -56,7 +67,7 @@ func NewWorld(reg *registry.Registry) *World {
 		Rel:         rel,
 		Graph:       NewFakeGraph(reg, rel),
 		Search:      NewFakeSearch(reg),
-		TS:          &FakeTS{data: map[string]map[string]map[string][]query.Point{}},
+		TS:          &FakeTS{data: map[string]map[string]map[string][]tsPoint{}},
 		Vector:      &FakeVector{data: map[string]map[string]map[string]vecEntry{}},
 		Spatial:     &FakeSpatial{data: map[string]map[string]map[string]geoEntry{}},
 		Docs:        &FakeDocumentStore{},
@@ -78,6 +89,7 @@ func (w *World) Executor() *command.Executor {
 type memRow struct {
 	vals    map[string]any
 	version int64
+	scope   string
 }
 
 type memdb struct {
@@ -164,7 +176,7 @@ func (t *fakeTx) CurrentVersion(_ context.Context, ent *registry.Entity, aggID s
 	return t.stage[t.tenantID][ent.Spec.Name][aggID].version, nil
 }
 
-func (t *fakeTx) ApplyChange(_ context.Context, ent *registry.Entity, op command.Op, aggID string, version int64, vals map[string]any) error {
+func (t *fakeTx) ApplyChange(ctx context.Context, ent *registry.Entity, op command.Op, aggID string, version int64, vals map[string]any) error {
 	entities, ok := t.stage[t.tenantID]
 	if !ok {
 		entities = map[string]map[string]memRow{}
@@ -179,7 +191,7 @@ func (t *fakeTx) ApplyChange(_ context.Context, ent *registry.Entity, op command
 		delete(rows, aggID)
 		return nil
 	}
-	rows[aggID] = memRow{vals: vals, version: version}
+	rows[aggID] = memRow{vals: vals, version: version, scope: tenant.ScopeOrEmpty(ctx)}
 	return nil
 }
 
@@ -229,7 +241,7 @@ func (r *FakeRelational) Get(ctx context.Context, entity, id string, into any) e
 	r.db.mu.RLock()
 	row, ok := r.db.rows[tid][entity][id]
 	r.db.mu.RUnlock()
-	if !ok {
+	if !ok || !scopeVisible(ctx, row.scope) {
 		return &fabriqerr.NotFoundError{Entity: entity, ID: id}
 	}
 	return ent.Binding.Populate(into, row.vals)
@@ -254,7 +266,7 @@ func (r *FakeRelational) GetMany(ctx context.Context, entity string, ids []strin
 	defer r.db.mu.RUnlock()
 	for _, id := range ids {
 		row, ok := r.db.rows[tid][entity][id]
-		if !ok {
+		if !ok || !scopeVisible(ctx, row.scope) {
 			continue
 		}
 		if err := appendRow(slice, elemIsPtr, elemType, ent, row.vals); err != nil {
@@ -287,6 +299,9 @@ func (r *FakeRelational) List(ctx context.Context, entity string, q query.ListQu
 	rows := r.db.rows[tid][entity]
 	ids := make([]string, 0, len(rows))
 	for id, row := range rows {
+		if !scopeVisible(ctx, row.scope) {
+			continue
+		}
 		ok, evErr := evalConds(row.vals, q.Where)
 		if evErr != nil {
 			r.db.mu.RUnlock()
@@ -607,6 +622,9 @@ func (s *FakeSearch) Search(ctx context.Context, q query.SearchQuery, into any) 
 		if d.doc[registry.ColumnTenant] != tid {
 			continue
 		}
+		if !scopeVisible(ctx, asString(d.doc[registry.ColumnScope])) {
+			continue
+		}
 		if needle != "" && !matchesText(d.doc, ent.Spec.Search.Fields, needle) {
 			continue
 		}
@@ -647,6 +665,12 @@ func (s *FakeSearch) Search(ctx context.Context, q query.SearchQuery, into any) 
 	return nil
 }
 
+// asString returns v as a string, or "" if v is nil or not a string.
+func asString(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
 // matchesText reports whether any declared field contains the needle.
 func matchesText(doc map[string]any, fields []string, needle string) bool {
 	for _, f := range fields {
@@ -659,10 +683,16 @@ func matchesText(doc map[string]any, fields []string, needle string) bool {
 
 // --- FakeTS (query.TSQuerier) ----------------------------------------------------
 
+// tsPoint wraps a query.Point with the scope it was written under.
+type tsPoint struct {
+	p     query.Point
+	scope string
+}
+
 // FakeTS stores points per (tenant, series, key), time-sorted.
 type FakeTS struct {
 	mu   sync.RWMutex
-	data map[string]map[string]map[string][]query.Point
+	data map[string]map[string]map[string][]tsPoint
 }
 
 // BulkWrite implements the event-bypass telemetry ingest.
@@ -671,24 +701,25 @@ func (f *FakeTS) BulkWrite(ctx context.Context, series string, points []query.Po
 	if err != nil {
 		return err
 	}
+	sc := tenant.ScopeOrEmpty(ctx)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	byseries, ok := f.data[tid]
 	if !ok {
-		byseries = map[string]map[string][]query.Point{}
+		byseries = map[string]map[string][]tsPoint{}
 		f.data[tid] = byseries
 	}
 	bykey, ok := byseries[series]
 	if !ok {
-		bykey = map[string][]query.Point{}
+		bykey = map[string][]tsPoint{}
 		byseries[series] = bykey
 	}
 	for _, p := range points {
-		bykey[p.Key] = append(bykey[p.Key], p)
+		bykey[p.Key] = append(bykey[p.Key], tsPoint{p: p, scope: sc})
 	}
 	for k := range bykey {
 		pts := bykey[k]
-		sort.Slice(pts, func(i, j int) bool { return pts[i].At.Before(pts[j].At) })
+		sort.Slice(pts, func(i, j int) bool { return pts[i].p.At.Before(pts[j].p.At) })
 	}
 	return nil
 }
@@ -708,9 +739,12 @@ func (f *FakeTS) Range(ctx context.Context, q query.RangeQuery, into any) error 
 	}
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	for _, p := range f.data[tid][q.Series][q.Key] {
-		if !p.At.Before(q.From) && p.At.Before(q.To) {
-			*dest = append(*dest, p)
+	for _, tp := range f.data[tid][q.Series][q.Key] {
+		if !scopeVisible(ctx, tp.scope) {
+			continue
+		}
+		if !tp.p.At.Before(q.From) && tp.p.At.Before(q.To) {
+			*dest = append(*dest, tp.p)
 		}
 	}
 	return nil
@@ -719,8 +753,9 @@ func (f *FakeTS) Range(ctx context.Context, q query.RangeQuery, into any) error 
 // --- FakeVector (query.VectorQuerier) ----------------------------------------------
 
 type vecEntry struct {
-	emb  []float32
-	meta map[string]any
+	emb   []float32
+	meta  map[string]any
+	scope string
 }
 
 // FakeVector is an exact cosine-similarity store.
@@ -749,7 +784,7 @@ func (f *FakeVector) Upsert(ctx context.Context, entity, id string, embedding []
 	}
 	emb := make([]float32, len(embedding))
 	copy(emb, embedding)
-	byID[id] = vecEntry{emb: emb, meta: meta}
+	byID[id] = vecEntry{emb: emb, meta: meta, scope: tenant.ScopeOrEmpty(ctx)}
 	return nil
 }
 
@@ -767,6 +802,9 @@ func (f *FakeVector) Similar(ctx context.Context, q query.VectorQuery, into any)
 	defer f.mu.RUnlock()
 	matches := make([]query.VectorMatch, 0)
 	for id, e := range f.data[tid][q.Entity] {
+		if !scopeVisible(ctx, e.scope) {
+			continue
+		}
 		matches = append(matches, query.VectorMatch{ID: id, Score: cosine(q.Embedding, e.emb), Meta: e.meta})
 	}
 	sort.Slice(matches, func(i, j int) bool {
@@ -866,6 +904,7 @@ type geoEntry struct {
 	x, y, z float64
 	srid    int
 	meta    map[string]any
+	scope   string
 }
 
 // FakeSpatial is an exact in-memory geometry store that implements
@@ -897,7 +936,7 @@ func (f *FakeSpatial) Upsert(ctx context.Context, entity, id string, geom query.
 	if f.data[tid][entity] == nil {
 		f.data[tid][entity] = map[string]geoEntry{}
 	}
-	f.data[tid][entity][id] = geoEntry{x: x, y: y, z: z, srid: geom.SRID, meta: meta}
+	f.data[tid][entity][id] = geoEntry{x: x, y: y, z: z, srid: geom.SRID, meta: meta, scope: tenant.ScopeOrEmpty(ctx)}
 	return nil
 }
 
@@ -934,6 +973,9 @@ func (f *FakeSpatial) Within(ctx context.Context, q query.SpatialQuery, into any
 	defer f.mu.RUnlock()
 	var matches []query.SpatialMatch
 	for id, e := range f.data[tid][q.Entity] {
+		if !scopeVisible(ctx, e.scope) {
+			continue
+		}
 		if math.IsNaN(e.x) {
 			continue
 		}
