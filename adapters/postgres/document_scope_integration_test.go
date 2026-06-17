@@ -20,11 +20,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/xraph/grove/crdt"
 
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/domain"
 	"github.com/xraph/fabriq/fabriqtest"
@@ -73,14 +75,14 @@ func newDocScopeHarness(t *testing.T) (*postgres.Adapter, *postgres.Adapter) {
 
 // crdtLWWUpdate encodes one LWW field write as a grove-crdt update blob — the
 // []crdt.ChangeRecord shape DocStore.ApplyUpdate folds through the merge engine.
-func crdtLWWUpdate(t testing.TB, docID, field string, value any, hlcWall int64, node string) []byte {
+func crdtLWWUpdate(t testing.TB, table, docID, field string, value any, hlcWall int64, node string) []byte {
 	t.Helper()
 	raw, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
 	}
 	blob, err := json.Marshal([]crdt.ChangeRecord{{
-		Table: "pages", PK: docID, Field: field, CRDTType: crdt.TypeLWW,
+		Table: table, PK: docID, Field: field, CRDTType: crdt.TypeLWW,
 		HLC: crdt.HLC{Timestamp: hlcWall, NodeID: node}, NodeID: node, Value: raw,
 	}})
 	if err != nil {
@@ -127,16 +129,16 @@ func TestScope_DocumentSyncFilter(t *testing.T) {
 	docShared := "page/" + event.NewID() // ws_1 / unscoped (shared)
 	docWs2 := "page/" + event.NewID()    // ws_2 / unscoped
 
-	if err := docs.ApplyUpdate(ws1A, docA, crdtLWWUpdate(t, docA, "title", "alpha", 100, "n1")); err != nil {
+	if err := docs.ApplyUpdate(ws1A, docA, crdtLWWUpdate(t, "pages", docA, "title", "alpha", 100, "n1")); err != nil {
 		t.Fatalf("ApplyUpdate docA: %v", err)
 	}
-	if err := docs.ApplyUpdate(ws1B, docB, crdtLWWUpdate(t, docB, "title", "bravo", 100, "n1")); err != nil {
+	if err := docs.ApplyUpdate(ws1B, docB, crdtLWWUpdate(t, "pages", docB, "title", "bravo", 100, "n1")); err != nil {
 		t.Fatalf("ApplyUpdate docB: %v", err)
 	}
-	if err := docs.ApplyUpdate(ws1, docShared, crdtLWWUpdate(t, docShared, "title", "shared", 100, "n1")); err != nil {
+	if err := docs.ApplyUpdate(ws1, docShared, crdtLWWUpdate(t, "pages", docShared, "title", "shared", 100, "n1")); err != nil {
 		t.Fatalf("ApplyUpdate docShared: %v", err)
 	}
-	if err := docs.ApplyUpdate(ws2, docWs2, crdtLWWUpdate(t, docWs2, "title", "ws2", 100, "n1")); err != nil {
+	if err := docs.ApplyUpdate(ws2, docWs2, crdtLWWUpdate(t, "pages", docWs2, "title", "ws2", 100, "n1")); err != nil {
 		t.Fatalf("ApplyUpdate docWs2: %v", err)
 	}
 
@@ -236,10 +238,10 @@ func TestScope_DocumentScopeIDStamped(t *testing.T) {
 	docA := "page/" + event.NewID()
 	docShared := "page/" + event.NewID()
 
-	if err := docs.ApplyUpdate(ws1A, docA, crdtLWWUpdate(t, docA, "title", "a", 100, "n1")); err != nil {
+	if err := docs.ApplyUpdate(ws1A, docA, crdtLWWUpdate(t, "pages", docA, "title", "a", 100, "n1")); err != nil {
 		t.Fatalf("ApplyUpdate docA: %v", err)
 	}
-	if err := docs.ApplyUpdate(ws1, docShared, crdtLWWUpdate(t, docShared, "title", "s", 100, "n1")); err != nil {
+	if err := docs.ApplyUpdate(ws1, docShared, crdtLWWUpdate(t, "pages", docShared, "title", "s", 100, "n1")); err != nil {
 		t.Fatalf("ApplyUpdate docShared: %v", err)
 	}
 
@@ -279,4 +281,179 @@ func TestScope_DocumentScopeIDStamped(t *testing.T) {
 	}
 	wantScoped(t, "fabriq_crdt_snapshots", docA)
 	wantShared(t, "fabriq_crdt_snapshots", docShared)
+}
+
+// docScopeMatTable is the dynamic KindDocument table for the materialization
+// scope-carry test. A scope_id column makes it a scope-aware entity table, which
+// the demo "page" entity (no scope_id) cannot be without breaking conformance.
+const docScopeMatTable = "ds_doc_scope_mat"
+
+// newDocMaterializeScopeHarness boots one Postgres container, runs the fabriq
+// migrations, then provisions a *scope-aware* dynamic KindDocument entity
+// ("note") whose table carries scope_id and the ScopeAwareTenantPolicy. It
+// returns (owner adapter, app-role adapter). The short QuietWindow lets
+// MaterializeQuiet fire after a brief sleep instead of the page entity's 2s.
+func newDocMaterializeScopeHarness(t *testing.T) (*postgres.Adapter, *postgres.Adapter) {
+	t.Helper()
+	ctx := context.Background()
+
+	superDSN := fabriqtest.StartPostgres(t)
+
+	reg := registry.New()
+	reg.MustRegister(registry.EntitySpec{
+		Name: "note",
+		Kind: registry.KindDocument,
+		CRDT: &registry.CRDTSpec{Engine: "grove-crdt", SnapshotEvery: 64, QuietWindow: 10 * time.Millisecond},
+		Schema: &registry.DynamicSchema{
+			Table: docScopeMatTable,
+			Columns: []registry.DynamicColumn{
+				{Name: "title", Type: registry.ColText},
+				{Name: "scope_id", Type: registry.ColText},
+			},
+		},
+	})
+
+	owner, err := postgres.Open(ctx, superDSN, reg)
+	if err != nil {
+		t.Fatalf("postgres.Open (owner): %v", err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+
+	orch, err := migrations.NewOrchestrator(owner.Driver())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	ent, ok := reg.Get("note")
+	if !ok {
+		t.Fatal("entity 'note' not registered")
+	}
+	if err := owner.EnsureDynamic(ctx, ent); err != nil {
+		t.Fatalf("EnsureDynamic: %v", err)
+	}
+	// Upgrade to the scope-aware policy so the materialized rows are filtered by
+	// scope, mirroring scope_integration_test.go's project harness.
+	for _, stmt := range migrations.ScopeAwareTenantPolicy(docScopeMatTable) {
+		if _, err := owner.Driver().Exec(ctx, stmt); err != nil {
+			t.Fatalf("apply scope RLS policy (%q): %v", stmt, err)
+		}
+	}
+
+	appDSN := fabriqtest.CreateAppRole(t, superDSN)
+	a, err := postgres.Open(ctx, appDSN, reg)
+	if err != nil {
+		t.Fatalf("postgres.Open (app role): %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	return owner, a
+}
+
+// noteIDs lists every "note" row visible under ctx and returns the id set.
+func noteIDs(t *testing.T, a *postgres.Adapter, ctx context.Context) map[string]bool {
+	t.Helper()
+	var rows []map[string]any
+	if err := a.List(ctx, "note", query.ListQuery{}, &rows); err != nil {
+		t.Fatalf("List notes: %v", err)
+	}
+	out := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		if id, ok := r["id"].(string); ok {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// TestScope_DocumentMaterializationCarriesScope proves that the quiet-window
+// materializer preserves a document's scope: a CRDT doc written under scope
+// proj_A materializes into an entity row stamped scope_id = "proj_A" (so RLS
+// keeps it partitioned), while an unscoped doc materializes to NULL (shared).
+// Without scope-carry the materialized row would default to NULL and leak the
+// scoped doc to every scope in the tenant.
+func TestScope_DocumentMaterializationCarriesScope(t *testing.T) {
+	owner, a := newDocMaterializeScopeHarness(t)
+	docs := a.Documents()
+
+	ws1 := scopedCtx(t, "ws_1", "")
+	ws1A := scopedCtx(t, "ws_1", "proj_A")
+	ws1B := scopedCtx(t, "ws_1", "proj_B")
+
+	docA := "note/" + event.NewID()      // proj_A
+	docShared := "note/" + event.NewID() // unscoped (shared)
+
+	if err := docs.ApplyUpdate(ws1A, docA, crdtLWWUpdate(t, docScopeMatTable, docA, "title", "alpha", 100, "n1")); err != nil {
+		t.Fatalf("ApplyUpdate docA: %v", err)
+	}
+	if err := docs.ApplyUpdate(ws1, docShared, crdtLWWUpdate(t, docScopeMatTable, docShared, "title", "shared", 100, "n1")); err != nil {
+		t.Fatalf("ApplyUpdate docShared: %v", err)
+	}
+
+	// Quiet window (10ms) elapses, then materialize both docs.
+	time.Sleep(100 * time.Millisecond)
+	n, err := docs.MaterializeQuiet(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("MaterializeQuiet: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("materialized %d docs, want 2", n)
+	}
+
+	// Raw column proof (owner bypasses RLS): the materialized row carries the
+	// doc's scope.
+	matScope := func(t *testing.T, id string) (*string, bool) {
+		t.Helper()
+		rows, err := owner.Driver().Query(context.Background(),
+			fmt.Sprintf(`SELECT scope_id FROM %s WHERE id = $1`, docScopeMatTable), id)
+		if err != nil {
+			t.Fatalf("owner query: %v", err)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			return nil, false
+		}
+		var scope *string
+		if err := rows.Scan(&scope); err != nil {
+			t.Fatalf("scan scope_id: %v", err)
+		}
+		return scope, true
+	}
+
+	if scope, found := matScope(t, docA); !found {
+		t.Fatalf("materialized row for %s missing", docA)
+	} else if scope == nil || *scope != "proj_A" {
+		t.Errorf("materialized %s scope_id = %v, want %q", docA, scope, "proj_A")
+	}
+	if scope, found := matScope(t, docShared); !found {
+		t.Fatalf("materialized row for %s missing", docShared)
+	} else if scope != nil {
+		t.Errorf("materialized %s scope_id = %q, want NULL", docShared, *scope)
+	}
+
+	// RLS visibility proof through List: the scoped row is partitioned exactly
+	// like any natively-written scope-aware row.
+	t.Run("scoped_projA_sees_own_and_shared", func(t *testing.T) {
+		got := noteIDs(t, a, ws1A)
+		if !got[docA] || !got[docShared] {
+			t.Errorf("scoped(proj_A) should see docA + docShared; got %v", got)
+		}
+	})
+	t.Run("scoped_projB_sees_only_shared", func(t *testing.T) {
+		got := noteIDs(t, a, ws1B)
+		if got[docA] {
+			t.Errorf("docA (proj_A) leaked into scoped(proj_B) read; got %v", got)
+		}
+		if !got[docShared] {
+			t.Errorf("shared row missing from scoped(proj_B) read; got %v", got)
+		}
+	})
+	t.Run("unscoped_ws1_sees_both", func(t *testing.T) {
+		got := noteIDs(t, a, ws1)
+		if !got[docA] || !got[docShared] {
+			t.Errorf("unscoped ws_1 should see both rows; got %v", got)
+		}
+	})
 }
