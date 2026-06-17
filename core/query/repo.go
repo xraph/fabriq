@@ -172,7 +172,7 @@ func (r *Repo[T]) Traverse(ctx context.Context, cypher string, params map[string
 	type traverseFP struct {
 		K      string
 		Cypher string
-		Params map[string]any
+		Params map[string]any // key stability relies on cache.Fingerprint's sorted-key JSON encoding
 	}
 	return r.cachedHydrate(ctx, traverseFP{K: "traverse", Cypher: cypher, Params: params},
 		func(ctx context.Context) ([]string, error) {
