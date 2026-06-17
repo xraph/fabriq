@@ -44,7 +44,7 @@ func TestCacheInvalidatorEvictsChangedRow(t *testing.T) {
 	_ = fc.Set(ctx, ks, "a1", []byte(`{"id":"a1"}`))
 	_ = fc.Set(ctx, ks, "a2", []byte(`{"id":"a2"}`))
 
-	inv := newCacheInvalidator(fc, reg)
+	inv := newCacheInvalidator(fc)
 	inv.AfterCommit(ctx, []command.Change{{
 		Entity:   ent,
 		Op:       command.OpUpdate,

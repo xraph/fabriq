@@ -138,7 +138,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		// Bust cached reads of any entity a committed write touches.
 		allOpts = append(allOpts, func(s *settings) {
 			s.executorOptions = append(s.executorOptions,
-				command.WithPostCommitHooks(newCacheInvalidator(ca, reg)))
+				command.WithPostCommitHooks(newCacheInvalidator(ca)))
 		})
 	}
 
