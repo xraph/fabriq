@@ -46,11 +46,11 @@ func (a *Adapter) Upsert(ctx context.Context, entity, id string, embedding []flo
 	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
-		const sql = `INSERT INTO fabriq_embeddings (tenant_id, entity, id, embedding, meta)
-			VALUES ($1, $2, $3, $4::vector, $5)
+		const sql = `INSERT INTO fabriq_embeddings (tenant_id, entity, id, embedding, meta, scope_id)
+			VALUES ($1, $2, $3, $4::vector, $5, NULLIF($6, ''))
 			ON CONFLICT (tenant_id, entity, id)
-			DO UPDATE SET embedding = EXCLUDED.embedding, meta = EXCLUDED.meta`
-		if _, err := tx.NewRaw(sql, tid, entity, id, vectorLiteral(embedding), metaJSON).Exec(ctx); err != nil {
+			DO UPDATE SET embedding = EXCLUDED.embedding, meta = EXCLUDED.meta, scope_id = EXCLUDED.scope_id`
+		if _, err := tx.NewRaw(sql, tid, entity, id, vectorLiteral(embedding), metaJSON, tenant.ScopeOrEmpty(ctx)).Exec(ctx); err != nil {
 			return fmt.Errorf("fabriq: upsert embedding %s/%s: %w", entity, id, err)
 		}
 		return nil
