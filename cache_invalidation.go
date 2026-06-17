@@ -6,7 +6,6 @@ import (
 	"github.com/xraph/fabriq/cachequery"
 	"github.com/xraph/fabriq/core/cache"
 	"github.com/xraph/fabriq/core/command"
-	"github.com/xraph/fabriq/core/registry"
 )
 
 // cacheInvalidator is the post-commit hook that busts cached reads of every
@@ -17,12 +16,11 @@ import (
 // is already durable, and the per-keyspace TTL is the backstop for a missed
 // invalidation.
 type cacheInvalidator struct {
-	c   cache.Cache
-	reg *registry.Registry
+	c cache.Cache
 }
 
-func newCacheInvalidator(c cache.Cache, reg *registry.Registry) cacheInvalidator {
-	return cacheInvalidator{c: c, reg: reg}
+func newCacheInvalidator(c cache.Cache) cacheInvalidator {
+	return cacheInvalidator{c: c}
 }
 
 // AfterCommit implements command.PostCommitHook.

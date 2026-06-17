@@ -6,6 +6,7 @@ package cachequery
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 
 	"github.com/xraph/fabriq/core/cache"
@@ -111,6 +112,9 @@ func (cr *CachedRelational) GetMany(ctx context.Context, entity string, ids []st
 	}
 
 	if len(miss) > 0 {
+		if reflect.TypeOf(into).Kind() != reflect.Pointer {
+			return fmt.Errorf("cachequery: GetMany into must be a pointer to a slice, got %T", into)
+		}
 		// Fresh slice of into's element type (into is *[]T).
 		tmpPtr := reflect.New(reflect.TypeOf(into).Elem())
 		if err := cr.inner.GetMany(ctx, entity, miss, tmpPtr.Interface()); err != nil {
