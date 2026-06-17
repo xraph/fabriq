@@ -27,6 +27,17 @@ type cmdSite struct {
 	Note     string `grove:"note"`
 }
 
+// cmdProject is a model WITH a scope_id column, used to test scope stamping.
+type cmdProject struct {
+	grove.BaseModel `grove:"table:projects"`
+
+	ID       string `grove:"id,pk"`
+	TenantID string `grove:"tenant_id,notnull"`
+	Version  int64  `grove:"version,notnull"`
+	ScopeID  string `grove:"scope_id"`
+	Name     string `grove:"name,notnull"`
+}
+
 type cmdDoc struct {
 	grove.BaseModel `grove:"table:pages"`
 
@@ -573,6 +584,74 @@ func TestExec_ScopeIDStampedOnEnvelope(t *testing.T) {
 	env2 := store2.outbox[0]
 	if env2.ScopeID != "" {
 		t.Fatalf("unscoped envelope: ScopeID = %q, want empty", env2.ScopeID)
+	}
+}
+
+// TestExec_ScopeIDStampedOnRelationalRow verifies that stampedValues injects
+// scope_id into the row vals when the entity declares the column and the
+// command context is scoped; entities without a scope_id column must be
+// unaffected (no phantom column).
+func TestExec_ScopeIDStampedOnRelationalRow(t *testing.T) {
+	// Build a registry with both a scoped entity (project) and an unscoped one (site).
+	r := registry.New()
+	r.MustRegister(registry.EntitySpec{
+		Name: "site", Kind: registry.KindAggregate, Model: (*cmdSite)(nil), GraphNode: "Site",
+	})
+	r.MustRegister(registry.EntitySpec{
+		Name: "project", Kind: registry.KindAggregate, Model: (*cmdProject)(nil),
+	})
+	if err := r.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = tenant.WithScope(ctx, "proj_Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// --- Entity WITH scope_id column: vals must include scope_id. ---
+	store := newFakeStore()
+	xp, err := command.NewExecutor(r, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := xp.Exec(ctx, command.Command{
+		Entity: "project", Op: command.OpCreate,
+		Payload: &cmdProject{Name: "Alpha"},
+	})
+	if err != nil {
+		t.Fatalf("project create: %v", err)
+	}
+	row := store.rows[key("project", res.AggID)]
+	if row == nil {
+		t.Fatalf("project row not found in fake store")
+	}
+	if got, ok := row[registry.ColumnScope]; !ok || got != "proj_Z" {
+		t.Fatalf("project row scope_id = %v, want %q", got, "proj_Z")
+	}
+
+	// --- Entity WITHOUT scope_id column: vals must NOT include scope_id. ---
+	store2 := newFakeStore()
+	xs, err := command.NewExecutor(r, store2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2, err := xs.Exec(ctx, command.Command{
+		Entity: "site", Op: command.OpCreate,
+		Payload: &cmdSite{Name: "Plant B"},
+	})
+	if err != nil {
+		t.Fatalf("site create under scoped ctx: %v", err)
+	}
+	row2 := store2.rows[key("site", res2.AggID)]
+	if row2 == nil {
+		t.Fatalf("site row not found in fake store")
+	}
+	if _, present := row2[registry.ColumnScope]; present {
+		t.Fatalf("site row must not carry scope_id (column absent from model), got %v", row2[registry.ColumnScope])
 	}
 }
 

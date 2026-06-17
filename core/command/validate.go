@@ -111,5 +111,8 @@ func (p *preparedCommand) stampedValues(version int64) map[string]any {
 	out[registry.ColumnID] = p.aggID
 	out[registry.ColumnTenant] = p.tenantID
 	out[registry.ColumnVersion] = version
+	if p.scopeID != "" && p.entity.Binding.HasColumn(registry.ColumnScope) {
+		out[registry.ColumnScope] = p.scopeID
+	}
 	return out
 }

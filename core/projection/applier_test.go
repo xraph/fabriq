@@ -240,13 +240,13 @@ func TestSearchApplier_EntityWithoutIndexIsNoOp(t *testing.T) {
 
 type edgeModel struct {
 	grove.BaseModel `grove:"table:kg_edges"`
-	ID       string `grove:"id,pk"`
-	TenantID string `grove:"tenant_id,notnull"`
-	Version  int64  `grove:"version,notnull"`
-	Type     string `grove:"type,notnull"`
-	SourceID string `grove:"source_id,notnull"`
-	TargetID string `grove:"target_id,notnull"`
-	Status   string `grove:"status"`
+	ID              string `grove:"id,pk"`
+	TenantID        string `grove:"tenant_id,notnull"`
+	Version         int64  `grove:"version,notnull"`
+	Type            string `grove:"type,notnull"`
+	SourceID        string `grove:"source_id,notnull"`
+	TargetID        string `grove:"target_id,notnull"`
+	Status          string `grove:"status"`
 }
 
 func jsonOf(t *testing.T, m map[string]any) []byte {
@@ -320,6 +320,82 @@ func TestGraphApplier_ReifiedEdgeUpdateAndMalformed(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("reified edge missing source/type/target must return an error")
+	}
+}
+
+// TestSearchApplier_ScopeIDStampedWhenSet verifies that when env.ScopeID is
+// non-empty the search doc carries scope_id, and that it is absent when unscoped.
+func TestSearchApplier_ScopeIDStampedWhenSet(t *testing.T) {
+	ap := projection.SearchApplier(testRegistry(t))
+
+	// Scoped envelope: scope_id must appear in the doc.
+	env := assetEnvelope(t, registry.VerbCreated, map[string]any{
+		"id": "A1", "tenant_id": "acme", "version": 1, "name": "Pump", "serial": "SN-1",
+	})
+	env.ScopeID = "proj_X"
+	muts, err := ap.Apply(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(muts) != 1 {
+		t.Fatalf("got %d mutations, want 1", len(muts))
+	}
+	doc := muts[0].(projection.DocIndex).Doc
+	if got, ok := doc[registry.ColumnScope]; !ok || got != "proj_X" {
+		t.Fatalf("scoped doc: scope_id = %v, want %q", got, "proj_X")
+	}
+	if doc[registry.ColumnTenant] != "acme" {
+		t.Fatalf("tenant_id must still be present: %v", doc)
+	}
+
+	// Unscoped envelope: scope_id must be absent.
+	env2 := assetEnvelope(t, registry.VerbCreated, map[string]any{
+		"id": "A2", "tenant_id": "acme", "version": 1, "name": "Valve", "serial": "SN-2",
+	})
+	// env2.ScopeID is "" (zero value)
+	muts2, err := ap.Apply(env2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc2 := muts2[0].(projection.DocIndex).Doc
+	if _, present := doc2[registry.ColumnScope]; present {
+		t.Fatalf("unscoped doc must not carry scope_id, got %v", doc2[registry.ColumnScope])
+	}
+}
+
+// TestGraphApplier_ScopeIDStampedInNodeProps verifies that when env.ScopeID is
+// non-empty the NodeUpsert Props map carries scope_id, and that it is absent
+// when unscoped.
+func TestGraphApplier_ScopeIDStampedInNodeProps(t *testing.T) {
+	ap := projection.GraphApplier(testRegistry(t))
+
+	// Scoped envelope: node props must include scope_id.
+	env := assetEnvelope(t, registry.VerbCreated, map[string]any{
+		"id": "A1", "tenant_id": "acme", "version": 1, "name": "Pump",
+		"site_id": "S1", "parent_id": "",
+	})
+	env.ScopeID = "proj_Y"
+	muts, err := ap.Apply(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := muts[0].(projection.NodeUpsert)
+	if got, ok := node.Props[registry.ColumnScope]; !ok || got != "proj_Y" {
+		t.Fatalf("scoped node props: scope_id = %v, want %q", got, "proj_Y")
+	}
+
+	// Unscoped envelope: scope_id must not appear in node props.
+	env2 := assetEnvelope(t, registry.VerbCreated, map[string]any{
+		"id": "A2", "tenant_id": "acme", "version": 1, "name": "Valve",
+		"site_id": "S1", "parent_id": "",
+	})
+	muts2, err := ap.Apply(env2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node2 := muts2[0].(projection.NodeUpsert)
+	if _, present := node2.Props[registry.ColumnScope]; present {
+		t.Fatalf("unscoped node props must not carry scope_id, got %v", node2.Props[registry.ColumnScope])
 	}
 }
 

@@ -51,6 +51,9 @@ func GraphApplier(reg *registry.Registry) Applier {
 		if err != nil {
 			return nil, err
 		}
+		if env.ScopeID != "" {
+			props[registry.ColumnScope] = env.ScopeID
+		}
 		muts := make([]Mutation, 0, 1+len(ent.Spec.Edges))
 		muts = append(muts, NodeUpsert{
 			Label:   ent.Spec.GraphNode,
@@ -143,6 +146,9 @@ func SearchApplier(reg *registry.Registry) Applier {
 		}
 		doc[registry.ColumnID] = env.AggID
 		doc[registry.ColumnTenant] = env.TenantID
+		if env.ScopeID != "" {
+			doc[registry.ColumnScope] = env.ScopeID
+		}
 		doc[registry.ColumnVersion] = env.Version
 
 		return []Mutation{DocIndex{
