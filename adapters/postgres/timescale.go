@@ -37,15 +37,17 @@ func (a *Adapter) BulkWrite(ctx context.Context, series string, points []query.P
 	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		var sb strings.Builder
-		args := make([]any, 0, len(points)*4+1)
-		args = append(args, tid)
-		fmt.Fprintf(&sb, `INSERT INTO %s (time, tenant_id, tag_id, value, quality) VALUES `, quoteIdent(series))
+		// $1 = tenant_id (shared across all rows), $2 = scope arg (NULLIF converts
+		// "" to NULL so unscoped writes store NULL, meaning "shared / no scope").
+		args := make([]any, 0, len(points)*4+2)
+		args = append(args, tid, tenant.ScopeOrEmpty(ctx))
+		fmt.Fprintf(&sb, `INSERT INTO %s (time, tenant_id, tag_id, value, quality, scope_id) VALUES `, quoteIdent(series))
 		for i, p := range points {
 			if i > 0 {
 				sb.WriteByte(',')
 			}
 			n := len(args)
-			fmt.Fprintf(&sb, "($%d, $1, $%d, $%d, $%d)", n+1, n+2, n+3, n+4)
+			fmt.Fprintf(&sb, "($%d, $1, $%d, $%d, $%d, NULLIF($2, ''))", n+1, n+2, n+3, n+4)
 			args = append(args, p.At, p.Key, p.Value, p.Quality)
 		}
 		if _, err := tx.NewRaw(sb.String(), args...).Exec(ctx); err != nil {
@@ -81,8 +83,16 @@ func (a *Adapter) Range(ctx context.Context, q query.RangeQuery, into any) error
 	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		var rows []pointRow
+		// inTenantTx sets app.scope_id via set_config (SET LOCAL equivalent), so
+		// current_setting is available here without an extra bind arg. Soft
+		// semantics: unscoped reads (app.scope_id='') see all rows in the tenant;
+		// scoped reads see their scope plus shared (NULL scope_id) rows.
 		sql := fmt.Sprintf(`SELECT tag_id AS key, time::text AS at, value, quality
-			FROM %s WHERE tenant_id = $1 AND tag_id = $2 AND time >= $3 AND time < $4
+			FROM %s
+			WHERE tenant_id = $1 AND tag_id = $2 AND time >= $3 AND time < $4
+			  AND ( current_setting('app.scope_id', true) = ''
+			     OR scope_id IS NULL
+			     OR scope_id = current_setting('app.scope_id', true) )
 			ORDER BY time ASC`, quoteIdent(q.Series))
 		if err := tx.NewRaw(sql, tid, q.Key, q.From, q.To).Scan(ctx, &rows); err != nil {
 			return fmt.Errorf("fabriq: range %s/%s: %w", q.Series, q.Key, err)
