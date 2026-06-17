@@ -14,6 +14,7 @@ import (
 	"github.com/xraph/fabriq/adapters/redis"
 	"github.com/xraph/fabriq/adapters/shard"
 	corecache "github.com/xraph/fabriq/core/cache"
+	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/registry"
@@ -131,6 +132,11 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			return nil, nil, fmt.Errorf("fabriq: open cache: %w", cerr)
 		}
 		stores.Cache = ca
+		// Bust cached reads of any entity a committed write touches.
+		allOpts = append(allOpts, func(s *settings) {
+			s.executorOptions = append(s.executorOptions,
+				command.WithPostCommitHooks(newCacheInvalidator(ca)))
+		})
 	}
 
 	if cfg.FalkorDB.Addr != "" {
