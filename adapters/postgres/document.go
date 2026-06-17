@@ -332,10 +332,13 @@ func (d *DocStore) MaterializeQuiet(ctx context.Context, validate ValidateFunc) 
 		DocID    string `grove:"doc_id"`
 		TenantID string `grove:"tenant_id"`
 		Entity   string `grove:"entity"`
+		Scope    string `grove:"scope_id"`
 		LastSeq  int64  `grove:"last_seq_materialized"`
 	}
 	var docs []docRow
-	rows, err := d.a.pg.Query(ctx, `SELECT doc_id, tenant_id, entity, last_seq_materialized
+	// COALESCE folds the nullable scope_id to the "" sentinel so the doc's scope
+	// can be carried onto the materialized row (materializeOne stamps the column).
+	rows, err := d.a.pg.Query(ctx, `SELECT doc_id, tenant_id, entity, COALESCE(scope_id, ''), last_seq_materialized
 		FROM fabriq_crdt_docs
 		WHERE flagged = FALSE AND last_seq > last_seq_materialized`)
 	if err != nil {
@@ -343,7 +346,7 @@ func (d *DocStore) MaterializeQuiet(ctx context.Context, validate ValidateFunc) 
 	}
 	for rows.Next() {
 		var r docRow
-		if err := rows.Scan(&r.DocID, &r.TenantID, &r.Entity, &r.LastSeq); err != nil {
+		if err := rows.Scan(&r.DocID, &r.TenantID, &r.Entity, &r.Scope, &r.LastSeq); err != nil {
 			_ = rows.Close()
 			return 0, err
 		}
@@ -364,7 +367,7 @@ func (d *DocStore) MaterializeQuiet(ctx context.Context, validate ValidateFunc) 
 		if err != nil || !quiet {
 			continue
 		}
-		wrote, err := d.materializeOne(ctx, doc.TenantID, doc.DocID, ent, validate)
+		wrote, err := d.materializeOne(ctx, doc.TenantID, doc.Scope, doc.DocID, ent, validate)
 		if err != nil {
 			return materialized, err
 		}
@@ -386,7 +389,7 @@ func (d *DocStore) isQuiet(ctx context.Context, docID string, window time.Durati
 	return quiet, nil
 }
 
-func (d *DocStore) materializeOne(ctx context.Context, tenantID, docID string, ent *registry.Entity, validate ValidateFunc) (bool, error) {
+func (d *DocStore) materializeOne(ctx context.Context, tenantID, scope, docID string, ent *registry.Entity, validate ValidateFunc) (bool, error) {
 	tctx, err := tenant.WithTenant(ctx, tenantID)
 	if err != nil {
 		return false, err
@@ -435,6 +438,14 @@ func (d *DocStore) materializeOne(ctx context.Context, tenantID, docID string, e
 		stamped[registry.ColumnID] = docID
 		stamped[registry.ColumnTenant] = tenantID
 		stamped[registry.ColumnVersion] = next
+		// Carry the document's scope onto the materialized row so a scope-aware
+		// entity table keeps it partitioned. Scope is a soft column-level filter,
+		// so stamping the column is sufficient — no need to re-scope the write
+		// context. Entities without scope_id (e.g. the demo "page") and unscoped
+		// docs (scope == "") are unaffected: the column stays NULL (shared).
+		if scope != "" && ent.Binding.HasColumn(registry.ColumnScope) {
+			stamped[registry.ColumnScope] = scope
+		}
 		if acErr := tx.ApplyChange(txCtx, ent, op, docID, next, stamped); acErr != nil {
 			return acErr
 		}
