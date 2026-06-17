@@ -10,12 +10,19 @@ import (
 	"github.com/xraph/grove/kv"
 
 	corecache "github.com/xraph/fabriq/core/cache"
+	"github.com/xraph/fabriq/core/tenant"
 )
 
 // --- key building -----------------------------------------------------------
 
+// genKey is the generation-counter key for ks under partition `part`. Entity-
+// keyed when ks.Entity is set (so InvalidateEntity bumps it); else keyed by
+// keyspace name (P1 behavior, new prefix).
 func genKey(ks corecache.Keyspace, part string) string {
-	return "fabriq:c:gen:" + ks.Name + ":" + part
+	if ks.Entity != "" {
+		return "fabriq:c:gen:e:" + ks.Entity + ":" + part
+	}
+	return "fabriq:c:gen:k:" + ks.Name + ":" + part
 }
 
 func fullKey(ks corecache.Keyspace, part string, gen int64, key string) string {
@@ -142,6 +149,35 @@ func (a *Adapter) InvalidateKeyspace(ctx context.Context, ks corecache.Keyspace)
 		return fmt.Errorf("fabriq/cache: invalidate keyspace: %w", err)
 	}
 	return nil
+}
+
+// InvalidateEntity bumps the entity generation (INCR) for Global + Tenant +
+// (if a scope is present) TenantScope partitions. A failure on any partition
+// returns the first error; partial bumps are safe (over-invalidation only).
+func (a *Adapter) InvalidateEntity(ctx context.Context, entity string) error {
+	parts := entityPartitions(ctx)
+	for _, part := range parts {
+		if err := a.client.Incr(ctx, "fabriq:c:gen:e:"+entity+":"+part).Err(); err != nil {
+			return fmt.Errorf("fabriq/cache: invalidate entity %q (%s): %w", entity, part, err)
+		}
+	}
+	return nil
+}
+
+// entityPartitions returns the partition segments a write under ctx must bump:
+// always Global ("g"); Tenant ("t:{tid}") when a tenant is present;
+// TenantScope ("t:{tid}:s:{scope}") when a scope is also present.
+func entityPartitions(ctx context.Context) []string {
+	parts := []string{"g"}
+	tid, err := tenant.FromContext(ctx)
+	if err != nil {
+		return parts
+	}
+	parts = append(parts, "t:"+tid)
+	if scope := tenant.ScopeOrEmpty(ctx); scope != "" {
+		parts = append(parts, "t:"+tid+":s:"+scope)
+	}
+	return parts
 }
 
 // --- single-flight ----------------------------------------------------------
