@@ -16,6 +16,7 @@ type Executor struct {
 	now         func() time.Time
 	traceparent func(context.Context) string
 	hooks       []LifecycleHook
+	postCommit  []PostCommitHook
 }
 
 // ExecutorOption customizes an Executor.
@@ -37,6 +38,12 @@ func WithTraceparent(fn func(context.Context) string) ExecutorOption {
 // registration order and the first error aborts the command (and any batch).
 func WithHooks(hooks ...LifecycleHook) ExecutorOption {
 	return func(x *Executor) { x.hooks = append(x.hooks, hooks...) }
+}
+
+// WithPostCommitHooks appends hooks that run after the transaction commits
+// successfully, receiving every Change produced. They never run on rollback.
+func WithPostCommitHooks(hooks ...PostCommitHook) ExecutorOption {
+	return func(x *Executor) { x.postCommit = append(x.postCommit, hooks...) }
 }
 
 // NewExecutor wires the command plane.
@@ -85,18 +92,25 @@ func (x *Executor) ExecBatch(ctx context.Context, cmds []Command) ([]Result, err
 	}
 
 	results := make([]Result, len(cmds))
+	changes := make([]Change, 0, len(cmds))
 	err := x.store.InTenantTx(ctx, func(ctx context.Context, tx Tx) error {
+		// Reset on retry: InTenantTx may invoke the closure more than once.
+		changes = changes[:0]
 		for i, p := range prepared {
-			res, err := x.apply(ctx, tx, p)
+			res, change, err := x.apply(ctx, tx, p)
 			if err != nil {
 				return err
 			}
 			results[i] = res
+			changes = append(changes, change)
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	for _, h := range x.postCommit {
+		h.AfterCommit(ctx, changes)
 	}
 	return results, nil
 }
@@ -115,42 +129,44 @@ func resolveOp(op Op, current int64) (Op, string) {
 }
 
 // apply runs one prepared command inside the transaction: version check,
-// row write, exactly one outbox envelope.
-func (x *Executor) apply(ctx context.Context, tx Tx, p *preparedCommand) (Result, error) {
+// row write, exactly one outbox envelope. It returns the Change so the caller
+// can collect changes for post-commit hooks.
+func (x *Executor) apply(ctx context.Context, tx Tx, p *preparedCommand) (Result, Change, error) {
 	current, err := tx.CurrentVersion(ctx, p.entity, p.aggID)
 	if err != nil {
-		return Result{}, err
+		return Result{}, Change{}, err
 	}
 	if vErr := checkVersion(p, current); vErr != nil {
-		return Result{}, vErr
+		return Result{}, Change{}, vErr
 	}
 	next := current + 1
 	op, verb := resolveOp(p.cmd.Op, current)
 
 	vals := p.stampedValues(next)
 	if aErr := tx.ApplyChange(ctx, p.entity, op, p.aggID, next, vals); aErr != nil {
-		return Result{}, aErr
+		return Result{}, Change{}, aErr
 	}
 
 	env, err := newEnvelope(p, next, vals, verb, x.now(), x.traceparent(ctx))
 	if err != nil {
-		return Result{}, err
+		return Result{}, Change{}, err
 	}
 	if err := tx.AppendOutbox(ctx, env); err != nil {
-		return Result{}, err
+		return Result{}, Change{}, err
 	}
+
+	change := Change{Entity: p.entity, Op: op, Envelope: env}
 
 	// Lifecycle hooks run in-transaction after the change is staged: they may
 	// participate (write atomically via tx) or veto (an error rolls the whole
 	// transaction back). They fire in order; the first error short-circuits.
 	if len(x.hooks) > 0 {
-		change := Change{Entity: p.entity, Op: op, Envelope: env}
 		for _, h := range x.hooks {
 			if err := h.OnChange(ctx, tx, change); err != nil {
-				return Result{}, fmt.Errorf("fabriq: lifecycle hook: %w", err)
+				return Result{}, Change{}, fmt.Errorf("fabriq: lifecycle hook: %w", err)
 			}
 		}
 	}
 
-	return Result{AggID: p.aggID, Version: next, EventID: env.ID}, nil
+	return Result{AggID: p.aggID, Version: next, EventID: env.ID}, change, nil
 }
