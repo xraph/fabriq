@@ -12,5 +12,5 @@ type Codec interface {
 // JSON is the default codec.
 type JSON struct{}
 
-func (JSON) Encode(v any) ([]byte, error)        { return json.Marshal(v) }
-func (JSON) Decode(data []byte, into any) error  { return json.Unmarshal(data, into) }
+func (JSON) Encode(v any) ([]byte, error)       { return json.Marshal(v) }
+func (JSON) Decode(data []byte, into any) error { return json.Unmarshal(data, into) }
