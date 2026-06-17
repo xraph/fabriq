@@ -48,6 +48,9 @@ func TestPartitionResolveRequiresTenant(t *testing.T) {
 	if _, err := cache.Tenant.Resolve(context.Background()); err == nil {
 		t.Fatal("expected error when tenant missing for Tenant partition")
 	}
+	if _, err := cache.TenantScope.Resolve(context.Background()); err == nil {
+		t.Fatal("expected error when tenant missing for TenantScope partition")
+	}
 	// Global never requires a tenant.
 	if _, err := cache.Global.Resolve(context.Background()); err != nil {
 		t.Fatalf("Global must not require tenant: %v", err)
