@@ -122,14 +122,18 @@ func toInfo(i *trovedriver.ObjectInfo) blob.ObjectInfo {
 
 // mapErr normalizes Trove not-found errors into fabriqerr.ErrNotFound.
 // Trove's sentinel errors live in the trove package; the mem driver also
-// returns plain fmt.Errorf strings containing "not found".
+// returns plain fmt.Errorf strings like "...object %q not found". The string
+// fallback requires BOTH "object" and "not found" so unrelated errors that
+// merely contain "not found" (e.g. a network "route not found") are not
+// misclassified as a missing object.
 func mapErr(err error) error {
 	if err == nil {
 		return nil
 	}
+	msg := strings.ToLower(err.Error())
 	if errors.Is(err, trove.ErrNotFound) ||
 		errors.Is(err, trove.ErrObjectNotFound) ||
-		strings.Contains(strings.ToLower(err.Error()), "not found") {
+		(strings.Contains(msg, "object") && strings.Contains(msg, "not found")) {
 		return fabriqerr.ErrNotFound
 	}
 	return fmt.Errorf("fabriq: trove blob: %w", err)
