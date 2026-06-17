@@ -133,6 +133,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			return nil, nil, fmt.Errorf("fabriq: open cache: %w", cerr)
 		}
 		stores.Cache = ca
+		ports.Cache = ca
 		// Route relational reads through the opt-in row cache.
 		ports.Relational = cachequery.New(ports.Relational, ca, reg)
 		// Bust cached reads of any entity a committed write touches.

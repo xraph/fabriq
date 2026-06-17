@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/xraph/fabriq/core/cache"
 	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
@@ -33,6 +34,8 @@ type Repo[T any] struct {
 	entity   string
 	node     string              // graph label (EntitySpec.GraphNode); "" = not graphed
 	selfRels map[string]struct{} // declared edges whose Target is this entity
+	cache    cache.Cache         // nil = result-set caching off
+	qks      cache.Keyspace      // the entity's result-set keyspace (set with cache)
 }
 
 // For builds a typed Repo by resolving T's registered entity. T is the
@@ -68,6 +71,15 @@ func (r *Repo[T]) WithSearch(s SearchQuerier) *Repo[T] { r.search = s; return r 
 
 // WithVector attaches the vector querier (enables Similar).
 func (r *Repo[T]) WithVector(v VectorQuerier) *Repo[T] { r.vector = v; return r }
+
+// WithResultCache enables result-set (id-list) caching for this repo, keyed in
+// ks (an entity-keyed Versioned keyspace). Wired by fabriq.For for opted-in
+// entities; a repo without it behaves exactly as before.
+func (r *Repo[T]) WithResultCache(c cache.Cache, ks cache.Keyspace) *Repo[T] {
+	r.cache = c
+	r.qks = ks
+	return r
+}
 
 // Entity returns the resolved registry entity name.
 func (r *Repo[T]) Entity() string { return r.entity }
