@@ -61,6 +61,10 @@ func RunCacheConformance(t *testing.T, newCache func(t *testing.T) cache.Cache) 
 		if _, ok, _ := c.Get(mkTenant(t, "globex"), ks, "k"); ok {
 			t.Fatal("tenant globex must not see acme's entry")
 		}
+		v, ok, _ := c.Get(mkTenant(t, "acme"), ks, "k")
+		if !ok || string(v) != "acme" {
+			t.Fatalf("acme must see its own entry: v=%q ok=%v", v, ok)
+		}
 	})
 
 	t.Run("scope isolation", func(t *testing.T) {
