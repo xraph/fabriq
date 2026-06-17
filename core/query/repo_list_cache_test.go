@@ -2,7 +2,6 @@ package query
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"sync"
 	"testing"
@@ -177,9 +176,6 @@ func (c *listTestCache) InvalidateEntity(ctx context.Context, entity string) err
 func (c *listTestCache) Close() error { return nil }
 
 var _ cache.Cache = (*listTestCache)(nil)
-
-// Ensure listTestCache stores valid JSON (used indirectly through GetOrLoad).
-var _ = json.Marshal
 
 func newCachedListRepo(t *testing.T, rel RelationalQuerier, c cache.Cache) *Repo[listRow] {
 	t.Helper()
