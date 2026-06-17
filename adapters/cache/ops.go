@@ -39,7 +39,10 @@ func (a *Adapter) resolve(ctx context.Context, ks corecache.Keyspace) (part stri
 	if err != nil {
 		return "", 0, fmt.Errorf("fabriq/cache: read generation: %w", err)
 	}
-	gen, _ = strconv.ParseInt(raw, 10, 64)
+	gen, perr := strconv.ParseInt(raw, 10, 64)
+	if perr != nil {
+		return "", 0, fmt.Errorf("fabriq/cache: parse generation %q: %w", raw, perr)
+	}
 	return part, gen, nil
 }
 
