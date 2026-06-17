@@ -8,6 +8,7 @@ import (
 
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/core/tenant"
 )
 
 // Search implements query.SearchQuerier: a multi_match over the entity's
@@ -45,12 +46,28 @@ func (a *Adapter) Search(ctx context.Context, q query.SearchQuery, into any) err
 		must = map[string]any{"match_all": map[string]any{}}
 	}
 	boolQuery := map[string]any{"must": []any{must}}
+	var filters []any
 	if len(q.Filter) > 0 {
 		clauses, ferr := esFilterClauses(q.Filter)
 		if ferr != nil {
 			return ferr
 		}
-		boolQuery["filter"] = clauses
+		filters = append(filters, clauses...)
+	}
+	// Soft secondary-scope filter: a scoped read sees docs whose scope_id
+	// matches OR is missing (shared); an unscoped read sees everything in the
+	// tenant (tenant isolation is enforced by the per-tenant index alias).
+	if scope, ok := tenant.ScopeFromContext(ctx); ok {
+		filters = append(filters, map[string]any{"bool": map[string]any{
+			"should": []any{
+				map[string]any{"term": map[string]any{esExactField(registry.ColumnScope, true): scope}},
+				map[string]any{"bool": map[string]any{"must_not": map[string]any{"exists": map[string]any{"field": registry.ColumnScope}}}},
+			},
+			"minimum_should_match": 1,
+		}})
+	}
+	if len(filters) > 0 {
+		boolQuery["filter"] = filters
 	}
 
 	req := map[string]any{
