@@ -35,3 +35,9 @@ func TestFakeCacheSetGet(t *testing.T) {
 		t.Fatalf("get: got=%q ok=%v err=%v", got, ok, err)
 	}
 }
+
+func TestFakeCacheConformance(t *testing.T) {
+	fabriqtest.RunCacheConformance(t, func(_ *testing.T) cache.Cache {
+		return fabriqtest.NewFakeCache()
+	})
+}
