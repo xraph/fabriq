@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/xraph/trove"
 	trovedriver "github.com/xraph/trove/driver"
@@ -98,13 +99,124 @@ func (a *Adapter) Copy(ctx context.Context, srcKey, dstKey string) (blob.ObjectI
 	return toInfo(info), nil
 }
 
-// Capabilities reports what the underlying driver supports (Task 5 fills these
-// by type-asserting the driver; the zero value here means "core only").
+// ErrUnsupported is returned by a capability method when the underlying driver
+// does not provide that capability (Capabilities() reports it false).
+var ErrUnsupported = errors.New("fabriq: trove blob: capability not supported by driver")
+
+// Compile-time assertions: Adapter structurally satisfies the optional interfaces.
+var (
+	_ blob.Presigner = (*Adapter)(nil)
+	_ blob.Multipart = (*Adapter)(nil)
+	_ blob.Ranger    = (*Adapter)(nil)
+)
+
+// Capabilities reports what the underlying driver supports by type-asserting
+// against the Trove driver capability interfaces.
 func (a *Adapter) Capabilities() blob.Caps { return a.caps() }
 
-// caps is the Task-5 stub — returns zero Caps until the capability
-// introspection is wired in the next task.
-func (a *Adapter) caps() blob.Caps { return blob.Caps{} }
+// caps type-asserts the driver to detect which optional capabilities it provides.
+func (a *Adapter) caps() blob.Caps {
+	d := a.t.Driver()
+	_, presign := d.(trovedriver.PresignDriver)
+	_, multipart := d.(trovedriver.MultipartDriver)
+	_, rng := d.(trovedriver.RangeDriver)
+	return blob.Caps{Presign: presign, Multipart: multipart, Range: rng}
+}
+
+// PresignGet returns a pre-signed GET URL for the given key. Returns
+// ErrUnsupported when the underlying driver does not implement PresignDriver.
+func (a *Adapter) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	d, ok := a.t.Driver().(trovedriver.PresignDriver)
+	if !ok {
+		return "", ErrUnsupported
+	}
+	url, err := d.PresignGet(ctx, a.bucket, key, ttl)
+	return url, mapErr(err)
+}
+
+// PresignPut returns a pre-signed PUT URL for the given key. Returns
+// ErrUnsupported when the underlying driver does not implement PresignDriver.
+func (a *Adapter) PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	d, ok := a.t.Driver().(trovedriver.PresignDriver)
+	if !ok {
+		return "", ErrUnsupported
+	}
+	url, err := d.PresignPut(ctx, a.bucket, key, ttl)
+	return url, mapErr(err)
+}
+
+// InitiateMultipart starts a multipart upload and returns the upload ID.
+// Returns ErrUnsupported when the underlying driver does not implement MultipartDriver.
+func (a *Adapter) InitiateMultipart(ctx context.Context, key string, o blob.PutOpts) (string, error) {
+	d, ok := a.t.Driver().(trovedriver.MultipartDriver)
+	if !ok {
+		return "", ErrUnsupported
+	}
+	var opts []trovedriver.PutOption
+	if o.ContentType != "" {
+		opts = append(opts, trovedriver.WithContentType(o.ContentType))
+	}
+	id, err := d.InitiateMultipart(ctx, a.bucket, key, opts...)
+	return id, mapErr(err)
+}
+
+// UploadPart uploads a single part of a multipart upload. Returns
+// ErrUnsupported when the underlying driver does not implement MultipartDriver.
+func (a *Adapter) UploadPart(ctx context.Context, key, uploadID string, part int, r io.Reader) (blob.PartInfo, error) {
+	d, ok := a.t.Driver().(trovedriver.MultipartDriver)
+	if !ok {
+		return blob.PartInfo{}, ErrUnsupported
+	}
+	p, err := d.UploadPart(ctx, a.bucket, key, uploadID, part, r)
+	if err != nil {
+		return blob.PartInfo{}, mapErr(err)
+	}
+	// driver.PartInfo fields: PartNumber int, ETag string, Size int64
+	return blob.PartInfo{Part: p.PartNumber, ETag: p.ETag}, nil
+}
+
+// CompleteMultipart finalises a multipart upload. Returns ErrUnsupported when
+// the underlying driver does not implement MultipartDriver.
+func (a *Adapter) CompleteMultipart(ctx context.Context, key, uploadID string, parts []blob.PartInfo) (blob.ObjectInfo, error) {
+	d, ok := a.t.Driver().(trovedriver.MultipartDriver)
+	if !ok {
+		return blob.ObjectInfo{}, ErrUnsupported
+	}
+	dparts := make([]trovedriver.PartInfo, len(parts))
+	for i, p := range parts {
+		dparts[i] = trovedriver.PartInfo{PartNumber: p.Part, ETag: p.ETag}
+	}
+	info, err := d.CompleteMultipart(ctx, a.bucket, key, uploadID, dparts)
+	if err != nil {
+		return blob.ObjectInfo{}, mapErr(err)
+	}
+	return toInfo(info), nil
+}
+
+// AbortMultipart cancels an in-progress multipart upload. Returns ErrUnsupported
+// when the underlying driver does not implement MultipartDriver.
+func (a *Adapter) AbortMultipart(ctx context.Context, key, uploadID string) error {
+	d, ok := a.t.Driver().(trovedriver.MultipartDriver)
+	if !ok {
+		return ErrUnsupported
+	}
+	return mapErr(d.AbortMultipart(ctx, a.bucket, key, uploadID))
+}
+
+// GetRange retrieves a byte range of an object. Returns ErrUnsupported when
+// the underlying driver does not implement RangeDriver.
+func (a *Adapter) GetRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	d, ok := a.t.Driver().(trovedriver.RangeDriver)
+	if !ok {
+		return nil, ErrUnsupported
+	}
+	obj, err := d.GetRange(ctx, a.bucket, key, offset, length)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	// ObjectReader embeds io.ReadCloser directly.
+	return obj, nil
+}
 
 // toInfo converts a Trove driver ObjectInfo to the blob port type.
 func toInfo(i *trovedriver.ObjectInfo) blob.ObjectInfo {
