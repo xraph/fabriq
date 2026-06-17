@@ -56,11 +56,17 @@ func tableExists(ctx context.Context, exec migrate.Executor, name string) (bool,
 // (pgvector/PostGIS) that are natural scope boundaries for vector/spatial data.
 var scopeTables = []string{"fabriq_embeddings", "fabriq_geometries"}
 
+// hypertableScopeTables are fabriq-managed TimescaleDB hypertables that gain a
+// scope_id column but CANNOT use RLS (columnstore restriction). Tenancy and
+// scope are enforced structurally via explicit WHERE clauses in the adapter.
+var hypertableScopeTables = []string{"tag_readings"}
+
 var migration0012Scope = &migrate.Migration{
 	Name:    "native_scope",
 	Version: "202606160012",
 	Comment: "secondary scope_id column + soft RLS predicate on fabriq-managed tables",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
+		// RLS-capable tables: add scope_id column + update policy.
 		for _, t := range scopeTables {
 			exists, err := tableExists(ctx, exec, t)
 			if err != nil {
@@ -75,9 +81,26 @@ var migration0012Scope = &migrate.Migration{
 				return err
 			}
 		}
+		// Hypertables: add scope_id column only — no RLS (columnstore forbids it).
+		// Scope filtering is enforced via explicit WHERE in the timescale adapter.
+		for _, t := range hypertableScopeTables {
+			exists, err := tableExists(ctx, exec, t)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				continue
+			}
+			if err := execAll(ctx, exec, []string{
+				fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS scope_id TEXT`, t),
+			}); err != nil {
+				return err
+			}
+		}
 		return nil
 	},
 	Down: func(ctx context.Context, exec migrate.Executor) error {
+		// RLS-capable tables: restore old policy and drop scope_id.
 		for _, t := range scopeTables {
 			exists, err := tableExists(ctx, exec, t)
 			if err != nil {
@@ -94,6 +117,21 @@ var migration0012Scope = &migrate.Migration{
 				fmt.Sprintf(`ALTER TABLE IF EXISTS %s DROP COLUMN IF EXISTS scope_id`, t),
 			}
 			if err := execAll(ctx, exec, stmts); err != nil {
+				return err
+			}
+		}
+		// Hypertables: drop scope_id only.
+		for _, t := range hypertableScopeTables {
+			exists, err := tableExists(ctx, exec, t)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				continue
+			}
+			if err := execAll(ctx, exec, []string{
+				fmt.Sprintf(`ALTER TABLE IF EXISTS %s DROP COLUMN IF EXISTS scope_id`, t),
+			}); err != nil {
 				return err
 			}
 		}
