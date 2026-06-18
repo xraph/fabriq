@@ -140,7 +140,11 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			if size <= 0 {
 				size = 10000
 			}
-			l1 := fcache.NewL1(ca, reg, size, cfg.Cache.L1TTL)
+			ttl := cfg.Cache.L1TTL
+			if ttl <= 0 {
+				ttl = 5 * time.Minute
+			}
+			l1 := fcache.NewL1(ca, reg, size, ttl)
 			engineCache = l1
 			// Per-node broadcast eviction: tails the event stream and calls
 			// l1.EvictLocal for each committed change. The goroutine is
@@ -148,6 +152,9 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			// individual requests, but remains cancellable via tctx so that
 			// Stores.Close() can stop it before tearing down the connection.
 			tctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+			// Cold-start window: commits between Open() returning and the tailer's
+			// first XRead attach are missed on this node and bounded by L1TTL (not
+			// stream lag). L1 is opt-in and TTL-backstopped; acceptable for P4a.
 			go func() { _ = fcache.RunL1EvictTailer(tctx, rd, l1) }()
 			stores.cancelFns = append(stores.cancelFns, cancel)
 		}
