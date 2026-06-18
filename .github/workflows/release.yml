@@ -1,9 +1,10 @@
 name: Release
 
 # Tag-triggered, mirroring octopus's release split: goreleaser cuts the GitHub
-# Release with cross-compiled binaries + a multi-arch ghcr.io image, then a
-# sibling job packages the Helm chart and publishes it as an OCI artifact
-# (goreleaser does not package charts).
+# Release with cross-compiled binaries + a multi-arch ghcr.io image, a sibling
+# job packages the Helm chart and publishes it as an OCI artifact (goreleaser
+# does not package charts), and an optional job mirrors the image to Docker Hub
+# when DOCKERHUB_USERNAME/DOCKERHUB_TOKEN are set.
 #
 #   git tag v0.2.0 && git push origin v0.2.0
 #
@@ -112,3 +113,75 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           files: ${{ steps.pkg.outputs.chart }}
+
+  # Optional Docker Hub mirror. goreleaser publishes the canonical multi-arch
+  # image to ghcr.io; this copies that manifest (all arches, same tags) to
+  # Docker Hub with `imagetools create` — only when BOTH DOCKERHUB_USERNAME and
+  # DOCKERHUB_TOKEN secrets are set. Override the target repo with the
+  # DOCKERHUB_REPO variable (default: xraph/fabriq). Absent the secrets, the
+  # job logs a warning and the image stays on ghcr.io only.
+  dockerhub:
+    name: Mirror image to Docker Hub
+    runs-on: ubuntu-latest
+    needs: goreleaser # the ghcr.io manifest must exist before we can copy it
+    permissions:
+      contents: read
+      packages: read # read the source manifest from ghcr.io
+    env:
+      GHCR_IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - name: Resolve version + Docker Hub config
+        id: prep
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          # Mirror only when BOTH credentials are present.
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "repo=${{ vars.DOCKERHUB_REPO || 'xraph/fabriq' }}" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub mirroring enabled -> docker.io/${{ vars.DOCKERHUB_REPO || 'xraph/fabriq' }}"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::DOCKERHUB_USERNAME/DOCKERHUB_TOKEN not both set — image published to ghcr.io only."
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.prep.outputs.enabled == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: steps.prep.outputs.enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: steps.prep.outputs.enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Mirror multi-arch manifest to Docker Hub
+        if: steps.prep.outputs.enabled == 'true'
+        env:
+          VERSION: ${{ steps.prep.outputs.version }}
+          REPO: ${{ steps.prep.outputs.repo }}
+        run: |
+          set -euo pipefail
+          # Mirror the same tag set goreleaser pushed to ghcr.io (version,
+          # major.minor, latest), all sourced from the canonical :version
+          # manifest so every architecture is copied across.
+          MAJOR_MINOR="$(printf '%s' "$VERSION" | cut -d. -f1-2)"
+          docker buildx imagetools create \
+            -t "docker.io/${REPO}:${VERSION}" \
+            -t "docker.io/${REPO}:${MAJOR_MINOR}" \
+            -t "docker.io/${REPO}:latest" \
+            "${GHCR_IMAGE}:${VERSION}"
+          docker buildx imagetools inspect "docker.io/${REPO}:${VERSION}"
