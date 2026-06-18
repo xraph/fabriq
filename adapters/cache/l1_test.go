@@ -187,6 +187,33 @@ func TestL1_PerIDRowEviction_SiblingsWarm(t *testing.T) {
 	}
 }
 
+func TestL1_GetOrLoad_PopulatesL1OnMiss(t *testing.T) {
+	m := newMem()
+	l := NewL1(m, l1reg(t), 64, time.Minute)
+	ctx := l1ctx(t)
+	loads := 0
+	load := func(context.Context) ([]byte, error) { loads++; return []byte("v"), nil }
+	v, err := l.GetOrLoad(ctx, rowKS(), "a1", load)
+	if err != nil || string(v) != "v" {
+		t.Fatalf("first GetOrLoad: v=%q err=%v", v, err)
+	}
+	if loads != 1 {
+		t.Fatalf("loader should run once on cold miss, ran %d", loads)
+	}
+	// Second call served from L1: loader NOT invoked, inner.Get NOT called.
+	gets := m.gets
+	v2, err := l.GetOrLoad(ctx, rowKS(), "a1", load)
+	if err != nil || string(v2) != "v" {
+		t.Fatalf("second GetOrLoad: v=%q err=%v", v2, err)
+	}
+	if loads != 1 {
+		t.Fatalf("second GetOrLoad must hit L1, not re-run loader: loads=%d", loads)
+	}
+	if m.gets != gets {
+		t.Fatalf("second GetOrLoad must hit L1, not inner: gets %d->%d", gets, m.gets)
+	}
+}
+
 func TestL1_EvictLocal_OrphansQueryAndRow_NoInner(t *testing.T) {
 	m := newMem()
 	l := NewL1(m, l1reg(t), 64, time.Minute)
