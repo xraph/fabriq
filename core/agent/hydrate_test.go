@@ -1,0 +1,56 @@
+// core/agent/hydrate_test.go
+package agent
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/fabriqtest"
+)
+
+func TestHydrate_TypedEntity(t *testing.T) {
+	reg := testRegistry(t)
+	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
+	tk, err := NewToolkit(ff, reg, nil, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testCtx(t, "acme")
+
+	res, err := ff.Exec(ctx, command.Command{Entity: "doc", Op: command.OpCreate, Payload: &tDoc{Title: "Hello", Body: "World"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := tk.hydrate(ctx, "doc", []string{res.AggID})
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+	raw, ok := rows[res.AggID]
+	if !ok {
+		t.Fatalf("missing id %q; got %v", res.AggID, rows)
+	}
+	var got tDoc
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Hello" {
+		t.Fatalf("want Title Hello, got %q", got.Title)
+	}
+}
+
+func TestHydrate_SkipsMissing(t *testing.T) {
+	reg := testRegistry(t)
+	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
+	tk, _ := NewToolkit(ff, reg, nil, Config{})
+	ctx := testCtx(t, "acme")
+
+	rows, err := tk.hydrate(ctx, "doc", []string{"nope"})
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("want 0 rows, got %d", len(rows))
+	}
+}
