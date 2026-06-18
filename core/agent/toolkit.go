@@ -30,7 +30,7 @@ func (c *Config) withDefaults() {
 	if c.K <= 0 {
 		c.K = defaultK
 	}
-	if c.Hops == 0 {
+	if c.Hops <= 0 {
 		c.Hops = defaultHops
 	}
 	if c.VectorDims <= 0 {

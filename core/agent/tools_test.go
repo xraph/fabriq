@@ -16,8 +16,13 @@ func TestTools_RecallDispatch(t *testing.T) {
 	tk, _ := NewToolkit(ff, reg, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}}, Config{VectorDims: 3})
 	ctx := testCtx(t, "acme")
 
-	res, _ := ff.Exec(ctx, command.Command{Entity: "doc", Op: command.OpCreate, Payload: &tDoc{Title: "T", Body: "B"}})
-	_ = w.Vector.Upsert(ctx, "doc", res.AggID, []float32{1, 0, 0}, nil)
+	res, err := ff.Exec(ctx, command.Command{Entity: "doc", Op: command.OpCreate, Payload: &tDoc{Title: "T", Body: "B"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Vector.Upsert(ctx, "doc", res.AggID, []float32{1, 0, 0}, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	tools := tk.Tools()
 	if len(tools) != 1 || tools[0].Name != "recall" {
