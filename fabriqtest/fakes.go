@@ -264,6 +264,27 @@ func (r *FakeRelational) GetMany(ctx context.Context, entity string, ids []strin
 	if err != nil {
 		return err
 	}
+	// Dynamic entities use map-native hydration: into must be *[]map[string]any.
+	if ent.Binding.IsDynamic() {
+		dest, ok := into.(*[]map[string]any)
+		if !ok {
+			return fmt.Errorf("fabriq: dynamic entity %q GetMany target must be *[]map[string]any, got %T", entity, into)
+		}
+		r.db.mu.RLock()
+		defer r.db.mu.RUnlock()
+		for _, id := range ids {
+			row, ok := r.db.rows[tid][entity][id]
+			if !ok || !scopeVisible(ctx, row.scope) {
+				continue
+			}
+			cp := make(map[string]any, len(row.vals))
+			for k, v := range row.vals {
+				cp[k] = v
+			}
+			*dest = append(*dest, cp)
+		}
+		return nil
+	}
 	slice, elemIsPtr, elemType, err := sliceTarget(into, ent)
 	if err != nil {
 		return err
