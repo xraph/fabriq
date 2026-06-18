@@ -25,6 +25,13 @@ type Metrics struct {
 	ConflationDepth prometheus.Gauge
 	ProjectionLag   *prometheus.GaugeVec
 	RelayPublished  prometheus.Counter
+
+	// Blob CAS garbage-collection instruments.
+	BlobGCBytesFreed        prometheus.Counter
+	BlobGCCollected         prometheus.Counter
+	BlobGCRefDriftCorrected prometheus.Counter
+	BlobGCBroken            prometheus.Gauge
+	BlobGCOrphans           prometheus.Counter
 }
 
 // New creates and registers the instruments on reg.
@@ -50,9 +57,30 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fabriq_relay_published_total",
 			Help: "Events published by the outbox relay.",
 		}),
+		BlobGCBytesFreed: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_blob_gc_bytes_freed_total",
+			Help: "Bytes reclaimed by blob CAS garbage collection.",
+		}),
+		BlobGCCollected: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_blob_gc_collected_total",
+			Help: "Unreferenced CAS entries garbage-collected.",
+		}),
+		BlobGCRefDriftCorrected: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_blob_gc_ref_drift_corrected_total",
+			Help: "blob_cas ref_count values corrected from the catalog truth.",
+		}),
+		BlobGCBroken: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "fabriq_blob_gc_broken",
+			Help: "Referenced hashes whose bytes are missing (last reconcile cycle).",
+		}),
+		BlobGCOrphans: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_blob_gc_orphans_total",
+			Help: "Orphan byte objects (no ledger row) deleted.",
+		}),
 	}
 	for _, c := range []prometheus.Collector{
 		m.OutboxBacklog, m.TenantHookTrips, m.ConflationDepth, m.ProjectionLag, m.RelayPublished,
+		m.BlobGCBytesFreed, m.BlobGCCollected, m.BlobGCRefDriftCorrected, m.BlobGCBroken, m.BlobGCOrphans,
 	} {
 		if err := reg.Register(c); err != nil {
 			return nil, err
