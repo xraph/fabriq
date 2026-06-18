@@ -177,6 +177,8 @@ func (l *L1Cache) EvictLocal(ctx context.Context, entity string, ids ...string) 
 	}
 	rowKs := cachequery.EntityRowKeyspace(ent)
 	part, err := rowKs.Partition.Resolve(ctx)
+	// Best-effort: a malformed tenant/scope ctx (which a committed envelope's
+	// validated TenantID should never produce) leaves row entries to the L1 TTL.
 	if err != nil {
 		return
 	}
