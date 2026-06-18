@@ -13,10 +13,10 @@ import (
 
 type hookModel struct {
 	grove.BaseModel `grove:"table:widgets"`
-	ID       string `grove:"id,pk"`
-	TenantID string `grove:"tenant_id,notnull"`
-	Version  int64  `grove:"version,notnull"`
-	Kind     string `grove:"kind,notnull"`
+	ID              string `grove:"id,pk"`
+	TenantID        string `grove:"tenant_id,notnull"`
+	Version         int64  `grove:"version,notnull"`
+	Kind            string `grove:"kind,notnull"`
 }
 
 func TestExec_ValidateHookRejects(t *testing.T) {

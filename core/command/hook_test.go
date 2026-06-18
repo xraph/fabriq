@@ -68,7 +68,10 @@ func TestLifecycleHook_OrderedChainShortCircuits(t *testing.T) {
 	var order []string
 	h1 := command.HookFunc(func(_ context.Context, _ command.Tx, _ command.Change) error { order = append(order, "h1"); return nil })
 	boom := errors.New("stop")
-	h2 := command.HookFunc(func(_ context.Context, _ command.Tx, _ command.Change) error { order = append(order, "h2"); return boom })
+	h2 := command.HookFunc(func(_ context.Context, _ command.Tx, _ command.Change) error {
+		order = append(order, "h2")
+		return boom
+	})
 	h3 := command.HookFunc(func(_ context.Context, _ command.Tx, _ command.Change) error { order = append(order, "h3"); return nil })
 	x, _ := command.NewExecutor(cmdRegistry(t), store, command.WithHooks(h1, h2, h3))
 

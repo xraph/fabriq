@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/xraph/grove/drivers/pgdriver"
 	"github.com/xraph/forge"
+	"github.com/xraph/grove/drivers/pgdriver"
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/registry"

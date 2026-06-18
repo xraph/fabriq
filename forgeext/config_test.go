@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/xraph/confy"
+
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/forgeext"
 )
