@@ -56,7 +56,7 @@ jobs:
           fi
 
       - name: Checkout (with PAT so the tag push triggers release.yml)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           token: ${{ env.DISPATCH_TOKEN }}
           ref: ${{ inputs.ref || github.ref }}
