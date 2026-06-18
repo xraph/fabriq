@@ -60,22 +60,30 @@ func (l *L1Cache) l1key(ks corecache.Keyspace, part, key string) string {
 	return ks.Name + "|v" + strconv.Itoa(ks.Version) + "|g" + strconv.FormatInt(g, 10) + "|" + part + "|" + key
 }
 
-// Get returns the cached value from L1; ok=false on L1 miss.
-// L1Cache is a write-populate cache: entries enter L1 only via Set or
-// GetOrLoad. Get does NOT fall through to the inner L2 because doing so
-// would re-admit stale entries after an EvictLocal/gen-bump orphan and
-// would impose an inner round-trip on every L1 miss (negating the value of
-// the local generation). Use GetOrLoad for load-on-miss semantics.
+// Get returns the cached value from L1 on a hit; on an L1 miss it falls
+// through to the inner L2. When the inner returns a hit the value is
+// populated into L1 (write-on-read) so subsequent Gets are served locally.
+// This preserves the cache hierarchy: a cold L1 (fresh node, after eviction,
+// or after restart) still benefits from the shared L2 rather than forcing a
+// DB reload on every Get.
 func (l *L1Cache) Get(ctx context.Context, ks corecache.Keyspace, key string) (val []byte, ok bool, err error) {
 	var part string
 	part, err = ks.Partition.Resolve(ctx)
 	if err != nil {
 		return nil, false, err
 	}
-	if val, ok = l.store.get(l.l1key(ks, part, key)); ok {
+	lk := l.l1key(ks, part, key)
+	if val, ok = l.store.get(lk); ok {
 		return val, true, nil
 	}
-	return nil, false, nil
+	val, ok, err = l.inner.Get(ctx, ks, key)
+	if err != nil {
+		return nil, false, err
+	}
+	if ok {
+		l.store.put(lk, val)
+	}
+	return val, ok, nil
 }
 
 // Set stores a value in the inner L2 and populates L1.
