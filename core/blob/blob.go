@@ -70,3 +70,14 @@ type Multipart interface {
 type Ranger interface {
 	GetRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error)
 }
+
+// CAS is the content-addressable storage capability the write path uses: store
+// bytes under their content hash (deduped), and retrieve by hash. Implemented by
+// adapters/trove.CASStore. Fabriq vocabulary only — no storage-engine types here.
+type CAS interface {
+	// Store writes content-addressed bytes, returning the content hash and size.
+	// Identical content is stored once (the underlying ref-count is incremented).
+	Store(ctx context.Context, r io.Reader) (hash string, size int64, err error)
+	// Retrieve returns the bytes for a content hash.
+	Retrieve(ctx context.Context, hash string) (io.ReadCloser, error)
+}
