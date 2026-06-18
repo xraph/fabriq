@@ -54,14 +54,10 @@ func newWindow(t *testing.T, n int, seed []livequery.Row, all []livequery.Row) *
 	return w
 }
 
-func change(id, name string, temp float64, status string, deleted bool) livequery.Change {
+func change(id, name string, temp float64, status string) livequery.Change {
 	vals := map[string]any{"id": id, "name": name, "temp": temp, "status": status}
 	raw, _ := json.Marshal(vals)
-	c := livequery.Change{AggID: id, Version: 2, Raw: raw, Deleted: deleted}
-	if !deleted {
-		c.Vals = vals
-	}
-	return c
+	return livequery.Change{AggID: id, Version: 2, Raw: raw, Vals: vals}
 }
 
 func TestWindowEnterMoveLeaveUpdate(t *testing.T) {
@@ -71,19 +67,19 @@ func TestWindowEnterMoveLeaveUpdate(t *testing.T) {
 	w := newWindow(t, 2, seed, all)
 
 	// ENTER: new "Bravo" sorts to index 1 (between Alpha and Charlie).
-	d := w.Apply(context.Background(), change("b", "Bravo", 1, "active", false))
+	d := w.Apply(context.Background(), change("b", "Bravo", 1, "active"))
 	if len(d) == 0 || d[0].Op != livequery.OpEnter || d[0].NewIndex != 1 {
 		t.Fatalf("expected enter at 1, got %+v", d)
 	}
 
 	// UPDATE: Alpha payload changes, same position.
-	d = w.Apply(context.Background(), change("a", "Alpha", 99, "active", false))
+	d = w.Apply(context.Background(), change("a", "Alpha", 99, "active"))
 	if len(d) != 1 || d[0].Op != livequery.OpUpdate || d[0].NewIndex != 0 {
 		t.Fatalf("expected update at 0, got %+v", d)
 	}
 
 	// LEAVE via predicate: Bravo goes inactive → leaves; cushion refills the slot.
-	d = w.Apply(context.Background(), change("b", "Bravo", 1, "idle", false))
+	d = w.Apply(context.Background(), change("b", "Bravo", 1, "idle"))
 	var sawLeave, sawEnter bool
 	for _, x := range d {
 		if x.Op == livequery.OpLeave && x.AggID == "b" {
@@ -98,7 +94,7 @@ func TestWindowEnterMoveLeaveUpdate(t *testing.T) {
 	}
 
 	// MOVE: the index-1 visible row (Charlie) is renamed but stays visible.
-	d = w.Apply(context.Background(), change("c", "Bravo", 1, "active", false))
+	d = w.Apply(context.Background(), change("c", "Bravo", 1, "active"))
 	var sawMove bool
 	for _, x := range d {
 		if x.Op == livequery.OpMove && x.AggID == "c" {

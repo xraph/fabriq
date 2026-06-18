@@ -3,8 +3,13 @@
 # toolchain and drops it into this build context, so there is no build stage
 # here — just a minimal, non-root runtime. The from-source build with the
 # vendored tree still lives in deploy/docker/Dockerfile for `make docker-build`.
+#
+# Under goreleaser's dockers_v2 the binaries are laid out per-platform in the
+# build context ($TARGETPLATFORM/fabriq, e.g. linux/amd64/fabriq), so the COPY
+# selects the right arch via the buildx-provided TARGETPLATFORM build arg.
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY fabriq /usr/local/bin/fabriq
+ARG TARGETPLATFORM
+COPY $TARGETPLATFORM/fabriq /usr/local/bin/fabriq
 USER nonroot:nonroot
 EXPOSE 8081
 ENTRYPOINT ["/usr/local/bin/fabriq", "serve"]

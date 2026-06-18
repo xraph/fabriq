@@ -70,58 +70,44 @@ changelog:
     - title: Others
       order: 999
 
-# Multi-arch image, assembled from the prebuilt binaries (no in-image compile,
-# so the arm64 build packages a cross-compiled binary rather than emulating a
-# toolchain). The workflow sets up QEMU + buildx and logs in to ghcr.io.
-dockers:
-  - id: fabriq-amd64
-    goos: linux
-    goarch: amd64
+# Multi-arch image (linux/amd64 + linux/arm64) assembled in a single buildx
+# pass from the prebuilt binaries — no in-image compile, so the arm64 image just
+# packages a cross-compiled binary rather than emulating a toolchain. goreleaser
+# builds both platforms at once and pushes one manifest list tagged with the
+# full version, major.minor, and latest. The workflow sets up QEMU + buildx and
+# logs in to ghcr.io.
+#
+# Migrated from the deprecated `dockers:` + `docker_manifests:` blocks to
+# `dockers_v2:` (https://goreleaser.com/deprecations#dockers). dockers_v2 lays
+# the binaries out per-platform in the build context ($TARGETPLATFORM/fabriq),
+# so Dockerfile.goreleaser copies via the buildx-provided TARGETPLATFORM arg.
+dockers_v2:
+  - id: fabriq
+    ids:
+      - fabriq
     dockerfile: deploy/docker/Dockerfile.goreleaser
-    use: buildx
-    image_templates:
-      - "ghcr.io/xraph/fabriq:{{ .Version }}-amd64"
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title=fabriq"
-      - "--label=org.opencontainers.image.description=TWINOS data fabric: worker + operations CLI"
-      - "--label=org.opencontainers.image.url=https://github.com/xraph/fabriq"
-      - "--label=org.opencontainers.image.source=https://github.com/xraph/fabriq"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.created={{ .Date }}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-  - id: fabriq-arm64
-    goos: linux
-    goarch: arm64
-    dockerfile: deploy/docker/Dockerfile.goreleaser
-    use: buildx
-    image_templates:
-      - "ghcr.io/xraph/fabriq:{{ .Version }}-arm64"
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title=fabriq"
-      - "--label=org.opencontainers.image.description=TWINOS data fabric: worker + operations CLI"
-      - "--label=org.opencontainers.image.url=https://github.com/xraph/fabriq"
-      - "--label=org.opencontainers.image.source=https://github.com/xraph/fabriq"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.created={{ .Date }}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-
-docker_manifests:
-  - name_template: "ghcr.io/xraph/fabriq:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/xraph/fabriq:{{ .Version }}-amd64"
-      - "ghcr.io/xraph/fabriq:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/xraph/fabriq:{{ .Major }}.{{ .Minor }}"
-    image_templates:
-      - "ghcr.io/xraph/fabriq:{{ .Version }}-amd64"
-      - "ghcr.io/xraph/fabriq:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/xraph/fabriq:latest"
-    image_templates:
-      - "ghcr.io/xraph/fabriq:{{ .Version }}-amd64"
-      - "ghcr.io/xraph/fabriq:{{ .Version }}-arm64"
+    images:
+      - "ghcr.io/xraph/fabriq"
+    tags:
+      - "{{ .Version }}"
+      - "{{ .Major }}.{{ .Minor }}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    # The previous dockers block produced no SBOM attestations; keep that so the
+    # published manifest list keeps the same shape (dockers_v2 attaches one by
+    # default).
+    sbom: false
+    labels:
+      org.opencontainers.image.title: fabriq
+      org.opencontainers.image.description: "TWINOS data fabric: worker + operations CLI"
+      org.opencontainers.image.url: https://github.com/xraph/fabriq
+      org.opencontainers.image.source: https://github.com/xraph/fabriq
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+      org.opencontainers.image.licenses: Apache-2.0
 
 release:
   github:

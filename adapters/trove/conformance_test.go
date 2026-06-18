@@ -38,7 +38,7 @@ func (b *troveMemBackend) Setup(t *testing.T) *conformance.Env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tr.CreateBucket(ctx, "conf"); err != nil {
+	if err = tr.CreateBucket(ctx, "conf"); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tr.Close(context.Background()) })

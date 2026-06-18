@@ -41,7 +41,7 @@ func (e *Extension) Run(ctx context.Context) error {
 	e.mu.Unlock()
 
 	// Observability: /metrics + gauge pollers.
-	app := e.BaseExtension.App()
+	app := e.App()
 	var relayOpts []postgres.RelayOption
 	if app != nil {
 		if m, err := wireObservability(app, stores); err == nil {

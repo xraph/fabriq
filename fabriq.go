@@ -107,7 +107,7 @@ func New(reg *registry.Registry, ports Ports, opts ...Option) (*Fabriq, error) {
 	// either, LiveQuery returns a typed not-configured error.
 	var liveEngine *livequery.Engine
 	if ports.Live != nil && s.tailer != nil {
-		feed := livequery.NewRedisFeed(s.tailer, func(ctx context.Context, q livequery.LiveQuery) (string, error) {
+		feed := livequery.NewRedisFeed(s.tailer, func(ctx context.Context, _ livequery.LiveQuery) (string, error) {
 			tid, terr := tenant.Require(ctx)
 			if terr != nil {
 				return "", terr

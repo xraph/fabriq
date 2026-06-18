@@ -35,8 +35,8 @@ type Sub struct {
 // NewSub builds a Sub from its stream and control closures. The adapter in
 // forgeext uses it to wrap a cluster.Gateway subscription; tests use it to wrap
 // a hand-fed channel.
-func NewSub(id string, deltas <-chan livequery.LiveDelta, reanchor func(context.Context, *livequery.Cursor, int) error, close func()) *Sub {
-	return &Sub{ID: id, Deltas: deltas, reanchor: reanchor, close: close}
+func NewSub(id string, deltas <-chan livequery.LiveDelta, reanchor func(context.Context, *livequery.Cursor, int) error, closeFn func()) *Sub {
+	return &Sub{ID: id, Deltas: deltas, reanchor: reanchor, close: closeFn}
 }
 
 // Reanchor slides the maintained window to a new keyset anchor (deep/infinite

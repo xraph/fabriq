@@ -37,7 +37,7 @@ func (s *server) liveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var q livequery.LiveQuery
-	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
+	if err = json.NewDecoder(r.Body).Decode(&q); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

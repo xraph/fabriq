@@ -51,14 +51,11 @@ func TestEngineSnapshotThenLiveDelta(t *testing.T) {
 		t.Fatalf("snapshot rows = %d want 2", len(snap.Rows))
 	}
 
-	feed.ch <- change("b", "Bravo", 1, "active", false)
+	feed.ch <- change("b", "Bravo", 1, "active")
 	select {
 	case d := <-deltas:
 		if d.Op != livequery.OpEnter {
 			t.Fatalf("first delta op = %v want enter", d.Op)
-		}
-		if d.StreamID == "" {
-			// change() leaves StreamID empty; ensure the engine still tagged At.
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no delta received")
@@ -82,11 +79,11 @@ func TestEngineGaplessDedup(t *testing.T) {
 	}
 	defer h.Close()
 
-	stale := change("a", "Alpha", 1, "active", false)
+	stale := change("a", "Alpha", 1, "active")
 	stale.Version = 3 // older than seeded version 5 → must be ignored
 	feed.ch <- stale
 	// follow with a genuinely new change to prove the loop is alive
-	feed.ch <- change("z", "Zeb", 1, "active", false)
+	feed.ch <- change("z", "Zeb", 1, "active")
 
 	select {
 	case d := <-deltas:

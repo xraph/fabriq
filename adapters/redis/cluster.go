@@ -75,7 +75,7 @@ func (c *ClusterTransport) SendControl(ctx context.Context, shardID string, ctrl
 	}).Err()
 }
 
-func (c *ClusterTransport) Control(ctx context.Context, shardID string) (<-chan cluster.Control, func(), error) {
+func (c *ClusterTransport) Control(ctx context.Context, shardID string) (events <-chan cluster.Control, stop func(), retErr error) {
 	out := make(chan cluster.Control, 64)
 	cctx, cancel := context.WithCancel(ctx)
 	go readStream(cctx, c.client, cluster.CtrlStream(shardID), "c", func(raw []byte) {
@@ -103,7 +103,7 @@ func (c *ClusterTransport) SendDelta(ctx context.Context, gatewayID string, d cl
 	}).Err()
 }
 
-func (c *ClusterTransport) Deltas(ctx context.Context, gatewayID string) (<-chan cluster.GatewayDelta, func(), error) {
+func (c *ClusterTransport) Deltas(ctx context.Context, gatewayID string) (events <-chan cluster.GatewayDelta, stop func(), retErr error) {
 	out := make(chan cluster.GatewayDelta, 256)
 	cctx, cancel := context.WithCancel(ctx)
 	go readStream(cctx, c.client, cluster.DeltaChannel(gatewayID), "d", func(raw []byte) {

@@ -14,7 +14,7 @@ func TestWindowEvictionEmitsLeave(t *testing.T) {
 	w := newWindow(t, 2, seed, all)
 
 	// Inserting Bravo at index 1 evicts Charlie (was visible index 1) → it must LEAVE.
-	d := w.Apply(context.Background(), change("b", "Bravo", 1, "active", false))
+	d := w.Apply(context.Background(), change("b", "Bravo", 1, "active"))
 	var sawEnterB, sawLeaveC bool
 	for _, x := range d {
 		if x.Op == livequery.OpEnter && x.AggID == "b" && x.NewIndex == 1 {
