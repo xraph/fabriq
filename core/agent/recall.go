@@ -19,9 +19,9 @@ type RecallRequest struct {
 	Filters  query.Where `json:"filters,omitempty"`
 }
 
-// Recall runs the auto-context pipeline: embed → vector nearest-neighbour →
-// RRF fuse → hydrate → token-budget pack. Phase 1a uses the vector channel
-// only; search/graph channels arrive in Phase 1b without changing this shape.
+// Recall runs the auto-context pipeline: build per-channel ranked candidates
+// (vector, search; graph added in Task 2) → RRF fuse → hydrate authoritative
+// rows → token-budget pack.
 func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, error) {
 	if req.Query == "" {
 		return ContextPack{}, fmt.Errorf("agent: recall requires a non-empty Query")
@@ -40,52 +40,39 @@ func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, e
 	var warnings []string
 	channels := map[string][]ref{}
 
-	if t.emb == nil {
-		warnings = append(warnings, "semantic channel skipped: no embedder configured")
-	} else if vecs, err := t.emb.Embed(ctx, []string{req.Query}); err != nil {
-		if t.cfg.Strict {
-			return ContextPack{}, fmt.Errorf("agent: embed query: %w", err)
-		}
-		warnings = append(warnings, fmt.Sprintf("semantic channel failed: %v", err))
-	} else if len(vecs) != 1 {
-		msg := fmt.Sprintf("agent: embed returned %d vectors for 1 input", len(vecs))
-		if t.cfg.Strict {
-			return ContextPack{}, fmt.Errorf("%s", msg)
-		}
-		warnings = append(warnings, msg)
-	} else {
-		var vrefs []ref
-		for _, ent := range req.Entities {
-			var matches []query.VectorMatch
-			if err := t.fab.Vector().Similar(ctx, query.VectorQuery{Entity: ent, Embedding: vecs[0], K: k}, &matches); err != nil {
-				if t.cfg.Strict {
-					return ContextPack{}, fmt.Errorf("agent: vector similar %q: %w", ent, err)
-				}
-				warnings = append(warnings, fmt.Sprintf("vector channel failed for %q: %v", ent, err))
-				continue
-			}
-			for _, m := range matches {
-				vrefs = append(vrefs, ref{Entity: ent, ID: m.ID})
-			}
-		}
+	vrefs, vw, err := t.vectorChannel(ctx, req, k)
+	if err != nil {
+		return ContextPack{}, err
+	}
+	warnings = append(warnings, vw...)
+	if vrefs != nil {
 		channels["vector"] = vrefs
+	}
+
+	srefs, sw, err := t.searchChannel(ctx, req, k)
+	if err != nil {
+		return ContextPack{}, err
+	}
+	warnings = append(warnings, sw...)
+	if srefs != nil {
+		channels["search"] = srefs
 	}
 
 	fused := fuse(channels, t.cfg.ChannelWeights)
 
-	// Batch-hydrate per entity.
+	// Hydrate every fused ref from the relational source of truth, batched per entity.
 	byEntity := map[string][]string{}
 	for _, sr := range fused {
 		byEntity[sr.Entity] = append(byEntity[sr.Entity], sr.ID)
 	}
 	rows := map[ref]json.RawMessage{}
 	for ent, ids := range byEntity {
-		hydrated, err := t.hydrate(ctx, ent, ids)
-		if err != nil {
+		hydrated, herr := t.hydrate(ctx, ent, ids)
+		if herr != nil {
 			if t.cfg.Strict {
-				return ContextPack{}, fmt.Errorf("agent: hydrate %q: %w", ent, err)
+				return ContextPack{}, fmt.Errorf("agent: hydrate %q: %w", ent, herr)
 			}
-			warnings = append(warnings, fmt.Sprintf("hydrate failed for %q: %v", ent, err))
+			warnings = append(warnings, fmt.Sprintf("hydrate failed for %q: %v", ent, herr))
 			continue
 		}
 		for id, raw := range hydrated {
@@ -93,7 +80,7 @@ func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, e
 		}
 	}
 
-	// Assemble in fused order, dropping rows that did not hydrate.
+	// Assemble in fused order, dropping refs that did not hydrate.
 	items := make([]ContextItem, 0, len(fused))
 	for _, sr := range fused {
 		raw, ok := rows[sr.ref]
@@ -112,4 +99,71 @@ func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, e
 
 	kept, omitted, used := pack(items, req.Budget)
 	return ContextPack{Items: kept, Omitted: omitted, Tokens: used, Warnings: warnings}, nil
+}
+
+// vectorChannel embeds the query and runs nearest-neighbour per entity. Returns
+// ranked refs, warnings (lenient mode), or an error (strict mode).
+func (t *Toolkit) vectorChannel(ctx context.Context, req RecallRequest, k int) ([]ref, []string, error) {
+	if t.emb == nil {
+		return nil, []string{"semantic channel skipped: no embedder configured"}, nil
+	}
+	vecs, err := t.emb.Embed(ctx, []string{req.Query})
+	if err != nil {
+		if t.cfg.Strict {
+			return nil, nil, fmt.Errorf("agent: embed query: %w", err)
+		}
+		return nil, []string{fmt.Sprintf("semantic channel failed: %v", err)}, nil
+	}
+	if len(vecs) != 1 {
+		msg := fmt.Sprintf("agent: embed returned %d vectors for 1 input", len(vecs))
+		if t.cfg.Strict {
+			return nil, nil, fmt.Errorf("%s", msg)
+		}
+		return nil, []string{msg}, nil
+	}
+	var refs []ref
+	var warnings []string
+	for _, ent := range req.Entities {
+		var matches []query.VectorMatch
+		if err := t.fab.Vector().Similar(ctx, query.VectorQuery{Entity: ent, Embedding: vecs[0], K: k}, &matches); err != nil {
+			if t.cfg.Strict {
+				return nil, nil, fmt.Errorf("agent: vector similar %q: %w", ent, err)
+			}
+			warnings = append(warnings, fmt.Sprintf("vector channel failed for %q: %v", ent, err))
+			continue
+		}
+		for _, m := range matches {
+			refs = append(refs, ref{Entity: ent, ID: m.ID})
+		}
+	}
+	return refs, warnings, nil
+}
+
+// searchChannel runs full-text search per searchable entity. Non-searchable
+// entities (no declared search index) are skipped silently.
+func (t *Toolkit) searchChannel(ctx context.Context, req RecallRequest, k int) ([]ref, []string, error) {
+	var refs []ref
+	var warnings []string
+	for _, ent := range req.Entities {
+		e, ok := t.reg.Get(ent)
+		if !ok || e.Spec.Search.Index == "" {
+			continue
+		}
+		var hits []map[string]any
+		if err := t.fab.Search().Search(ctx, query.SearchQuery{Entity: ent, Query: req.Query, Limit: k}, &hits); err != nil {
+			if t.cfg.Strict {
+				return nil, nil, fmt.Errorf("agent: search %q: %w", ent, err)
+			}
+			warnings = append(warnings, fmt.Sprintf("search channel failed for %q: %v", ent, err))
+			continue
+		}
+		for _, h := range hits {
+			id, _ := h["id"].(string)
+			if id == "" {
+				continue
+			}
+			refs = append(refs, ref{Entity: ent, ID: id})
+		}
+	}
+	return refs, warnings, nil
 }
