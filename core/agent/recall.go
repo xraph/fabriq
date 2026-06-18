@@ -42,11 +42,17 @@ func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, e
 
 	if t.emb == nil {
 		warnings = append(warnings, "semantic channel skipped: no embedder configured")
-	} else if vecs, err := t.emb.Embed(ctx, []string{req.Query}); err != nil || len(vecs) != 1 {
+	} else if vecs, err := t.emb.Embed(ctx, []string{req.Query}); err != nil {
 		if t.cfg.Strict {
 			return ContextPack{}, fmt.Errorf("agent: embed query: %w", err)
 		}
 		warnings = append(warnings, fmt.Sprintf("semantic channel failed: %v", err))
+	} else if len(vecs) != 1 {
+		msg := fmt.Sprintf("agent: embed returned %d vectors for 1 input", len(vecs))
+		if t.cfg.Strict {
+			return ContextPack{}, fmt.Errorf("%s", msg)
+		}
+		warnings = append(warnings, msg)
 	} else {
 		var vrefs []ref
 		for _, ent := range req.Entities {

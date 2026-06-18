@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/xraph/fabriq/core/command"
@@ -72,6 +73,29 @@ func TestRecall_NoEmbedderDegradesWithWarning(t *testing.T) {
 	}
 	if len(pack.Warnings) == 0 {
 		t.Fatal("want a degradation warning")
+	}
+}
+
+// errEmbedder always returns an error from Embed; used by the Strict-mode test.
+type errEmbedder struct{ dims int }
+
+func (e errEmbedder) Dims() int { return e.dims }
+func (e errEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	return nil, errors.New("boom")
+}
+
+func TestRecall_StrictReturnsErrorOnChannelFailure(t *testing.T) {
+	reg := testRegistry(t)
+	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
+	tk, err := NewToolkit(ff, reg, errEmbedder{dims: 3}, Config{Strict: true, VectorDims: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testCtx(t, "acme")
+
+	_, recallErr := tk.Recall(ctx, RecallRequest{Query: "anything", Budget: 10000, Entities: []string{"doc"}})
+	if recallErr == nil {
+		t.Fatal("want non-nil error in Strict mode when embedder fails, got nil")
 	}
 }
 
