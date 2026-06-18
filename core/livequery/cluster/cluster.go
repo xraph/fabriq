@@ -64,7 +64,7 @@ func weight(shardID string, p int) uint64 {
 	_, _ = h.Write([]byte(shardID))
 	_, _ = h.Write([]byte{0})
 	var buf [8]byte
-	binary.LittleEndian.PutUint64(buf[:], uint64(p))
+	binary.LittleEndian.PutUint64(buf[:], uint64(p)) // #nosec G115 -- p is a non-negative partition index
 	_, _ = h.Write(buf[:])
 	return h.Sum64()
 }

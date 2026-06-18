@@ -33,7 +33,7 @@ func NewRedisFeed(tail Tailer, channel ChannelFor) *RedisFeed {
 }
 
 // Changes implements Feed.
-func (f *RedisFeed) Changes(ctx context.Context, q LiveQuery, from string) (<-chan Change, func(), error) {
+func (f *RedisFeed) Changes(ctx context.Context, q LiveQuery, from string) (stream <-chan Change, stop func(), retErr error) {
 	ch, err := f.channel(ctx, q)
 	if err != nil {
 		return nil, nil, err

@@ -118,7 +118,7 @@ func (x *Executor) ExecBatch(ctx context.Context, cmds []Command) ([]Result, err
 // resolveOp maps the command op and the stored version to the effective
 // write op and the event verb. OpUpsert becomes create (absent) or update
 // (present); every other op is unchanged.
-func resolveOp(op Op, current int64) (Op, string) {
+func resolveOp(op Op, current int64) (eff Op, verb string) {
 	if op == OpUpsert {
 		if current == 0 {
 			return OpCreate, registry.VerbCreated

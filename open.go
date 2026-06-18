@@ -152,7 +152,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			// detached from the request ctx (WithoutCancel) so it outlives
 			// individual requests, but remains cancellable via tctx so that
 			// Stores.Close() can stop it before tearing down the connection.
-			tctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+			tctx, cancel := context.WithCancel(context.WithoutCancel(ctx)) // #nosec G118 -- cancel is retained in cancelFns and invoked by Stores.Close()
 			// Cold-start window: commits between Open() returning and the tailer's
 			// first XRead attach are missed on this node and bounded by L1TTL (not
 			// stream lag). L1 is opt-in and TTL-backstopped; acceptable for P4a.
@@ -264,7 +264,7 @@ func (s *Stores) Close() error {
 	}
 	var firstErr error
 	if s.Blob != nil {
-		if err := s.Blob.Close(context.Background()); err != nil && firstErr == nil {
+		if err := s.Blob.Close(context.Background()); err != nil {
 			firstErr = err
 		}
 	}

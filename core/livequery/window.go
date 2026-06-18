@@ -104,11 +104,11 @@ func (w *Window) insert(ctx context.Context, ch Change) []LiveDelta {
 		}
 	}
 	w.trimTail()
-	deltas = append(deltas, w.maybeRefill(ctx)...)
+	w.maybeRefill(ctx)
 	return deltas
 }
 
-func (w *Window) remove(ctx context.Context, pos int, ch Change) []LiveDelta {
+func (w *Window) remove(ctx context.Context, pos int, _ Change) []LiveDelta {
 	leaving := w.rows[pos]
 	w.rows = append(w.rows[:pos], w.rows[pos+1:]...)
 
@@ -121,7 +121,7 @@ func (w *Window) remove(ctx context.Context, pos int, ch Change) []LiveDelta {
 			deltas = append(deltas, w.delta(OpEnter, promoted, -1, w.n-1))
 		}
 	}
-	deltas = append(deltas, w.maybeRefill(ctx)...)
+	w.maybeRefill(ctx)
 	return deltas
 }
 
@@ -156,7 +156,7 @@ func (w *Window) reposition(ctx context.Context, old int, ch Change) []LiveDelta
 		deltas = append(deltas, w.delta(OpEnter, r, -1, pos))
 	}
 	w.trimTail()
-	deltas = append(deltas, w.maybeRefill(ctx)...)
+	w.maybeRefill(ctx)
 	return deltas
 }
 
@@ -171,10 +171,10 @@ func (w *Window) trimTail() {
 // maybeRefill tops the cushion back up from Postgres when it runs low, keeping
 // the prefix exact. Refilled rows append at the tail (past the visible N), so
 // no visible delta results.
-func (w *Window) maybeRefill(ctx context.Context) []LiveDelta {
+func (w *Window) maybeRefill(ctx context.Context) {
 	low := w.cushion / 2
 	if w.complete || len(w.rows) >= w.n+low {
-		return nil
+		return
 	}
 	var after Cursor
 	if len(w.rows) > 0 {
@@ -185,13 +185,12 @@ func (w *Window) maybeRefill(ctx context.Context) []LiveDelta {
 	need := w.cap() - len(w.rows)
 	more, err := w.refill.After(ctx, w.q, after, need)
 	if err != nil {
-		return nil // suspicion flag for reconcile (P4); never corrupt the window
+		return // suspicion flag for reconcile (P4); never corrupt the window
 	}
 	if len(more) < need {
 		w.complete = true
 	}
 	w.rows = append(w.rows, more...)
-	return nil
 }
 
 func (w *Window) delta(op DeltaOp, r Row, oldIdx, newIdx int) LiveDelta {

@@ -60,18 +60,19 @@ func likeAnchored(s, pat string) bool {
 	var si, pi, star, mark int
 	star = -1
 	for si < len(s) {
-		if pi < len(pat) && (pat[pi] == '_' || pat[pi] == s[si]) {
+		switch {
+		case pi < len(pat) && (pat[pi] == '_' || pat[pi] == s[si]):
 			si++
 			pi++
-		} else if pi < len(pat) && pat[pi] == '%' {
+		case pi < len(pat) && pat[pi] == '%':
 			star = pi
 			mark = si
 			pi++
-		} else if star != -1 {
+		case star != -1:
 			pi = star + 1
 			mark++
 			si = mark
-		} else {
+		default:
 			return false
 		}
 	}

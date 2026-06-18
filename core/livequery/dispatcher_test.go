@@ -12,10 +12,14 @@ import (
 	"github.com/xraph/fabriq/core/query"
 )
 
-func pushChange(feed *fakeFeed, id, name, status, kind string, version int64) {
+func changeFor(id, name, status, kind string, version int64) livequery.Change {
 	vals := map[string]any{"id": id, "name": name, "status": status, "kind": kind}
 	raw, _ := json.Marshal(vals)
-	feed.ch <- livequery.Change{AggID: id, Version: version, Vals: vals, Raw: raw}
+	return livequery.Change{AggID: id, Version: version, Vals: vals, Raw: raw}
+}
+
+func pushChange(feed *fakeFeed, id, name, status, kind string, version int64) {
+	feed.ch <- changeFor(id, name, status, kind, version)
 }
 
 func assertEnter(t *testing.T, ch <-chan livequery.LiveDelta, aggID string) {
@@ -152,7 +156,16 @@ func TestDispatcher_ConcurrentSubscribeCancel(t *testing.T) {
 				return
 			default:
 			}
-			pushChange(feed, fmt.Sprintf("a%d", i%50), fmt.Sprintf("n%d", i%50), "active", "pump", int64(i))
+			change := changeFor(fmt.Sprintf("a%d", i%50), fmt.Sprintf("n%d", i%50), "active", "pump", int64(i))
+			// Respect stop during the send too: once every subscription cancels,
+			// the dispatcher stops draining feed.ch, so a plain blocking send would
+			// hang forever and writer.Wait() would never return. The select lets
+			// close(stop) interrupt an in-flight send.
+			select {
+			case feed.ch <- change:
+			case <-stop:
+				return
+			}
 		}
 	}()
 

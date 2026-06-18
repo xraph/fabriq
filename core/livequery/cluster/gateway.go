@@ -68,7 +68,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 // that owns the query's partition and returns the demuxed delta stream. The
 // initial snapshot arrives on that stream as an OpReset followed by OpEnter
 // rows (the same encoding a failover re-snapshot uses).
-func (g *Gateway) Subscribe(ctx context.Context, q livequery.LiveQuery) (string, <-chan livequery.LiveDelta, func(), error) {
+func (g *Gateway) Subscribe(ctx context.Context, q livequery.LiveQuery) (id string, stream <-chan livequery.LiveDelta, release func(), retErr error) {
 	tid, err := tenant.Require(ctx)
 	if err != nil {
 		return "", nil, nil, err

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/xraph/grove/driver"
@@ -91,20 +92,15 @@ func (e *Elector) campaign(ctx context.Context, lead func(ctx context.Context) e
 	if !got {
 		return nil
 	}
-	defer func() {
-		// Best effort: if the session is gone the lock is already free.
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		var released bool
-		_ = conn.QueryRow(releaseCtx, `SELECT pg_advisory_unlock($1)`, e.key).Scan(&released)
-	}()
 
 	leadCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	// Watchdog: the advisory lock lives in the dedicated session. If that
 	// session dies, someone else may already lead — abdicate immediately.
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(e.heartbeat)
 		defer ticker.Stop()
 		for {
@@ -119,6 +115,19 @@ func (e *Elector) campaign(ctx context.Context, lead func(ctx context.Context) e
 				}
 			}
 		}
+	}()
+
+	// Tear down in order: stop the watchdog and wait for it to exit BEFORE
+	// reusing the dedicated connection for the unlock — a pgx connection is
+	// not safe for concurrent use, and the watchdog and unlock both query it.
+	defer func() {
+		cancel()
+		wg.Wait()
+		// Best effort: if the session is gone the lock is already free.
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer releaseCancel()
+		var released bool
+		_ = conn.QueryRow(releaseCtx, `SELECT pg_advisory_unlock($1)`, e.key).Scan(&released)
 	}()
 
 	return lead(leadCtx)

@@ -54,7 +54,7 @@ func TestGatewaySSE_OverForgeRouter(t *testing.T) {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/api/v1/live",
 		strings.NewReader(`{"entity":"asset","limit":10}`))
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // closed via defer below; the body is consumed by the scanner goroutine
 	if err != nil {
 		t.Fatalf("POST /api/v1/live: %v", err)
 	}

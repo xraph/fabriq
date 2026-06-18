@@ -126,8 +126,8 @@ func (b *fakeBackend) Subscribe(_ context.Context, q livequery.LiveQuery) (*Sub,
 	return NewSub("sub-1", b.deltas, reanchor, closeFn), nil
 }
 
-func subscribeCmd(entity string) ClientCommand {
-	return ClientCommand{Action: ActionSubscribe, Query: &livequery.LiveQuery{Entity: entity}}
+func subscribeCmd() ClientCommand {
+	return ClientCommand{Action: ActionSubscribe, Query: &livequery.LiveQuery{Entity: "asset"}}
 }
 
 func TestServeWS_SubscribeThenForwardDelta(t *testing.T) {
@@ -136,7 +136,7 @@ func TestServeWS_SubscribeThenForwardDelta(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- ServeWS(context.Background(), conn, be, WSOptions{}) }()
 
-	conn.feed(subscribeCmd("asset"))
+	conn.feed(subscribeCmd())
 	select {
 	case q := <-be.subscribed:
 		if q.Entity != "asset" {
@@ -168,7 +168,7 @@ func TestServeWS_ReanchorCommand(t *testing.T) {
 	be := newFakeBackend()
 	go ServeWS(context.Background(), conn, be, WSOptions{})
 
-	conn.feed(subscribeCmd("asset"))
+	conn.feed(subscribeCmd())
 	<-be.subscribed
 	conn.feed(ClientCommand{Action: ActionReanchor, Cursor: &livequery.Cursor{Values: []any{"z"}}, Limit: 25})
 
@@ -189,7 +189,7 @@ func TestServeWS_UnsubscribeEndsCleanly(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- ServeWS(context.Background(), conn, be, WSOptions{}) }()
 
-	conn.feed(subscribeCmd("asset"))
+	conn.feed(subscribeCmd())
 	<-be.subscribed
 	conn.feed(ClientCommand{Action: ActionUnsubscribe})
 
@@ -231,7 +231,7 @@ func TestServeWS_StreamCloseEndsConnection(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- ServeWS(context.Background(), conn, be, WSOptions{}) }()
 
-	conn.feed(subscribeCmd("asset"))
+	conn.feed(subscribeCmd())
 	<-be.subscribed
 	close(be.deltas) // backend ends the stream
 
@@ -254,7 +254,7 @@ func TestServeWS_WriteWatchdogTearsDownStalledClient(t *testing.T) {
 		done <- ServeWS(context.Background(), conn, be, WSOptions{WriteTimeout: 20 * time.Millisecond})
 	}()
 
-	conn.feed(subscribeCmd("asset"))
+	conn.feed(subscribeCmd())
 	<-be.subscribed
 	be.deltas <- livequery.LiveDelta{Op: livequery.OpEnter, AggID: "a"}
 

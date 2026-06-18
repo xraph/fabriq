@@ -73,7 +73,7 @@ func BenchmarkWindowApplyUpdate(b *testing.B) {
 			}
 			target := seed[n/2]
 			name, _ := target.Vals["name"].(string)
-			ch := change(target.AggID, name, 1, "active", false)
+			ch := change(target.AggID, name, 1, "active")
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -102,7 +102,7 @@ func BenchmarkWindowApplyChurn(b *testing.B) {
 		if i%2 == 1 {
 			status = "idle"
 		}
-		_ = w.Apply(context.Background(), change(churnID, churnName, 1, status, false))
+		_ = w.Apply(context.Background(), change(churnID, churnName, 1, status))
 	}
 }
 
@@ -126,7 +126,7 @@ func BenchmarkWindowFanout(b *testing.B) {
 			}
 			target := seed[5]
 			name, _ := target.Vals["name"].(string)
-			ch := change(target.AggID, name, 1, "active", false)
+			ch := change(target.AggID, name, 1, "active")
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {

@@ -44,7 +44,7 @@ func (c *liveSSEController) Stream(ctx forge.Context) error {
 	}
 
 	var q livequery.LiveQuery
-	if err := json.NewDecoder(ctx.Request().Body).Decode(&q); err != nil {
+	if err = json.NewDecoder(ctx.Request().Body).Decode(&q); err != nil {
 		return forge.BadRequest("invalid live query: " + err.Error())
 	}
 

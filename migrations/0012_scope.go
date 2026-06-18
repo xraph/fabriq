@@ -75,8 +75,10 @@ var migration0012Scope = &migrate.Migration{
 			if !exists {
 				continue // pgvector/postgis table absent on this DB — skip
 			}
-			stmts := []string{fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS scope_id TEXT`, t)}
-			stmts = append(stmts, ScopeAwareTenantPolicy(t)...)
+			policy := ScopeAwareTenantPolicy(t)
+			stmts := make([]string, 0, 1+len(policy))
+			stmts = append(stmts, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS scope_id TEXT`, t))
+			stmts = append(stmts, policy...)
 			if err := execAll(ctx, exec, stmts); err != nil {
 				return err
 			}

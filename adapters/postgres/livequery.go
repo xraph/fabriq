@@ -39,8 +39,8 @@ func (s *LiveStore) Members(ctx context.Context, q livequery.LiveQuery) ([]strin
 	if err != nil {
 		return nil, err
 	}
-	if err := query.ValidateConds(q.Where, ent.Binding.HasColumn); err != nil {
-		return nil, err
+	if verr := query.ValidateConds(q.Where, ent.Binding.HasColumn); verr != nil {
+		return nil, verr
 	}
 	if !ddlValid(ent.Binding.Table) {
 		return nil, fmt.Errorf("fabriq: live: table %q failed ddl validation", ent.Binding.Table)
@@ -99,8 +99,8 @@ func (s *LiveStore) read(ctx context.Context, q livequery.LiveQuery, after *live
 		return nil, err
 	}
 	// Column validation is the injection guard: every filter column must exist.
-	if err := query.ValidateConds(q.Where, ent.Binding.HasColumn); err != nil {
-		return nil, err
+	if verr := query.ValidateConds(q.Where, ent.Binding.HasColumn); verr != nil {
+		return nil, verr
 	}
 	if !ddlValid(ent.Binding.Table) {
 		return nil, fmt.Errorf("fabriq: live: table %q failed ddl validation", ent.Binding.Table)
@@ -181,7 +181,7 @@ func (s *LiveStore) read(ctx context.Context, q livequery.LiveQuery, after *live
 //
 // where ▷ is ">" for ascending keys and "<" for descending. Identifiers are
 // ddlValid-checked and quoted; every value travels as a bound parameter.
-func keysetSQL(sort []livequery.SortKey, after livequery.Cursor, argN *int) (string, []any) {
+func keysetSQL(sort []livequery.SortKey, after livequery.Cursor, argN *int) (clause string, args []any) {
 	cols := make([]string, 0, len(sort)+1)
 	desc := make([]bool, 0, len(sort)+1)
 	for _, sk := range sort {
@@ -193,8 +193,7 @@ func keysetSQL(sort []livequery.SortKey, after livequery.Cursor, argN *int) (str
 
 	ph := func() int { n := *argN; *argN++; return n }
 
-	var chains []string
-	var args []any
+	chains := make([]string, 0, len(cols))
 	for i := range cols {
 		var parts []string
 		for j := 0; j < i; j++ {

@@ -63,7 +63,7 @@ func RelationalCases() []RelationalCase {
 		{
 			Name: "list LIKE filter ordered by name",
 			Seed: fleet,
-			Run: func(env *Env, ids map[string]string) ([]*domain.Asset, error) {
+			Run: func(env *Env, _ map[string]string) ([]*domain.Asset, error) {
 				var got []*domain.Asset
 				err := env.Relational.List(env.Ctx, "asset", query.ListQuery{
 					Where: query.Where{query.Like("name", "%Pump")}, OrderBy: "name",
@@ -75,7 +75,7 @@ func RelationalCases() []RelationalCase {
 		{
 			Name: "list equality filter on kind",
 			Seed: fleet,
-			Run: func(env *Env, ids map[string]string) ([]*domain.Asset, error) {
+			Run: func(env *Env, _ map[string]string) ([]*domain.Asset, error) {
 				var got []*domain.Asset
 				err := env.Relational.List(env.Ctx, "asset", query.ListQuery{
 					Where: query.Where{query.Eq("kind", "valve")},
@@ -87,7 +87,7 @@ func RelationalCases() []RelationalCase {
 		{
 			Name: "list order desc with limit",
 			Seed: fleet,
-			Run: func(env *Env, ids map[string]string) ([]*domain.Asset, error) {
+			Run: func(env *Env, _ map[string]string) ([]*domain.Asset, error) {
 				var got []*domain.Asset
 				err := env.Relational.List(env.Ctx, "asset", query.ListQuery{
 					OrderBy: "name DESC", Limit: 2,
@@ -117,7 +117,7 @@ func RelationalCases() []RelationalCase {
 			Requires: []Capability{CapRawSQL},
 			Degrade:  &Degradation{ExpectErrContains: "does not execute raw SQL"},
 			Seed:     fleet,
-			Run: func(env *Env, ids map[string]string) ([]*domain.Asset, error) {
+			Run: func(env *Env, _ map[string]string) ([]*domain.Asset, error) {
 				var got []*domain.Asset
 				// $1 is the Postgres placeholder dialect; Postgres is the only CapRawSQL backend today.
 				err := env.Relational.Query(env.Ctx, &got,
