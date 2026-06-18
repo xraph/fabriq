@@ -59,3 +59,16 @@ func TestMetrics_DoubleRegisterFails(t *testing.T) {
 		t.Fatal("double registration must fail loudly")
 	}
 }
+
+func TestBlobGCInstruments(t *testing.T) {
+	m, err := New(prometheus.NewRegistry())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// All five instruments are wired (no nil deref when emitting).
+	m.BlobGCBytesFreed.Add(1024)
+	m.BlobGCCollected.Add(3)
+	m.BlobGCRefDriftCorrected.Add(2)
+	m.BlobGCBroken.Set(1)
+	m.BlobGCOrphans.Add(4)
+}

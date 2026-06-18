@@ -280,6 +280,7 @@ func (e *Extension) runBlobGC(ctx context.Context, interval time.Duration) {
 func (e *Extension) gcBlobAll(ctx context.Context) {
 	e.mu.Lock()
 	stores := e.stores
+	m := e.metrics
 	e.mu.Unlock()
 	if stores == nil {
 		return
@@ -296,14 +297,26 @@ func (e *Extension) gcBlobAll(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	var broken int
 	for _, tenantID := range tenants {
 		tctx, err := tenant.WithTenant(ctx, tenantID)
 		if err != nil {
 			continue
 		}
-		if _, err := rec.Reconcile(tctx, true); err != nil {
+		rep, err := rec.Reconcile(tctx, true)
+		if err != nil {
 			continue
 		}
+		broken += len(rep.Broken)
+		if m != nil {
+			m.BlobGCBytesFreed.Add(float64(rep.BytesFreed))
+			m.BlobGCCollected.Add(float64(rep.GCCount))
+			m.BlobGCRefDriftCorrected.Add(float64(rep.RefsCorrected))
+			m.BlobGCOrphans.Add(float64(rep.OrphansDeleted))
+		}
+	}
+	if m != nil {
+		m.BlobGCBroken.Set(float64(broken))
 	}
 }
 
