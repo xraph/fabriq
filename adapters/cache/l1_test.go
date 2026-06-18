@@ -194,14 +194,19 @@ func TestL1_EvictLocal_OrphansQueryAndRow_NoInner(t *testing.T) {
 	_ = l.Set(ctx, queryKS(), "fp1", []byte("ids"))
 	_ = l.Set(ctx, rowKS(), "a1", []byte("v"))
 	genBefore := m.gen["asset|t:acme"]
+
 	l.EvictLocal(ctx, "asset", "a1")
-	if _, ok, _ := l.Get(ctx, queryKS(), "fp1"); ok {
-		t.Fatal("EvictLocal must orphan query L1 for the entity")
-	}
-	if _, ok, _ := l.Get(ctx, rowKS(), "a1"); ok {
-		t.Fatal("EvictLocal must evict the row L1 entry")
-	}
+
+	// (a) EvictLocal is local-only: it must NOT touch the inner/L2 generation.
 	if m.gen["asset|t:acme"] != genBefore {
 		t.Fatal("EvictLocal must NOT touch the inner/L2 generation (local-only)")
+	}
+	// (b) L1 no longer serves the orphaned/evicted entries: the next Get for each
+	// misses L1 and falls through to inner (so inner.gets increases by 2).
+	gets := m.gets
+	_, _, _ = l.Get(ctx, queryKS(), "fp1")
+	_, _, _ = l.Get(ctx, rowKS(), "a1")
+	if m.gets != gets+2 {
+		t.Fatalf("after EvictLocal both Gets must miss L1 and hit inner: gets %d->%d (want +2)", gets, m.gets)
 	}
 }
