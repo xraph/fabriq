@@ -38,19 +38,7 @@ Elasticsearch are derived projections. The kernel in `core/` is
 domain-agnostic and engine-agnostic; engine dialects live exclusively under
 `adapters/`.
 
-```text
-        commands                queries (capability ports)        deltas
-           │                            │                           ▲
-           ▼                            ▼                           │
-┌──────────────────────────────────────────────────────────────────┴─────┐
-│ fabriq (facade)                                                         │
-│  core/registry  core/command  core/event  core/projection  core/subscribe
-│  ─────────────────────────── ports ──────────────────────────────────  │
-│  adapters/postgres (grove)  adapters/redis  adapters/falkordb  adapters/elastic
-└─────────────────────────────────────────────────────────────────────────┘
-  Postgres+Timescale+pgvector+PostGIS  Redis Streams   FalkorDB    Elasticsearch
-        (source of truth)           (fan-out)      (projection) (projection)
-```
+<ArchitectureDiagram />
 
 ## Capability ports
 
@@ -68,6 +56,11 @@ engine types appear in any signature, so adapters stay swappable.
 | [Vector](/docs/vector) | pgvector | Embedding upsert and nearest-neighbour search. |
 | [Spatial](/docs/spatial) | PostGIS | Geometry upsert/delete and GiST-accelerated radius search. WKT+SRID, engine-neutral. SRID 4326 → true metres (geography); other SRIDs → planar metres. |
 | [Document](/docs/documents) | Postgres + grove CRDT | Collaborative CRDT documents that materialize into ordinary events. |
+
+Reads over opted-in entities are transparently **[cached](/docs/caching)** — a two-level
+(per-id rows + query result-sets), write-invalidated read-through cache behind these
+ports, with an optional per-node in-process L1. Off by default; a registration flag, not
+a code change.
 
 ## A first taste
 

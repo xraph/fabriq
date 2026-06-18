@@ -55,6 +55,11 @@ const ports = [
     body: "Maintained, ordered, filtered windows with enter/leave/move/update deltas — exact top-N.",
     engine: "SSE · WebSocket",
   },
+  {
+    method: "Opt-in cache",
+    body: "Transparent two-level read-through cache — per-id rows and query result-sets — behind the read ports, write-invalidated, with an optional in-process L1.",
+    engine: "Redis · grove kv",
+  },
 ];
 
 export function Ports() {
