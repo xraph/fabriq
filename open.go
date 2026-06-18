@@ -136,13 +136,20 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		// When disabled (default), engineCache == ca and behaviour is P1-P3.
 		var engineCache corecache.Cache = ca
 		if cfg.Cache.L1Enabled {
-			l1 := fcache.NewL1(ca, reg, cfg.Cache.L1Size, cfg.Cache.L1TTL)
+			size := cfg.Cache.L1Size
+			if size <= 0 {
+				size = 10000
+			}
+			l1 := fcache.NewL1(ca, reg, size, cfg.Cache.L1TTL)
 			engineCache = l1
 			// Per-node broadcast eviction: tails the event stream and calls
-			// l1.EvictLocal for each committed change. The goroutine outlives
-			// the request ctx; context.WithoutCancel keeps it alive until the
-			// process exits or stores.Close() drains the underlying connection.
-			go func() { _ = fcache.RunL1EvictTailer(context.WithoutCancel(ctx), rd, l1) }()
+			// l1.EvictLocal for each committed change. The goroutine is
+			// detached from the request ctx (WithoutCancel) so it outlives
+			// individual requests, but remains cancellable via tctx so that
+			// Stores.Close() can stop it before tearing down the connection.
+			tctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+			go func() { _ = fcache.RunL1EvictTailer(tctx, rd, l1) }()
+			stores.cancelFns = append(stores.cancelFns, cancel)
 		}
 		stores.Cache = engineCache
 		ports.Cache = engineCache
@@ -222,10 +229,17 @@ type Stores struct {
 	// Config.CustomAppliers. They are forwarded to all four engine/rebuilder
 	// constructors so live and rebuilt projections stay identical.
 	customAppliers []projection.CustomApplier
+	// cancelFns stop background workers (e.g. the L1 evict tailer) on Close.
+	cancelFns []func()
 }
 
 // Close releases every opened adapter (every shard, plus the projections).
 func (s *Stores) Close() error {
+	// Cancel background workers first so they stop blocking on their
+	// connections before we close those connections below.
+	for _, cancel := range s.cancelFns {
+		cancel()
+	}
 	var firstErr error
 	if s.Falkor != nil {
 		if err := s.Falkor.Close(); err != nil {
