@@ -88,52 +88,107 @@ func (c *CASIndex) Put(ctx context.Context, e *trovecas.Entry) error {
 }
 
 // Delete removes the entry for hash from this tenant's namespace.
+// Returns trovecas.ErrNotFound when no row matched (matches trove's reference MemoryIndex semantics).
 func (c *CASIndex) Delete(ctx context.Context, hash string) error {
 	return c.run.TenantTxRaw(ctx, func(tx *pgdriver.PgTx) error {
-		_, err := tx.NewRaw(
+		res, err := tx.NewRaw(
 			`DELETE FROM blob_cas WHERE hash = $1`, hash,
 		).Exec(ctx)
-		return err
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return trovecas.ErrNotFound
+		}
+		return nil
 	})
 }
 
 // IncrementRef adds 1 to the ref_count for hash.
+// Returns trovecas.ErrNotFound when no row matched (matches trove's reference MemoryIndex semantics).
 func (c *CASIndex) IncrementRef(ctx context.Context, hash string) error {
 	return c.run.TenantTxRaw(ctx, func(tx *pgdriver.PgTx) error {
-		_, err := tx.NewRaw(
+		res, err := tx.NewRaw(
 			`UPDATE blob_cas SET ref_count = ref_count + 1 WHERE hash = $1`, hash,
 		).Exec(ctx)
-		return err
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return trovecas.ErrNotFound
+		}
+		return nil
 	})
 }
 
 // DecrementRef subtracts 1 from the ref_count for hash.
+// Returns trovecas.ErrNotFound when no row matched (matches trove's reference MemoryIndex semantics).
 func (c *CASIndex) DecrementRef(ctx context.Context, hash string) error {
 	return c.run.TenantTxRaw(ctx, func(tx *pgdriver.PgTx) error {
-		_, err := tx.NewRaw(
+		res, err := tx.NewRaw(
 			`UPDATE blob_cas SET ref_count = ref_count - 1 WHERE hash = $1`, hash,
 		).Exec(ctx)
-		return err
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return trovecas.ErrNotFound
+		}
+		return nil
 	})
 }
 
 // Pin marks the entry as pinned, preventing garbage collection.
+// Returns trovecas.ErrNotFound when no row matched (matches trove's reference MemoryIndex semantics).
 func (c *CASIndex) Pin(ctx context.Context, hash string) error {
 	return c.run.TenantTxRaw(ctx, func(tx *pgdriver.PgTx) error {
-		_, err := tx.NewRaw(
+		res, err := tx.NewRaw(
 			`UPDATE blob_cas SET pinned = true WHERE hash = $1`, hash,
 		).Exec(ctx)
-		return err
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return trovecas.ErrNotFound
+		}
+		return nil
 	})
 }
 
 // Unpin clears the pinned flag, making the entry eligible for GC.
+// Returns trovecas.ErrNotFound when no row matched (matches trove's reference MemoryIndex semantics).
 func (c *CASIndex) Unpin(ctx context.Context, hash string) error {
 	return c.run.TenantTxRaw(ctx, func(tx *pgdriver.PgTx) error {
-		_, err := tx.NewRaw(
+		res, err := tx.NewRaw(
 			`UPDATE blob_cas SET pinned = false WHERE hash = $1`, hash,
 		).Exec(ctx)
-		return err
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return trovecas.ErrNotFound
+		}
+		return nil
 	})
 }
 
