@@ -18,8 +18,8 @@ require (
 	github.com/xraph/grove/drivers/pgdriver v1.5.7
 	github.com/xraph/grove/kv v1.5.7
 	github.com/xraph/grove/kv/drivers/redisdriver v1.5.7
-	github.com/xraph/vessel v1.0.2
 	github.com/xraph/trove v1.5.1
+	github.com/xraph/vessel v1.0.2
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
 )

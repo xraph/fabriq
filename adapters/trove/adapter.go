@@ -14,6 +14,8 @@ import (
 
 	"github.com/xraph/trove"
 	trovedriver "github.com/xraph/trove/driver"
+	_ "github.com/xraph/trove/drivers/localdriver" // register file:// and local:// schemes
+	_ "github.com/xraph/trove/drivers/memdriver"   // register mem:// scheme
 
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/fabriqerr"
@@ -230,6 +232,58 @@ func toInfo(i *trovedriver.ObjectInfo) blob.ObjectInfo {
 		ContentType: i.ContentType,
 		ModifiedAt:  i.LastModified,
 	}
+}
+
+// Config describes how to build a Trove-backed blob.Store from a DSN.
+type Config struct {
+	// StorageDriver is the backend DSN, e.g. "file:///data/blobs" or "mem://".
+	StorageDriver string `json:"storageDriver" yaml:"storageDriver"`
+	// DefaultBucket is the bucket all keys live under (created on Open).
+	DefaultBucket string `json:"defaultBucket" yaml:"defaultBucket"`
+}
+
+// Open builds a Trove instance from the config's DSN (via the driver registry),
+// ensures the default bucket exists, and returns an Adapter. The Adapter owns
+// the Trove handle; call Close to release it.
+func Open(ctx context.Context, cfg Config) (*Adapter, error) {
+	if cfg.StorageDriver == "" {
+		return nil, fmt.Errorf("fabriq: trove storage: storageDriver (DSN) is required")
+	}
+	bucket := cfg.DefaultBucket
+	if bucket == "" {
+		bucket = "default"
+	}
+
+	dsn, err := trovedriver.ParseDSN(cfg.StorageDriver)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: trove storage: parse DSN: %w", err)
+	}
+	factory, ok := trovedriver.Lookup(dsn.Scheme)
+	if !ok {
+		return nil, fmt.Errorf("fabriq: trove storage: unknown driver %q (registered: %v)", dsn.Scheme, trovedriver.Drivers())
+	}
+	drv := factory()
+	err = drv.Open(ctx, cfg.StorageDriver)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: trove storage: open driver: %w", err)
+	}
+
+	tr, err := trove.Open(drv, trove.WithDefaultBucket(bucket))
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: trove storage: open trove: %w", err)
+	}
+	// CreateBucket is idempotent; ignore errors (bucket may already exist).
+	_ = tr.CreateBucket(ctx, bucket)
+
+	return New(tr, bucket), nil
+}
+
+// Close releases the underlying Trove handle. Safe to call on a nil Adapter.
+func (a *Adapter) Close(ctx context.Context) error {
+	if a == nil || a.t == nil {
+		return nil
+	}
+	return a.t.Close(ctx)
 }
 
 // mapErr normalizes Trove not-found errors into fabriqerr.ErrNotFound.
