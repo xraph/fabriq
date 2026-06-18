@@ -19,6 +19,7 @@ type Config struct {
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
 	Projections   ProjectionsConfig   `yaml:"projections" json:"projections"`
 	Subscriptions SubscriptionsConfig `yaml:"subscriptions" json:"subscriptions"`
+	Cache         CacheConfig         `yaml:"cache" json:"cache"`
 	// CustomAppliers are consumer-supplied projection appliers, unioned after
 	// the built-in declarative applier for their Target. They MUST be pure (see
 	// projection.CustomApplier). The same set feeds both the live engines and
@@ -77,6 +78,19 @@ type SubscriptionsConfig struct {
 	ConflationWindow time.Duration `yaml:"conflation_window" json:"conflation_window"`
 	StreamMaxLen     int64         `yaml:"stream_max_len" json:"stream_max_len"`
 	SubscribeBuffer  int           `yaml:"subscribe_buffer" json:"subscribe_buffer"`
+}
+
+// CacheConfig controls the optional in-process L1 cache tier that sits in
+// front of the shared Redis L2. When L1Enabled is false (the default) the
+// engine uses the L2 adapter directly and behaviour is identical to P1-P3.
+type CacheConfig struct {
+	// L1Enabled gates the per-node LRU tier. Requires Redis.Addr to be set.
+	L1Enabled bool `yaml:"l1_enabled" json:"l1_enabled"`
+	// L1Size is the maximum number of entries the LRU holds (default 0 = no
+	// entries, so always set a positive value when L1Enabled is true).
+	L1Size int `yaml:"l1_size" json:"l1_size"`
+	// L1TTL is the per-entry time-to-live in the in-process store.
+	L1TTL time.Duration `yaml:"l1_ttl" json:"l1_ttl"`
 }
 
 // Validate checks cross-field consistency. It does not dial anything.

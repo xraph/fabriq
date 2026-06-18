@@ -132,14 +132,26 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			closeDialed()
 			return nil, nil, fmt.Errorf("fabriq: open cache: %w", cerr)
 		}
-		stores.Cache = ca
-		ports.Cache = ca
+		// Wrap the shared L2 cache with an optional per-node L1 LRU tier.
+		// When disabled (default), engineCache == ca and behaviour is P1-P3.
+		var engineCache corecache.Cache = ca
+		if cfg.Cache.L1Enabled {
+			l1 := fcache.NewL1(ca, reg, cfg.Cache.L1Size, cfg.Cache.L1TTL)
+			engineCache = l1
+			// Per-node broadcast eviction: tails the event stream and calls
+			// l1.EvictLocal for each committed change. The goroutine outlives
+			// the request ctx; context.WithoutCancel keeps it alive until the
+			// process exits or stores.Close() drains the underlying connection.
+			go func() { _ = fcache.RunL1EvictTailer(context.WithoutCancel(ctx), rd, l1) }()
+		}
+		stores.Cache = engineCache
+		ports.Cache = engineCache
 		// Route relational reads through the opt-in row cache.
-		ports.Relational = cachequery.New(ports.Relational, ca, reg)
+		ports.Relational = cachequery.New(ports.Relational, engineCache, reg)
 		// Bust cached reads of any entity a committed write touches.
 		allOpts = append(allOpts, func(s *settings) {
 			s.executorOptions = append(s.executorOptions,
-				command.WithPostCommitHooks(newCacheInvalidator(ca)))
+				command.WithPostCommitHooks(newCacheInvalidator(engineCache)))
 		})
 	}
 
