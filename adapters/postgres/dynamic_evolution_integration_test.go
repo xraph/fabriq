@@ -80,8 +80,8 @@ func TestDynamicEvolution_AdditiveSchemaChange(t *testing.T) {
 			Table: "ds_items",
 			Columns: []registry.DynamicColumn{
 				{Name: "name", Type: registry.ColText, NotNull: true},
-				{Name: "note", Type: registry.ColText},  // nullable — safe to add to existing rows
-				{Name: "qty", Type: registry.ColInt},    // nullable — safe to add to existing rows
+				{Name: "note", Type: registry.ColText}, // nullable — safe to add to existing rows
+				{Name: "qty", Type: registry.ColInt},   // nullable — safe to add to existing rows
 			},
 			Indexes: []registry.DynamicIndex{
 				{Name: "ds_items_qty_idx", Columns: []string{"qty"}},

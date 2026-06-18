@@ -141,4 +141,3 @@ func TestWorker_RunsAndProjects(t *testing.T) {
 	}
 	t.Logf("graph projection confirmed: asset=%q projected under site=%s", assetNames[0], siteRes.AggID)
 }
-
