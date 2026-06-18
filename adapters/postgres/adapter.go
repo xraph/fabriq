@@ -121,6 +121,14 @@ func (a *Adapter) BackstopTrips() int64 { return a.backstop.trips.Load() }
 // ProjectionState returns the projection bookkeeping repo.
 func (a *Adapter) ProjectionState() *StateRepo { return a.state }
 
+// TenantTxRaw opens a tenant-stamped transaction for NON-command components
+// (e.g. the CAS index) that need raw SQL under app.tenant_id + app.scope_id.
+// It is the only sanctioned way to run blob_cas SQL outside the command plane;
+// FORCE RLS isolates the work to the context tenant.
+func (a *Adapter) TenantTxRaw(ctx context.Context, fn func(tx *pgdriver.PgTx) error) error {
+	return a.inTenantTx(ctx, fn)
+}
+
 // inTenantTx runs fn inside a transaction stamped with the context tenant.
 func (a *Adapter) inTenantTx(ctx context.Context, fn func(tx *pgdriver.PgTx) error) error {
 	tid, err := tenant.Require(ctx)
