@@ -63,6 +63,8 @@ linters:
               desc: grove kv may only be imported under fabriq/adapters
             - pkg: github.com/xraph/trove
               desc: trove may only be imported under fabriq/adapters
+            - pkg: github.com/hashicorp/golang-lru/v2
+              desc: golang-lru is an adapter-level cache primitive; use it under fabriq/adapters
         # core/ is the extractable kernel: no TWINOS knowledge, no app
         # framework, no driver packages of any kind.
         core-purity:
