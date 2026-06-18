@@ -13,6 +13,7 @@ import (
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
 	"github.com/xraph/fabriq/adapters/shard"
+	trovestore "github.com/xraph/fabriq/adapters/trove"
 	"github.com/xraph/fabriq/cachequery"
 	corecache "github.com/xraph/fabriq/core/cache"
 	"github.com/xraph/fabriq/core/command"
@@ -196,6 +197,19 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		ports.Search = es
 	}
 
+	if cfg.Storage.StorageDriver != "" {
+		ba, berr := trovestore.Open(ctx, trovestore.Config{
+			StorageDriver: cfg.Storage.StorageDriver,
+			DefaultBucket: cfg.Storage.DefaultBucket,
+		})
+		if berr != nil {
+			_ = stores.Close()
+			return nil, nil, fmt.Errorf("fabriq: open storage: %w", berr)
+		}
+		stores.Blob = ba
+		ports.Blob = ba
+	}
+
 	f, err := New(reg, ports, allOpts...)
 	if err != nil {
 		_ = stores.Close()
@@ -218,6 +232,7 @@ type Stores struct {
 	Redis    *redis.Adapter
 	Falkor   *falkordb.Adapter
 	Elastic  *elastic.Adapter
+	Blob     *trovestore.Adapter // nil when Storage not configured
 	// Cache is the engine cache (nil when Redis is not configured).
 	Cache corecache.Cache
 	// Shards is the tenant -> source-of-truth routing table backing the
@@ -248,6 +263,11 @@ func (s *Stores) Close() error {
 		cancel()
 	}
 	var firstErr error
+	if s.Blob != nil {
+		if err := s.Blob.Close(context.Background()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if s.Falkor != nil {
 		if err := s.Falkor.Close(); err != nil {
 			firstErr = err

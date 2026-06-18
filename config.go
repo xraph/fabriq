@@ -17,6 +17,7 @@ type Config struct {
 	Redis         RedisConfig         `yaml:"redis" json:"redis"`
 	FalkorDB      FalkorDBConfig      `yaml:"falkordb" json:"falkordb"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
+	Storage       StorageConfig       `yaml:"storage" json:"storage"`
 	Projections   ProjectionsConfig   `yaml:"projections" json:"projections"`
 	Subscriptions SubscriptionsConfig `yaml:"subscriptions" json:"subscriptions"`
 	Cache         CacheConfig         `yaml:"cache" json:"cache"`
@@ -95,6 +96,13 @@ type CacheConfig struct {
 	// are missed on this node and will remain stale until at most L1TTL
 	// elapses. Defaults to 5 minutes when L1Enabled is true and this is <= 0.
 	L1TTL time.Duration `yaml:"l1_ttl" json:"l1_ttl"`
+}
+
+// StorageConfig configures the object-store backend that fills f.Blob().
+// Empty StorageDriver leaves the blob port unconfigured (shipped dark).
+type StorageConfig struct {
+	StorageDriver string `yaml:"storageDriver" json:"storageDriver"`
+	DefaultBucket string `yaml:"defaultBucket" json:"defaultBucket"`
 }
 
 // Validate checks cross-field consistency. It does not dial anything.
