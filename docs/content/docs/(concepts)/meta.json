@@ -8,6 +8,7 @@
     "sharding",
     "commands-and-events",
     "projections",
+    "caching",
     "subscriptions",
     "live-queries"
   ]

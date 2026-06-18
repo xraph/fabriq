@@ -1,0 +1,115 @@
+---
+title: Caching
+description: A transparent, opt-in, two-level read-through cache — per-id rows and query result-sets, kept correct by write-driven invalidation, with an optional per-node in-process tier.
+---
+
+Fabriq can cache reads **transparently**. You opt an entity in, and the relational read port and the typed [`Repo[T]`](/docs/relational) start serving cached rows and cached query result-sets — with **no change to call sites**. There is deliberately no `f.Cache()` port: caching decorates the ports you already use, so turning it on is a registration flag, not a code rewrite.
+
+The cache is **correct by construction**. Every committed write invalidates exactly what it touched through the same post-commit seam the audit and projection planes use — so a cached read never silently goes stale against the source of truth.
+
+<Callout type="info">
+  Caching is **off by default** and **opt-in per entity**. An entity with no cache policy reads exactly as before — same path, same latency, zero cache code in the way. You choose what is cacheable and its staleness budget.
+</Callout>
+
+## Opting in: `CacheSpec`
+
+An entity opts into caching by declaring a `CacheSpec` (nil = disabled), mirroring how [`SearchSpec`](/docs/search) and [`LiveSpec`](/docs/live-queries#opting-in-livespec) opt into their planes:
+
+```go
+r.MustRegister(registry.EntitySpec{
+	Name:  "asset",
+	Model: (*domain.Asset)(nil),
+	Cache: &registry.CacheSpec{
+		TTL:    5 * time.Minute, // per-entry expiry + cross-entity staleness bound
+		Scoped: true,            // partition by tenant + scope_id (false = tenant only)
+	},
+})
+```
+
+`Scoped` picks the cache partition: `false` keys entries by tenant, `true` by tenant **and** `scope_id` (the [native-scope](/docs/tenancy) axis), so a scoped reader never sees another scope's cached result. Tenant and scope come **exclusively from the context** — never from a caller-supplied key — the same structural-tenancy property the rest of fabriq holds.
+
+## Two levels: rows and result-sets
+
+Caching is **two-level** (the Russian-doll pattern). The two layers cache different things and are invalidated differently:
+
+| Layer | Caches | Keyed by | Invalidated by |
+|---|---|---|---|
+| **Entity rows** | one aggregate row | id | per-id eviction on that row's write |
+| **Result sets** | the ordered **id-list** of a query | a fingerprint of the query | the entity's generation, bumped on **any** write to the entity |
+
+A query (`List`, `Traverse`, `Out`/`In`/`Reachable`, `Search`/`SearchWith`, `Similar`) caches only its **id-list**, then hydrates each id through the **row** cache:
+
+```text
+repo.List(ctx, q)
+   │
+   ├─ id-list cache  (fingerprint(q) → [id1, id2, id3])   ← result-set layer
+   │
+   └─ GetMany(ids)   (id → row, per id)                   ← row layer (warm)
+```
+
+This is what makes the design pay off: when one row changes, its entity's generation bumps so every cached id-list over that entity **re-resolves** — but **every unchanged row stays warm**, so the re-resolved lists hydrate from the row cache without touching the database. A pure re-read with no intervening write is a total cache hit.
+
+<Callout type="info">
+  The row layer hydrates through `GetMany`, which **every** typed read funnels through — `Get`, and the batched hydration behind `Traverse`, `Search`, `Similar`, and the self-edge walks. So opting an entity in warms its rows across *all* of those paths, not just direct id lookups.
+</Callout>
+
+## Invalidation: write-driven, read-your-writes
+
+There is no manual cache-busting. The command plane runs a **post-commit hook** ([the same seam](/docs/commands-and-events) the chronicle and projection appliers use) that, for every committed change, fires two invalidations against the cache:
+
+```text
+f.Exec(...)  →  commit  →  post-commit hook:
+                              • bump generation(entity)   → busts the entity's cached id-lists
+                              • evict row(entity, aggID)   → drops just the changed row
+```
+
+Because the hook runs **after the transaction commits, on the writing request's goroutine**, the writing node sees its own change immediately — **read-your-writes**, with no before-commit race (the cache is busted only once the data is durable). The generation counter lives in shared Redis, so a bump on one node is visible to all nodes at once.
+
+The per-entity generation bump is **coarse on purpose**: a write to *any* row of an entity re-resolves *all* of that entity's cached lists. That is always correct (the lists rebuild from Postgres) and needs no per-query bookkeeping. For the eventually-consistent projection reads (`Traverse`/`Search`/`Similar`, served from the graph/search/vector projections that already lag writes), the `CacheSpec.TTL` is the staleness bound for changes a single entity's generation can't capture — consistent with those projections being eventual anyway.
+
+<Callout type="warn">
+  The raw-SQL escape hatch (`f.Relational().Query(...)`) is **never cached** — fabriq can't infer which entities an arbitrary query depends on. Reach for it only for reads the structured filter can't express.
+</Callout>
+
+## The backend
+
+The shared cache (L2) is [grove kv](https://github.com/xraph/grove) over Redis — the place grove kv "earns its keep" ([ADR 0003](/docs/reference/decisions)), while the event-stream adapter keeps using go-redis directly. It is wired in `Open()` when Redis is configured; the relational port is wrapped with the cache decorator and `Repo[T]` gets the result-set cache, both only for opted-in entities. The whole thing is one [conformance suite](/docs/architecture) that gates the in-memory fake **and** the real adapter, so the two can never drift.
+
+## In-process L1 tier
+
+For the hottest reads you can add a per-node **in-process L1** in front of the shared Redis L2, so a hit skips the Redis round-trip entirely. It is opt-in via config:
+
+```go
+f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
+	Postgres: fabriq.PostgresConfig{DSN: dsn},
+	Redis:    fabriq.RedisConfig{Addr: redisAddr},
+	Cache: fabriq.CacheConfig{
+		L1Enabled: true,
+		L1Size:    10_000,          // bounded LRU (default 10k when enabled)
+		L1TTL:     5 * time.Minute, // backstop (default 5m when enabled)
+	},
+})
+```
+
+The L1 wraps the L2 transparently (it implements the same cache port), so rows and result-sets both gain a local tier with no further code. Coherence is the interesting part:
+
+- **Local generation, never a Redis read.** Reading the L2 generation on every access would defeat the L1, so the L1 mirrors the generation scheme with an **in-process** counter. Cached id-lists orphan when the local generation bumps; rows evict per-id — so a sibling write never busts a warm row locally either.
+- **Writing node, synchronously.** The post-commit hook hits the L1-wrapped cache, so the node that wrote clears its own L1 immediately (read-your-writes holds with the L1 on).
+- **Other nodes, by broadcast.** Each node runs a small tailer that reads the main event stream from "now" (a **broadcast** fan-out — every node sees every committed event, not a partitioned consumer group) and evicts its own L1 per change. The tailer is cancelled cleanly on shutdown.
+
+<Callout type="warn">
+  L1 trades a little staleness for the round-trip saved. Cross-node eviction is bounded by stream-propagation latency, and a freshly-opened node has a brief **cold-start window** (commits between `Open()` returning and the tailer attaching) bounded by `L1TTL`. Set a sensible `L1TTL`; an L1 with no TTL has no backstop. Leave L1 off until a profile shows a hot read path — the shared L2 already survives restarts and is shared across nodes.
+</Callout>
+
+## What's not built (and why)
+
+Invalidation is per-entity-generation coarse, not per-query precise. **Precise list invalidation was scoped and intentionally not built.** Evicting only the lists a write *actually* affects needs a predicate index to find matches — but a predicate index catches only rows whose *new* state matches a filter (an "enter"), not rows that were *in* a list and left (a delete or change-out). Catching leaves requires tracking each cached list's membership, which essentially reinvents the [live-query engine's](/docs/live-queries) maintained-result-set bookkeeping. The coarse generation bump is correct and simple; when you genuinely need precise, maintained, ordered results, that *is* a live query — reach for [`f.LiveQuery`](/docs/live-queries), not a cache.
+
+## Where to go next
+
+<Cards>
+  <Card title="Relational" href="/docs/relational">The read port and `Repo[T]` the cache decorates.</Card>
+  <Card title="Commands & Events" href="/docs/commands-and-events">The post-commit seam that drives invalidation.</Card>
+  <Card title="Registry" href="/docs/registry">How `CacheSpec` and the other per-entity opt-ins are declared.</Card>
+  <Card title="Live Queries" href="/docs/live-queries">When you need precise, maintained result sets instead of cached ones.</Card>
+</Cards>
