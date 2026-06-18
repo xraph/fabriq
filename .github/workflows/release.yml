@@ -1,17 +1,25 @@
 name: Release
 
-# Tag-triggered, learning from octopus's release split: goreleaser cuts the
-# GitHub Release with cross-compiled binaries + a multi-arch ghcr.io image,
-# then a sibling job packages the Helm chart and publishes it as an OCI
-# artifact (goreleaser does not package charts).
+# Tag-triggered, mirroring octopus's release split: goreleaser cuts the GitHub
+# Release with cross-compiled binaries + a multi-arch ghcr.io image, then a
+# sibling job packages the Helm chart and publishes it as an OCI artifact
+# (goreleaser does not package charts).
 #
 #   git tag v0.2.0 && git push origin v0.2.0
+#
+# Or trigger it from the Actions UI via the release-dispatch.yml wrapper, which
+# validates the tag and pushes it with a PAT.
 #
 # Pre-release suffixes (v0.2.0-rc.1) are auto-marked pre-release.
 on:
   push:
     tags:
       - "v*.*.*"
+
+# One release run per tag; never cancel a release in flight.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read

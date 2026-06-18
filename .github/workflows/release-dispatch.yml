@@ -1,0 +1,79 @@
+# Manual release trigger.
+#
+# release.yml fires on a `vX.Y.Z` tag push and runs goreleaser + the Helm
+# publish job. This wrapper lets you cut a release from the Actions UI
+# ("Run workflow") or:
+#
+#   gh workflow run release-dispatch.yml -f tag=vX.Y.Z
+#
+# Unlike a Cargo/npm project, fabriq has no in-repo version to bump: goreleaser
+# stamps main.version from the git tag, and the Helm chart version/appVersion
+# are set from the tag at package time (release.yml). So this wrapper only
+# validates and pushes the tag.
+#
+# IMPORTANT: a tag pushed with the default GITHUB_TOKEN does NOT trigger other
+# workflows. The push must use a PAT — CUSTOM_GITHUB_TOKEN — with `repo`
+# (contents: write) and `workflow` scope so the tag push triggers release.yml.
+name: Release (dispatch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v1.2.3)"
+        required: true
+        type: string
+      ref:
+        description: "Branch or commit SHA to tag (default: this branch)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  tag-and-release:
+    name: Create + push release tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      DISPATCH_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN || secrets.RELEASE_DISPATCH_TOKEN || secrets.GORELEASER_TOKEN }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Require a PAT
+        run: |
+          set -euo pipefail
+          if [ -z "${DISPATCH_TOKEN:-}" ]; then
+            echo "::error::No CUSTOM_GITHUB_TOKEN secret set. A tag pushed with the default GITHUB_TOKEN can't trigger release.yml, so this wrapper needs a PAT with repo + workflow scope."
+            exit 1
+          fi
+
+      - name: Validate tag format
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag '$TAG' is not a vX.Y.Z semver tag (release.yml triggers on 'v*.*.*', e.g. v1.2.3 or v1.2.3-rc.1)."
+            exit 1
+          fi
+
+      - name: Checkout (with PAT so the tag push triggers release.yml)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ env.DISPATCH_TOKEN }}
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Create and push the tag
+        run: |
+          set -euo pipefail
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists on origin. Pick a new version or delete the tag first."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "Pushed $TAG — the Release workflow will now run on the tag push."
