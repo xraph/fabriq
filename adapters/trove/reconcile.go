@@ -87,7 +87,7 @@ func (r *BlobReconciler) Reconcile(ctx context.Context, repair bool) (Report, er
 		// 1. Ref-count recompute from truth.
 		if row.RefCount != t {
 			rep.RefsCorrected++
-			if repair {
+			if repair && t > 0 {
 				if err := r.setRefCount(ctx, row.Hash, t); err != nil {
 					return rep, fmt.Errorf("fabriq: blob reconcile: correct ref_count %q: %w", row.Hash, err)
 				}
