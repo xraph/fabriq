@@ -208,6 +208,11 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		}
 		stores.Blob = ba
 		ports.Blob = ba
+		if cfg.Storage.EnableCas {
+			cs := trovestore.NewCASStore(ba.Driver(), trovestore.NewCASIndex(pg), cfg.Storage.DefaultBucket)
+			stores.CAS = cs
+			ports.CAS = cs
+		}
 	}
 
 	f, err := New(reg, ports, allOpts...)
@@ -233,6 +238,8 @@ type Stores struct {
 	Falkor   *falkordb.Adapter
 	Elastic  *elastic.Adapter
 	Blob     *trovestore.Adapter // nil when Storage not configured
+	// CAS is the content-addressable store (nil when EnableCas is false).
+	CAS *trovestore.CASStore
 	// Cache is the engine cache (nil when Redis is not configured).
 	Cache corecache.Cache
 	// Shards is the tenant -> source-of-truth routing table backing the
