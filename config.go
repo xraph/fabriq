@@ -103,6 +103,10 @@ type CacheConfig struct {
 type StorageConfig struct {
 	StorageDriver string `yaml:"storageDriver" json:"storageDriver"`
 	DefaultBucket string `yaml:"defaultBucket" json:"defaultBucket"`
+	// EnableCas gates the content-addressable store layer. When true, Open()
+	// will wire a CASStore backed by the blob_cas ledger (requires a Postgres
+	// adapter). The open.go wiring that reads this field lands in Phase 3b.
+	EnableCas bool `yaml:"enableCas" json:"enableCas"`
 }
 
 // Validate checks cross-field consistency. It does not dial anything.
