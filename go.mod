@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	github.com/elastic/go-elasticsearch/v9 v9.4.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.20.1
