@@ -231,6 +231,41 @@ func TestRedis_ChannelNameMatchesRegistryDerivation(t *testing.T) {
 	}
 }
 
+func TestRedis_TailEvents_ReceivesBroadcast(t *testing.T) {
+	a := openRedis(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	got := make(chan event.Envelope, 4)
+	ready := make(chan struct{})
+	go func() {
+		// Signal that the tailer goroutine is about to start blocking.
+		close(ready)
+		_ = a.TailEvents(ctx, func(e event.Envelope) error {
+			select {
+			case got <- e:
+			default:
+			}
+			return nil
+		})
+	}()
+	<-ready
+	time.Sleep(100 * time.Millisecond) // let the XREAD attach before publishing
+
+	if _, err := a.Publish(ctx, env("broadcast1", 42), nil); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	select {
+	case e := <-got:
+		if e.AggID != "broadcast1" || e.Version != 42 {
+			t.Fatalf("TailEvents received wrong envelope: %+v", e)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("TailEvents: handler never received the published envelope")
+	}
+}
+
 func BenchmarkRedis_Publish(b *testing.B) {
 	a := openRedis(b)
 	ctx := context.Background()

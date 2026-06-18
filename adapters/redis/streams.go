@@ -272,3 +272,45 @@ func deltaFromEntry(channel string, entry redis.XMessage) (query.Delta, bool) {
 	}
 	return query.DeltaFromEnvelope(channel, entry.ID, env), true
 }
+
+// TailEvents broadcasts the main event stream to THIS caller from "now": every
+// node calling TailEvents sees every committed envelope (fan-out, not a
+// consumer group). Used for per-node L1 cache eviction. Blocks until ctx ends.
+func (a *Adapter) TailEvents(ctx context.Context, handle func(event.Envelope) error) error {
+	lastID := "$"
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		res, err := a.client.XRead(ctx, &redis.XReadArgs{
+			Streams: []string{registry.StreamKey(), lastID},
+			Count:   128,
+			Block:   time.Second,
+		}).Result()
+		if errors.Is(err, redis.Nil) {
+			continue // no new entries this window
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("fabriq: tail events: %w", err)
+		}
+		for _, stream := range res {
+			for _, msg := range stream.Messages {
+				lastID = msg.ID
+				raw, ok := msg.Values[envField].(string)
+				if !ok {
+					continue
+				}
+				env, derr := event.Decode([]byte(raw))
+				if derr != nil {
+					continue
+				}
+				if herr := handle(env); herr != nil {
+					return herr
+				}
+			}
+		}
+	}
+}
