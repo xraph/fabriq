@@ -465,6 +465,16 @@ func (s *Stores) SearchReconciler(reg *registry.Registry) (*projection.Reconcile
 	}, nil
 }
 
+// BlobReconciler assembles the per-tenant blob CAS reconciler (ref-count
+// recompute, byte GC, broken-row + orphan detection). Returns an error when
+// the CAS layer is not configured (Storage.EnableCas false).
+func (s *Stores) BlobReconciler(grace time.Duration) (*trovestore.BlobReconciler, error) {
+	if s.CAS == nil || s.Postgres == nil {
+		return nil, fmt.Errorf("fabriq: blob reconciler needs storage with enableCas and postgres configured")
+	}
+	return trovestore.NewBlobReconciler(s.CAS, s.Postgres, grace), nil
+}
+
 // liveSearchModelVersion resolves the live search model version through
 // projection_state, with a small TTL cache (same pattern as the graph
 // resolver).
