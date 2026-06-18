@@ -2,6 +2,7 @@ package trovestore
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	trovecas "github.com/xraph/trove/cas"
@@ -58,5 +59,9 @@ func (s *CASStore) Retrieve(ctx context.Context, hash string) (io.ReadCloser, er
 		return nil, err
 	}
 	// *driver.ObjectReader embeds io.ReadCloser directly (confirmed via go doc).
+	// Guard against a driver returning (nil, nil) — avoids a latent nil-deref panic.
+	if obj == nil || obj.ReadCloser == nil {
+		return nil, fmt.Errorf("fabriq: trove cas: retrieve %q: driver returned nil reader", hash)
+	}
 	return obj.ReadCloser, nil
 }
