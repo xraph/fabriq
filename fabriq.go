@@ -42,7 +42,9 @@ type Ports struct {
 	Spatial    query.SpatialQuerier
 	Documents  document.Store
 	// Blob is the byte-plane port; nil degrades to ErrStoreNotConfigured.
-	Blob            blob.Store
+	Blob blob.Store
+	// CAS is the content-addressable store port; nil when EnableCas is false.
+	CAS             blob.CAS
 	ProjectionState projection.StateReader
 
 	// Live is the snapshot/refill oracle for live queries; when set (and a
