@@ -89,7 +89,11 @@ type CacheConfig struct {
 	// L1Size is the maximum number of entries the LRU holds (default 0 = no
 	// entries, so always set a positive value when L1Enabled is true).
 	L1Size int `yaml:"l1_size" json:"l1_size"`
-	// L1TTL is the per-entry time-to-live in the in-process store.
+	// L1TTL is the per-entry time-to-live in the in-process store. It also
+	// bounds the cold-start cross-node staleness window: commits that land
+	// between Open() returning and the L1 evict tailer's first XRead attach
+	// are missed on this node and will remain stale until at most L1TTL
+	// elapses. Defaults to 5 minutes when L1Enabled is true and this is <= 0.
 	L1TTL time.Duration `yaml:"l1_ttl" json:"l1_ttl"`
 }
 

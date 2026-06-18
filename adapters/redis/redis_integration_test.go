@@ -242,10 +242,7 @@ func TestRedis_TailEvents_ReceivesBroadcast(t *testing.T) {
 		// Signal that the tailer goroutine is about to start blocking.
 		close(ready)
 		_ = a.TailEvents(ctx, func(e event.Envelope) error {
-			select {
-			case got <- e:
-			default:
-			}
+			got <- e
 			return nil
 		})
 	}()

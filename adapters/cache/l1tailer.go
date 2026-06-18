@@ -16,8 +16,9 @@ type eventTailer interface {
 
 // RunL1EvictTailer drives per-node L1 eviction from the event stream: every
 // committed change evicts this node's L1 for the changed entity + id. Blocks
-// until ctx ends. It is best-effort — a handler error on one envelope is logged
-// (here: skipped) and tailing continues; the L1 TTL is the backstop.
+// until ctx ends. It is best-effort — a handler error on one envelope is
+// skipped (best-effort; no logger wired — the L1 TTL backstops a missed
+// eviction) and tailing continues.
 func RunL1EvictTailer(ctx context.Context, t eventTailer, l *L1Cache) error {
 	return t.TailEvents(ctx, func(env event.Envelope) error {
 		ectx, err := evictCtx(ctx, env.TenantID, env.ScopeID)
