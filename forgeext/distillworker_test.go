@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/xraph/grove"
 
 	"github.com/xraph/fabriq/core/agent"
@@ -15,6 +17,7 @@ import (
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/domain"
 	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/internal/metrics"
 )
 
 // dwNote is a small distillable grove model for the distill-worker test:
@@ -108,4 +111,70 @@ func TestDistillSweeper_MarkSweepBuildsTree(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("debounced sweep did not build the L0 digest node")
+}
+
+// TestDistillSweeper_IncrementsMetrics asserts that a sweep driven through
+// distillHandler increments fabriq_distill_nodes_total and
+// fabriq_distill_summaries_total via the distillMetricsObserver.
+func TestDistillSweeper_IncrementsMetrics(t *testing.T) {
+	reg := distillReg(t) // note (distillable) + digest_node
+	w := fabriqtest.NewWorld(reg)
+	fab := fabriqtest.NewFabric(w)
+	cas := fabriqtest.NewFakeCAS()
+	d, err := agent.NewDistiller(fab, reg, stubEmb{}, fakeSum{}, nil, cas, agent.DistillConfig{VectorDims: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := metrics.New(prometheus.NewRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-nil metrics wires the distillMetricsObserver into the Distiller.
+	sw := NewDistillSweeper(d, 5*time.Millisecond, m)
+	handle := distillHandler(context.Background(), sw)
+
+	env := event.Envelope{
+		TenantID:  "acme",
+		Aggregate: "note",
+		AggID:     "n1",
+		Type:      "note.created",
+		Payload:   json.RawMessage(`{"id":"n1","title":"Pump","body":"vibration","site_id":"s1"}`),
+	}
+	if err := handle("s-1", env); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	// Poll for the debounced sweep (mirrors TestDistillSweeper_MarkSweepBuildsTree).
+	// DistillNodesTotal > 0 proves NodeBuilt() was called, i.e. the observer fired.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if testutil.ToFloat64(m.DistillNodesTotal) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := testutil.ToFloat64(m.DistillNodesTotal); got == 0 {
+		t.Fatalf("DistillNodesTotal = 0 after sweep; observer not wired or sweep did not run")
+	}
+	if got := testutil.ToFloat64(m.DistillSummariesTotal); got == 0 {
+		t.Fatalf("DistillSummariesTotal = 0 after sweep; Summarized() observer callback not fired")
+	}
+
+	// Verify the vector side-effect also happened (belt-and-suspenders: matches
+	// the existing build test so we know it's the same sweep code path).
+	ctx, _ := tenant.WithTenant(context.Background(), "acme")
+	var matches []query.VectorMatch
+	_ = w.Vector.Similar(ctx, query.VectorQuery{Entity: agent.DigestEntity, Embedding: []float32{1, 0, 0}, K: 50}, &matches)
+	found := false
+	for _, mv := range matches {
+		if mv.ID == agent.L0ID("note", "n1") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("L0 digest node vector not found; sweep may have run but distillation failed silently")
+	}
 }
