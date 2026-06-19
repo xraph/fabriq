@@ -27,7 +27,7 @@ func (f *Fabriq) AddBookmark(ctx context.Context, userID, nodeID string, sortOrd
 func (f *Fabriq) ListUserBookmarks(ctx context.Context, userID string) ([]domain.FsBookmark, error) {
 	var rows []domain.FsBookmark
 	err := f.Relational().List(ctx, "fs_bookmark", query.ListQuery{
-		Where: query.Where{query.Eq("user_id", userID)}, OrderBy: "sort_order ASC",
+		Where: query.Where{query.Eq("user_id", userID)}, OrderBy: "sort_order ASC, created_at ASC",
 	}, &rows)
 	if err != nil {
 		return nil, fmt.Errorf("fabriq: ListUserBookmarks: %w", err)

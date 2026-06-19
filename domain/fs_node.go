@@ -12,6 +12,13 @@ import (
 // blob plane. parent_id is the adjacency truth; path is a materialized index
 // maintained transactionally on move/rename. File nodes reference a
 // blob_object (blob_id) with denormalized facets.
+//
+// Metadata and MountConfig are JSONB NOT NULL columns. Nil maps must be
+// normalised before any INSERT or UPDATE to avoid a NOT NULL constraint
+// violation. The hooks below fire because the command plane reaches Postgres
+// through pgdriver.PgTx.NewInsert / NewUpdate — grove's model-mutation API —
+// which calls hook.RunModelBeforeInsert / RunModelBeforeUpdate on the model
+// prior to executing the statement (adapters/postgres/tx.go ApplyChange).
 type FsNode struct {
 	grove.BaseModel `grove:"table:fs_nodes"`
 
@@ -37,9 +44,9 @@ type FsNode struct {
 	UpdatedAt   time.Time      `grove:"updated_at"        json:"updatedAt"`
 }
 
-// normalizeFsNodeMaps ensures JSONB NOT NULL columns carry a non-nil map so
-// the database column constraint (DEFAULT '{}') is never violated by an
-// explicit NULL from a grove full-row write.
+// normalizeMaps ensures JSONB NOT NULL columns carry a non-nil map so the
+// database constraint is never violated by a nil value from a bare struct
+// literal (e.g. in tests) that did not go through the facade init path.
 func (n *FsNode) normalizeMaps() {
 	if n.Metadata == nil {
 		n.Metadata = map[string]any{}
@@ -49,15 +56,17 @@ func (n *FsNode) normalizeMaps() {
 	}
 }
 
-// BeforeInsert implements grove/hook.BeforeInsertHook. It normalizes nil JSONB
-// maps to empty maps before the INSERT so mount_config/metadata NOT NULL is
-// never violated, regardless of how the FsNode was constructed.
+// BeforeInsert implements grove/hook.BeforeInsertHook. It fires via
+// pgdriver.PgTx.NewInsert (called by adapters/postgres/tx.go ApplyChange)
+// before the INSERT executes, normalising nil JSONB maps so the
+// mount_config/metadata NOT NULL constraint is never violated.
 func (n *FsNode) BeforeInsert(_ context.Context, _ *hook.QueryContext) error {
 	n.normalizeMaps()
 	return nil
 }
 
-// BeforeUpdate implements grove/hook.BeforeUpdateHook for the same reason.
+// BeforeUpdate implements grove/hook.BeforeUpdateHook for the same reason:
+// pgdriver.PgTx.NewUpdate (also in ApplyChange) fires this before the UPDATE.
 func (n *FsNode) BeforeUpdate(_ context.Context, _ *hook.QueryContext) error {
 	n.normalizeMaps()
 	return nil

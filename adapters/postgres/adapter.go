@@ -283,7 +283,7 @@ func (a *Adapter) List(ctx context.Context, entity string, q query.ListQuery, in
 	if err != nil {
 		return err
 	}
-	orderCol, orderDir, err := splitOrder(ent, q.OrderBy)
+	orderExpr, err := buildOrderExpr(ent, q.OrderBy)
 	if err != nil {
 		return err
 	}
@@ -322,11 +322,8 @@ func (a *Adapter) List(ctx context.Context, entity string, q query.ListQuery, in
 				sqlArgs = append(sqlArgs, fargs...)
 			}
 
-			if orderCol != "" {
-				if !ddlValid(orderCol) {
-					return fmt.Errorf("fabriq: order column %q failed ddl validation", orderCol)
-				}
-				fmt.Fprintf(&sb, ` ORDER BY %s %s`, quoteIdent(orderCol), orderDir)
+			if orderExpr != "" {
+				fmt.Fprintf(&sb, ` ORDER BY %s`, orderExpr)
 			} else {
 				fmt.Fprintf(&sb, ` ORDER BY %s ASC`, quoteIdent(registry.ColumnID))
 			}
@@ -358,8 +355,8 @@ func (a *Adapter) List(ctx context.Context, entity string, q query.ListQuery, in
 			}
 			sel = sel.Where(frag, args...)
 		}
-		if orderCol != "" {
-			sel = sel.OrderExpr(quoteIdent(orderCol) + " " + orderDir)
+		if orderExpr != "" {
+			sel = sel.OrderExpr(orderExpr)
 		} else {
 			sel = sel.OrderExpr(quoteIdent(registry.ColumnID) + " ASC")
 		}
@@ -445,25 +442,37 @@ func (a *Adapter) Query(ctx context.Context, into any, sql string, args ...any) 
 	})
 }
 
-func splitOrder(ent *registry.Entity, orderBy string) (col, dir string, err error) {
+// buildOrderExpr parses a comma-separated list of "col [ASC|DESC]" terms,
+// validates each column against the entity binding (SQL-injection guard), and
+// returns a fully-formed ORDER BY expression ready for interpolation into a
+// query string. An empty orderBy returns "".
+func buildOrderExpr(ent *registry.Entity, orderBy string) (string, error) {
 	if orderBy == "" {
-		return "", "", nil
+		return "", nil
 	}
-	parts := strings.Fields(orderBy)
-	col = parts[0]
-	dir = "ASC"
-	if len(parts) > 1 {
-		switch strings.ToUpper(parts[1]) {
-		case "ASC", "DESC":
-			dir = strings.ToUpper(parts[1])
-		default:
-			return "", "", fmt.Errorf("fabriq: invalid order direction %q", parts[1])
+	terms := strings.Split(orderBy, ",")
+	exprs := make([]string, 0, len(terms))
+	for _, term := range terms {
+		parts := strings.Fields(strings.TrimSpace(term))
+		if len(parts) == 0 {
+			continue
 		}
+		col := parts[0]
+		dir := "ASC"
+		if len(parts) > 1 {
+			switch strings.ToUpper(parts[1]) {
+			case "ASC", "DESC":
+				dir = strings.ToUpper(parts[1])
+			default:
+				return "", fmt.Errorf("fabriq: invalid order direction %q", parts[1])
+			}
+		}
+		if len(parts) > 2 || !ent.Binding.HasColumn(col) {
+			return "", fmt.Errorf("fabriq: invalid order column %q for entity %q", term, ent.Spec.Name)
+		}
+		exprs = append(exprs, quoteIdent(col)+" "+dir)
 	}
-	if len(parts) > 2 || !ent.Binding.HasColumn(col) {
-		return "", "", fmt.Errorf("fabriq: invalid order column %q for entity %q", orderBy, ent.Spec.Name)
-	}
-	return col, dir, nil
+	return strings.Join(exprs, ", "), nil
 }
 
 func quoteIdent(name string) string {

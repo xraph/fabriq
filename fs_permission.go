@@ -49,7 +49,7 @@ func (f *Fabriq) ListNodePermissions(ctx context.Context, nodeID string) ([]doma
 func (f *Fabriq) ListPrincipalPermissions(ctx context.Context, principalType, principalID string) ([]domain.FsPermission, error) {
 	var rows []domain.FsPermission
 	err := f.Relational().List(ctx, "fs_permission", query.ListQuery{
-		Where: query.Where{query.Eq("principal_type", principalType), query.Eq("principal_id", principalID)},
+		Where:   query.Where{query.Eq("principal_type", principalType), query.Eq("principal_id", principalID)},
 		OrderBy: "created_at ASC",
 	}, &rows)
 	if err != nil {

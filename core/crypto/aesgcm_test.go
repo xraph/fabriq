@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -39,7 +40,7 @@ func TestAESGCMRoundTrip(t *testing.T) {
 	}
 	// Unknown key version is rejected.
 	bad := append([]byte{9}, ct[1:]...)
-	if _, err := enc.Decrypt(bad, aad); err != ErrKeyVersion {
+	if _, err := enc.Decrypt(bad, aad); !errors.Is(err, ErrKeyVersion) {
 		t.Fatalf("bad version err = %v, want ErrKeyVersion", err)
 	}
 }

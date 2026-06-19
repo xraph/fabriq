@@ -66,7 +66,7 @@ type Fabriq struct {
 	hub      *subscribe.Hub
 	gate     *subscribe.Gate
 	settings settings
-	stores   *Stores        // set by Open; nil when assembled from explicit ports
+	stores   *Stores          // set by Open; nil when assembled from explicit ports
 	crypto   crypto.Encryptor // nil when encryption is not configured
 
 	liveEngine *livequery.Engine   // nil when live queries are not configured
