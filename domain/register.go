@@ -9,7 +9,7 @@ import (
 // RegisterAll registers the TWINOS domain pack. Call it once at startup;
 // follow with reg.Validate() (fabriq.New does both).
 func RegisterAll(reg *registry.Registry) error {
-	specs := make([]registry.EntitySpec, 0, 5)
+	specs := make([]registry.EntitySpec, 0, 6)
 	specs = append(specs, []registry.EntitySpec{
 		{
 			Name:      "site",
@@ -110,6 +110,13 @@ func RegisterAll(reg *registry.Registry) error {
 		Kind:      registry.KindAggregate,
 		Model:     (*FsBookmark)(nil),
 		Subscribe: []registry.Scope{registry.ByID, registry.ByField("user", "user_id"), registry.ByTenant},
+	})
+	specs = append(specs, registry.EntitySpec{
+		Name:      "digest_node",
+		Kind:      registry.KindAggregate,
+		Model:     (*DigestNode)(nil),
+		GraphNode: "DigestNode",
+		Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},
 	})
 	for _, spec := range specs {
 		if err := reg.Register(spec); err != nil {
