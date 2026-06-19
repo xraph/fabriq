@@ -86,6 +86,66 @@ func TestDigest_NodeNotFound(t *testing.T) {
 	}
 }
 
+func TestResolve_ExactAndNear(t *testing.T) {
+	r := distillRegistry(t)
+	w := fabriqtest.NewWorld(r)
+	fab := fabriqtest.NewFabric(w)
+	cas := fabriqtest.NewFakeCAS()
+	d, err := NewDistiller(fab, r, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}}, &fakeSummarizer{}, nil, cas, DistillConfig{VectorDims: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testCtx(t, "acme")
+
+	// Build a minimal tree: one L0 note → rollup creates scope + tenant root.
+	if _, err := d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "A", "body": "hello", "site_id": "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Rollup(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	tk, err := NewToolkit(fab, r, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}}, Config{VectorDims: 3, CAS: cas})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get a node via Map so we have a real ContentHash and SemHash.
+	lines, err := tk.Map(ctx, MapRequest{})
+	if err != nil || len(lines) == 0 {
+		t.Fatalf("map: %d lines err=%v", len(lines), err)
+	}
+	target := lines[0]
+
+	// --- Exact ContentHash match ---
+	res, err := tk.Resolve(ctx, target.ContentHash)
+	if err != nil {
+		t.Fatalf("Resolve(ContentHash): %v", err)
+	}
+	if res.Exact == nil {
+		t.Fatal("Resolve(ContentHash): expected Exact != nil")
+	}
+	if res.Exact.ContentHash != target.ContentHash {
+		t.Fatalf("Resolve(ContentHash): Exact.ContentHash = %q, want %q", res.Exact.ContentHash, target.ContentHash)
+	}
+
+	// --- SemHash nearest-neighbor search (itself at distance 0) ---
+	res2, err := tk.Resolve(ctx, target.SemHash)
+	if err != nil {
+		t.Fatalf("Resolve(SemHash): %v", err)
+	}
+	found := false
+	for _, m := range res2.Near {
+		if m.Node.ID == target.ID && m.HammingBits == 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("Resolve(SemHash): expected Near to contain %s at HammingBits=0; got %+v", target.ID, res2.Near)
+	}
+}
+
 func TestMap_OutlineAndUnchanged(t *testing.T) {
 	r := distillRegistry(t)
 	w := fabriqtest.NewWorld(r)
