@@ -77,9 +77,11 @@ func NewMCP(fab *forgeext.Extension, opts ...Option) *Extension {
 	return &Extension{fab: fab, cfg: cfg}
 }
 
-func (e *Extension) Name() string        { return "fabriq-agent-mcp" }
-func (e *Extension) Version() string     { return forgeext.Version }
-func (e *Extension) Description() string { return "fabriq agent toolkit over MCP (JSON-RPC tools/list + tools/call)" }
+func (e *Extension) Name() string    { return "fabriq-agent-mcp" }
+func (e *Extension) Version() string { return forgeext.Version }
+func (e *Extension) Description() string {
+	return "fabriq agent toolkit over MCP (JSON-RPC tools/list + tools/call)"
+}
 func (e *Extension) Dependencies() []string { return []string{"fabriq"} }
 
 // Register registers the MCP controller and watch SSE controller; the toolkit

@@ -43,8 +43,25 @@ TimescaleDB's columnstore refuses tables with row security, and compressed telem
 
 When the source of truth needs to scale past a single Postgres, Fabriq shards **by tenant**: a tenant's entire history, event log, and outbox live on exactly one shard. Two existing invariants turn this into a routing problem rather than a distributed-systems one. Every read carries a tenant and there are no cross-tenant queries, so there is no scatter-gather. A command never spans tenants, so one tenant routes to one shard's local ACID transaction — **no two-phase commit, no sagas**. Sharding enters as a routing adapter behind the existing ports plus a per-shard leader loop; `core/`, the facade, and every call site stay unchanged. And because projections are rebuildable from Postgres, moving a tenant means copying only its rows and log — projections are rebuilt on the far side.
 
+## Optional remote protocol — fabriq-as-a-server
+
+<Callout type="info">
+  The write, relational-read and subscribe planes plus edge authentication (mTLS
+  + bearer, tenant stamping) are **implemented** and round-trip-tested over real
+  gRPC. The maintained live-query, blob streaming and interactive-transaction
+  planes are **not yet**; raw-SQL `Query` is held by policy — see [Remote
+  protocol](/docs/remote-protocol).
+</Callout>
+
+Fabriq is an embedded library first — each service owns its datastore pools and holds the facade in-process. The remote protocol adds fabriq-as-a-server as an *optional topology over the same `core/query.Fabric` interface*, so call sites are identical whether the facade is embedded or remote. The decision is faithful to the layering above, not a break from it: Postgres stays the single linearizable anchor and the server tier is a transport in front of it, not a second writer — there are no distributed transactions (`ExecBatch` is one single-node transaction; interactive `Tx`, when built, is pinned to one replica).
+
+The transport is **gRPC over HTTP/2**, chosen because only backends connect — no browser removes the one real reason to avoid it: native bidirectional streaming for live deltas and file bytes, one multiplexed channel per client (which *is* the connection-consolidation goal), and deadline/cancellation propagation that maps onto fabriq's ctx-carried tenant. The envelope is **protobuf framing with opaque JSON/bytes payload bodies** — the registry, not the wire schema, stays the authority on payload shape, so dynamic entities and map-native writes cross unchanged. Identity is **authenticated at the edge** from the verified credential and stamped as the tenant, never trusted from a request field — a strict upgrade over the in-process trust-the-context model.
+
+The gRPC binding lives in its **own Go module** (`remote/grpc`) so a service that only embeds the library never pulls `google.golang.org/grpc` into its dependency tree — the same dependency-fencing discipline that keeps the byte store out of the core.
+
 <Cards>
   <Card title="Tenancy" href="/docs/tenancy">How the tenancy layers and the telemetry exception work in practice.</Card>
   <Card title="Sharding" href="/docs/sharding">The tenant-routed, multi-shard source of truth.</Card>
+  <Card title="Remote protocol" href="/docs/remote-protocol">The optional fabriq-as-a-server topology and its gRPC binding.</Card>
   <Card title="Errors" href="/docs/reference/errors">The ErrTenantHookTripped trip and the rest of the error taxonomy.</Card>
 </Cards>
