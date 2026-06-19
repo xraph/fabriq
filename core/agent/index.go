@@ -80,8 +80,19 @@ func (ix *Indexer) IndexRow(ctx context.Context, entity, id string, vals map[str
 	return ix.fab.Vector().Upsert(ctx, entity, id, vecs[0], nil)
 }
 
+// reindexBatch is the page size used by Reindex. It is a package-level var
+// (not const) so tests can reduce it to exercise the multi-page loop.
+var reindexBatch = 200
+
 // Reindex re-embeds every row of an embeddable entity (backfill). Returns the
 // number of rows indexed. No-op (0) for non-embeddable entities.
+//
+// Reindex is tenant-scoped: it backfills only the tenant present in ctx. Call
+// once per tenant for a full cluster-wide backfill.
+//
+// NOTE: Reindex embeds one row per Embed call (the Embedder is batch-capable;
+// a batched backfill is a future optimisation for the forgeext worker). Rows
+// whose "id" field is empty or absent are silently skipped.
 func (ix *Indexer) Reindex(ctx context.Context, entity string) (int, error) {
 	if ix.embedSpec(entity) == nil {
 		return 0, nil
@@ -90,7 +101,7 @@ func (ix *Indexer) Reindex(ctx context.Context, entity string) (int, error) {
 	if !ok {
 		return 0, fmt.Errorf("agent: reindex: unknown entity %q", entity)
 	}
-	const batch = 200
+	batch := reindexBatch
 	indexed := 0
 	for offset := 0; ; offset += batch {
 		rows, err := ix.listVals(ctx, ent, batch, offset)

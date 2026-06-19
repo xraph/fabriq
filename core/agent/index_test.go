@@ -120,3 +120,15 @@ func TestNewIndexer_RequiresEmbedder(t *testing.T) {
 	}
 }
 
+func TestNewIndexer_NilFabOrReg(t *testing.T) {
+	reg := embedRegistry(t)
+	emb := stubEmbedder{dims: 3, vec: []float32{1, 0, 0}}
+	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
+	if _, err := NewIndexer(nil, reg, emb); err == nil {
+		t.Fatal("want error for nil Fabric")
+	}
+	if _, err := NewIndexer(ff, nil, emb); err == nil {
+		t.Fatal("want error for nil Registry")
+	}
+}
+
