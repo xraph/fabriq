@@ -1,6 +1,7 @@
 package agentmcp
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,9 +37,11 @@ func TestMCP_OverForgeRouter(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
-	buf := make([]byte, 4096)
-	n, _ := resp.Body.Read(buf)
-	if !strings.Contains(string(buf[:n]), `"recall"`) {
-		t.Fatalf("tools/list response missing recall: %s", buf[:n])
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(raw), `"recall"`) {
+		t.Fatalf("tools/list response missing recall: %s", raw)
 	}
 }

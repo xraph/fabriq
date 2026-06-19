@@ -55,6 +55,9 @@ const (
 // Dispatch handles one MCP JSON-RPC request against the toolkit and returns the
 // response bytes. Transport errors (parse/method/params) become JSON-RPC error
 // objects; tool execution errors become MCP results with isError=true.
+// Note: JSON-RPC notifications (requests without an "id") and the jsonrpc
+// version field are not specially validated — this is the documented minimal
+// single-request scope.
 func Dispatch(ctx context.Context, tk *agent.Toolkit, body []byte) []byte {
 	var req rpcRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -106,11 +109,13 @@ func Dispatch(ctx context.Context, tk *agent.Toolkit, body []byte) []byte {
 	}
 }
 
-// errorText renders a tool error, surfacing the WriteError code when present.
+// errorText renders a tool error as a human-readable string. For WriteError the
+// message already embeds the code (e.g. "agent: write not_allowed: …"), so we
+// return we.Error() directly to avoid printing the code twice.
 func errorText(err error) string {
 	var we *agent.WriteError
 	if errors.As(err, &we) {
-		return we.Code + ": " + we.Error()
+		return we.Error()
 	}
 	return err.Error()
 }
