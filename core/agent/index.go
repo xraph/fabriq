@@ -159,14 +159,29 @@ func (ix *Indexer) listVals(ctx context.Context, ent *registry.Entity, limit, of
 	return out, nil
 }
 
+// Unindex removes an entity row's embedding. No-op for non-embeddable entities
+// or empty id.
+func (ix *Indexer) Unindex(ctx context.Context, entity, id string) error {
+	if ix.embedSpec(entity) == nil {
+		return nil
+	}
+	if id == "" {
+		return nil
+	}
+	return ix.fab.Vector().Delete(ctx, entity, id)
+}
+
 // IndexEvent indexes a create/update event whose aggregate is embeddable.
-// Deletes (".deleted" type) and empty payloads are skipped — the vector port
-// has no delete operation in v1.
+// On a ".deleted" event, it unindexes the aggregate row (calls Unindex).
+// Non-delete events with an empty payload are skipped.
 func (ix *Indexer) IndexEvent(ctx context.Context, env event.Envelope) error {
 	if ix.embedSpec(env.Aggregate) == nil {
 		return nil
 	}
-	if strings.HasSuffix(env.Type, ".deleted") || len(env.Payload) == 0 {
+	if strings.HasSuffix(env.Type, ".deleted") {
+		return ix.Unindex(ctx, env.Aggregate, env.AggID)
+	}
+	if len(env.Payload) == 0 {
 		return nil
 	}
 	var vals map[string]any
