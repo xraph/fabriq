@@ -128,16 +128,17 @@ func (d *Distiller) DistillSpecFor(entity string) *registry.DistillSpec {
 // It mirrors the embed worker's IndexEvent: the L0 source values come from the
 // event payload (no store reload), so callers need no relational seeding.
 //
-// Returns (false, nil) — a no-op — for a non-distillable aggregate, a
-// ".deleted" event (delete is wired in Task 3.2), or an empty payload.
-// Otherwise it unmarshals the payload into a column-keyed map and runs DistillL0,
+// A ".deleted" event routes to DeleteL0 (returning removed/err). Otherwise it
+// returns (false, nil) — a no-op — for a non-distillable aggregate or an empty
+// payload, or unmarshals the payload into a column-keyed map and runs DistillL0,
 // returning its changed/err.
 func (d *Distiller) DistillEvent(ctx context.Context, env event.Envelope) (bool, error) {
 	if d.distillSpec(env.Aggregate) == nil {
 		return false, nil
 	}
 	if strings.HasSuffix(env.Type, ".deleted") {
-		return false, nil // Task 3.2 wires DeleteL0
+		removed, err := d.DeleteL0(ctx, env.Aggregate, env.AggID)
+		return removed, err
 	}
 	if len(env.Payload) == 0 {
 		return false, nil
@@ -356,6 +357,81 @@ func (d *Distiller) linkChild(ctx context.Context, parentID, childID string) err
 	}
 	parent.ChildIDs = append(parent.ChildIDs, childID)
 	return d.upsertNode(ctx, parent)
+}
+
+// DeleteL0 removes an entity's L0 digest node: it unlinks the node from each of
+// its parents' ChildIDs, deletes the digest row through the command plane, and
+// removes its vector. Returns (false, nil) when the node is already gone
+// (idempotent). The next Rollup re-rolls the affected parents and collapses any
+// scope/cluster node that drops below the noise floor (see Rollup's cleanup pass).
+func (d *Distiller) DeleteL0(ctx context.Context, entity, id string) (bool, error) {
+	nodeID := L0ID(entity, id)
+	node, ok, err := d.getNode(ctx, nodeID)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil // already gone
+	}
+
+	// Unlink this node from each parent's ChildIDs so the next Rollup re-rolls
+	// the parent over the remaining members.
+	for _, pid := range node.ParentIDs {
+		parent, ok, err := d.getNode(ctx, pid)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			continue // parent already gone
+		}
+		filtered := filterOut(parent.ChildIDs, nodeID)
+		if len(filtered) == len(parent.ChildIDs) {
+			continue // not linked; nothing to rewrite
+		}
+		parent.ChildIDs = filtered
+		if err := d.upsertNode(ctx, parent); err != nil {
+			return false, err
+		}
+	}
+
+	if err := d.deleteNode(ctx, nodeID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// deleteNode removes a digest node by id: it deletes the row through the command
+// plane (OpDelete carries no payload) and removes its vector. A not-found error
+// from the command plane is tolerated as already-deleted. Reused for both L0
+// leaves and L1 (scope/cluster) nodes during Rollup's cleanup pass.
+func (d *Distiller) deleteNode(ctx context.Context, id string) error {
+	if _, err := d.fab.Exec(ctx, command.Command{
+		Entity: DigestEntity,
+		Op:     command.OpDelete,
+		AggID:  id,
+	}); err != nil {
+		var nfe *fabriqerr.NotFoundError
+		if !errors.Is(err, fabriqerr.ErrNotFound) && !errors.As(err, &nfe) {
+			return fmt.Errorf("agent: delete digest node %s: %w", id, err)
+		}
+		// already deleted — fall through to vector cleanup
+	}
+	if err := d.fab.Vector().Delete(ctx, DigestEntity, id); err != nil {
+		return fmt.Errorf("agent: vector delete %s: %w", id, err)
+	}
+	return nil
+}
+
+// filterOut returns ss with every occurrence of v removed, preserving order.
+// Returns a new slice; the input is not mutated.
+func filterOut(ss []string, v string) []string {
+	out := make([]string, 0, len(ss))
+	for _, s := range ss {
+		if s != v {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // tenantOf returns the tenant id stamped on ctx (empty if unstamped).
