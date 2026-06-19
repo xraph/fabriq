@@ -104,7 +104,16 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 		}
 	}
 
-	// 4. Tenant root: children = all current L1 (scope + cluster) nodes.
+	// 4. Cleanup: GC orphaned L1 nodes so a delete collapses the tree. A scope
+	//    node with no current L0 members, or a cluster node whose bucket fell
+	//    below the noise floor (including to zero), is deleted; its remaining
+	//    members must not retain a stale parent link. Run BEFORE the tenant-root
+	//    build so the root's children reflect only L1 nodes that still exist.
+	if err := d.cleanupL1(ctx, scopeMembers, buckets, cluster); err != nil {
+		return rep, err
+	}
+
+	// 5. Tenant root: children = all current L1 (scope + cluster) nodes.
 	l1s, err := d.listNodes(ctx, LevelScope)
 	if err != nil {
 		return rep, fmt.Errorf("agent: rollup list L1: %w", err)
@@ -287,6 +296,75 @@ func (d *Distiller) ensureParent(ctx context.Context, memberID, parentID string)
 	// Mirror the edge onto the cluster parent's ChildIDs (no-op until the
 	// cluster node is materialized by rollupNode).
 	return d.linkChild(ctx, parentID, memberID)
+}
+
+// cleanupL1 garbage-collects orphaned scope and cluster (L1) nodes after a
+// rollup pass so a delete actually collapses the tree.
+//
+//   - A scope node whose id is not in scopeMembers (zero current L0 members) is
+//     deleted.
+//   - A cluster node whose bucket is now below the noise floor (members <
+//     NoiseFloor, including a vanished bucket with zero members) is deleted, and
+//     the stale cluster parent link is stripped from any remaining members so the
+//     next pass does not re-derive a phantom membership.
+//
+// scopeMembers maps live scope ids -> member L0 ids; buckets maps every cluster
+// id (above or below floor) -> member L0 ids; cluster is the set of above-floor
+// cluster ids that were (re)summarized this pass.
+func (d *Distiller) cleanupL1(ctx context.Context, scopeMembers, buckets map[string][]string, cluster map[string]bool) error {
+	l1s, err := d.listNodes(ctx, LevelScope)
+	if err != nil {
+		return fmt.Errorf("agent: rollup cleanup list L1: %w", err)
+	}
+	for _, n := range l1s {
+		switch {
+		case isScopeID(n.ID):
+			if _, live := scopeMembers[n.ID]; !live {
+				if err := d.deleteNode(ctx, n.ID); err != nil {
+					return fmt.Errorf("agent: rollup collapse scope %s: %w", n.ID, err)
+				}
+			}
+		case isClusterID(n.ID):
+			if cluster[n.ID] {
+				continue // still above floor — keep it
+			}
+			// Below floor (or vanished): unlink it from any members that still
+			// reference it, then delete the cluster node.
+			for _, mid := range buckets[n.ID] {
+				if err := d.removeParent(ctx, mid, n.ID); err != nil {
+					return fmt.Errorf("agent: rollup unlink cluster %s: %w", n.ID, err)
+				}
+			}
+			if err := d.deleteNode(ctx, n.ID); err != nil {
+				return fmt.Errorf("agent: rollup collapse cluster %s: %w", n.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// removeParent strips parentID from a member node's ParentIDs (idempotently),
+// re-upserting the member only when the link was present. The inverse of
+// ensureParent; used when a cluster node collapses below the noise floor.
+func (d *Distiller) removeParent(ctx context.Context, memberID, parentID string) error {
+	node, ok, err := d.getNode(ctx, memberID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	filtered := filterOut(node.ParentIDs, parentID)
+	if len(filtered) == len(node.ParentIDs) {
+		return nil // not linked
+	}
+	node.ParentIDs = filtered
+	return d.upsertNode(ctx, node)
+}
+
+// isClusterID reports whether id is a cluster (L1) node id (digest:1:cluster:*).
+func isClusterID(id string) bool {
+	return strings.HasPrefix(id, "digest:1:cluster:")
 }
 
 // parseSemOrZero parses a formatted SemHash, returning 0 on empty/invalid input
