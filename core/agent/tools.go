@@ -122,10 +122,10 @@ func (t *Toolkit) searchTool() Tool {
 func (t *Toolkit) graphTraverseTool() Tool {
 	return Tool{
 		Name: "graph_traverse",
-		// NOTE: this tool passes caller-supplied cypher straight to the graph
-		// engine. Read-only safety depends entirely on the adapter's enforcement
-		// (e.g. a read-only connection or driver-level flag); no subset filtering
-		// is applied here — that is a Phase-2 item.
+		// NOTE: this tool passes caller-supplied cypher to the graph engine with
+		// a defense-in-depth denylist guard (readOnlyCypher) rejecting mutating
+		// clauses. For deployments handling untrusted callers, a read-only graph
+		// connection or driver-level flag is still recommended as a second layer.
 		Description: "Run a read-only openCypher traversal (caller-supplied) returning column-keyed rows.",
 		InputSchema: json.RawMessage(`{"type":"object","required":["cypher"],"properties":{"cypher":{"type":"string"},"params":{"type":"object"}}}`),
 		Handler: func(ctx context.Context, args json.RawMessage) (any, error) {
@@ -135,6 +135,9 @@ func (t *Toolkit) graphTraverseTool() Tool {
 			}
 			if err := json.Unmarshal(args, &a); err != nil {
 				return nil, fmt.Errorf("agent: graph_traverse args: %w", err)
+			}
+			if err := readOnlyCypher(a.Cypher); err != nil {
+				return nil, err
 			}
 			var rows []map[string]any
 			if err := t.fab.Graph().Query(ctx, a.Cypher, a.Params, &rows); err != nil {
