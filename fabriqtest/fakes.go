@@ -313,12 +313,59 @@ func (r *FakeRelational) List(ctx context.Context, entity string, q query.ListQu
 	if err != nil {
 		return err
 	}
-	slice, elemIsPtr, elemType, err := sliceTarget(into, ent)
-	if err != nil {
+
+	if err := query.ValidateConds(q.Where, ent.Binding.HasColumn); err != nil {
 		return err
 	}
 
-	if err := query.ValidateConds(q.Where, ent.Binding.HasColumn); err != nil {
+	// Dynamic entities use map-native hydration: into must be *[]map[string]any.
+	if ent.Binding.IsDynamic() {
+		dest, ok := into.(*[]map[string]any)
+		if !ok {
+			return fmt.Errorf("fabriq: dynamic entity %q List target must be *[]map[string]any, got %T", entity, into)
+		}
+		r.db.mu.RLock()
+		rows := r.db.rows[tid][entity]
+		ids := make([]string, 0, len(rows))
+		for id, row := range rows {
+			if !scopeVisible(ctx, row.scope) {
+				continue
+			}
+			ok, evErr := evalConds(row.vals, q.Where)
+			if evErr != nil {
+				r.db.mu.RUnlock()
+				return evErr
+			}
+			if ok {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		r.db.mu.RUnlock()
+		if q.Offset > 0 {
+			if q.Offset >= len(ids) {
+				return nil
+			}
+			ids = ids[q.Offset:]
+		}
+		if q.Limit > 0 && len(ids) > q.Limit {
+			ids = ids[:q.Limit]
+		}
+		r.db.mu.RLock()
+		defer r.db.mu.RUnlock()
+		for _, id := range ids {
+			row := r.db.rows[tid][entity][id]
+			cp := make(map[string]any, len(row.vals))
+			for k, v := range row.vals {
+				cp[k] = v
+			}
+			*dest = append(*dest, cp)
+		}
+		return nil
+	}
+
+	slice, elemIsPtr, elemType, err := sliceTarget(into, ent)
+	if err != nil {
 		return err
 	}
 
