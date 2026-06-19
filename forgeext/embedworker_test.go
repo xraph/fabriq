@@ -174,6 +174,14 @@ func TestEmbedHandler_Metrics(t *testing.T) {
 		t.Fatalf("EmbedEventsTotal = %v, want 1", got)
 	}
 
+	// tenant-less event → EmbedEventsTotal++ and returns nil
+	if err := hOK("s", event.Envelope{Aggregate: "ewdoc", AggID: "x", Type: "ewdoc.created", Payload: json.RawMessage(`{"title":"t"}`)}); err != nil {
+		t.Fatalf("tenant-less event should be ack-skipped, got %v", err)
+	}
+	if got := testutil.ToFloat64(m.EmbedEventsTotal); got != 2 {
+		t.Fatalf("EmbedEventsTotal = %v, want 2", got)
+	}
+
 	// transient failure → EmbedFailuresTotal++ and error propagates
 	ixErr, _ := agent.NewIndexer(fabriqtest.NewFabric(fabriqtest.NewWorld(reg)), reg, errEmb{})
 	hErr := embedHandler(context.Background(), ixErr, m)
