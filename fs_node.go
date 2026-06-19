@@ -7,8 +7,8 @@ import (
 	"io"
 	"time"
 
-	fabriqerr "github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/command"
+	fabriqerr "github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/domain"

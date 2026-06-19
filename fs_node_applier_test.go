@@ -1,4 +1,4 @@
-package projection_test
+package fabriq_test
 
 import (
 	"encoding/json"
