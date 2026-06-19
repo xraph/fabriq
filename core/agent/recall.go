@@ -17,6 +17,10 @@ type RecallRequest struct {
 	K        int         `json:"k"`
 	Hops     int         `json:"hops"`
 	Filters  query.Where `json:"filters,omitempty"`
+	// Altitude selects which layer of the distillation tree surfaces. AltAuto
+	// (the zero value) defers to Config.Altitude, which itself defaults to
+	// AltAuto: the budget then decides between entities and the tenant digest.
+	Altitude Altitude `json:"altitude,omitempty"`
 }
 
 // Recall runs the auto-context pipeline: build per-channel ranked candidates
@@ -109,6 +113,23 @@ func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, e
 		})
 	}
 
+	// Altitude resolution: collapse the digest tree to a single layer before
+	// packing so a digest and the entities it covers never both surface. AltAuto
+	// lets the budget decide — descend to entities when their tokens fit, else
+	// climb to the tenant digest. dedupeByAltitude is a no-op when no digest
+	// items are present, so registries without digest_node are unaffected.
+	alt := req.Altitude
+	if alt == AltAuto {
+		alt = t.cfg.Altitude
+	}
+	entityTokens := 0
+	for _, it := range items {
+		if !isDigest(it.Entity) {
+			entityTokens += it.Tokens
+		}
+	}
+	items = dedupeByAltitude(items, resolveAltitude(alt, entityTokens, req.Budget))
+
 	kept, omitted, used := pack(items, req.Budget)
 	return ContextPack{Items: kept, Omitted: omitted, Tokens: used, Warnings: warnings}, nil
 }
@@ -133,9 +154,18 @@ func (t *Toolkit) vectorChannel(ctx context.Context, req RecallRequest, k int) (
 		}
 		return nil, []string{msg}, nil
 	}
+	// Probe the caller's entities, plus digest_node when it is registered, so
+	// distillation digests become recall candidates without the caller having to
+	// name them. This is additive and leaves req.Entities untouched: registries
+	// without digest_node behave exactly as before.
+	entities := req.Entities
+	if _, ok := t.reg.Get(DigestEntity); ok {
+		entities = append(append([]string(nil), req.Entities...), DigestEntity)
+	}
+
 	var refs []ref
 	var warnings []string
-	for _, ent := range req.Entities {
+	for _, ent := range entities {
 		var matches []query.VectorMatch
 		if err := t.fab.Vector().Similar(ctx, query.VectorQuery{Entity: ent, Embedding: vecs[0], K: k}, &matches); err != nil {
 			if t.cfg.Strict {

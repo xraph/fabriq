@@ -42,6 +42,7 @@ type Config struct {
 	GraphSeeds     int                // top seeds (vector+search) to expand in the graph channel (default 8)
 	GraphReverse   bool               // expand incoming (reverse) edges too; default false
 	Write          WritePolicy        // agent write allowlist; empty = no writes
+	Altitude       Altitude           // distillation layer to surface (default AltAuto: budget decides)
 }
 
 func defaultTokenizer(b []byte) int { return (len(b) + 3) / 4 }
