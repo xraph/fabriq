@@ -101,6 +101,21 @@ func (a *Adapter) Similar(ctx context.Context, q query.VectorQuery, into any) er
 	})
 }
 
+// Delete implements query.VectorQuerier.
+func (a *Adapter) Delete(ctx context.Context, entity, id string) error {
+	if _, err := tenant.Require(ctx); err != nil {
+		return err
+	}
+	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		tid, _ := tenant.FromContext(ctx)
+		const sql = `DELETE FROM fabriq_embeddings WHERE tenant_id=$1 AND entity=$2 AND id=$3`
+		if _, err := tx.NewRaw(sql, tid, entity, id).Exec(ctx); err != nil {
+			return fmt.Errorf("fabriq: delete embedding %s/%s: %w", entity, id, err)
+		}
+		return nil
+	})
+}
+
 // parsePGTime parses Postgres text timestamps in the formats time::text
 // produces.
 func parsePGTime(s string) (time.Time, error) {

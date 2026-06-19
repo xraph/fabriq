@@ -184,6 +184,9 @@ type RangeQuery struct {
 type VectorQuerier interface {
 	Upsert(ctx context.Context, entity, id string, embedding []float32, meta map[string]any) error
 	Similar(ctx context.Context, q VectorQuery, into any) error
+	// Delete removes the embedding for (tenant, entity, id). Deleting a missing
+	// id is a no-op. Mirrors SpatialQuerier.Delete.
+	Delete(ctx context.Context, entity, id string) error
 }
 
 // VectorQuery is a nearest-neighbour search.

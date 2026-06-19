@@ -115,6 +115,15 @@ func (v *Vector) Similar(ctx context.Context, q query.VectorQuery, into any) err
 	return sh.Vector.Similar(ctx, q, into)
 }
 
+// Delete routes an embedding delete to the tenant's shard.
+func (v *Vector) Delete(ctx context.Context, entity, id string) error {
+	sh, err := v.set.For(ctx)
+	if err != nil {
+		return err
+	}
+	return sh.Vector.Delete(ctx, entity, id)
+}
+
 // BulkWrite routes a telemetry batch.
 func (t *Timeseries) BulkWrite(ctx context.Context, series string, points []query.Point) error {
 	sh, err := t.set.For(ctx)

@@ -56,6 +56,9 @@ func (notConfiguredVector) Upsert(context.Context, string, string, []float32, ma
 func (notConfiguredVector) Similar(context.Context, query.VectorQuery, any) error {
 	return errPort("vector")
 }
+func (notConfiguredVector) Delete(context.Context, string, string) error {
+	return errPort("vector")
+}
 
 type notConfiguredSpatial struct{}
 

@@ -50,6 +50,8 @@ func (v *vectorStub) Similar(_ context.Context, _ VectorQuery, into any) error {
 	return nil
 }
 
+func (v *vectorStub) Delete(_ context.Context, _, _ string) error { return nil }
+
 // TestSearchWith_CachedIDList: two identical SearchWith calls → underlying Search
 // called ONCE (ss.searches==1 after the second call).
 func TestSearchWith_CachedIDList(t *testing.T) {
