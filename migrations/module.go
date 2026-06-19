@@ -52,6 +52,7 @@ func Group() *migrate.Group {
 			migration0016FsNode,
 			migration0018FsPermission,
 			migration0019FsShare,
+			migration0020FsBookmark,
 			migration0021BlobSource,
 		)
 	})
