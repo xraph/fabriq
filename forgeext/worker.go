@@ -165,7 +165,7 @@ func (e *Extension) Run(ctx context.Context) error {
 			cancel()
 			return ierr
 		}
-		handle := embedHandler(runCtx, ix)
+		handle := embedHandler(runCtx, ix, e.metrics)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

@@ -32,6 +32,10 @@ type Metrics struct {
 	BlobGCRefDriftCorrected prometheus.Counter
 	BlobGCBroken            prometheus.Gauge
 	BlobGCOrphans           prometheus.Counter
+
+	// Embedding worker (proj:embed) instruments.
+	EmbedEventsTotal   prometheus.Counter
+	EmbedFailuresTotal prometheus.Counter
 }
 
 // New creates and registers the instruments on reg.
@@ -77,10 +81,19 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fabriq_blob_gc_orphans_total",
 			Help: "Orphan byte objects (no ledger row) deleted.",
 		}),
+		EmbedEventsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_embed_events_total",
+			Help: "Events handled by the embed worker (indexed or ack-skipped).",
+		}),
+		EmbedFailuresTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_embed_failures_total",
+			Help: "Events the embed worker failed to process (transient; left pending for retry).",
+		}),
 	}
 	for _, c := range []prometheus.Collector{
 		m.OutboxBacklog, m.TenantHookTrips, m.ConflationDepth, m.ProjectionLag, m.RelayPublished,
 		m.BlobGCBytesFreed, m.BlobGCCollected, m.BlobGCRefDriftCorrected, m.BlobGCBroken, m.BlobGCOrphans,
+		m.EmbedEventsTotal, m.EmbedFailuresTotal,
 	} {
 		if err := reg.Register(c); err != nil {
 			return nil, err

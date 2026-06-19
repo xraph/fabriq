@@ -8,6 +8,7 @@ import (
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
+	"github.com/xraph/fabriq/internal/metrics"
 )
 
 // hasEmbeddableEntity reports whether any registered entity opts into embedding.
@@ -32,7 +33,7 @@ func hasEmbeddableEntity(reg *registry.Registry) bool {
 //   - Embedder failures and vector upsert errors.
 //
 // Vector upserts are idempotent by id, so at-least-once redelivery is safe.
-func embedHandler(ctx context.Context, ix *agent.Indexer) func(streamID string, env event.Envelope) error {
+func embedHandler(ctx context.Context, ix *agent.Indexer, m *metrics.Metrics) func(streamID string, env event.Envelope) error {
 	return func(_ string, env event.Envelope) error {
 		if env.TenantID == "" {
 			return nil
@@ -44,9 +45,18 @@ func embedHandler(ctx context.Context, ix *agent.Indexer) func(streamID string, 
 		if err := ix.IndexEvent(tctx, env); err != nil {
 			if errors.Is(err, agent.ErrUnindexablePayload) {
 				// skip: poison payload — retrying won't help
+				if m != nil {
+					m.EmbedEventsTotal.Inc() // ack-skipped poison still counts as handled
+				}
 				return nil
 			}
+			if m != nil {
+				m.EmbedFailuresTotal.Inc()
+			}
 			return err
+		}
+		if m != nil {
+			m.EmbedEventsTotal.Inc()
 		}
 		return nil
 	}
