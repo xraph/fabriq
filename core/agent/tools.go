@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/xraph/fabriq/core/query"
 )
 
 // Tool is a transport-neutral agent tool descriptor. The MCP adapter maps each
@@ -17,10 +19,17 @@ type Tool struct {
 	Handler     func(ctx context.Context, args json.RawMessage) (any, error)
 }
 
-// Tools returns the agent-facing tool surface. Phase 1a exposes recall; read
-// primitives, remember, and watch arrive in later phases.
+// Tools returns the agent-facing tool surface. Phase 1b exposes recall plus
+// the four read primitives: vector_similar, search, graph_traverse, get.
+// list is intentionally deferred.
 func (t *Toolkit) Tools() []Tool {
-	return []Tool{t.recallTool()}
+	return []Tool{
+		t.recallTool(),
+		t.vectorSimilarTool(),
+		t.searchTool(),
+		t.graphTraverseTool(),
+		t.getTool(),
+	}
 }
 
 func (t *Toolkit) recallTool() Tool {
@@ -44,6 +53,115 @@ func (t *Toolkit) recallTool() Tool {
 				return nil, fmt.Errorf("agent: recall args: %w", err)
 			}
 			return t.Recall(ctx, req)
+		},
+	}
+}
+
+func (t *Toolkit) vectorSimilarTool() Tool {
+	return Tool{
+		Name:        "vector_similar",
+		Description: "Semantic nearest-neighbour search for an entity by query text.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["entity","query"],"properties":{"entity":{"type":"string"},"query":{"type":"string"},"k":{"type":"integer"}}}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (any, error) {
+			var a struct {
+				Entity string `json:"entity"`
+				Query  string `json:"query"`
+				K      int    `json:"k"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return nil, fmt.Errorf("agent: vector_similar args: %w", err)
+			}
+			if t.emb == nil {
+				return nil, fmt.Errorf("agent: vector_similar requires an embedder")
+			}
+			vecs, err := t.emb.Embed(ctx, []string{a.Query})
+			if err != nil {
+				return nil, fmt.Errorf("agent: vector_similar embed: %w", err)
+			}
+			if len(vecs) != 1 {
+				return nil, fmt.Errorf("agent: vector_similar embed returned %d vectors", len(vecs))
+			}
+			k := a.K
+			if k <= 0 {
+				k = t.cfg.K
+			}
+			var matches []query.VectorMatch
+			if err := t.fab.Vector().Similar(ctx, query.VectorQuery{Entity: a.Entity, Embedding: vecs[0], K: k}, &matches); err != nil {
+				return nil, err
+			}
+			return matches, nil
+		},
+	}
+}
+
+func (t *Toolkit) searchTool() Tool {
+	return Tool{
+		Name:        "search",
+		Description: "Full-text search over an entity's indexed fields.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["entity","query"],"properties":{"entity":{"type":"string"},"query":{"type":"string"},"limit":{"type":"integer"},"offset":{"type":"integer"}}}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (any, error) {
+			var a struct {
+				Entity string `json:"entity"`
+				Query  string `json:"query"`
+				Limit  int    `json:"limit"`
+				Offset int    `json:"offset"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return nil, fmt.Errorf("agent: search args: %w", err)
+			}
+			var hits []map[string]any
+			if err := t.fab.Search().Search(ctx, query.SearchQuery{Entity: a.Entity, Query: a.Query, Limit: a.Limit, Offset: a.Offset}, &hits); err != nil {
+				return nil, err
+			}
+			return hits, nil
+		},
+	}
+}
+
+func (t *Toolkit) graphTraverseTool() Tool {
+	return Tool{
+		Name:        "graph_traverse",
+		Description: "Run a read-only openCypher traversal (caller-supplied) returning column-keyed rows.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["cypher"],"properties":{"cypher":{"type":"string"},"params":{"type":"object"}}}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (any, error) {
+			var a struct {
+				Cypher string         `json:"cypher"`
+				Params map[string]any `json:"params"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return nil, fmt.Errorf("agent: graph_traverse args: %w", err)
+			}
+			var rows []map[string]any
+			if err := t.fab.Graph().Query(ctx, a.Cypher, a.Params, &rows); err != nil {
+				return nil, err
+			}
+			return rows, nil
+		},
+	}
+}
+
+func (t *Toolkit) getTool() Tool {
+	return Tool{
+		Name:        "get",
+		Description: "Fetch one entity row by id as a JSON object.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["entity","id"],"properties":{"entity":{"type":"string"},"id":{"type":"string"}}}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (any, error) {
+			var a struct {
+				Entity string `json:"entity"`
+				ID     string `json:"id"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return nil, fmt.Errorf("agent: get args: %w", err)
+			}
+			rows, err := t.hydrate(ctx, a.Entity, []string{a.ID})
+			if err != nil {
+				return nil, err
+			}
+			raw, ok := rows[a.ID]
+			if !ok {
+				return nil, fmt.Errorf("agent: get: %s %q not found", a.Entity, a.ID)
+			}
+			return raw, nil
 		},
 	}
 }

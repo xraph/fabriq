@@ -25,14 +25,15 @@ func TestTools_RecallDispatch(t *testing.T) {
 	}
 
 	tools := tk.Tools()
-	if len(tools) != 1 || tools[0].Name != "recall" {
-		t.Fatalf("want one recall tool, got %+v", tools)
+	recallTool, ok := toolByName(tools, "recall")
+	if !ok {
+		t.Fatalf("recall tool missing from %+v", tools)
 	}
 	var schema map[string]any
-	if err := json.Unmarshal(tools[0].InputSchema, &schema); err != nil {
+	if err := json.Unmarshal(recallTool.InputSchema, &schema); err != nil {
 		t.Fatalf("invalid input schema: %v", err)
 	}
-	out, err := tools[0].Handler(ctx, json.RawMessage(`{"query":"x","budget":10000,"entities":["doc"]}`))
+	out, err := recallTool.Handler(ctx, json.RawMessage(`{"query":"x","budget":10000,"entities":["doc"]}`))
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
