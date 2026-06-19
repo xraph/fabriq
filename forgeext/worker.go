@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq/adapters/postgres"
+	"github.com/xraph/fabriq/core/tenant"
 )
 
 // Advisory lock keys per singleton role. Stable across versions; never reuse
@@ -18,6 +19,7 @@ const (
 	lockKeyRelay         = int64(1001)
 	lockKeyReconciler    = int64(1002)
 	lockKeyDocumentPlane = int64(1003)
+	lockKeyBlobGC        = int64(1004)
 )
 
 // Run implements forge.RunnableExtension: supervise the leader-elected relay
@@ -103,6 +105,22 @@ func (e *Extension) Run(ctx context.Context) error {
 			supervise(runCtx, logger, "reconciler", func(c context.Context) error {
 				return reconElector.Run(c, func(leadCtx context.Context) error {
 					e.runReconciler(leadCtx, reconcileInterval)
+					return leadCtx.Err()
+				})
+			})
+		}()
+	}
+
+	// Blob CAS GC: leader-elected (lock 1004), one reconciler across replicas.
+	// Reuses the reconcile interval; disabled when CAS is not configured.
+	if reconcileInterval > 0 && stores.CAS != nil {
+		gcElector := postgres.NewElector(stores.Postgres, lockKeyBlobGC)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "blob-gc", func(c context.Context) error {
+				return gcElector.Run(c, func(leadCtx context.Context) error {
+					e.runBlobGC(leadCtx, reconcileInterval)
 					return leadCtx.Err()
 				})
 			})
@@ -235,6 +253,70 @@ func (e *Extension) runReconciler(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 			e.reconcileAll(ctx)
 		}
+	}
+}
+
+// runBlobGC is the scheduled blob garbage collector: leader-elected (lock
+// 1004) so exactly one replica reconciles, iterating every tenant. Interval 0
+// disables it.
+func (e *Extension) runBlobGC(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.gcBlobAll(ctx)
+		}
+	}
+}
+
+// gcBlobAll reconciles the blob CAS for every tenant, repairing drift and
+// collecting unreferenced bytes past the grace window.
+func (e *Extension) gcBlobAll(ctx context.Context) {
+	e.mu.Lock()
+	stores := e.stores
+	m := e.metrics
+	e.mu.Unlock()
+	if stores == nil {
+		return
+	}
+	grace := e.cfg.BlobGCGrace
+	if grace <= 0 {
+		grace = time.Hour
+	}
+	rec, err := stores.BlobReconciler(grace)
+	if err != nil {
+		return
+	}
+	tenants, err := stores.AllTenants(ctx)
+	if err != nil {
+		return
+	}
+	var broken int
+	for _, tenantID := range tenants {
+		tctx, err := tenant.WithTenant(ctx, tenantID)
+		if err != nil {
+			continue
+		}
+		rep, err := rec.Reconcile(tctx, true)
+		if err != nil {
+			continue
+		}
+		broken += len(rep.Broken)
+		if m != nil {
+			m.BlobGCBytesFreed.Add(float64(rep.BytesFreed))
+			m.BlobGCCollected.Add(float64(rep.GCCount))
+			m.BlobGCRefDriftCorrected.Add(float64(rep.RefsCorrected))
+			m.BlobGCOrphans.Add(float64(rep.OrphansDeleted))
+		}
+	}
+	if m != nil {
+		m.BlobGCBroken.Set(float64(broken))
 	}
 }
 

@@ -61,6 +61,22 @@ func RegisterAll(reg *registry.Registry) error {
 		},
 	}...)
 	specs = append(specs, registry.EntitySpec{
+		Name:      "fs_node",
+		Kind:      registry.KindAggregate,
+		Model:     (*FsNode)(nil),
+		GraphNode: "FsNode",
+		Edges: []registry.EdgeSpec{
+			{Field: "parent_id", Rel: "CHILD_OF", Target: "fs_node"},
+		},
+		Search:    registry.SearchSpec{Index: "fs_nodes", Fields: []string{"name", "content_type"}},
+		Subscribe: []registry.Scope{registry.ByID, registry.ByField("parent", "parent_id"), registry.ByTenant},
+		Live: &registry.LiveSpec{
+			Filterable: []string{"parent_id", "node_type", "name", "deleted_at"},
+			Sortable:   []string{"name", "size", "updated_at", "node_type"},
+			MaxWindow:  500,
+		},
+	})
+	specs = append(specs, registry.EntitySpec{
 		Name:  "page",
 		Kind:  registry.KindDocument,
 		Model: (*Page)(nil),

@@ -208,6 +208,11 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		}
 		stores.Blob = ba
 		ports.Blob = ba
+		if cfg.Storage.EnableCas {
+			cs := trovestore.NewCASStore(ba.Driver(), trovestore.NewCASIndex(pg), cfg.Storage.DefaultBucket)
+			stores.CAS = cs
+			ports.CAS = cs
+		}
 	}
 
 	f, err := New(reg, ports, allOpts...)
@@ -233,6 +238,8 @@ type Stores struct {
 	Falkor   *falkordb.Adapter
 	Elastic  *elastic.Adapter
 	Blob     *trovestore.Adapter // nil when Storage not configured
+	// CAS is the content-addressable store (nil when EnableCas is false).
+	CAS *trovestore.CASStore
 	// Cache is the engine cache (nil when Redis is not configured).
 	Cache corecache.Cache
 	// Shards is the tenant -> source-of-truth routing table backing the
@@ -456,6 +463,16 @@ func (s *Stores) SearchReconciler(reg *registry.Registry) (*projection.Reconcile
 		Projected:  s.Elastic.AggregateVersions,
 		Repair:     s.repair, // synthetic event lands on the tenant's shard outbox
 	}, nil
+}
+
+// BlobReconciler assembles the per-tenant blob CAS reconciler (ref-count
+// recompute, byte GC, broken-row + orphan detection). Returns an error when
+// the CAS layer is not configured (Storage.EnableCas false).
+func (s *Stores) BlobReconciler(grace time.Duration) (*trovestore.BlobReconciler, error) {
+	if s.CAS == nil || s.Postgres == nil {
+		return nil, fmt.Errorf("fabriq: blob reconciler needs storage with enableCas and postgres configured")
+	}
+	return trovestore.NewBlobReconciler(s.CAS, s.Postgres, grace), nil
 }
 
 // liveSearchModelVersion resolves the live search model version through
