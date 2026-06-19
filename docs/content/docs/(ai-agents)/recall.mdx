@@ -1,0 +1,107 @@
+---
+title: Recall
+description: Auto-context retrieval — fuse semantic, lexical, and graph candidates with Reciprocal Rank Fusion, hydrate authoritative rows, and fit them to a token budget. Plus thin per-plane primitives.
+---
+
+`Recall` is the agent toolkit's headline capability: hand it a natural-language
+query and a token budget, and it returns a ranked, budget-fitted **context
+pack** assembled across the [vector](/docs/vector), [search](/docs/search), and
+[graph](/docs/graph) planes. It is the difference between a vector store and a
+*brain* — recall is a pipeline, and fabriq has every stage as a first-class
+port.
+
+```go
+type RecallRequest struct {
+    Query    string      // natural-language; embedded + lexical-searched
+    Budget   int         // token budget for the returned pack
+    Entities []string    // entity types to recall from
+    K        int         // candidates per channel (default 24)
+    Hops     int         // graph expansion depth (default 1)
+    Filters  query.Where // optional structured constraints
+}
+
+pack, err := tk.Recall(ctx, agent.RecallRequest{
+    Query: "overheating pumps", Budget: 8000, Entities: []string{"asset"},
+})
+```
+
+## The pipeline
+
+1. **Semantic** — embed `Query` (via the [Embedder](/docs/agent-toolkit#the-embedder-seam)) and run `Vector().Similar` per entity.
+2. **Lexical** — `Search().Search` per searchable entity (full-text).
+3. **Graph** — expand the top seeds one or more hops along each entity's declared [edges](/docs/registry) (and, optionally, reverse edges).
+4. **Fuse** — combine the channels with **Reciprocal Rank Fusion**.
+5. **Hydrate** — load the fused ids' authoritative rows from the [relational plane](/docs/relational) (the source of truth), batched per entity.
+6. **Pack** — greedily include rows in fused-rank order until the next would exceed `Budget`; the rest are reported as `Omitted`.
+
+```go
+type ContextItem struct {
+    Entity, ID string
+    Row        json.RawMessage // the hydrated, current row
+    Score      float64         // fused rank score
+    Source     []string        // provenance: "vector","search","graph"
+    Tokens     int
+}
+
+type ContextPack struct {
+    Items    []ContextItem
+    Omitted  int      // candidates that didn't fit the budget
+    Tokens   int      // total estimate used
+    Warnings []string // degraded-channel notes — observable, not silent
+}
+```
+
+### Why Reciprocal Rank Fusion
+
+RRF combines the channels using only **rank position**, never raw scores —
+`score = Σ weight / (60 + rank)` across channels. So cosine similarity, BM25
+relevance, and graph hop-distance never have to be normalized against each
+other, which is the single biggest source of fragility in hybrid retrieval. An
+item that surfaces in multiple channels rises; per-channel weights are tunable
+via `Config.ChannelWeights`.
+
+<Callout type="info">
+  Recall is **lenient by default**: if a channel errors (search engine
+  unreachable, no embedder), it is logged, dropped, and surfaced in
+  `ContextPack.Warnings` — recall returns what the surviving channels found. Set
+  `Config.Strict = true` to make any channel failure a hard error instead.
+</Callout>
+
+## Graph expansion
+
+The graph channel expands from the top seeds along each seed entity's declared
+edges, staying inside fabriq's confirmed openCypher subset
+(`MATCH (n:Label {id:$id})-[:Rel]->(m:Target) RETURN m.id`). Neighbours map back
+to entities through the edge's target — no label-to-entity reverse lookup
+needed. Knobs:
+
+- `Hops` — depth; `> 1` emits a variable-length path (`[:Rel*1..H]`).
+- `Config.GraphReverse` — also expand *incoming* edges (opt-in; off by default to bound fan-out).
+- `Config.GraphSeeds` — how many top-ranked seeds to expand (default 8).
+
+## Token budgeting
+
+`Config.Tokenizer func([]byte) int` estimates a row's token cost; the default is
+a dependency-free `bytes/4` heuristic. Wire an exact tokenizer (tiktoken, etc.)
+for precise budgets. The packer stops at the first row that would overflow,
+preserving fused-rank order, and reports the remainder as `Omitted`.
+
+## Read primitives
+
+For agents that want manual control, the same tool surface exposes the raw
+planes as individual tools (see [MCP](/docs/mcp) for the agent-facing names):
+
+| Tool | Plane | Notes |
+| --- | --- | --- |
+| `recall` | all (fused) | the auto-context front door |
+| `vector_similar` | [vector](/docs/vector) | semantic nearest-neighbour by query text |
+| `search` | [search](/docs/search) | full-text over indexed fields |
+| `graph_traverse` | [graph](/docs/graph) | read-only openCypher (caller-supplied) |
+| `get` | [relational](/docs/relational) | one row by id |
+
+<Callout type="warn">
+  `graph_traverse` passes caller-supplied cypher straight to the graph engine. A
+  read-only guard rejects mutating clauses (`CREATE`/`MERGE`/`DELETE`/`SET`/…) as
+  defense-in-depth, but deployments exposing it to untrusted callers should also
+  use a read-only graph connection.
+</Callout>

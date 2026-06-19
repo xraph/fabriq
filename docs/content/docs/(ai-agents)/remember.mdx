@@ -1,0 +1,116 @@
+---
+title: Remember & Auto-Indexing
+description: Guarded memory formation through the command plane (deny-by-default write policy), plus auto-embedding on write and auto-unindexing on delete so what an agent writes is immediately recallable.
+---
+
+An agent that can only read is a search box. A *brain* forms memory. `Remember`
+lets an agent create, update, upsert, or delete entities — but only within
+limits the deploying app controls, and routed through the same
+[command plane](/docs/commands-and-events) as everything else (one versioned
+event per write, tenant-scoped, lifecycle-hook-vetoable). Auto-indexing then
+makes what the agent wrote immediately recallable.
+
+## Guarded writes
+
+```go
+type RememberRequest struct {
+    Entity          string          `json:"entity"`
+    Op              string          `json:"op"`              // create|update|upsert|delete
+    AggID           string          `json:"aggId,omitempty"`
+    Payload         json.RawMessage `json:"payload,omitempty"`
+    ExpectedVersion *int64          `json:"expectedVersion,omitempty"`
+}
+
+res, err := tk.Remember(ctx, agent.RememberRequest{
+    Entity: "note", Op: "create", Payload: []byte(`{"title":"Pump 7 runs hot","body":"…"}`),
+})
+```
+
+An agent's write power is exactly `WritePolicy ∩ tenant scope ∩ lifecycle-hook
+rules` — every knob the deploying app already owns. The toolkit adds **no** new
+enforcement engine:
+
+- **Allowlist (deny-by-default).** `Config.Write.Allow` maps entity → permitted ops. An entity absent from the map permits no writes; deletes only if explicitly listed.
+- **Tenant scope — inherited.** `Remember` calls `Exec`, already tenant-scoped from `ctx`. An agent physically cannot cross tenants.
+- **Lifecycle-hook veto — inherited.** The in-tx [lifecycle hook](/docs/commands-and-events) can reject or audit any write (block deletes, require a justification, stamp provenance). Fabriq supplies the primitive; the host writes the rule.
+- **Optimistic concurrency.** `ExpectedVersion` forwards to the command so an agent can't silently clobber a concurrent write.
+
+```go
+type WritePolicy struct {
+    Allow map[string][]command.Op // entity → permitted ops; absent = no writes
+}
+```
+
+Errors are typed for machine handling — the MCP layer maps them to JSON-RPC
+errors:
+
+| `WriteError.Code` | Meaning |
+| --- | --- |
+| `not_allowed` | entity/op not in the write policy |
+| `validation_failed` | unknown op, unknown entity, or empty/malformed payload |
+| `version_conflict` | `ExpectedVersion` mismatch (wraps `fabriqerr.ErrVersionConflict`) |
+| `not_found` | update/delete of a missing aggregate row |
+| `exec_failed` | other command-plane failure (e.g. a lifecycle-hook veto) |
+
+<Callout type="info">
+  Payloads are decoded into the entity's shape automatically — a typed Go model
+  for [model-backed entities](/docs/registry), or a `map[string]any` for
+  [dynamic entities](/docs/dynamic-entities) — so an agent only ever sends JSON.
+</Callout>
+
+## Auto-indexing on write
+
+Declare which fields of an entity are embeddable with an `EmbedSpec` decorator
+on its [registry](/docs/registry) entry — the same pattern as `Search`,
+`Live`, and `Cache`:
+
+```go
+reg.MustRegister(registry.EntitySpec{
+    Name: "note", Kind: registry.KindAggregate, Model: (*Note)(nil),
+    Embed: &registry.EmbedSpec{Fields: []string{"title", "body"}},
+})
+```
+
+Only entities with an `Embed` spec are indexed — opt-in, no surprise embedding
+cost. With the [embedding worker](#the-embedding-worker) running, every write to
+such an entity is embedded and upserted into the [vector plane](/docs/vector)
+asynchronously, and every delete removes the embedding — so recall never
+resurfaces deleted content.
+
+### The embedding worker
+
+Embedding is a side-effecting, model-calling operation, so it cannot ride the
+pure projection-applier path — it runs as its own consumer over the event
+stream, alongside the graph and search projection consumers. Enable it on the
+[forge extension](/docs/deployment):
+
+```go
+forgeext.New(reg,
+    forgeext.WithWorker(true),
+    forgeext.WithEmbedder(myEmbedder), // enables the proj:embed consumer
+)
+```
+
+The worker consumes each write event and calls `IndexEvent`: embeddable
+create/update → embed + `Vector().Upsert`; `*.deleted` → `Vector().Delete`. It
+is at-least-once and idempotent (vector upsert is keyed by id), so redelivery is
+safe. A structurally-unindexable payload is ack-skipped (it will never succeed);
+a transient embedder failure is left pending for retry. Throughput and failures
+are exported as `fabriq_embed_events_total` / `fabriq_embed_failures_total` (see
+[Observability](/docs/observability)).
+
+### Backfill
+
+To embed entities written before indexing was enabled, run `Reindex` — it pages
+an entity's rows and embeds them in batches (one `Embed` call per page):
+
+```go
+ix, _ := agent.NewIndexer(f, f.Registry(), myEmbedder)
+n, err := ix.Reindex(ctx, "note") // returns the number of rows indexed
+```
+
+<Callout type="warn">
+  `Reindex` is scoped to the tenant in `ctx` — call it once per tenant for a
+  full backfill. Embedding dimension is fixed at 768 in v1 (the
+  `fabriq_embeddings` table); the wired model must match.
+</Callout>

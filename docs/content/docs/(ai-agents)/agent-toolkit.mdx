@@ -1,0 +1,112 @@
+---
+title: Agent Toolkit
+description: A transport-agnostic toolkit that turns fabriq into an AI agent's brain — multi-modal recall, guarded memory formation, and live awareness — exposed in-process to Go agents and over MCP to any agent.
+---
+
+The agent toolkit (`core/agent`) lets an AI agent use the data fabric as a
+**brain**: it retrieves the relevant slice of a large corpus on demand, forms
+new memory under policy, and stays current as the world changes. It operates
+**only** on the existing [`query.Fabric`](/docs/architecture) facade — no new
+storage, no engine coupling — so everything an agent can recall or write rides
+the same tenancy, eventing, and projection invariants as the rest of fabriq.
+
+<Callout type="info">
+  An agent's context window holds ~1&nbsp;MB of text; a corpus is gigabytes
+  (~1000×). The toolkit never loads the corpus — it returns the *ranked,
+  budget-fitted slice* the model needs for the turn. Embeddings, graph edges,
+  and projections are the compression that lets a small window reach into a
+  large base.
+</Callout>
+
+## The shape
+
+Two front doors over one core:
+
+<Cards>
+  <Card title="Native Go agents (in-process)">
+    Import <code>core/agent</code>, build a <code>Toolkit</code> over the
+    facade, and call it directly — zero network hops. The hot wire.
+  </Card>
+  <Card title="Any agent (over MCP)" href="/docs/mcp">
+    The <code>forgeext/agentmcp</code> Forge extension exposes the
+    <em>same</em> tool handlers over MCP (JSON-RPC <code>tools/list</code> /
+    <code>tools/call</code>) so any LLM agent can reach them.
+  </Card>
+</Cards>
+
+```go
+import "github.com/xraph/fabriq/core/agent"
+
+tk, err := agent.NewToolkit(f, f.Registry(), embedder, agent.Config{
+    Write: agent.WritePolicy{Allow: map[string][]command.Op{
+        "note": {command.OpCreate, command.OpUpdate},
+    }},
+})
+
+// Recall: the auto-context front door.
+pack, err := tk.Recall(ctx, agent.RecallRequest{
+    Query:    "overheating pumps at the north site",
+    Budget:   8000, // token budget for the returned context pack
+    Entities: []string{"asset", "note"},
+})
+
+// Remember: guarded memory formation through the command plane.
+res, err := tk.Remember(ctx, agent.RememberRequest{
+    Entity: "note", Op: "create", Payload: []byte(`{"title":"…","body":"…"}`),
+})
+
+// Watch: react to live deltas.
+deltas, err := tk.Watch(ctx, query.SubscribeScope{Entity: "asset", Scope: "tenant"})
+```
+
+## What it does
+
+<Cards>
+  <Card title="Recall" href="/docs/recall">
+    One <code>recall(query, budget)</code> that fuses semantic (vector), lexical
+    (search), and relationship (graph) retrieval with Reciprocal Rank Fusion,
+    then fits the result to a token budget. Thin per-plane primitives sit
+    underneath for manual control.
+  </Card>
+  <Card title="Remember + auto-index" href="/docs/remember">
+    Guarded writes through the command plane (deny-by-default
+    <code>WritePolicy</code>), plus auto-embedding on write and
+    auto-unindexing on delete so what the agent writes is immediately
+    recallable.
+  </Card>
+  <Card title="Watch" href="/docs/mcp">
+    Subscribe to the conflated delta stream so the agent reacts to changes,
+    not just polls — in-process as a Go channel, or over MCP as SSE.
+  </Card>
+  <Card title="MCP interface" href="/docs/mcp">
+    The common interface: <code>tools/list</code> + <code>tools/call</code> over
+    JSON-RPC, auth-agnostic, so any agent platform can drive the toolkit.
+  </Card>
+</Cards>
+
+## The Embedder seam
+
+Semantic recall and auto-indexing both need to turn text into vectors. Fabriq
+**stores** vectors (the [vector plane](/docs/vector)) but does not produce
+them — the host supplies an `Embedder`, exactly the way it supplies auth:
+
+```go
+// Embedder turns text into vectors. The host wires the model
+// (Anthropic, OpenAI, a local model); fabriq stays model-agnostic.
+type Embedder interface {
+    Embed(ctx context.Context, texts []string) ([][]float32, error)
+    Dims() int
+}
+```
+
+`Dims()` is validated against the vector port at `NewToolkit`. With no embedder
+wired, recall still works — it degrades to the lexical and relational channels
+and records a warning on the result, rather than failing.
+
+<Callout type="info">
+  The toolkit is **transport-agnostic**: `core/agent` imports no Forge, no HTTP,
+  and no MCP. Cognition (embedding orchestration, fusion, token-budgeting) lives
+  in the core; transport and auth live in the [`agentmcp`](/docs/mcp) Forge
+  shell — the same "primitives in core, policy in the seam" discipline as the
+  rest of fabriq.
+</Callout>
