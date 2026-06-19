@@ -2,6 +2,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"github.com/xraph/fabriq/core/command"
@@ -89,6 +90,52 @@ func TestIndexer_ReindexPaginates(t *testing.T) {
 		if !indexed(t, w, ctx, "ixdoc", id, []float32{1, 0, 0}) {
 			t.Fatalf("id %q not indexed after paginated Reindex", id)
 		}
+	}
+}
+
+type countingEmbedder struct {
+	calls   int
+	batches []int
+}
+
+func (c *countingEmbedder) Dims() int { return 3 }
+func (c *countingEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	c.calls++
+	c.batches = append(c.batches, len(texts))
+	out := make([][]float32, len(texts))
+	for i := range texts {
+		out[i] = []float32{1, 0, 0}
+	}
+	return out, nil
+}
+
+func TestIndexer_ReindexBatchesEmbedCalls(t *testing.T) {
+	reg := embedRegistry(t)
+	w := fabriqtest.NewWorld(reg)
+	ff := newFakeFabric(t, w)
+	emb := &countingEmbedder{}
+	ix, _ := NewIndexer(ff, reg, emb)
+	ctx := testCtx(t, "acme")
+
+	orig := reindexBatch
+	reindexBatch = 2
+	defer func() { reindexBatch = orig }()
+
+	for _, ttl := range []string{"a", "b", "c", "d", "e"} {
+		if _, err := ff.Exec(ctx, command.Command{Entity: "ixdoc", Op: command.OpCreate, Payload: &ixDoc{Title: ttl, Body: "x"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := ix.Reindex(ctx, "ixdoc")
+	if err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("want 5 indexed, got %d", n)
+	}
+	// 5 rows / batch 2 = 3 pages → 3 Embed calls (NOT 5), batch sizes 2,2,1
+	if emb.calls != 3 {
+		t.Fatalf("want 3 batched Embed calls, got %d (batches=%v)", emb.calls, emb.batches)
 	}
 }
 
