@@ -58,7 +58,10 @@ func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, e
 		channels["search"] = srefs
 	}
 
-	grefs, gw, err := t.graphChannel(ctx, channels, req)
+	// Pre-fuse the discovery channels to pick the highest-ranked seeds to expand.
+	seeds := topSeeds(fuse(channels, t.cfg.ChannelWeights), t.cfg.GraphSeeds)
+
+	grefs, gw, err := t.graphChannel(ctx, seeds, req)
 	if err != nil {
 		return ContextPack{}, err
 	}
