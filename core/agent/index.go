@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/xraph/fabriq/core/event"
@@ -77,6 +78,67 @@ func (ix *Indexer) IndexRow(ctx context.Context, entity, id string, vals map[str
 		return fmt.Errorf("agent: embed %q/%s: got %d vectors for 1 input", entity, id, len(vecs))
 	}
 	return ix.fab.Vector().Upsert(ctx, entity, id, vecs[0], nil)
+}
+
+// Reindex re-embeds every row of an embeddable entity (backfill). Returns the
+// number of rows indexed. No-op (0) for non-embeddable entities.
+func (ix *Indexer) Reindex(ctx context.Context, entity string) (int, error) {
+	if ix.embedSpec(entity) == nil {
+		return 0, nil
+	}
+	ent, ok := ix.reg.Get(entity)
+	if !ok {
+		return 0, fmt.Errorf("agent: reindex: unknown entity %q", entity)
+	}
+	const batch = 200
+	indexed := 0
+	for offset := 0; ; offset += batch {
+		rows, err := ix.listVals(ctx, ent, batch, offset)
+		if err != nil {
+			return indexed, fmt.Errorf("agent: reindex %q: %w", entity, err)
+		}
+		for _, vals := range rows {
+			id, _ := vals["id"].(string)
+			if id == "" {
+				continue
+			}
+			if err := ix.IndexRow(ctx, entity, id, vals); err != nil {
+				return indexed, err
+			}
+			indexed++
+		}
+		if len(rows) < batch {
+			return indexed, nil
+		}
+	}
+}
+
+// listVals lists one page of an entity's rows as column-keyed maps, handling
+// both typed (Go-model) and dynamic entities — the same split as hydrate.
+func (ix *Indexer) listVals(ctx context.Context, ent *registry.Entity, limit, offset int) ([]map[string]any, error) {
+	q := query.ListQuery{Limit: limit, Offset: offset}
+	if ent.Binding.IsDynamic() {
+		var maps []map[string]any
+		if err := ix.fab.Relational().List(ctx, ent.Spec.Name, q, &maps); err != nil {
+			return nil, err
+		}
+		return maps, nil
+	}
+	mt := ent.Binding.ModelType()
+	slicePtr := reflect.New(reflect.SliceOf(mt))
+	if err := ix.fab.Relational().List(ctx, ent.Spec.Name, q, slicePtr.Interface()); err != nil {
+		return nil, err
+	}
+	slice := slicePtr.Elem()
+	out := make([]map[string]any, 0, slice.Len())
+	for i := 0; i < slice.Len(); i++ {
+		vals, err := ent.Binding.ValuesByColumn(slice.Index(i).Interface())
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, vals)
+	}
+	return out, nil
 }
 
 // IndexEvent indexes a create/update event whose aggregate is embeddable.

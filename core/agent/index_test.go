@@ -8,7 +8,6 @@ import (
 
 	"github.com/xraph/grove"
 
-	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
@@ -121,4 +120,3 @@ func TestNewIndexer_RequiresEmbedder(t *testing.T) {
 	}
 }
 
-var _ = command.OpCreate // keep command import for Task 2's seeding (remove if unused)
