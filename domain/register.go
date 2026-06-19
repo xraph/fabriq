@@ -99,6 +99,12 @@ func RegisterAll(reg *registry.Registry) error {
 		Model:     (*FsPermission)(nil),
 		Subscribe: []registry.Scope{registry.ByID, registry.ByField("node", "node_id"), registry.ByTenant},
 	})
+	specs = append(specs, registry.EntitySpec{
+		Name:      "fs_share",
+		Kind:      registry.KindAggregate,
+		Model:     (*FsShare)(nil),
+		Subscribe: []registry.Scope{registry.ByID, registry.ByField("node", "node_id"), registry.ByTenant},
+	})
 	for _, spec := range specs {
 		if err := reg.Register(spec); err != nil {
 			return err
