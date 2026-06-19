@@ -1,0 +1,97 @@
+---
+title: MCP Adapter
+description: Expose the agent toolkit to any agent over MCP — JSON-RPC tools/list + tools/call, plus a watch SSE stream — as an auth-agnostic Forge extension that mirrors the live-query gateway.
+---
+
+The `forgeext/agentmcp` extension is the **common interface**: it surfaces the
+[agent toolkit](/docs/agent-toolkit)'s tools over [MCP](https://modelcontextprotocol.io)
+(JSON-RPC 2.0) so any agent — Claude, a Python agent, another service — can
+drive recall, the read primitives, guarded writes, and a live watch stream. Go
+agents call the toolkit in-process; external agents reach the *same handlers*
+over HTTP. One brain, two front doors.
+
+## Wiring
+
+The extension depends on the `fabriq` extension and builds its toolkit in
+`Start`. It is **auth-agnostic** — the host attaches auth via forwarded route
+options, exactly like the [live-query gateway](/docs/subscriptions):
+
+```go
+app.RegisterExtension(forgeext.New(reg, forgeext.WithWorker(true)))
+app.RegisterExtension(agentmcp.NewMCP(fabriqExt,
+    agentmcp.WithEmbedder(myEmbedder),
+    agentmcp.WithWritePolicy(agent.WritePolicy{Allow: map[string][]command.Op{
+        "note": {command.OpCreate, command.OpUpdate},
+    }}),
+    agentmcp.WithRouteOptions(pkgAuth.RequirePermission("agent:use")), // host auth
+))
+```
+
+<Callout type="warn">
+  The endpoint introduces **no** authority of its own. With no auth attached via
+  `WithRouteOptions`, recall, writes, and `graph_traverse` are open to any caller
+  the router admits. Always attach the host's auth middleware in production.
+</Callout>
+
+## The JSON-RPC surface
+
+A single `POST` endpoint (default `/api/v1/agent/mcp`) speaks minimal JSON-RPC
+2.0:
+
+- `tools/list` → the tool descriptors (`name`, `description`, `inputSchema`).
+- `tools/call` → run a tool by name with its arguments.
+
+```bash
+curl -X POST /api/v1/agent/mcp -d '{
+  "jsonrpc": "2.0", "id": 1,
+  "method": "tools/call",
+  "params": { "name": "recall", "arguments": {
+    "query": "overheating pumps", "budget": 8000, "entities": ["asset"]
+  }}
+}'
+```
+
+The tool surface (six tools): `recall`, `vector_similar`, `search`,
+`graph_traverse`, `get`, and `remember`. Protocol errors (unknown method, bad
+params, unparseable body) return a JSON-RPC `error` object; **tool execution**
+errors (a denied write, a failed embed) return a normal result with
+`isError: true` and the reason — so the agent sees them and can react, exactly
+as MCP intends.
+
+<Callout type="info">
+  The JSON-RPC dispatcher is transport-neutral (`dispatch.go` imports no Forge):
+  it is a pure <code>[]byte → []byte</code> handler over a <code>*agent.Toolkit</code>,
+  which is why the full request/response path is unit-testable without a running
+  server. The Forge shell is the thin controller that pipes the request body
+  through it.
+</Callout>
+
+## Watch over SSE
+
+Request/response tools can't stream, so `watch` is a separate **Server-Sent
+Events** endpoint (default `/api/v1/agent/mcp/watch`). POST a subscribe scope and
+the connection streams `query.Delta`s as SSE events until the client
+disconnects:
+
+```bash
+curl -N -X POST /api/v1/agent/mcp/watch -d '{"entity":"asset","scope":"tenant"}'
+```
+
+```
+event: asset.created
+data: {"aggId":"…","version":1,"type":"asset.created", …}
+```
+
+It reuses fabriq's SSE writer and the conflated [subscription](/docs/subscriptions)
+stream; teardown is context-scoped — when the client disconnects, the request
+context cancels and the hub releases the subscription. In-process Go agents get
+the same stream as a channel via `Toolkit.Watch`.
+
+## What's integration-gated
+
+The dispatcher, the read/write tools, and the SSE route are exercised by
+unit/HTTP tests with in-memory fakes. The pieces that require a live stack
+(Postgres + Redis) — the extension's `Start` (`fabriq.Open`), the embedding
+worker's consume loop, and the live `Watch → Redis` delta stream — are verified
+in the integration suite. See [Deployment](/docs/deployment) and
+[Observability](/docs/observability).

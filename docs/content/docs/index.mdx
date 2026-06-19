@@ -104,6 +104,36 @@ snap, live, cancel, err := f.LiveQuery(tenantCtx, livequery.LiveQuery{
   before it reaches a store.
 </Callout>
 
+## Embed or serve
+
+By default a service embeds fabriq and owns its datastore pools. An **optional
+remote topology** lets backend services instead talk to a central,
+connection-owning fabriq over gRPC — through the *same* `query.Fabric` interface,
+so call sites are identical.
+
+<Callout type="info">
+  The remote protocol is **experimental / in development**: write, read and
+  subscribe planes plus edge auth (mTLS + bearer) are wired and tested over real
+  gRPC; live-query, blob and interactive-transaction planes are not yet. See
+  [Remote protocol](/docs/remote-protocol).
+</Callout>
+
+## An agent's brain
+
+An AI agent can use fabriq as its **brain** through the
+[agent toolkit](/docs/agent-toolkit): one `recall(query, budget)` that fuses
+semantic, lexical, and graph retrieval into a token-budgeted context pack;
+guarded memory formation with auto-embedding on write; and a live watch stream —
+exposed in-process to Go agents and over [MCP](/docs/mcp) to any agent.
+
+```go
+tk, _ := agent.NewToolkit(f, f.Registry(), embedder, agent.Config{})
+pack, _ := tk.Recall(tenantCtx, agent.RecallRequest{
+    Query: "overheating pumps at the north site", Budget: 8000,
+    Entities: []string{"asset", "note"},
+})
+```
+
 ## Where to go next
 
 <Cards>
@@ -118,6 +148,10 @@ snap, live, cancel, err := f.LiveQuery(tenantCtx, livequery.LiveQuery{
   <Card title="Data Planes" href="/docs/relational">
     Per-port guides: relational, graph, search, timeseries, vector, spatial,
     and the CRDT document plane.
+  </Card>
+  <Card title="AI Agents" href="/docs/agent-toolkit">
+    Use fabriq as an agent's brain: fused recall, guarded memory, a live watch
+    stream, and an MCP interface for any agent.
   </Card>
   <Card title="Operations" href="/docs/deployment">
     Deploy the worker, run migrations, rebuild and reconcile projections, and
