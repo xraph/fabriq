@@ -19,8 +19,9 @@ import (
 
 // --- minimal fake Fabric over a fabriqtest.World (local to this package) ---
 type fakeFabric struct {
-	w *fabriqtest.World
-	x *command.Executor
+	w     *fabriqtest.World
+	x     *command.Executor
+	subCh chan query.Delta
 }
 
 func newFakeFabric(t testing.TB, w *fabriqtest.World) *fakeFabric {
@@ -46,7 +47,17 @@ func (f *fakeFabric) Spatial() query.SpatialQuerier       { return f.w.Spatial }
 func (f *fakeFabric) Document() document.Store            { return f.w.Docs }
 func (f *fakeFabric) Blob() blob.Store                    { return f.w.Blob }
 func (f *fakeFabric) Subscribe(context.Context, query.SubscribeScope) (<-chan query.Delta, error) {
-	return nil, nil
+	if f.subCh == nil {
+		f.subCh = make(chan query.Delta, 16)
+	}
+	return f.subCh, nil
+}
+
+func (f *fakeFabric) pushDelta(d query.Delta) {
+	if f.subCh == nil {
+		f.subCh = make(chan query.Delta, 16)
+	}
+	f.subCh <- d
 }
 func (f *fakeFabric) WaitForProjection(context.Context, string, string, string, int64) error {
 	return nil

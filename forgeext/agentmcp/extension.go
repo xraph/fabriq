@@ -17,6 +17,7 @@ import (
 // config holds the MCP extension's options.
 type config struct {
 	BasePath     string
+	WatchPath    string
 	Embedder     agent.Embedder
 	Toolkit      agent.Config
 	RouteOptions []forge.RouteOption
@@ -70,6 +71,9 @@ func NewMCP(fab *forgeext.Extension, opts ...Option) *Extension {
 	if cfg.BasePath == "" {
 		cfg.BasePath = "/api/v1/agent/mcp"
 	}
+	if cfg.WatchPath == "" {
+		cfg.WatchPath = cfg.BasePath + "/watch"
+	}
 	return &Extension{fab: fab, cfg: cfg}
 }
 
@@ -78,12 +82,16 @@ func (e *Extension) Version() string     { return forgeext.Version }
 func (e *Extension) Description() string { return "fabriq agent toolkit over MCP (JSON-RPC tools/list + tools/call)" }
 func (e *Extension) Dependencies() []string { return []string{"fabriq"} }
 
-// Register registers the MCP controller; the toolkit resolves lazily (built in Start).
+// Register registers the MCP controller and watch SSE controller; the toolkit
+// resolves lazily (built in Start).
 func (e *Extension) Register(app forge.App) error {
 	if err := e.BaseExtension.Register(app); err != nil {
 		return err
 	}
-	return app.RegisterController(newMCPController(e))
+	if err := app.RegisterController(newMCPController(e)); err != nil {
+		return err
+	}
+	return app.RegisterController(newWatchController(e))
 }
 
 // Start builds the toolkit over the started fabriq facade.
