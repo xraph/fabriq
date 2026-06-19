@@ -37,21 +37,19 @@ type MapLine struct {
 // mapBatch is the page size used when listing digest nodes in Map.
 const mapBatch = 500
 
-// Map returns a compact outline of the tenant's context-distillation Merkle tree.
-// Each line carries its ContentHash + SemHash. When req.KnownHashes is provided,
-// nodes whose ContentHash matches the caller's known value are marked Unchanged=true
-// (Merkle-diff re-grounding).
-//
-// If req.Scope is non-empty, only nodes whose scope_id equals req.Scope and the
-// tenant root are included. If the DigestEntity is not registered, (nil, nil) is
-// returned.
-func (t *Toolkit) Map(ctx context.Context, req MapRequest) ([]MapLine, error) {
+// resolveHammingThreshold is the maximum Hamming distance for a node to be
+// included in the Near result set of Toolkit.Resolve.
+const resolveHammingThreshold = 8
+
+// listDigestRows pages through all digest_node rows for the tenant in ctx and
+// returns them as []digestRow. It is shared by Map and Resolve to avoid
+// duplicating the paging logic. Returns (nil, nil) when DigestEntity is not
+// registered.
+func (t *Toolkit) listDigestRows(ctx context.Context) ([]digestRow, error) {
 	ent, ok := t.reg.Get(DigestEntity)
 	if !ok {
 		return nil, nil
 	}
-
-	// Page through all digest_node rows for this tenant.
 	var all []digestRow
 	for offset := 0; ; offset += mapBatch {
 		rows, err := listEntityVals(ctx, t.fab.Relational(), ent, mapBatch, offset)
@@ -64,6 +62,26 @@ func (t *Toolkit) Map(ctx context.Context, req MapRequest) ([]MapLine, error) {
 		if len(rows) < mapBatch {
 			break
 		}
+	}
+	return all, nil
+}
+
+// Map returns a compact outline of the tenant's context-distillation Merkle tree.
+// Each line carries its ContentHash + SemHash. When req.KnownHashes is provided,
+// nodes whose ContentHash matches the caller's known value are marked Unchanged=true
+// (Merkle-diff re-grounding).
+//
+// If req.Scope is non-empty, only nodes whose scope_id equals req.Scope and the
+// tenant root are included. If the DigestEntity is not registered, (nil, nil) is
+// returned.
+func (t *Toolkit) Map(ctx context.Context, req MapRequest) ([]MapLine, error) {
+	// Page through all digest_node rows for this tenant.
+	all, err := t.listDigestRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if all == nil {
+		return nil, nil
 	}
 
 	// Build outline, optionally filtering by scope.
@@ -110,6 +128,76 @@ type DigestView struct {
 	Node     MapLine       `json:"node"`
 	Summary  string        `json:"summary"`
 	Children []DigestChild `json:"children"`
+}
+
+// ResolveMatch is one entry in the Near list returned by Toolkit.Resolve.
+type ResolveMatch struct {
+	Node        MapLine `json:"node"`
+	HammingBits int     `json:"hammingBits"`
+}
+
+// ResolveResult is the value returned by Toolkit.Resolve. Exact is set when a
+// node's ContentHash equals the queried hash. Near holds nodes whose SemHash is
+// within resolveHammingThreshold bits of the queried SemHash (sorted ascending
+// by HammingBits, tiebroken by ID).
+type ResolveResult struct {
+	Exact *MapLine       `json:"exact,omitempty"`
+	Near  []ResolveMatch `json:"near,omitempty"`
+}
+
+// Resolve performs a quick reference lookup without re-embedding:
+//
+//   - Exact: if any node's ContentHash equals hash, Exact is set to that node.
+//   - Near: if hash parses as a 16-hex SemHash (via ParseSemHash), every node
+//     whose SemHash is within resolveHammingThreshold Hamming bits is included in
+//     Near, sorted ascending by HammingBits and then by ID.
+//
+// Both lookups are attempted independently. A node may appear in both Exact and
+// Near if its ContentHash happens to be all-hex and its SemHash is also close.
+// Returns (zero, nil) when DigestEntity is not registered.
+func (t *Toolkit) Resolve(ctx context.Context, hash string) (ResolveResult, error) {
+	all, err := t.listDigestRows(ctx)
+	if err != nil {
+		return ResolveResult{}, err
+	}
+
+	var res ResolveResult
+
+	// Try to parse hash as a SemHash for the Near scan.
+	parsed, semErr := ParseSemHash(hash)
+
+	for _, row := range all {
+		// Exact ContentHash match.
+		if row.ContentHash == hash {
+			line := mapLineFromRow(row)
+			res.Exact = &line
+		}
+
+		// Near SemHash scan (only when hash parses as a valid SemHash).
+		if semErr == nil {
+			nodeParsed, parseErr := ParseSemHash(row.SemHash)
+			if parseErr != nil {
+				continue
+			}
+			dist := HammingDistance(parsed, nodeParsed)
+			if dist <= resolveHammingThreshold {
+				res.Near = append(res.Near, ResolveMatch{
+					Node:        mapLineFromRow(row),
+					HammingBits: dist,
+				})
+			}
+		}
+	}
+
+	// Sort Near deterministically: ascending HammingBits, tiebreak by ID.
+	sort.Slice(res.Near, func(i, j int) bool {
+		if res.Near[i].HammingBits != res.Near[j].HammingBits {
+			return res.Near[i].HammingBits < res.Near[j].HammingBits
+		}
+		return res.Near[i].Node.ID < res.Near[j].Node.ID
+	})
+
+	return res, nil
 }
 
 // mapLineFromRow converts a digestRow into a MapLine (no KnownHashes diff).
