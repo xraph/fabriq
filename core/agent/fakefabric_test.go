@@ -21,10 +21,13 @@ var errNotImplemented = errors.New("agent test: not implemented in phase 1a")
 
 // fakeFabric adapts a fabriqtest.World to the query.Fabric interface. Phase-1a
 // recall exercises only the read queriers; Exec is wired so tests can seed
-// rows; subscribe/wait are stubbed (unused in 1a).
+// rows; subscribe/wait are stubbed (unused in 1a). Phase-3 adds Subscribe
+// test-driving via subCh and lastSubscribeScope.
 type fakeFabric struct {
-	w *fabriqtest.World
-	x *command.Executor
+	w                  *fabriqtest.World
+	x                  *command.Executor
+	subCh              chan query.Delta
+	lastSubscribeScope query.SubscribeScope
 }
 
 func newFakeFabric(t testing.TB, w *fabriqtest.World) *fakeFabric {
@@ -50,8 +53,20 @@ func (f *fakeFabric) Vector() query.VectorQuerier         { return f.w.Vector }
 func (f *fakeFabric) Spatial() query.SpatialQuerier       { return f.w.Spatial }
 func (f *fakeFabric) Document() document.Store            { return f.w.Docs }
 func (f *fakeFabric) Blob() blob.Store                    { return f.w.Blob }
-func (f *fakeFabric) Subscribe(context.Context, query.SubscribeScope) (<-chan query.Delta, error) {
-	return nil, errNotImplemented
+func (f *fakeFabric) Subscribe(_ context.Context, scope query.SubscribeScope) (<-chan query.Delta, error) {
+	f.lastSubscribeScope = scope
+	if f.subCh == nil {
+		f.subCh = make(chan query.Delta, 16)
+	}
+	return f.subCh, nil
+}
+
+// pushDelta feeds a delta to the most recent Subscribe channel (test helper).
+func (f *fakeFabric) pushDelta(d query.Delta) {
+	if f.subCh == nil {
+		f.subCh = make(chan query.Delta, 16)
+	}
+	f.subCh <- d
 }
 func (f *fakeFabric) WaitForProjection(context.Context, string, string, string, int64) error {
 	return errNotImplemented
