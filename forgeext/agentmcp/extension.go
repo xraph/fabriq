@@ -36,7 +36,9 @@ func WithWritePolicy(p agent.WritePolicy) Option {
 	return func(c *config) { c.Toolkit.Write = p }
 }
 
-// WithConfig sets the full toolkit Config (Write is overridden by WithWritePolicy if both used).
+// WithConfig sets the full toolkit Config. Apply WithConfig BEFORE WithWritePolicy:
+// a later WithConfig call replaces c.Toolkit entirely, clobbering any earlier
+// WithWritePolicy; a later WithWritePolicy only sets c.Toolkit.Write.
 func WithConfig(cfg agent.Config) Option { return func(c *config) { c.Toolkit = cfg } }
 
 // WithRouteOptions forwards forge route options (auth middleware, OpenAPI) to
@@ -57,6 +59,9 @@ type Extension struct {
 }
 
 // NewMCP builds the MCP extension wired to a started fabriq Extension.
+// The endpoint is auth-agnostic: the host MUST attach authentication via
+// WithRouteOptions (e.g. a bearer-token middleware), otherwise recall, writes,
+// and graph_traverse are exposed to any caller the router admits.
 func NewMCP(fab *forgeext.Extension, opts ...Option) *Extension {
 	cfg := config{BasePath: "/api/v1/agent/mcp"}
 	for _, o := range opts {

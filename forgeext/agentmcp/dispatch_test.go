@@ -144,7 +144,9 @@ func TestDispatch_ToolErrorIsErrorResult(t *testing.T) {
 			} `json:"content"`
 		} `json:"result"`
 	}
-	_ = json.Unmarshal(resp, &out)
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("bad response %s: %v", resp, err)
+	}
 	if !out.Result.IsError {
 		t.Fatalf("want isError for denied write, got %s", resp)
 	}
