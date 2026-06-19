@@ -71,7 +71,7 @@ func RegisterAll(reg *registry.Registry) error {
 		Search:    registry.SearchSpec{Index: "fs_nodes", Fields: []string{"name", "content_type"}},
 		Subscribe: []registry.Scope{registry.ByID, registry.ByField("parent", "parent_id"), registry.ByTenant},
 		Live: &registry.LiveSpec{
-			Filterable: []string{"parent_id", "node_type", "name"},
+			Filterable: []string{"parent_id", "node_type", "name", "deleted_at"},
 			Sortable:   []string{"name", "size", "updated_at", "node_type"},
 			MaxWindow:  500,
 		},

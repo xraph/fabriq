@@ -9,6 +9,7 @@ import (
 
 	fabriqerr "github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/domain"
 )
@@ -217,4 +218,17 @@ func (f *Fabriq) SearchNodesByName(ctx context.Context, q string, limit int) ([]
 		return nil, fmt.Errorf("fabriq: SearchNodesByName: %w", err)
 	}
 	return rows, nil
+}
+
+// WatchChildren returns a maintained result set of a folder's live children,
+// ordered by name — the per-folder live view the explorer subscribes to.
+// Trashed children (deleted_at IS NOT NULL) are excluded from the live window.
+// Single-shard deployments only (the LiveQuery constraint).
+func (f *Fabriq) WatchChildren(ctx context.Context, parentID string, limit int) (livequery.Snapshot, <-chan livequery.LiveDelta, *livequery.Handle, error) {
+	return f.LiveQuery(ctx, livequery.LiveQuery{
+		Entity: "fs_node",
+		Where:  query.Where{query.Eq("parent_id", parentID), query.IsNull("deleted_at")},
+		Sort:   []livequery.SortKey{{Column: "name"}},
+		Limit:  limit,
+	})
 }
