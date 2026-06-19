@@ -3,7 +3,12 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"sort"
+
+	"github.com/xraph/fabriq/core/fabriqerr"
 )
 
 // MapRequest parameters for Toolkit.Map.
@@ -93,4 +98,133 @@ func (t *Toolkit) Map(ctx context.Context, req MapRequest) ([]MapLine, error) {
 	})
 
 	return lines, nil
+}
+
+// DigestChild is one child entry in a DigestView: the child's id, kind, and
+// Merkle hashes. Summary is populated only when the Toolkit was configured with
+// a CAS (otherwise empty).
+type DigestChild struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Summary     string `json:"summary"`
+	ContentHash string `json:"contentHash"`
+	SemHash     string `json:"semHash"`
+}
+
+// DigestView is the drill-down result returned by Toolkit.Digest: the node's
+// own MapLine, its summary text (from CAS), and its immediate children.
+type DigestView struct {
+	Node     MapLine       `json:"node"`
+	Summary  string        `json:"summary"`
+	Children []DigestChild `json:"children"`
+}
+
+// mapLineFromRow converts a digestRow into a MapLine (no KnownHashes diff).
+func mapLineFromRow(row digestRow) MapLine {
+	return MapLine{
+		ID:          row.ID,
+		Level:       row.Level,
+		Kind:        row.Kind,
+		Scope:       row.ScopeID,
+		ContentHash: row.ContentHash,
+		SemHash:     row.SemHash,
+	}
+}
+
+// getDigestRow reads a single digest_node row by id using the Toolkit's fabric.
+// Returns (row, true, nil) on success, (zero, false, nil) when the row is not
+// found, and (zero, false, err) for any other error.
+func (t *Toolkit) getDigestRow(ctx context.Context, id string) (digestRow, bool, error) {
+	ent, ok := t.reg.Get(DigestEntity)
+	if !ok {
+		return digestRow{}, false, fmt.Errorf("agent: digest: %q not registered", DigestEntity)
+	}
+	model := ent.Binding.NewModel()
+	if err := t.fab.Relational().Get(ctx, DigestEntity, id, model); err != nil {
+		var nfe *fabriqerr.NotFoundError
+		if errors.Is(err, fabriqerr.ErrNotFound) || errors.As(err, &nfe) {
+			return digestRow{}, false, nil
+		}
+		return digestRow{}, false, err
+	}
+	vals, err := ent.Binding.ValuesByColumn(model)
+	if err != nil {
+		return digestRow{}, false, err
+	}
+	return digestRowFromVals(vals), true, nil
+}
+
+// retrieveSummary fetches the summary text for a content hash from CAS.
+// Returns an empty string when t.cas is nil or when the hash is empty
+// (graceful degradation — never an error in those two cases).
+func (t *Toolkit) retrieveSummary(ctx context.Context, hash string) (string, error) {
+	if t.cas == nil || hash == "" {
+		return "", nil
+	}
+	rc, err := t.cas.Retrieve(ctx, hash)
+	if err != nil {
+		return "", fmt.Errorf("agent: digest: cas retrieve %q: %w", hash, err)
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		return "", fmt.Errorf("agent: digest: read summary %q: %w", hash, err)
+	}
+	return string(b), nil
+}
+
+// Digest drills into one context-distillation node: it returns the node's
+// MapLine, its summary text (retrieved from CAS by SummaryHash), and its
+// immediate children with their own hashes and summaries.
+//
+// When the Toolkit was created without a CAS (Config.CAS == nil), Summary and
+// child Summary fields are always empty — this is graceful degradation, not an
+// error.
+//
+// Returns an error if nodeID is not found in the digest tree, or on any
+// storage error.
+func (t *Toolkit) Digest(ctx context.Context, nodeID string) (DigestView, error) {
+	// 1. Load the target node.
+	row, ok, err := t.getDigestRow(ctx, nodeID)
+	if err != nil {
+		return DigestView{}, err
+	}
+	if !ok {
+		return DigestView{}, fmt.Errorf("agent: digest: node %q not found", nodeID)
+	}
+
+	// 2. Retrieve the node's summary text from CAS.
+	summary, err := t.retrieveSummary(ctx, row.SummaryHash)
+	if err != nil {
+		return DigestView{}, err
+	}
+
+	// 3. Build children: load each child row, retrieve its summary.
+	children := make([]DigestChild, 0, len(row.ChildIDs))
+	for _, cid := range row.ChildIDs {
+		crow, ok, err := t.getDigestRow(ctx, cid)
+		if err != nil {
+			return DigestView{}, err
+		}
+		if !ok {
+			continue // tolerate dangling child references
+		}
+		childSummary, err := t.retrieveSummary(ctx, crow.SummaryHash)
+		if err != nil {
+			return DigestView{}, err
+		}
+		children = append(children, DigestChild{
+			ID:          crow.ID,
+			Kind:        crow.Kind,
+			Summary:     childSummary,
+			ContentHash: crow.ContentHash,
+			SemHash:     crow.SemHash,
+		})
+	}
+
+	return DigestView{
+		Node:     mapLineFromRow(row),
+		Summary:  summary,
+		Children: children,
+	}, nil
 }
