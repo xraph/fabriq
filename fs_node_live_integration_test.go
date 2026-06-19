@@ -70,8 +70,13 @@ func TestFsWatchChildren(t *testing.T) {
 	f, _ := openFsLiveTest(t)
 	tctx := tenant.MustWithTenant(ctx, "acme")
 
-	dir, _ := f.CreateFolder(tctx, "", "live")
-	_, _ = f.CreateFolder(tctx, dir.ID, "first")
+	dir, err := f.CreateFolder(tctx, "", "live")
+	if err != nil {
+		t.Fatalf("CreateFolder root: %v", err)
+	}
+	if _, err := f.CreateFolder(tctx, dir.ID, "first"); err != nil {
+		t.Fatalf("CreateFolder first: %v", err)
+	}
 
 	snap, deltas, handle, err := f.WatchChildren(tctx, dir.ID, 100)
 	if err != nil {
@@ -83,7 +88,9 @@ func TestFsWatchChildren(t *testing.T) {
 	}
 
 	// A new child arrives → OpEnter delta.
-	_, _ = f.CreateFile(tctx, dir.ID, "second.txt", bytes.NewReader([]byte("x")), fabriq.CreateFileOpts{})
+	if _, err := f.CreateFile(tctx, dir.ID, "second.txt", bytes.NewReader([]byte("x")), fabriq.CreateFileOpts{}); err != nil {
+		t.Fatalf("CreateFile second.txt: %v", err)
+	}
 
 	select {
 	case d := <-deltas:
