@@ -49,10 +49,11 @@ func (c *Config) withDefaults() {
 
 // Toolkit is the transport-agnostic agent surface over the fabriq facade.
 type Toolkit struct {
-	fab query.Fabric
-	reg *registry.Registry
-	emb Embedder
-	cfg Config
+	fab      query.Fabric
+	reg      *registry.Registry
+	emb      Embedder
+	cfg      Config
+	revEdges map[string][]reverseEdge // cached result of reverseEdgeIndex(reg); built once in NewToolkit
 }
 
 // NewToolkit builds a Toolkit. emb may be nil (semantic recall is then skipped).
@@ -67,5 +68,5 @@ func NewToolkit(fab query.Fabric, reg *registry.Registry, emb Embedder, cfg Conf
 	if emb != nil && emb.Dims() != cfg.VectorDims {
 		return nil, fmt.Errorf("agent: embedder dims %d != configured vector dims %d", emb.Dims(), cfg.VectorDims)
 	}
-	return &Toolkit{fab: fab, reg: reg, emb: emb, cfg: cfg}, nil
+	return &Toolkit{fab: fab, reg: reg, emb: emb, cfg: cfg, revEdges: reverseEdgeIndex(reg)}, nil
 }

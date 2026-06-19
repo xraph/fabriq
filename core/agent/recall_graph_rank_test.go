@@ -21,6 +21,9 @@ func TestTopSeeds_TakesHighestFusedFirst(t *testing.T) {
 	if all := topSeeds(fused, 0); len(all) != 3 {
 		t.Fatalf("n<=0 → no cap, want 3 got %d", len(all))
 	}
+	if all := topSeeds(fused, -1); len(all) != 3 {
+		t.Fatalf("n<0 → no cap, want 3 got %d", len(all))
+	}
 }
 
 // With GraphSeeds=1, the single expanded seed must be the highest FUSED-score

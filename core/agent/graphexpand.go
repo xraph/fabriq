@@ -13,6 +13,12 @@ import (
 // variable-length [:Rel*1..hops]. reverse → incoming edge (<-). Implementation
 // AND tests build cypher through this helper so FakeGraph exact-string canning
 // matches.
+//
+// NOTE: the combined reverse + variable-length form `<-[:R*1..N]-` (hops>1 &&
+// reverse==true) is NOT yet exercised by the graph conformance suite
+// (adapters/graphtest/suite.go). The suite only covers forward var-length and
+// single-hop reverse separately. Add a reverse-varlen case to the suite before
+// adopting a non-FalkorDB graph backend.
 func expansionCypher(seedLabel, rel, targetLabel string, hops int, reverse bool) string {
 	relPart := "[:" + rel + "]"
 	if hops > 1 {
@@ -70,7 +76,7 @@ func (t *Toolkit) graphChannel(ctx context.Context, seeds []ref, req RecallReque
 	}
 	var revIdx map[string][]reverseEdge
 	if t.cfg.GraphReverse {
-		revIdx = reverseEdgeIndex(t.reg)
+		revIdx = t.revEdges
 	}
 
 	seen := map[ref]struct{}{}
@@ -93,7 +99,8 @@ func (t *Toolkit) graphChannel(ctx context.Context, seeds []ref, req RecallReque
 		var ids []string
 		if err := t.fab.Graph().Query(ctx, cypher, map[string]any{"id": seed.ID}, &ids); err != nil {
 			if t.cfg.Strict {
-				return fmt.Errorf("agent: graph expand %s-[:%s]->%s: %w", seedLabel, rel, targetLabel, err)
+				dir := "->"; if reverse { dir = "<-" }
+				return fmt.Errorf("agent: graph expand %s-[:%s]%s%s: %w", seedLabel, rel, dir, targetLabel, err)
 			}
 			warnings = append(warnings, fmt.Sprintf("graph channel failed for %s-[:%s]: %v", seed.Entity, rel, err))
 			return nil
