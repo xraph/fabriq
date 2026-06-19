@@ -894,6 +894,22 @@ func (f *FakeVector) Similar(ctx context.Context, q query.VectorQuery, into any)
 	return nil
 }
 
+// Delete implements query.VectorQuerier.
+func (f *FakeVector) Delete(ctx context.Context, entity, id string) error {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if byEntity, ok := f.data[tid]; ok {
+		if byID, ok := byEntity[entity]; ok {
+			delete(byID, id)
+		}
+	}
+	return nil
+}
+
 func cosine(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return -1
