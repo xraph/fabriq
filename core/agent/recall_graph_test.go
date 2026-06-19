@@ -86,6 +86,35 @@ func TestRecall_GraphChannelExpandsToNeighbor(t *testing.T) {
 	}
 }
 
+func TestRecall_GraphChannelStrictReturnsError(t *testing.T) {
+	reg := graphRegistry(t)
+	w := fabriqtest.NewWorld(reg)
+	ff := newFakeFabric(t, w)
+	tk, err := NewToolkit(ff, reg, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}}, Config{Strict: true, VectorDims: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testCtx(t, "acme")
+
+	site, err := ff.Exec(ctx, command.Command{Entity: "gsite", Op: command.OpCreate, Payload: &gSite{Name: "Plant B"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset, err := ff.Exec(ctx, command.Command{Entity: "gasset", Op: command.OpCreate, Payload: &gAsset{Name: "Pump 2", SiteID: site.AggID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// asset is the vector seed — no Graph.Cann, so FakeGraph returns an error
+	if err := w.Vector.Upsert(ctx, "gasset", asset.AggID, []float32{1, 0, 0}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = tk.Recall(ctx, RecallRequest{Query: "pump", Budget: 100000, Entities: []string{"gasset"}})
+	if err == nil {
+		t.Fatal("strict graph channel: expected error from uncanned cypher, got nil")
+	}
+}
+
 func TestExpansionCypher_Format(t *testing.T) {
 	got := expansionCypher("GAsset", "LOCATED_AT", "GSite")
 	want := "MATCH (n:GAsset {id: $id})-[:LOCATED_AT]->(m:GSite) RETURN m.id"
