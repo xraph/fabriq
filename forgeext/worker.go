@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq/adapters/postgres"
+	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/tenant"
 )
 
@@ -154,6 +155,26 @@ func (e *Extension) Run(ctx context.Context) error {
 		go func() {
 			defer wg.Done()
 			supervise(runCtx, logger, "proj:search", func(c context.Context) error { return engine.Run(c, consumer) })
+		}()
+	}
+
+	// Embedding worker: one consumer per replica, no election needed.
+	if e.cfg.Embedder != nil && stores.Redis != nil && hasEmbeddableEntity(e.reg) {
+		ix, ierr := agent.NewIndexer(fab, e.reg, e.cfg.Embedder)
+		if ierr != nil {
+			cancel()
+			return ierr
+		}
+		handle := embedHandler(runCtx, ix)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "proj:embed", func(c context.Context) error {
+				if err := stores.Redis.EnsureGroup(c, "proj:embed"); err != nil {
+					return err
+				}
+				return stores.Redis.Consume(c, "proj:embed", consumer, handle)
+			})
 		}()
 	}
 

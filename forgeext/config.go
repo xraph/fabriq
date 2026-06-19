@@ -6,6 +6,7 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq"
+	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/projection"
 )
 
@@ -19,6 +20,9 @@ type Config struct {
 	// BlobGCGrace protects freshly-created CAS entries and orphan bytes from
 	// collection for this window. Zero falls back to 1h at run time.
 	BlobGCGrace time.Duration
+	// Embedder enables the embedding worker: each write to an entity with an
+	// EmbedSpec is embedded + vector-upserted asynchronously. Nil = disabled.
+	Embedder agent.Embedder
 }
 
 // Option is a functional option for Config.
@@ -41,6 +45,10 @@ func WithReconcileInterval(d time.Duration) Option {
 func WithBlobGCGrace(d time.Duration) Option {
 	return func(o *Config) { o.BlobGCGrace = d }
 }
+
+// WithEmbedder enables the embedding worker: each write to an entity with an
+// EmbedSpec is embedded + vector-upserted asynchronously. Nil = disabled.
+func WithEmbedder(e agent.Embedder) Option { return func(o *Config) { o.Embedder = e } }
 
 // WithCustomAppliers appends consumer-supplied projection appliers to the
 // fabriq config. They are unioned after the built-in declarative applier for
