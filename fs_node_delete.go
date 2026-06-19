@@ -40,7 +40,8 @@ func (f *Fabriq) setDeleted(ctx context.Context, id string, deleted bool) error 
 	for i := range nodes {
 		n := nodes[i] // copy
 		if deleted {
-			n.DeletedAt = &now
+			ts := now
+			n.DeletedAt = &ts
 			n.DeletedBy = ""
 		} else {
 			n.DeletedAt = nil
