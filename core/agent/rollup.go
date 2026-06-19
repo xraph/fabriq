@@ -150,9 +150,15 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashe
 	if existing, ok, err := d.getNode(ctx, args.id); err != nil {
 		return false, err
 	} else if ok && existing.ContentHash == ch {
+		if d.obs != nil {
+			d.obs.ShortCircuited()
+		}
 		return false, nil
 	}
 
+	if d.obs != nil {
+		d.obs.Summarized()
+	}
 	summary, err := d.sum.Summarize(ctx, SummaryInput{
 		Level:    args.level,
 		Kind:     args.kind,
@@ -171,6 +177,9 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashe
 		Level: args.level, Text: summary,
 	}, d.cfg.FailOpenGuard)
 	if ge.Blocked {
+		if d.obs != nil {
+			d.obs.GuardBlocked()
+		}
 		return false, nil // fail-closed: drop (see ErrSummaryBlocked)
 	}
 
@@ -182,6 +191,9 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashe
 	}
 	if _, err := d.persistSummary(ctx, args); err != nil {
 		return false, err
+	}
+	if d.obs != nil {
+		d.obs.NodeBuilt()
 	}
 	return true, nil
 }
