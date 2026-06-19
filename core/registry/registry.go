@@ -181,6 +181,16 @@ func (r *Registry) Validate() error {
 				return fmt.Errorf("fabriq: entity %q: edge %s targets %q which has no GraphNode", name, edge.Rel, edge.Target)
 			}
 		}
+		if e.Spec.Embed != nil && e.Spec.Embed.Text == nil {
+			if len(e.Spec.Embed.Fields) == 0 {
+				return fmt.Errorf("fabriq: entity %q: Embed needs Fields or Text", name)
+			}
+			for _, f := range e.Spec.Embed.Fields {
+				if !e.Binding.HasColumn(f) {
+					return fmt.Errorf("fabriq: entity %q: Embed field %q is not a column", name, f)
+				}
+			}
+		}
 	}
 	return nil
 }
