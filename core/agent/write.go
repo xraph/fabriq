@@ -84,11 +84,19 @@ func (t *Toolkit) Remember(ctx context.Context, req RememberRequest) (command.Re
 	if !ok {
 		return command.Result{}, &WriteError{Code: "validation_failed", Msg: fmt.Sprintf("unknown op %q", req.Op)}
 	}
+	// Unknown entity → validation_failed for ALL ops (including delete).
+	if _, ok := t.reg.Get(req.Entity); !ok {
+		return command.Result{}, &WriteError{Code: "validation_failed", Msg: fmt.Sprintf("unknown entity %q", req.Entity)}
+	}
 	if !t.cfg.Write.allows(req.Entity, op) {
 		return command.Result{}, &WriteError{Code: "not_allowed", Msg: fmt.Sprintf("%s on %q not permitted", req.Op, req.Entity)}
 	}
 	var payload any
 	if op != command.OpDelete {
+		// Empty payload for a non-delete op is a caller error; surface it before Exec.
+		if len(req.Payload) == 0 {
+			return command.Result{}, &WriteError{Code: "validation_failed", Msg: "empty payload"}
+		}
 		p, err := t.decodePayload(req.Entity, req.Payload)
 		if err != nil {
 			return command.Result{}, &WriteError{Code: "validation_failed", Msg: "payload", Err: err}
@@ -104,9 +112,10 @@ func (t *Toolkit) Remember(ctx context.Context, req RememberRequest) (command.Re
 	})
 	if err != nil {
 		code := "exec_failed"
-		if errors.Is(err, fabriqerr.ErrVersionConflict) {
+		switch {
+		case errors.Is(err, fabriqerr.ErrVersionConflict):
 			code = "version_conflict"
-		} else {
+		default:
 			var nfe *fabriqerr.NotFoundError
 			if errors.As(err, &nfe) {
 				code = "not_found"
