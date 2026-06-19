@@ -510,3 +510,67 @@ func asStrings(v any) []string {
 	}
 	return nil
 }
+
+// distillBatch is the page size used by Distill. A package-level var (not
+// const) so tests can reduce it to exercise the multi-page loop.
+var distillBatch = 200
+
+// BackfillReport summarises one Distill pass over the tenant in ctx.
+type BackfillReport struct {
+	Entities int // number of distillable entities enumerated
+	Rows     int // total source rows seen across all entities
+	Built    int // L0 nodes that were (re)summarized and persisted (changed=true)
+}
+
+// Distill performs a per-tenant backfill/rebuild of the context-distillation
+// Merkle tree. For every registered entity that has a DistillSpec it pages
+// through all source rows (Reindex-style) and calls DistillL0 per row, then
+// calls Rollup once to rebuild the L1/L2 backbone.
+//
+// Distill is tenant-scoped: it operates on the tenant present in ctx (RLS).
+// Call once per tenant for a full cluster-wide rebuild.
+func (d *Distiller) Distill(ctx context.Context) (BackfillReport, error) {
+	var rep BackfillReport
+
+	for _, e := range d.reg.All() {
+		if e.Spec.Distill == nil {
+			continue
+		}
+		rep.Entities++
+
+		ent, ok := d.reg.Get(e.Spec.Name)
+		if !ok {
+			continue
+		}
+
+		batch := distillBatch
+		for offset := 0; ; offset += batch {
+			rows, err := listEntityVals(ctx, d.fab.Relational(), ent, batch, offset)
+			if err != nil {
+				return rep, fmt.Errorf("agent: distill %q list: %w", e.Spec.Name, err)
+			}
+			for _, vals := range rows {
+				id, _ := vals["id"].(string)
+				if id == "" {
+					continue
+				}
+				rep.Rows++
+				changed, err := d.DistillL0(ctx, e.Spec.Name, id, vals)
+				if err != nil {
+					return rep, fmt.Errorf("agent: distill %q/%s: %w", e.Spec.Name, id, err)
+				}
+				if changed {
+					rep.Built++
+				}
+			}
+			if len(rows) < batch {
+				break
+			}
+		}
+	}
+
+	if _, err := d.Rollup(ctx); err != nil {
+		return rep, fmt.Errorf("agent: distill rollup: %w", err)
+	}
+	return rep, nil
+}
