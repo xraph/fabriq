@@ -51,6 +51,7 @@ func Group() *migrate.Group {
 			migration0015BlobCASCreatedAt,
 			migration0016FsNode,
 			migration0018FsPermission,
+			migration0019FsShare,
 			migration0021BlobSource,
 		)
 	})
