@@ -9,6 +9,7 @@ import (
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/cache"
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/crypto"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/livequery"
@@ -65,7 +66,8 @@ type Fabriq struct {
 	hub      *subscribe.Hub
 	gate     *subscribe.Gate
 	settings settings
-	stores   *Stores // set by Open; nil when assembled from explicit ports
+	stores   *Stores        // set by Open; nil when assembled from explicit ports
+	crypto   crypto.Encryptor // nil when encryption is not configured
 
 	liveEngine *livequery.Engine   // nil when live queries are not configured
 	liveAuthz  livequery.AuthzFunc // optional authz hook for live queries
@@ -131,6 +133,7 @@ func New(reg *registry.Registry, ports Ports, opts ...Option) (*Fabriq, error) {
 		hub:        subscribe.NewHub(hubOpts...),
 		gate:       subscribe.NewGate(reg, s.authz),
 		settings:   s,
+		crypto:     s.encryptor,
 		liveEngine: liveEngine,
 		liveAuthz:  s.liveAuthz,
 	}, nil
