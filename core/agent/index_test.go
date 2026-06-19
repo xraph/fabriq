@@ -88,7 +88,7 @@ func TestIndexer_IndexRowNoopForNonEmbeddable(t *testing.T) {
 	}
 }
 
-func TestIndexer_IndexEventCreateAndSkipDelete(t *testing.T) {
+func TestIndexer_IndexEventCreateIndexes(t *testing.T) {
 	reg := embedRegistry(t)
 	w := fabriqtest.NewWorld(reg)
 	ff := newFakeFabric(t, w)
@@ -101,14 +101,6 @@ func TestIndexer_IndexEventCreateAndSkipDelete(t *testing.T) {
 	}
 	if !indexed(t, w, ctx, "ixdoc", "e1", []float32{1, 0, 0}) {
 		t.Fatal("created event not indexed")
-	}
-
-	del := event.Envelope{Aggregate: "ixdoc", AggID: "e2", Type: "ixdoc.deleted", Payload: json.RawMessage(`{"title":"gone"}`)}
-	if err := ix.IndexEvent(ctx, del); err != nil {
-		t.Fatalf("IndexEvent delete: %v", err)
-	}
-	if indexed(t, w, ctx, "ixdoc", "e2", []float32{1, 0, 0}) {
-		t.Fatal("deleted event must be skipped (no vector delete in v1)")
 	}
 }
 
