@@ -69,13 +69,14 @@ func TestBlobSourceEncryptedRoundTrip(t *testing.T) {
 
 	// The stored auth_enc column is ciphertext, not the plaintext secret.
 	var enc []byte
-	if err := f.Relational().Query(tctx, &enc, `SELECT auth_enc FROM blob_sources WHERE id = $1`, ref.ID); err == nil {
-		if len(enc) == 0 {
-			t.Fatal("auth_enc is empty")
-		}
-		if string(enc) == "SECRET" || contains(enc, "SECRET") {
-			t.Fatal("auth stored in plaintext")
-		}
+	if err := f.Relational().Query(tctx, &enc, `SELECT auth_enc FROM blob_sources WHERE id = $1`, ref.ID); err != nil {
+		t.Fatalf("reading auth_enc: %v", err)
+	}
+	if len(enc) == 0 {
+		t.Fatal("auth_enc is empty")
+	}
+	if string(enc) == "SECRET" || contains(enc, "SECRET") {
+		t.Fatal("auth stored in plaintext")
 	}
 
 	// GetSource decrypts.
