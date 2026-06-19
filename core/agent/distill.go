@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
@@ -20,6 +22,17 @@ import (
 // NOT return it — a blocked summary is fail-closed (changed=false, nothing
 // stored) — but the rollup paths reuse it to distinguish a block from an error.
 var ErrSummaryBlocked = errors.New("agent: summary blocked by guard")
+
+// DistillObserver receives distillation events for metrics/audit. All methods
+// are optional via a nil observer. Kept in core (not the worker) so the
+// Prometheus dependency stays out of core/agent: the worker passes a small
+// adapter that increments counters.
+type DistillObserver interface {
+	Summarized()     // a Summarize call was made (L0 or internal node)
+	ShortCircuited() // a Merkle hash matched — the node was not re-summarized
+	NodeBuilt()      // a node summary was persisted (CAS + vector + row)
+	GuardBlocked()   // a guard vetoed an ingest or emit (fail-closed drop)
+}
 
 // DistillConfig tunes the Distiller. Zero values get defaults via withDefaults.
 type DistillConfig struct {
@@ -67,7 +80,12 @@ type Distiller struct {
 	cas    blob.CAS
 	cfg    DistillConfig
 	planes [64][]float32
+	obs    DistillObserver // optional; nil = no instrumentation
 }
+
+// SetObserver attaches an optional DistillObserver for metrics/audit. Pass nil
+// to detach. Not safe to call concurrently with distillation.
+func (d *Distiller) SetObserver(o DistillObserver) { d.obs = o }
 
 // NewDistiller builds a Distiller. emb, sum, cas are required; guard is optional
 // (nil = identity). The embedder's dimensionality must match the configured
@@ -97,6 +115,38 @@ func (d *Distiller) distillSpec(entity string) *registry.DistillSpec {
 		return nil
 	}
 	return e.Spec.Distill
+}
+
+// DistillSpecFor returns the DistillSpec for an entity, or nil when the entity
+// is unknown or not opted into distillation. Exported for the worker's
+// distillable-aggregate predicate.
+func (d *Distiller) DistillSpecFor(entity string) *registry.DistillSpec {
+	return d.distillSpec(entity)
+}
+
+// DistillEvent distills a create/update event whose aggregate is distillable.
+// It mirrors the embed worker's IndexEvent: the L0 source values come from the
+// event payload (no store reload), so callers need no relational seeding.
+//
+// Returns (false, nil) — a no-op — for a non-distillable aggregate, a
+// ".deleted" event (delete is wired in Task 3.2), or an empty payload.
+// Otherwise it unmarshals the payload into a column-keyed map and runs DistillL0,
+// returning its changed/err.
+func (d *Distiller) DistillEvent(ctx context.Context, env event.Envelope) (bool, error) {
+	if d.distillSpec(env.Aggregate) == nil {
+		return false, nil
+	}
+	if strings.HasSuffix(env.Type, ".deleted") {
+		return false, nil // Task 3.2 wires DeleteL0
+	}
+	if len(env.Payload) == 0 {
+		return false, nil
+	}
+	var vals map[string]any
+	if err := json.Unmarshal(env.Payload, &vals); err != nil {
+		return false, fmt.Errorf("agent: distill event %q/%s: %w", env.Aggregate, env.AggID, err)
+	}
+	return d.DistillL0(ctx, env.Aggregate, env.AggID, vals)
 }
 
 // distillTextFor builds the L0 source text from a row's column values. Mirrors
@@ -138,6 +188,9 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 	if existing, ok, err := d.getNode(ctx, nodeID); err != nil {
 		return false, err
 	} else if ok && existing.ContentHash == newContentHash {
+		if d.obs != nil {
+			d.obs.ShortCircuited()
+		}
 		return false, nil // unchanged — no LLM call
 	}
 
@@ -146,12 +199,18 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 		Stage: GuardIngest, TenantID: tenantOf(ctx), Level: LevelEntity, Text: raw,
 	}, d.cfg.FailOpenGuard)
 	if gi.Blocked {
+		if d.obs != nil {
+			d.obs.GuardBlocked()
+		}
 		return false, nil // fail-closed: drop
 	}
 
 	budget := spec.Budget
 	if budget <= 0 {
 		budget = d.cfg.Budget
+	}
+	if d.obs != nil {
+		d.obs.Summarized()
 	}
 	summary, err := d.sum.Summarize(ctx, SummaryInput{
 		Level: LevelEntity, Kind: KindEntityNode, Raw: []byte(gi.Text), Budget: budget,
@@ -165,6 +224,9 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 		Stage: GuardEmit, TenantID: tenantOf(ctx), Level: LevelEntity, Text: summary,
 	}, d.cfg.FailOpenGuard)
 	if ge.Blocked {
+		if d.obs != nil {
+			d.obs.GuardBlocked()
+		}
 		return false, nil // fail-closed: drop
 	}
 
@@ -175,6 +237,9 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 		parents: d.l0Parents(spec, vals),
 	}); err != nil {
 		return false, err
+	}
+	if d.obs != nil {
+		d.obs.NodeBuilt()
 	}
 	return true, nil
 }

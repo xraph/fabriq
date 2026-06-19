@@ -178,6 +178,34 @@ func (e *Extension) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Distillation worker: debounced, per-tenant single-flight; one per replica.
+	// Requires an Embedder (digests share the entity vector space) + a Summarizer
+	// + CAS + Redis + at least one distillable entity.
+	if e.cfg.Summarizer != nil && e.cfg.Embedder != nil && stores.Redis != nil && stores.CAS != nil && hasDistillableEntity(e.reg) {
+		dcfg := agent.DistillConfig{
+			VectorDims:    e.cfg.Embedder.Dims(), // dims come straight from the embedder
+			RecipeVersion: e.cfg.DistillRecipeVersion,
+			FailOpenGuard: e.cfg.DistillFailOpenGuard,
+		}
+		dist, derr := agent.NewDistiller(fab, e.reg, e.cfg.Embedder, e.cfg.Summarizer, e.cfg.Guard, stores.CAS, dcfg)
+		if derr != nil {
+			cancel()
+			return derr
+		}
+		sw := NewDistillSweeper(dist, e.cfg.DistillDebounce, e.metrics)
+		handle := distillHandler(runCtx, sw)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "proj:distill", func(c context.Context) error {
+				if err := stores.Redis.EnsureGroup(c, "proj:distill"); err != nil {
+					return err
+				}
+				return stores.Redis.Consume(c, "proj:distill", consumer, handle)
+			})
+		}()
+	}
+
 	go func() {
 		wg.Wait()
 		close(done)
