@@ -166,6 +166,9 @@ type EntitySpec struct {
 
 	// Cache opts the entity into the read-through row cache. Nil = not cached.
 	Cache *CacheSpec
+
+	// Embed opts the entity into vector embedding (auto-indexing). Nil = not embedded.
+	Embed *EmbedSpec
 }
 
 // LiveSpec opts an entity into the live query engine (nil = disabled).
@@ -184,4 +187,13 @@ type LiveSpec struct {
 type CacheSpec struct {
 	TTL    time.Duration
 	Scoped bool
+}
+
+// EmbedSpec opts an entity into vector embedding. It is declarative metadata
+// only — the agent layer supplies the embedding model. Fields names the columns
+// whose values are concatenated into the embed text; Text, when set, overrides
+// Fields and builds the text from column values.
+type EmbedSpec struct {
+	Fields []string
+	Text   func(vals map[string]any) string
 }
