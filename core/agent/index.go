@@ -4,6 +4,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -12,6 +13,12 @@ import (
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 )
+
+// ErrUnindexablePayload is returned by IndexEvent when the event payload cannot
+// be unmarshalled into a map. Such events are structurally poison and will never
+// succeed on retry; callers should ack-skip them rather than leaving them in the
+// pending-entry list (PEL).
+var ErrUnindexablePayload = errors.New("agent: unindexable event payload")
 
 // Indexer embeds entity rows and upserts their vectors. It is the write-side
 // counterpart to recall. Construct it once and call IndexEvent from the host's
@@ -164,7 +171,7 @@ func (ix *Indexer) IndexEvent(ctx context.Context, env event.Envelope) error {
 	}
 	var vals map[string]any
 	if err := json.Unmarshal(env.Payload, &vals); err != nil {
-		return fmt.Errorf("agent: index event %s/%s: payload: %w", env.Aggregate, env.AggID, err)
+		return fmt.Errorf("%w: %v", ErrUnindexablePayload, err)
 	}
 	if len(vals) == 0 {
 		return nil

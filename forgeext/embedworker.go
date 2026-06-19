@@ -2,6 +2,7 @@ package forgeext
 
 import (
 	"context"
+	"errors"
 
 	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/event"
@@ -20,8 +21,16 @@ func hasEmbeddableEntity(reg *registry.Registry) bool {
 }
 
 // embedHandler is the per-event consumer callback: it derives a tenant-scoped
-// context from the envelope and indexes the event. A tenant-less envelope is
-// skipped (returns nil) so one malformed event cannot stall the consumer.
+// context from the envelope and indexes the event.
+//
+// Ack-skipped (returns nil, not re-queued):
+//   - Tenant-less envelopes — no tenant context can be derived.
+//   - Unindexable-payload events (agent.ErrUnindexablePayload) — structurally
+//     poison; retrying will never succeed and would accumulate PEL entries.
+//
+// Propagated (transient → stays pending for at-least-once retry):
+//   - Embedder failures and vector upsert errors.
+//
 // Vector upserts are idempotent by id, so at-least-once redelivery is safe.
 func embedHandler(ctx context.Context, ix *agent.Indexer) func(streamID string, env event.Envelope) error {
 	return func(_ string, env event.Envelope) error {
@@ -32,6 +41,13 @@ func embedHandler(ctx context.Context, ix *agent.Indexer) func(streamID string, 
 		if err != nil {
 			return nil
 		}
-		return ix.IndexEvent(tctx, env)
+		if err := ix.IndexEvent(tctx, env); err != nil {
+			if errors.Is(err, agent.ErrUnindexablePayload) {
+				// skip: poison payload — retrying won't help
+				return nil
+			}
+			return err
+		}
+		return nil
 	}
 }
