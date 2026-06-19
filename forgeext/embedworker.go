@@ -26,6 +26,7 @@ func hasEmbeddableEntity(reg *registry.Registry) bool {
 //
 // Ack-skipped (returns nil, not re-queued):
 //   - Tenant-less envelopes — no tenant context can be derived.
+//   - Tenant context derivation failures (tenant.WithTenant error).
 //   - Unindexable-payload events (agent.ErrUnindexablePayload) — structurally
 //     poison; retrying will never succeed and would accumulate PEL entries.
 //
@@ -36,10 +37,16 @@ func hasEmbeddableEntity(reg *registry.Registry) bool {
 func embedHandler(ctx context.Context, ix *agent.Indexer, m *metrics.Metrics) func(streamID string, env event.Envelope) error {
 	return func(_ string, env event.Envelope) error {
 		if env.TenantID == "" {
+			if m != nil {
+				m.EmbedEventsTotal.Inc()
+			}
 			return nil
 		}
 		tctx, err := tenant.WithTenant(ctx, env.TenantID)
 		if err != nil {
+			if m != nil {
+				m.EmbedEventsTotal.Inc()
+			}
 			return nil
 		}
 		if err := ix.IndexEvent(tctx, env); err != nil {
