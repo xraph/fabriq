@@ -87,7 +87,7 @@ func (f *Fabriq) CreateFolder(ctx context.Context, parentID, name string) (FsRef
 	now := time.Now().UTC()
 	node := &domain.FsNode{
 		ParentID: parentID, Name: name, Path: childPath(parentPath, name),
-		NodeType: "folder", Metadata: map[string]any{}, CreatedAt: now, UpdatedAt: now,
+		NodeType: "folder", Metadata: map[string]any{}, MountConfig: map[string]any{}, CreatedAt: now, UpdatedAt: now,
 	}
 	res, err := f.exec.Exec(ctx, command.Command{Entity: "fs_node", Op: command.OpCreate, Payload: node})
 	if err != nil {
@@ -116,7 +116,7 @@ func (f *Fabriq) CreateFile(ctx context.Context, parentID, name string, r io.Rea
 	node := &domain.FsNode{
 		ParentID: parentID, Name: name, Path: childPath(parentPath, name), NodeType: "file",
 		BlobID: blob.ID, Size: blob.Size, ContentType: opts.ContentType, Checksum: blob.Hash,
-		Metadata: map[string]any{}, CreatedAt: now, UpdatedAt: now,
+		Metadata: map[string]any{}, MountConfig: map[string]any{}, CreatedAt: now, UpdatedAt: now,
 	}
 	res, err := f.exec.Exec(ctx, command.Command{Entity: "fs_node", Op: command.OpCreate, Payload: node})
 	if err != nil {
