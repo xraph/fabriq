@@ -65,7 +65,7 @@ func TestRecall_GraphChannelExpandsToNeighbor(t *testing.T) {
 		t.Fatal(err)
 	}
 	// graph: gasset --LOCATED_AT--> gsite (canned to the EXACT cypher the channel builds)
-	w.Graph.Cann(expansionCypher("GAsset", "LOCATED_AT", "GSite"), []string{site.AggID})
+	w.Graph.Cann(expansionCypher("GAsset", "LOCATED_AT", "GSite", 1, false), []string{site.AggID})
 
 	pack, err := tk.Recall(ctx, RecallRequest{Query: "pump", Budget: 100000, Entities: []string{"gasset"}})
 	if err != nil {
@@ -116,7 +116,7 @@ func TestRecall_GraphChannelStrictReturnsError(t *testing.T) {
 }
 
 func TestExpansionCypher_Format(t *testing.T) {
-	got := expansionCypher("GAsset", "LOCATED_AT", "GSite")
+	got := expansionCypher("GAsset", "LOCATED_AT", "GSite", 1, false)
 	want := "MATCH (n:GAsset {id: $id})-[:LOCATED_AT]->(m:GSite) RETURN m.id"
 	if got != want {
 		t.Fatalf("cypher mismatch:\n got %q\nwant %q", got, want)
