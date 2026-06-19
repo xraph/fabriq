@@ -110,3 +110,107 @@ func TestBlobReconcilerRefCountRecompute(t *testing.T) {
 		t.Fatalf("GCCount = %d, want 0 (still referenced)", rep.GCCount)
 	}
 }
+
+// seedDigestNode inserts a digest_nodes row whose summary_hash points at the
+// given CAS hash. This simulates the context-distillation path that writes a
+// summary blob and records its hash in the digest tree — without creating a
+// blob_objects row, so the reconciler's old blob_objects-only truth query would
+// see count=0 and GC the blob.
+func seedDigestNode(t *testing.T, pg *postgres.Adapter, tctx context.Context, id, summaryHash string) {
+	t.Helper()
+	err := pg.TenantTxRaw(tctx, func(tx *pgdriver.PgTx) error {
+		_, err := tx.NewRaw(
+			`INSERT INTO digest_nodes
+				(id, tenant_id, version, level, kind, summary_hash)
+			 VALUES ($1, current_setting('app.tenant_id', true), 1, 0, 'entity', $2)`,
+			id, summaryHash,
+		).Exec(tctx)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed digest_node: %v", err)
+	}
+}
+
+// TestBlobReconcilerDigestNodeIsGCRoot verifies that a CAS blob referenced only
+// via digest_nodes.summary_hash (no blob_objects row) is NOT garbage-collected.
+// This guards the UNION ALL + += fix in truthCounts: without it, the
+// digest_nodes root would be invisible to the GC and the summary blob would be
+// deleted even while a DigestNode still points at it.
+func TestBlobReconcilerDigestNodeIsGCRoot(t *testing.T) {
+	ctx := context.Background()
+	pg, cs := migrateAppCAS(t)
+	tctx, err := tenant.WithTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Store the summary blob. CAS creates a blob_cas ledger row but no
+	// blob_objects row (that's the facade's job, not done here on purpose).
+	hash, _, err := cs.Store(tctx, bytes.NewReader([]byte("summary-content")))
+	if err != nil {
+		t.Fatalf("Store summary blob: %v", err)
+	}
+
+	// Insert a digest_node that references the blob via summary_hash only.
+	// There is intentionally NO blob_objects row for this hash.
+	seedDigestNode(t, pg, tctx, "dn-root-1", hash)
+
+	// grace=0 → would immediately GC if not treated as a root.
+	rec := trovestore.NewBlobReconciler(cs, pg, 0)
+	rep, err := rec.Reconcile(tctx, true)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// The blob must survive — digest_nodes root keeps it alive.
+	if rep.GCCount != 0 {
+		t.Fatalf("GCCount = %d, want 0: digest_node summary_hash must be a GC root", rep.GCCount)
+	}
+
+	// Byte is still retrievable.
+	rc, err := cs.Retrieve(tctx, hash)
+	if err != nil {
+		t.Fatalf("summary blob should survive GC but Retrieve failed: %v", err)
+	}
+	_ = rc.Close()
+}
+
+// TestBlobReconcilerDigestAndBlobObjectSameHash verifies that when a hash
+// appears in BOTH blob_objects AND digest_nodes, the += accumulation yields the
+// correct combined count — not just one or the other (overwrite regression).
+func TestBlobReconcilerDigestAndBlobObjectSameHash(t *testing.T) {
+	ctx := context.Background()
+	pg, cs := migrateAppCAS(t)
+	tctx, err := tenant.WithTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Store the blob (1 CAS row with ref_count=1 from Store).
+	hash, _, err := cs.Store(tctx, bytes.NewReader([]byte("shared")))
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	// Add one blob_objects row AND one digest_node referencing the same hash.
+	seedBlobObject(t, pg, tctx, "bo-shared", hash)
+	seedDigestNode(t, pg, tctx, "dn-shared", hash)
+
+	// grace=0, so if truth count is 0 it would be GC'd.
+	rec := trovestore.NewBlobReconciler(cs, pg, 0)
+	rep, err := rec.Reconcile(tctx, true)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// Combined truth count is 2 (1 from blob_objects + 1 from digest_nodes),
+	// ledger ref_count was 1 → corrected to 2.
+	if rep.GCCount != 0 {
+		t.Fatalf("GCCount = %d, want 0: hash referenced by both sources must not be GC'd", rep.GCCount)
+	}
+	// ref_count in ledger was 1 (set by Store), truth is now 2 → corrected.
+	if rep.RefsCorrected != 1 {
+		t.Fatalf("RefsCorrected = %d, want 1 (blob_objects+digest_nodes combined count)", rep.RefsCorrected)
+	}
+}
