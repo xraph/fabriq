@@ -112,9 +112,10 @@ connection-owning fabriq over gRPC — through the *same* `query.Fabric` interfa
 so call sites are identical.
 
 <Callout type="info">
-  The remote protocol is **experimental / in development**: write, read and
-  subscribe planes plus edge auth (mTLS + bearer) are wired and tested over real
-  gRPC; live-query, blob and interactive-transaction planes are not yet. See
+  The remote protocol is **experimental / in development**: write, read,
+  subscribe, live-query, blob, and the graph/search/vector retrieval channels (so
+  an agent's `recall` works remotely) are wired and tested over real gRPC + mTLS.
+  Interactive transactions are a non-goal (`ExecBatch` is the transaction). See
   [Remote protocol](/docs/remote-protocol).
 </Callout>
 

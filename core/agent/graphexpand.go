@@ -99,7 +99,10 @@ func (t *Toolkit) graphChannel(ctx context.Context, seeds []ref, req RecallReque
 		var ids []string
 		if err := t.fab.Graph().Query(ctx, cypher, map[string]any{"id": seed.ID}, &ids); err != nil {
 			if t.cfg.Strict {
-				dir := "->"; if reverse { dir = "<-" }
+				dir := "->"
+				if reverse {
+					dir = "<-"
+				}
 				return fmt.Errorf("agent: graph expand %s-[:%s]%s%s: %w", seedLabel, rel, dir, targetLabel, err)
 			}
 			warnings = append(warnings, fmt.Sprintf("graph channel failed for %s-[:%s]: %v", seed.Entity, rel, err))

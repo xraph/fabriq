@@ -1,0 +1,190 @@
+---
+title: Remote protocol
+description: An optional fabriq-as-a-server topology — backend services talk to a central, connection-owning fabriq over gRPC through the same query.Fabric interface, instead of each embedding the library and its datastore pools.
+---
+
+<Callout type="warn">
+  **Experimental — in development.** The remote protocol is a working,
+  fully-tested skeleton, not a released surface. The write, relational-read and
+  subscribe planes plus edge authentication are wired and round-trip-tested over
+  real gRPC and mTLS; the maintained live-query, blob and interactive-transaction
+  planes are not built yet (their accessors return <code>remote.ErrNotImplemented</code>).
+  See [Architecture Decisions](/docs/reference/decisions) for the full status.
+</Callout>
+
+Fabriq is, first and foremost, an **embedded library**: a service calls
+`fabriq.Open`, owns its own pools to Postgres/Redis/FalkorDB/Elasticsearch/the
+object store, and holds the facade in-process. The remote protocol adds an
+**optional second topology** without changing that: a central, connection-owning
+fabriq deployment that other backend services talk to over gRPC.
+
+The seam that makes this possible is that the facade is an interface
+(`core/query.Fabric`). A remote client only has to implement that interface over
+a wire, so **application call sites are identical** whether the facade is
+embedded or remote.
+
+## Why
+
+- **Connection consolidation** — one tier owns the datastore pools instead of
+  N services × M engines.
+- **Centralized policy** — schema registry, migrations, RLS, authz and caching
+  live in one place and one version.
+- **Decoupled deploys** — roll out a fabriq change without rebuilding every
+  service against a new library version.
+
+The cost is a network hop per call, a tier to run HA, and a protocol to version.
+Reach for it when those trade against connection/operational pressure; keep
+embedding when you want in-process transactional composition.
+
+## Topology
+
+The same fabriq binary runs in distinct roles; the worker plane (relay,
+projections, reconciler) always lives on the connection-owning tier, never on a
+remote client.
+
+| Role | gRPC server | `RunWorker` | DB pools | Scales on |
+| --- | :---: | :---: | :---: | --- |
+| Service — **embedded** | — | `false` | owns | request load |
+| Service — **remote client** | holds 1 channel | n/a | none | request load |
+| **fabriq-server** | on | `false` | owns | RPCs/streams (behind a gRPC LB) |
+| **fabriq-worker** | off | `true` | owns | event throughput (consumer groups) |
+
+## Modules
+
+The protocol is split across two Go modules so the gRPC dependency tree stays
+out of the core module — a service that only **embeds** the library never pulls
+in `google.golang.org/grpc`.
+
+- **`remote`** (part of `github.com/xraph/fabriq`) — transport-neutral. The
+  `RemoteFabric` client (implements `query.Fabric`), the server-side `Handler`
+  (wraps a real facade), the codec-neutral `Transport` seam, and an in-process
+  `Loopback` for testing. No gRPC import.
+- **`remote/grpc`** (its own `go.mod`, package `remotegrpc`) — the gRPC binding:
+  a `Client` implementing `remote.Transport`, `Register` for a `*grpc.Server`,
+  and the edge-auth interceptors. It frames the envelope over gRPC/HTTP-2 with a
+  pass-through bytes codec, so gRPC supplies multiplexing, deadlines and mTLS
+  while the envelope format stays owned above the seam.
+
+## Serving
+
+The server is the connection-owning tier: open the facade as usual, wrap it in a
+`Handler`, and register it on a gRPC server with TLS credentials and an auth
+interceptor.
+
+```go
+// fabriq-server: owns the DB pools
+f, stores, err := fabriq.Open(ctx, reg, cfg)
+h := remote.NewHandler(f, reg)
+
+// Identity is authenticated at the EDGE: the Authenticator stamps the tenant
+// (and any app principal/claims the authz hooks read) from the verified
+// credential — never from a request field.
+auth := func(ctx context.Context) (context.Context, error) {
+    cert, ok := remotegrpc.ClientCertificate(ctx) // mTLS client cert
+    if !ok {
+        return nil, errors.New("no client certificate")
+    }
+    ctx, err := remotegrpc.WithTenant(ctx, cert.Subject.CommonName) // CN → tenant (required)
+    if err != nil {
+        return nil, err
+    }
+    // Stamp any principal/claims under your OWN context key — fabriq core
+    // defines no principal type; the authz hooks read whatever you put here.
+    return app.WithPrincipal(ctx, cert.Subject.SerialNumber), nil
+}
+
+creds := credentials.NewTLS(&tls.Config{
+    Certificates: []tls.Certificate{serverCert},
+    ClientCAs:    caPool,
+    ClientAuth:   tls.RequireAndVerifyClientCert,
+})
+srv := grpc.NewServer(append(remotegrpc.ServerOptions(auth), grpc.Creds(creds))...)
+remotegrpc.Register(srv, h)
+_ = srv.Serve(lis)
+```
+
+`ServerOptions` installs unary **and** stream interceptors that run the
+`Authenticator` and enrich the call's context **before** the handler runs. The
+returned context must carry a tenant (the binding rejects one that doesn't);
+`TenantOnly(func(ctx) (string, error))` adapts a tenant-only resolver when you
+need no principal. `BearerToken` covers token-based auth as an alternative to
+`ClientCertificate`. fabriq core defines no principal type — the authz hooks
+read whatever you stamp.
+
+## Calling
+
+A client holds one multiplexed gRPC channel and a `RemoteFabric` over it. The
+call sites match the embedded facade exactly.
+
+```go
+// a backend service: no DB pools, one channel
+cc, _ := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(clientTLS)))
+var fab query.Fabric = remote.New(remotegrpc.NewClient(cc))
+
+// writes — atomic, server-side
+res, _ := fab.Exec(ctx, command.Command{
+    Entity: "asset", Op: command.OpCreate, Payload: &domain.Asset{Name: "Pump 7"},
+})
+
+// reads
+var a domain.Asset
+_ = fab.Relational().Get(ctx, "asset", res.AggID, &a)
+_ = fab.Relational().List(ctx, "asset", query.ListQuery{
+    Where: query.Where{query.Eq("kind", "pump")}, OrderBy: "name", Limit: 50,
+}, &assets)
+
+// subscribe — server-streamed, conflated deltas
+deltas, _ := fab.Subscribe(ctx, query.SubscribeScope{Entity: "asset", Scope: "site", ID: siteID})
+
+// live query — a maintained window: snapshot + enter/leave/move/update deltas
+snap, live, h, _ := fab.LiveQuery(ctx, livequery.LiveQuery{
+    Entity: "asset", Where: query.Where{query.Eq("kind", "pump")},
+    Sort: []livequery.SortKey{{Column: "name"}}, Limit: 50,
+})
+defer h.Close() // Reanchor (deep scroll) is a follow-on
+
+// blob — chunked upload/download (never buffers a whole object); large/hot
+// bytes can skip this tier via the presign bypass.
+info, _ := fab.Blob().Put(ctx, "k1", reader, blob.PutOpts{ContentType: "image/png"})
+rc, _, _ := fab.Blob().Get(ctx, info.Key)
+defer rc.Close()
+```
+
+<Callout type="info">
+  For typed repositories over a remote facade, use
+  <code>query.For[T](reg, fab.Relational())</code> rather than
+  <code>fabriq.For[T]</code> — the latter is bound to the concrete embedded
+  facade. The fabriq error taxonomy travels in-band: a remote
+  <code>Exec</code> still returns an <code>errors.Is</code>-matchable
+  <code>ErrVersionConflict</code> / <code>ErrNotFound</code>.
+</Callout>
+
+## Plane status
+
+| Plane | Wired |
+| --- | --- |
+| Write — `Exec`, `ExecBatch` | ✅ |
+| Read — `Get`, `GetMany`, `List` | ✅ |
+| Retrieval — `Graph.Query`, `Search.Search`, `Vector.Similar` (agent `recall`) | ✅ |
+| Subscribe (server-streamed deltas) | ✅ |
+| Live query — snapshot + deltas (maintained window) | ✅ (`Reanchor` / deep-scroll pending — needs bidi) |
+| Blob — chunked `Put`/`Get`, `Head`/`Delete`, presign bypass | ✅ (`List`/`Copy`/multipart pending) |
+| Edge auth — mTLS + bearer, tenant stamping | ✅ |
+| Raw SQL `Query` | held — remoting arbitrary SQL is a deliberate policy decision |
+| Timeseries, Spatial ports | not yet |
+| Interactive (multi-round-trip) `Tx` | non-goal — `ExecBatch` is the transaction surface |
+
+Two seams to remember when extending it: the wire **envelope is protobuf**
+(generated into `remote/fabriqpb` from `remote/proto/fabriq/v1/fabriq.proto`,
+messages-only so core stays grpc-free) while payload bodies stay opaque JSON; and
+every new unary method must be registered in **both** `Handler.Dispatch` and the
+gRPC `ServiceDesc` — gRPC routes by the latter.
+
+## Security
+
+Only backends connect (no browser), so **mTLS** is realistic and strong: every
+client presents a certificate. Tenant and principal arrive in the call's
+transport metadata and are authenticated by the server-edge interceptor — never
+trusted from a field in the request body. The embedded facade then enforces RLS
+and authz exactly as it does in-process. This is a strict upgrade over the
+in-process trust-the-context model.

@@ -158,4 +158,3 @@ func TestIndexer_UnindexNonEmbeddableNoop(t *testing.T) {
 		t.Fatalf("Unindex on non-embeddable should be no-op, got %v", err)
 	}
 }
-
