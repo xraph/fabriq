@@ -43,32 +43,24 @@ func reverseEdgeIndex(reg *registry.Registry) map[string][]reverseEdge {
 	return idx
 }
 
-// seedRefs collects the deduped union of vector then search refs in encounter
-// order, capped at n (n<=0 → no cap). (Phase 1c Task 2 replaces the caller with
-// rank-ordered selection; this remains for that task to supersede.)
-func seedRefs(channels map[string][]ref, n int) []ref {
-	seen := map[ref]struct{}{}
-	var out []ref
-	for _, name := range []string{"vector", "search"} {
-		for _, r := range channels[name] {
-			if _, ok := seen[r]; ok {
-				continue
-			}
-			seen[r] = struct{}{}
-			out = append(out, r)
-			if n > 0 && len(out) >= n {
-				return out
-			}
-		}
+// topSeeds returns the first n refs of an already-score-sorted fused slice
+// (n<=0 → all).
+func topSeeds(fused []scoredRef, n int) []ref {
+	limit := len(fused)
+	if n > 0 && n < limit {
+		limit = n
+	}
+	out := make([]ref, 0, limit)
+	for i := 0; i < limit; i++ {
+		out = append(out, fused[i].ref)
 	}
 	return out
 }
 
-// graphChannel expands the top seeds one hop (or Hops hops) along each seed
+// graphChannel expands the given seeds one hop (or Hops hops) along each seed
 // entity's declared edges (forward) and, when cfg.GraphReverse is set, along
 // edges that point at the seed entity (reverse). Neighbours are deduped.
-func (t *Toolkit) graphChannel(ctx context.Context, channels map[string][]ref, req RecallRequest) ([]ref, []string, error) {
-	seeds := seedRefs(channels, t.cfg.GraphSeeds)
+func (t *Toolkit) graphChannel(ctx context.Context, seeds []ref, req RecallRequest) ([]ref, []string, error) {
 	if len(seeds) == 0 {
 		return nil, nil, nil
 	}
