@@ -36,6 +36,13 @@ type Metrics struct {
 	// Embedding worker (proj:embed) instruments.
 	EmbedEventsTotal   prometheus.Counter
 	EmbedFailuresTotal prometheus.Counter
+
+	// Distillation worker (proj:distill) instruments.
+	DistillNodesTotal        prometheus.Counter
+	DistillSummariesTotal    prometheus.Counter
+	DistillShortCircuitTotal prometheus.Counter
+	DistillGuardBlockedTotal prometheus.Counter
+	DistillFailuresTotal     prometheus.Counter
 }
 
 // New creates and registers the instruments on reg.
@@ -89,11 +96,22 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fabriq_embed_failures_total",
 			Help: "Events the embed worker failed to process (transient; left pending for retry).",
 		}),
+		DistillNodesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_distill_nodes_total", Help: "Digest nodes (re)built by the distill worker."}),
+		DistillSummariesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_distill_summaries_total", Help: "Summarizer calls made by the distill worker."}),
+		DistillShortCircuitTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_distill_shortcircuit_total", Help: "Nodes skipped via the Merkle short-circuit."}),
+		DistillGuardBlockedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_distill_guard_blocked_total", Help: "Contents dropped by the guard (fail-closed or block)."}),
+		DistillFailuresTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_distill_failures_total", Help: "Events the distill worker failed to process (transient)."}),
 	}
 	for _, c := range []prometheus.Collector{
 		m.OutboxBacklog, m.TenantHookTrips, m.ConflationDepth, m.ProjectionLag, m.RelayPublished,
 		m.BlobGCBytesFreed, m.BlobGCCollected, m.BlobGCRefDriftCorrected, m.BlobGCBroken, m.BlobGCOrphans,
 		m.EmbedEventsTotal, m.EmbedFailuresTotal,
+		m.DistillNodesTotal, m.DistillSummariesTotal, m.DistillShortCircuitTotal, m.DistillGuardBlockedTotal, m.DistillFailuresTotal,
 	} {
 		if err := reg.Register(c); err != nil {
 			return nil, err
