@@ -1,0 +1,132 @@
+---
+title: File Plane
+description: Layered file/blob storage for fabriq — catalog (entities, versioned events, RLS, projections, live queries) lives in Postgres; raw bytes live in an external object store reached through the core/blob port, backed by adapters/trove.
+---
+
+The file plane adds file and blob storage to fabriq's data fabric without breaking fabriq's core invariant that Postgres is the single linearizable anchor. The catalog — names, tree positions, checksums, permissions, versioned events, and all relationships — is stored in Postgres as ordinary fabriq entities with [tenant](/docs/tenancy) isolation via stamped transactions and `FORCE RLS`. The raw bytes live in an external object store and fabriq stores none of them.
+
+<Callout type="info">
+The file plane is shipped dark. The blob port (`f.Blob()`) is `nil` unless `storage.storageDriver` is set in `config.yaml`. All components are opt-in.
+</Callout>
+
+## Architecture — Shape B
+
+fabriq's file plane uses **Shape B**: depend on the Trove byte engine as a *library*, never as an extension. The distinction is load-bearing:
+
+- The Trove *library* (`github.com/xraph/trove`, `trove/driver`, `trove/drivers/*`, `trove/cas`) provides `trove.Open` + the driver registry. It has no store, no Grove ORM, no `trove_*` metadata tables, and persists nothing. `Put` is `middleware → router → driver.Put` and that is all.
+- The Trove *extension* (`trove/extension`, `trove/store`, `trove/model`, `trove/handler`, `trove/hooks`) adds a full catalog. Importing it is forbidden in fabriq.
+
+Using only the library guarantees, by the compile-time dependency graph, that **Trove holds no catalog and can never be a source of truth**. It also keeps fabriq's dependency tree free of grove/forge and the SQL+Mongo store backends — only the cloud SDK for the configured driver is pulled in.
+
+## Layering
+
+```
+config.yaml  storage.storageDriver / storage.defaultBucket / storage.enableCas
+     │
+     ▼
+forgeext storage provider   ← DI wiring (vessel.Provide / ProvideNamed)
+     │
+     ▼
+adapters/trove.Adapter      ← trovestore package; wraps trove.Trove + one bucket
+     │  capability-detect: Caps{Presign, Multipart, Range}
+     │  CAS path: CASStore → blob_cas table in Postgres
+     ▼
+core/blob.Store             ← pure fabriq port; no storage-engine types cross here
+```
+
+### core/blob port
+
+`core/blob.Store` is the byte-plane port. It speaks only fabriq vocabulary: `ObjectInfo`, `PutOpts`, `Caps`. No Trove types cross this boundary.
+
+```go
+type Store interface {
+    Put(ctx context.Context, key string, r io.Reader, o PutOpts) (ObjectInfo, error)
+    Get(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error)
+    Head(ctx context.Context, key string) (ObjectInfo, error)
+    Delete(ctx context.Context, key string) error
+    List(ctx context.Context, prefix string) ([]ObjectInfo, error)
+    Copy(ctx context.Context, srcKey, dstKey string) (ObjectInfo, error)
+    Capabilities() Caps
+}
+```
+
+Three optional sub-interfaces are detected at runtime via `Caps` — never faked:
+
+| Sub-interface | Capability | `Caps` field |
+|---|---|---|
+| `blob.Presigner` | Client-direct presigned PUT/GET URLs | `Caps.Presign` |
+| `blob.Multipart` | Resumable multipart uploads | `Caps.Multipart` |
+| `blob.Ranger` | Byte-range reads | `Caps.Range` |
+
+`blob.CAS` is the content-addressable layer: `Store(r io.Reader) (hash, size, error)` / `Retrieve(hash string)`. The underlying ref-count ledger is a fabriq `blob_cas` table, not a Trove table.
+
+### adapters/trove adapter
+
+`adapters/trove` (`package trovestore`) implements `blob.Store` over a single `trove.Trove` handle and one bucket. It:
+
+- Opens a driver from the DSN via the Trove driver registry (`trovedriver.Lookup` → `drv.Open` → `trove.Open`).
+- Capability-detects `Presign`/`Multipart`/`Range` by type-asserting the underlying driver against `trovedriver.PresignDriver`, `trovedriver.MultipartDriver`, and `trovedriver.RangeDriver`.
+- Normalizes not-found errors to `fabriqerr.ErrNotFound`.
+- Exposes `Driver()` so the `forgeext` provider can construct a `CASStore` without importing `trove/driver` directly.
+
+Config for the adapter:
+
+```go
+type Config struct {
+    StorageDriver string `yaml:"storageDriver"` // e.g. "file:///data/blobs", "mem://"
+    DefaultBucket string `yaml:"defaultBucket"`
+}
+```
+
+### forgeext storage provider
+
+DI wiring and `config.yaml` configuration come from the `forgeext` storage provider, not from the Trove extension. It reads `StorageConfig`, calls `trovestore.Open`, and wires the resulting `blob.Store` (and optionally a `blob.CAS`) via `vessel.Provide`/`ProvideNamed`. The blob port is exposed as `f.Blob()`.
+
+```yaml
+storage:
+  storageDriver: "s3://my-bucket?region=us-east-1"
+  defaultBucket: "fabriq-blobs"
+  enableCas: true
+```
+
+`StorageDriver` empty → blob port is unconfigured (nil). `EnableCas: true` wires the CAS layer backed by the `blob_cas` Postgres table.
+
+## Amendment to ADR 0007
+
+ADR 0007 declares Postgres the single linearizable anchor and everything else a derived, rebuildable read model. The file plane introduces exactly one bounded exception: **referenced external blobs** — opaque bytes in an object store, referenced by a fabriq catalog row.
+
+This carve-out is fenced by three disciplines (recorded in ADR 0008):
+
+1. **Opaque, no catalog authority.** The byte store holds bytes only. All queryable state and relationships remain in Postgres. You query fabriq, never the byte store.
+2. **Checksum-verifiable.** Every byte object is checksum-stamped; in server-ingest mode it is content-addressed. The Postgres ↔ bytes relationship is verifiable even though not regenerable.
+3. **Reconciled, not rebuilt.** The reconciler treats the byte store as a checkable peer (existence + checksum correspondence + CAS ref-count integrity), a distinct semantics from projection rebuild.
+
+ADR 0007's distributed-systems prohibitions — no multi-master writes, no own consensus, no distributed transactions, no distributed query — are untouched.
+
+## Tenancy
+
+Catalog tenancy is the normal stamped-transaction + `FORCE RLS` path. The object store cannot enforce RLS, so it follows the same compensating-control pattern as Redis, FalkorDB, Elasticsearch, and Timescale: **structural key stamping** — bucket and key are derived from `tenant_id` + `scope_id` in one place. Access is further controlled by key-scoped, time-limited presigned URLs and a raw-access guard that rejects cross-tenant keys.
+
+## Write path
+
+The write path is: **reserve → prepare → commit**.
+
+1. **Reserve** — a draft `BlobObject` row is created in the fabriq command plane.
+2. **Prepare** — bytes are written out of band: server-ingest for small/dedup payloads, presigned client-direct PUT for large media.
+3. **Commit** — the `BlobObject` command inside a Postgres transaction is the sole authoritative, versioned write. Bytes prepared without a committed command are orphans; the reconciler garbage-collects them.
+
+## What is in the file plane
+
+| Component | Description |
+|---|---|
+| Blob storage + CAS | `BlobObject` entity, `blob_cas` CAS ledger, presign/multipart/range, dedup |
+| Garbage collection | Reconciler mode for orphaned bytes and stale CAS ref-counts |
+| Filesystem tree | `FsNode` entity — hierarchical folder/file tree projected to the graph |
+| Satellite entities | `FsPermission`, `FsShare`, `FsBookmark`, `BlobSource`, mount points |
+
+<Cards>
+  <Card title="Blob Storage & CAS" href="/docs/blobs">BlobObject entity, content-addressable store, presign/multipart, write path detail.</Card>
+  <Card title="Blob Garbage Collection" href="/docs/blob-gc">Reconciler mode — orphan detection, CAS ref-count integrity, grace windows.</Card>
+  <Card title="Filesystem Tree" href="/docs/fs-node">FsNode entity, hierarchical folder structure, graph projection.</Card>
+  <Card title="Satellite Entities" href="/docs/fs-satellites">FsPermission, FsShare, FsBookmark, BlobSource, and mount points.</Card>
+</Cards>
