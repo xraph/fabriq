@@ -16,6 +16,9 @@ type Config struct {
 	Fabriq            fabriq.Config
 	RunWorker         bool
 	ReconcileInterval time.Duration
+	// BlobGCGrace protects freshly-created CAS entries and orphan bytes from
+	// collection for this window. Zero falls back to 1h at run time.
+	BlobGCGrace time.Duration
 }
 
 // Option is a functional option for Config.
@@ -31,6 +34,12 @@ func WithWorker(on bool) Option { return func(o *Config) { o.RunWorker = on } }
 // reconciles projection state.
 func WithReconcileInterval(d time.Duration) Option {
 	return func(o *Config) { o.ReconcileInterval = d }
+}
+
+// WithBlobGCGrace sets the grace window before an unreferenced CAS entry or
+// orphan byte becomes GC-eligible. Defaults to 1h when zero.
+func WithBlobGCGrace(d time.Duration) Option {
+	return func(o *Config) { o.BlobGCGrace = d }
 }
 
 // WithCustomAppliers appends consumer-supplied projection appliers to the

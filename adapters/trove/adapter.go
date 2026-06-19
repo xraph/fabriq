@@ -278,6 +278,10 @@ func Open(ctx context.Context, cfg Config) (*Adapter, error) {
 	return New(tr, bucket), nil
 }
 
+// Driver returns the underlying trove driver so callers (e.g. Open) can
+// construct a CASStore without importing trove/driver directly.
+func (a *Adapter) Driver() trovedriver.Driver { return a.t.Driver() }
+
 // Close releases the underlying Trove handle. Safe to call on a nil Adapter.
 func (a *Adapter) Close(ctx context.Context) error {
 	if a == nil || a.t == nil {

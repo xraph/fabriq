@@ -48,6 +48,8 @@ func Group() *migrate.Group {
 			migration0012Scope,
 			migration0013CRDTScope,
 			migration0014Blob,
+			migration0015BlobCASCreatedAt,
+			migration0016FsNode,
 		)
 	})
 	return group
