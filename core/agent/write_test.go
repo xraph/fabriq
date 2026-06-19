@@ -98,6 +98,36 @@ func TestRemember_VersionConflict(t *testing.T) {
 	}
 }
 
+func TestRemember_UnknownEntity(t *testing.T) {
+	reg := testRegistry(t)
+	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
+	// policy lists "ghost" — but "ghost" is not registered; unknown-entity check fires first.
+	pol := WritePolicy{Allow: map[string][]command.Op{
+		"ghost": {command.OpCreate},
+	}}
+	tk, _ := NewToolkit(ff, reg, nil, Config{Write: pol})
+	ctx := testCtx(t, "acme")
+
+	_, err := tk.Remember(ctx, RememberRequest{Entity: "ghost", Op: "create", Payload: []byte(`{"x":1}`)})
+	var we *WriteError
+	if !errors.As(err, &we) || we.Code != "validation_failed" {
+		t.Fatalf("want WriteError validation_failed for unknown entity, got %v", err)
+	}
+}
+
+func TestRemember_EmptyPayload(t *testing.T) {
+	reg := testRegistry(t)
+	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
+	tk, _ := NewToolkit(ff, reg, nil, Config{Write: writePolicy()})
+	ctx := testCtx(t, "acme")
+
+	_, err := tk.Remember(ctx, RememberRequest{Entity: "doc", Op: "create"}) // Payload is nil/empty
+	var we *WriteError
+	if !errors.As(err, &we) || we.Code != "validation_failed" {
+		t.Fatalf("want WriteError validation_failed for empty payload, got %v", err)
+	}
+}
+
 func TestRemember_LifecycleHookVeto(t *testing.T) {
 	reg := testRegistry(t)
 	w := fabriqtest.NewWorld(reg)
