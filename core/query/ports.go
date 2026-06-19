@@ -78,7 +78,8 @@ type ListQuery struct {
 	// Where: conditions ANDed together. Use the constructors; Eqs(map)
 	// is the terse equality shorthand.
 	Where Where
-	// OrderBy: a column, optionally suffixed " DESC". Empty orders by id.
+	// OrderBy: one or more comma-separated "col [ASC|DESC]" terms, e.g.
+	// "sort_order ASC, created_at ASC". Empty orders by id.
 	OrderBy string
 	Limit   int
 	Offset  int
