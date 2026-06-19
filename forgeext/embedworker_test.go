@@ -102,6 +102,41 @@ func TestEmbedHandler_TenantlessEventSkipped(t *testing.T) {
 	}
 }
 
+func TestEmbedHandler_UnindexablePayloadSkipped(t *testing.T) {
+	reg := embedReg(t)
+	w := fabriqtest.NewWorld(reg)
+	fab := fabriqtest.NewFabric(w)
+	ix, err := agent.NewIndexer(fab, reg, stubEmb{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := embedHandler(context.Background(), ix)
+
+	// Malformed JSON payload for an embeddable entity with a valid tenant id.
+	env := event.Envelope{
+		TenantID:  "acme",
+		Aggregate: "ewdoc",
+		AggID:     "bad1",
+		Type:      "ewdoc.created",
+		Payload:   json.RawMessage(`{not json`),
+	}
+	if err := handle("stream-bad", env); err != nil {
+		t.Fatalf("unindexable payload should be ack-skipped (nil), got %v", err)
+	}
+
+	// Nothing should have been indexed under the tenant.
+	ctx, _ := tenant.WithTenant(context.Background(), "acme")
+	var matches []query.VectorMatch
+	if err := w.Vector.Similar(ctx, query.VectorQuery{Entity: "ewdoc", Embedding: []float32{1, 0, 0}, K: 10}, &matches); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range matches {
+		if m.ID == "bad1" {
+			t.Fatalf("poison event should not have been indexed; got match %+v", m)
+		}
+	}
+}
+
 func TestWithEmbedder_SetsConfig(t *testing.T) {
 	var c Config
 	WithEmbedder(stubEmb{})(&c)
