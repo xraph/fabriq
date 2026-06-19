@@ -43,6 +43,7 @@ func (t *Toolkit) graphChannel(ctx context.Context, channels map[string][]ref, _
 	if len(seeds) == 0 {
 		return nil, nil, nil
 	}
+	seen := map[ref]struct{}{}
 	var refs []ref
 	var warnings []string
 	for _, seed := range seeds {
@@ -65,7 +66,12 @@ func (t *Toolkit) graphChannel(ctx context.Context, channels map[string][]ref, _
 				continue
 			}
 			for _, id := range ids {
-				refs = append(refs, ref{Entity: edge.Target, ID: id})
+				r := ref{Entity: edge.Target, ID: id}
+				if _, dup := seen[r]; dup {
+					continue
+				}
+				seen[r] = struct{}{}
+				refs = append(refs, r)
 			}
 		}
 	}

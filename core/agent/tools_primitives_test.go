@@ -25,6 +25,9 @@ func TestTools_ListsAllPrimitives(t *testing.T) {
 	tk, _ := NewToolkit(ff, reg, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}}, Config{VectorDims: 3})
 
 	tools := tk.Tools()
+	if len(tools) != 5 {
+		t.Fatalf("want 5 tools, got %d", len(tools))
+	}
 	for _, name := range []string{"recall", "vector_similar", "search", "graph_traverse", "get"} {
 		tl, ok := toolByName(tools, name)
 		if !ok {
@@ -73,7 +76,10 @@ func TestTools_SearchDispatch(t *testing.T) {
 	tk, _ := NewToolkit(ff, reg, nil, Config{})
 	ctx := testCtx(t, "acme")
 
-	res, _ := ff.Exec(ctx, command.Command{Entity: "doc", Op: command.OpCreate, Payload: &tDoc{Title: "alpha", Body: "b"}})
+	res, err := ff.Exec(ctx, command.Command{Entity: "doc", Op: command.OpCreate, Payload: &tDoc{Title: "alpha", Body: "b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := w.Search.ApplyMutations(ctx, "docs", []projection.Mutation{
 		projection.DocIndex{Index: "docs", ID: res.AggID, Version: 1, Doc: map[string]any{
 			"id": res.AggID, "tenant_id": "acme", "title": "alpha", "body": "b",

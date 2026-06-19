@@ -43,8 +43,15 @@ func TestRecall_SearchChannelContributesRankedRefs(t *testing.T) {
 	if len(pack.Items) != 1 || pack.Items[0].ID != res.AggID {
 		t.Fatalf("want 1 search hit %q, got %+v (warnings %v)", res.AggID, pack.Items, pack.Warnings)
 	}
-	if len(pack.Items[0].Source) == 0 || pack.Items[0].Source[0] != "search" {
-		t.Fatalf("want search provenance, got %v", pack.Items[0].Source)
+	found := false
+	for _, s := range pack.Items[0].Source {
+		if s == "search" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("want search provenance in source, got %v", pack.Items[0].Source)
 	}
 	// row is the hydrated authoritative relational row (a tDoc), not the index doc
 	var row tDoc

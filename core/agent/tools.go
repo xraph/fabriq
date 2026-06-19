@@ -87,7 +87,7 @@ func (t *Toolkit) vectorSimilarTool() Tool {
 			}
 			var matches []query.VectorMatch
 			if err := t.fab.Vector().Similar(ctx, query.VectorQuery{Entity: a.Entity, Embedding: vecs[0], K: k}, &matches); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("agent: vector_similar: %w", err)
 			}
 			return matches, nil
 		},
@@ -111,7 +111,7 @@ func (t *Toolkit) searchTool() Tool {
 			}
 			var hits []map[string]any
 			if err := t.fab.Search().Search(ctx, query.SearchQuery{Entity: a.Entity, Query: a.Query, Limit: a.Limit, Offset: a.Offset}, &hits); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("agent: search: %w", err)
 			}
 			return hits, nil
 		},
@@ -120,7 +120,11 @@ func (t *Toolkit) searchTool() Tool {
 
 func (t *Toolkit) graphTraverseTool() Tool {
 	return Tool{
-		Name:        "graph_traverse",
+		Name: "graph_traverse",
+		// NOTE: this tool passes caller-supplied cypher straight to the graph
+		// engine. Read-only safety depends entirely on the adapter's enforcement
+		// (e.g. a read-only connection or driver-level flag); no subset filtering
+		// is applied here — that is a Phase-2 item.
 		Description: "Run a read-only openCypher traversal (caller-supplied) returning column-keyed rows.",
 		InputSchema: json.RawMessage(`{"type":"object","required":["cypher"],"properties":{"cypher":{"type":"string"},"params":{"type":"object"}}}`),
 		Handler: func(ctx context.Context, args json.RawMessage) (any, error) {
@@ -133,7 +137,7 @@ func (t *Toolkit) graphTraverseTool() Tool {
 			}
 			var rows []map[string]any
 			if err := t.fab.Graph().Query(ctx, a.Cypher, a.Params, &rows); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("agent: graph_traverse: %w", err)
 			}
 			return rows, nil
 		},
@@ -155,7 +159,7 @@ func (t *Toolkit) getTool() Tool {
 			}
 			rows, err := t.hydrate(ctx, a.Entity, []string{a.ID})
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("agent: get: %w", err)
 			}
 			raw, ok := rows[a.ID]
 			if !ok {
