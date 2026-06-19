@@ -21,6 +21,7 @@ type Config struct {
 	Projections   ProjectionsConfig   `yaml:"projections" json:"projections"`
 	Subscriptions SubscriptionsConfig `yaml:"subscriptions" json:"subscriptions"`
 	Cache         CacheConfig         `yaml:"cache" json:"cache"`
+	Encryption    EncryptionConfig    `yaml:"encryption" json:"encryption"`
 	// CustomAppliers are consumer-supplied projection appliers, unioned after
 	// the built-in declarative applier for their Target. They MUST be pure (see
 	// projection.CustomApplier). The same set feeds both the live engines and
@@ -96,6 +97,13 @@ type CacheConfig struct {
 	// are missed on this node and will remain stale until at most L1TTL
 	// elapses. Defaults to 5 minutes when L1Enabled is true and this is <= 0.
 	L1TTL time.Duration `yaml:"l1_ttl" json:"l1_ttl"`
+}
+
+// EncryptionConfig configures field-level encryption (blob_source credentials).
+// Key is a base64-encoded 32-byte AES-256 data-encryption key; empty disables
+// encryption (writes that carry credentials then fail closed).
+type EncryptionConfig struct {
+	Key string `yaml:"key" json:"key"`
 }
 
 // StorageConfig configures the object-store backend that fills f.Blob().

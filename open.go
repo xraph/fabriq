@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"encoding/base64"
+
 	fcache "github.com/xraph/fabriq/adapters/cache"
 	"github.com/xraph/fabriq/adapters/elastic"
 	"github.com/xraph/fabriq/adapters/falkordb"
@@ -17,6 +19,7 @@ import (
 	"github.com/xraph/fabriq/cachequery"
 	corecache "github.com/xraph/fabriq/core/cache"
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/crypto"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/registry"
@@ -107,6 +110,20 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 	}
 
 	allOpts := append(cfg.Options(), opts...)
+
+	if cfg.Encryption.Key != "" {
+		keyBytes, derr := base64.StdEncoding.DecodeString(cfg.Encryption.Key)
+		if derr != nil {
+			_ = stores.Close()
+			return nil, nil, fmt.Errorf("fabriq: decode encryption key: %w", derr)
+		}
+		enc, eerr := crypto.NewAESGCM(keyBytes)
+		if eerr != nil {
+			_ = stores.Close()
+			return nil, nil, fmt.Errorf("fabriq: encryption: %w", eerr)
+		}
+		allOpts = append(allOpts, WithEncryptor(enc))
+	}
 
 	if cfg.Redis.Addr != "" {
 		rd, rerr := redis.Open(ctx, redis.Config{

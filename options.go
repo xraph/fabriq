@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/crypto"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/subscribe"
@@ -24,6 +25,7 @@ type settings struct {
 	executorOptions  []command.ExecutorOption
 	liveAuthz        livequery.AuthzFunc
 	liveCushion      int
+	encryptor        crypto.Encryptor
 }
 
 func defaultSettings() settings {
@@ -146,4 +148,9 @@ func WithClock(now func() time.Time) Option {
 	return func(s *settings) {
 		s.executorOptions = append(s.executorOptions, command.WithClock(now))
 	}
+}
+
+// WithEncryptor sets the field encryptor used for blob_source credentials.
+func WithEncryptor(e crypto.Encryptor) Option {
+	return func(s *settings) { s.encryptor = e }
 }
