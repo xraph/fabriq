@@ -1,0 +1,261 @@
+---
+title: fs_node
+description: The filesystem tree entity — adjacency-list folders and files backed by blob_objects, with a transactionally maintained materialized path, graph CHILD_OF projection, soft-delete subtree ops, write-lock, and a live-query facade for folder children.
+---
+
+`fs_node` is fabriq's filesystem catalog: a folder/file tree where every node is a first-class aggregate in `package fabriq`, [tenant-scoped](/docs/tenancy) at the database level through RLS and structural stamping. Folders group other nodes; file nodes reference a `blob_object` 1:1 and carry denormalized size, content type, and checksum. A third type, `mount`, appears when a remote source is grafted into the tree — see [fs-satellites](/docs/fs-satellites).
+
+## Model
+
+```go
+type FsNode struct {
+    ID          string         `json:"id"`
+    TenantID    string         `json:"tenantId"`
+    ScopeID     string         `json:"scopeId"`
+    Version     int64          `json:"version"`
+    ParentID    string         `json:"parentId"`   // ""  = root
+    Name        string         `json:"name"`
+    Path        string         `json:"path"`       // materialized index, e.g. "/docs/reports/q1"
+    NodeType    string         `json:"nodeType"`   // "folder" | "file" | "mount"
+    BlobID      string         `json:"blobId"`     // file nodes only
+    Size        int64          `json:"size"`
+    ContentType string         `json:"contentType"`
+    Checksum    string         `json:"checksum"`
+    IsLocked    bool           `json:"isLocked"`
+    LockedBy    string         `json:"lockedBy"`
+    Metadata    map[string]any `json:"metadata"`   // JSONB escape hatch, never nil
+    MountConfig map[string]any `json:"mountConfig"` // satellite config, never nil
+    DeletedAt   *time.Time     `json:"deletedAt"`  // nil = live
+    DeletedBy   string         `json:"deletedBy"`
+    CreatedAt   time.Time      `json:"createdAt"`
+    UpdatedAt   time.Time      `json:"updatedAt"`
+}
+```
+
+**Indexing strategy.** `parent_id` is the adjacency truth. `path` is a materialized prefix index — maintained transactionally inside every move/rename command — used by `GetNodeByPath` and `Descendants`. A partial unique index on `(tenant_id, parent_id, name) WHERE deleted_at IS NULL` enforces sibling-name uniqueness at the database level. `name` and `content_type` are search-indexed (not `path`) via the [search projection](/docs/search). Arbitrary-depth traversal is available via the graph `CHILD_OF` self-edge (see [graph](/docs/graph)).
+
+### FsRef
+
+Write operations return `FsRef`, not the full model:
+
+```go
+type FsRef struct {
+    ID       string `json:"id"`
+    ParentID string `json:"parentId"`
+    Name     string `json:"name"`
+    Path     string `json:"path"`
+    NodeType string `json:"nodeType"`
+    Version  int64  `json:"version"`
+}
+```
+
+### Errors
+
+| Error | Trigger |
+|---|---|
+| `ErrNodeNameConflict` | a live sibling already uses the name |
+| `ErrNotContainer` | `parentID` resolves to a non-folder |
+| `ErrNodeLocked` | mutating op targets a locked node |
+
+## Registry spec
+
+```go
+registry.EntitySpec{
+    Name:      "fs_node",
+    Kind:      registry.KindAggregate,
+    Model:     (*domain.FsNode)(nil),
+    GraphNode: "FsNode",
+    Edges: []registry.EdgeSpec{
+        {Field: "parent_id", Rel: "CHILD_OF", Target: "fs_node"},
+    },
+    Search: registry.SearchSpec{
+        Index:  "fs_nodes",
+        Fields: []string{"name", "content_type"},
+    },
+    Subscribe: []registry.Scope{
+        registry.ByID,
+        registry.ByField("parent", "parent_id"),
+        registry.ByTenant,
+    },
+    Live: &registry.LiveSpec{
+        Filterable: []string{"parent_id", "node_type", "name", "deleted_at"},
+        Sortable:   []string{"name", "size", "updated_at", "node_type"},
+        MaxWindow:  500,
+    },
+}
+```
+
+## Write operations
+
+### CreateFolder
+
+Creates a folder under `parentID` (`""` = tree root). Validates the parent is a folder (`ErrNotContainer`) and that no live sibling shares the name (`ErrNodeNameConflict`). Emits one node-create event.
+
+```go
+ref, err := f.CreateFolder(ctx, parentID, "reports")
+// ref.Path == "/docs/reports"
+```
+
+### CreateFile
+
+Stores bytes via `PutBlob` (one blob-create event), then creates a file node referencing the resulting `blob_object` 1:1, with `size`, `content_type`, and `checksum` denormalized onto the node (one node-create event). The same name-conflict and container guards apply.
+
+```go
+ref, err := f.CreateFile(ctx, parentID, "q1.pdf", r, fabriq.CreateFileOpts{
+    ContentType: "application/pdf",
+})
+```
+
+### RenameNode
+
+Renames a node in place. Computes the new path from the existing parent path and `newName`, then issues a single `OpUpdate` on the node. The `fsPathRewriteHook` runs inside that command's transaction and bulk-rewrites all descendant paths in one `UPDATE` statement — the move and every descendant path rewrite are atomic. Returns `ErrNodeLocked` if the node is locked; `ErrNodeNameConflict` if a live sibling already has `newName`.
+
+```go
+ref, err := f.RenameNode(ctx, nodeID, "q1-final.pdf")
+```
+
+### MoveNode
+
+Re-parents a node under `newParentID`. Path rewrite behavior is identical to `RenameNode` — single event for the moved node, bulk in-tx rewrite for all descendants. Guards:
+
+- `ErrNotContainer` if `newParentID` is not a folder
+- `ErrNodeNameConflict` if a live sibling at the destination already has the same name
+- cycle guard: moving a node into its own subtree is rejected with an explicit error
+
+```go
+ref, err := f.MoveNode(ctx, nodeID, destFolderID)
+```
+
+<Callout type="info">
+Both `RenameNode` and `MoveNode` emit exactly **one event** for the moved node. Descendant path rewrites happen in the same transaction via a single bulk `UPDATE` on `fs_nodes` — they do not emit individual events and do not bump descendant versions.
+</Callout>
+
+### TrashNode
+
+Soft-deletes a node and its entire subtree by stamping `deleted_at` on every member. Emits one `OpUpdate` event per node. Trashed nodes are excluded from `ListChildren`, `GetNodeByPath`, `Descendants`, and the `WatchChildren` live window, but remain readable via `GetNode`.
+
+```go
+err := f.TrashNode(ctx, folderID)
+```
+
+### RestoreNode
+
+Clears `deleted_at` on a node and its entire subtree. Emits one `OpUpdate` event per node.
+
+```go
+err := f.RestoreNode(ctx, folderID)
+```
+
+### PermanentDeleteNode
+
+Hard-deletes a node and its subtree (one `OpDelete` event per node) then calls `DeleteBlob` for each file node's `blob_object`. Removing the `blob_object` row makes the underlying bytes GC-eligible — see [blob GC](/docs/blob-gc) for how Phase-4 reclaims unreferenced storage.
+
+```go
+err := f.PermanentDeleteNode(ctx, nodeID)
+```
+
+<Callout type="warn">
+`PermanentDeleteNode` is irreversible. There is no recovery path once the `blob_object` rows are deleted and the underlying bytes are GC-reclaimed.
+</Callout>
+
+### LockNode / UnlockNode
+
+Stamps or clears `is_locked` and `locked_by` on a single node. A locked node rejects `RenameNode`, `MoveNode`, and `ReplaceFile` with `ErrNodeLocked`. Lock state does not propagate to children.
+
+```go
+err := f.LockNode(ctx, nodeID, "user:alice")
+err  = f.UnlockNode(ctx, nodeID)
+```
+
+### ReplaceFile
+
+Stores new bytes via `PutBlob` and repoints `blob_id`, `size`, `content_type`, and `checksum` on the node, bumping its version. The previous `blob_object` is **not** deleted — a prior version may still be referenced elsewhere; Phase-4 GC reclaims it once it is genuinely unreferenced.
+
+```go
+ref, err := f.ReplaceFile(ctx, fileNodeID, newReader, fabriq.CreateFileOpts{
+    ContentType: "application/pdf",
+})
+```
+
+## Read operations
+
+### GetNode
+
+Loads any node by ID regardless of `deleted_at` state.
+
+```go
+node, err := f.GetNode(ctx, nodeID)
+```
+
+### GetNodeByPath
+
+Resolves a **live** (non-trashed) node by its materialized path. Returns `fabriqerr.ErrNotFound` if no live node matches.
+
+```go
+node, err := f.GetNodeByPath(ctx, "/docs/reports/q1.pdf")
+```
+
+### ListChildren
+
+Returns live children of `parentID`, ordered by `name ASC`. Paginated by `limit`/`offset`.
+
+```go
+children, err := f.ListChildren(ctx, folderID, 50, 0)
+```
+
+### Ancestors
+
+Returns the chain of ancestors from root down to (but not including) the target node, in root-first order. Implemented as O(depth) sequential `GetNode` reads — appropriate for filesystem tree depths.
+
+```go
+crumbs, err := f.Ancestors(ctx, nodeID)
+// crumbs[0] is the root ancestor, crumbs[len-1] is the direct parent
+```
+
+### Descendants
+
+Returns all live nodes whose `path` has the target node's path as a prefix (`path LIKE '<node.Path>/%'`), ordered by `path ASC`. This is the efficient flat enumeration for bulk operations; arbitrary-depth graph traversal is also available via the `CHILD_OF` edge — see [graph](/docs/graph).
+
+```go
+all, err := f.Descendants(ctx, folderID)
+```
+
+### SearchNodesByName
+
+SQL `ILIKE` name search over live nodes, ordered by `name ASC`. For fuzzy or cross-field search, use the search projection indexed on `name` and `content_type` — see [search](/docs/search).
+
+```go
+results, err := f.SearchNodesByName(ctx, "report", 20)
+```
+
+## Live queries — WatchChildren
+
+`WatchChildren` returns a maintained result set of a folder's live children, ordered by `name ASC`. It is a thin wrapper over `f.LiveQuery` with a fixed filter on `parent_id` and `deleted_at IS NULL`.
+
+```go
+snap, deltas, handle, err := f.WatchChildren(ctx, folderID, 100)
+if err != nil {
+    // unknown entity, no LiveSpec, shard count > 1, or no live-query engine configured
+}
+defer handle.Close()
+
+render(snap.Rows)
+for d := range deltas {
+    apply(d) // livequery.LiveDelta: Op enter/leave/move/update, Row, OldIndex, NewIndex
+}
+```
+
+<Callout type="warn">
+Live queries — including `WatchChildren` — are **single-shard only**. In a sharded deployment (`FABRIQ_SHARD_COUNT > 1`) the call returns an error. See [live queries](/docs/live-queries) for the constraint and the gateway-tier alternative.
+</Callout>
+
+### Subscribing to a folder
+
+For change notifications without a maintained window (e.g. cache invalidation), use `f.Subscribe`. The `fs_node` registry spec declares a `"parent"` subscribe scope keyed on `parent_id`; pass a `query.SubscribeScope` naming that scope and the target folder ID. See [Subscriptions](/docs/subscriptions) for the full `Subscribe` API and [Live Queries](/docs/live-queries) for `WatchChildren`.
+
+<Cards>
+  <Card title="File Plane" href="/docs/file-plane" />
+  <Card title="fs-satellites" href="/docs/fs-satellites" />
+  <Card title="Live Queries" href="/docs/live-queries" />
+  <Card title="Graph" href="/docs/graph" />
+</Cards>

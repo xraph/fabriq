@@ -1,0 +1,209 @@
+---
+title: Blob GC & Reconcile
+description: The BlobReconciler in adapters/trove recomputes ref-counts from the command-authoritative catalog, garbage-collects unreferenced bytes past a grace window, and reports broken or orphaned content — run as a leader-elected worker to keep the byte store self-healing and storage-bounded.
+---
+
+The byte store is external and referenced, not rebuilt (see ADR 0008 — the
+"referenced external blobs" model). That means fabriq never rebuilds it from
+events; instead a reconciler closes the gap between the `blob_cas` ledger and
+the object-storage layer on each GC cycle. `BlobReconciler` in
+`adapters/trove` owns all three checks: ref-count recompute, broken-row
+detection, and orphan-byte GC. In the worker it runs leader-elected under
+advisory lock `1004`, so exactly one replica scans across every tenant.
+
+<Callout type="info">
+Per-tenant byte isolation makes per-tenant GC safe. Each tenant's bytes live
+in their own bucket (`{base}/{tenantID}/`), scoped by Postgres RLS on the
+ledger side. The reconciler stamps `tenant.WithTenant` into every query so
+a single `BlobReconciler` instance iterates tenants without cross-contamination.
+</Callout>
+
+## Report type
+
+`Reconcile` returns a `Report` summarizing one tenant's pass:
+
+```go
+// Report summarizes one tenant's reconcile pass.
+type Report struct {
+    RefsCorrected  int      // ledger rows whose ref_count disagreed with truth
+    GCCount        int      // unreferenced+unpinned entries garbage-collected
+    BytesFreed     int64    // bytes reclaimed by GC
+    Broken         []string // referenced hashes whose bytes are missing
+    OrphansDeleted int      // stored objects with no ledger row, removed
+}
+```
+
+A non-empty `Broken` slice is an alert condition — these are live references
+pointing at missing bytes. `RefsCorrected`, `GCCount`, and `OrphansDeleted`
+are normal operational noise that converges to zero in a healthy system.
+
+## Reconcile(ctx, repair)
+
+```go
+func (r *BlobReconciler) Reconcile(ctx context.Context, repair bool) (Report, error)
+```
+
+`ctx` must carry a tenant ID stamped by `tenant.WithTenant`; the method
+returns `tenant.ErrNoTenant` (via `tenant.Require`) if absent.
+
+With `repair=false` the call is a **dry run**: all three checks run and
+counts accumulate in the `Report`, but no SQL mutation and no byte deletion
+occurs. Use this for auditing or alerting without side effects.
+
+With `repair=true` the reconciler mutates: it corrects `blob_cas.ref_count`,
+deletes GC-eligible byte objects then their ledger rows, and deletes orphan
+byte objects. All three operations are idempotent — a crash mid-cycle
+re-converges on the next run.
+
+### Check 1 — ref-count recompute
+
+The reconciler counts live references from `blob_objects` (the
+command-authoritative catalog, written by every Blob `Store` call):
+
+```sql
+SELECT hash, COUNT(*) AS n FROM blob_objects GROUP BY hash
+```
+
+It compares each `blob_cas` ledger row's `ref_count` against the truth count.
+When they disagree:
+
+- `Report.RefsCorrected` increments.
+- With `repair=true`: `UPDATE blob_cas SET ref_count = $truth WHERE hash = $h`.
+
+### Check 1b — GC unreferenced entries past the grace window
+
+When truth is `0`, the entry is not pinned (`blob_cas.pinned = false`), and
+`blob_cas.created_at` is older than `BlobGCGrace`:
+
+1. `Report.GCCount` and `Report.BytesFreed` accumulate.
+2. With `repair=true`: byte object deleted from object storage, then the
+   `blob_cas` row deleted. A `fabriqerr.ErrNotFound` on the byte delete is
+   treated as already-gone and not surfaced as an error (idempotent).
+
+The `created_at` column was added in migration `0015` (version
+`202606180015`). Entries younger than the grace window are skipped, protecting
+an in-flight `Store` call whose ledger row commits after bytes land.
+
+### Check 2 — broken-row detection
+
+For every ledger row with `truth > 0`, the reconciler calls a `HEAD` against
+object storage. If the object is absent the hash is appended to
+`Report.Broken`. Broken rows are **reported, never deleted** — deletion could
+destroy the only pointer to content that needs manual recovery.
+
+A referenced hash that has no ledger row at all is also recorded as broken
+(the reverse case: catalog references a hash that was never written to the
+CAS).
+
+<Callout type="warn">
+A non-empty `Report.Broken` after a repair pass means bytes are permanently
+missing for live references. Alert on `fabriq_blob_gc_broken > 0` and
+investigate the upstream write path or object-storage bucket.
+</Callout>
+
+### Check 3 — orphan-byte GC
+
+The reconciler lists the tenant bucket via the object-storage driver and
+compares keys against the ledger. A key with no matching ledger row **and**
+whose `LastModified` is older than `BlobGCGrace` is an orphan:
+
+- `Report.OrphansDeleted` increments.
+- With `repair=true`: byte object deleted. Not-found is treated as
+  already-gone (idempotent).
+
+The grace window prevents collecting bytes whose ledger row has not committed
+yet (a `Store` call that wrote bytes but not the ledger row).
+
+If the tenant bucket does not exist yet, the list returns a `ErrNotFound`
+which the reconciler treats as zero orphans (no bucket = no bytes).
+
+## Worker (leader-elected)
+
+The blob GC runs inside the Forge extension worker. It is enabled when
+`ReconcileInterval > 0` and `Stores.CAS != nil`. It shares the
+`ReconcileInterval` with the projection reconciler.
+
+```
+advisory lock 1004 (lockKeyBlobGC)
+    → runBlobGC (ticker at ReconcileInterval)
+        → gcBlobAll
+            → for each tenant: rec.Reconcile(tctx, repair=true)
+```
+
+`gcBlobAll` falls back to a `BlobGCGrace` of `1h` when the configured value
+is zero. It calls `stores.BlobReconciler(grace)` to build the reconciler,
+which requires `Storage.EnableCas = true` and a Postgres store; it returns an
+error otherwise (GC silently skips that cycle).
+
+`Stores.BlobReconciler` accessor:
+
+```go
+func (s *Stores) BlobReconciler(grace time.Duration) (*trovestore.BlobReconciler, error)
+```
+
+Returns `fmt.Errorf("fabriq: blob reconciler needs storage with enableCas and postgres configured")`
+when either `s.CAS` or `s.Postgres` is nil.
+
+## Configuration
+
+The blob GC shares `ReconcileInterval` with the projection reconciler and
+adds one knob: `BlobGCGrace`.
+
+<Callout type="info">The `fabriq` binary's environment loader covers the core stores only (see the [CLI reference](/docs/cli)). Storage, CAS, encryption, and blob-GC settings are configured via the library `Config` struct (or a `config.yaml` a future `fabriqd` loads).</Callout>
+
+`BlobGCGrace` is a **forgeext worker knob** (`forgeext.WithBlobGCGrace`), not a `fabriq.Config` or config.yaml field. Configure it when embedding fabriq via the extension:
+
+```go
+forgeext.New(reg,
+    forgeext.WithWorker(true),
+    forgeext.WithReconcileInterval(10 * time.Minute), // also governs blob GC tick
+    forgeext.WithBlobGCGrace(2 * time.Hour),          // default 1h when zero
+)
+```
+
+<Callout type="info">
+`BlobGCGrace` has no `FABRIQ_*` env override in the standalone binary — it
+defaults to `1h` in `gcBlobAll`. When embedding fabriq as a library use
+`WithBlobGCGrace` to tune it. Pinned entries (`blob_cas.pinned = true`) are
+never collected regardless of grace.
+</Callout>
+
+## Metrics
+
+Five instruments from `internal/metrics` cover the GC cycle. All are
+reset-safe monotonic counters except `fabriq_blob_gc_broken`, which is set to
+the total broken count across all tenants at the end of each `gcBlobAll` call.
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `fabriq_blob_gc_bytes_freed_total` | counter | Bytes reclaimed by GC (unreferenced entries, past grace). |
+| `fabriq_blob_gc_collected_total` | counter | Unreferenced, unpinned CAS entries deleted. |
+| `fabriq_blob_gc_ref_drift_corrected_total` | counter | `blob_cas.ref_count` values corrected to catalog truth. |
+| `fabriq_blob_gc_orphans_total` | counter | Orphan byte objects (no ledger row) deleted. |
+| `fabriq_blob_gc_broken` | gauge | Referenced hashes whose bytes are missing (last cycle, all tenants). |
+
+Alert on `fabriq_blob_gc_broken > 0`. Sustained growth in
+`fabriq_blob_gc_ref_drift_corrected_total` indicates a write-path bug in
+ref-count accounting. `fabriq_blob_gc_bytes_freed_total` and
+`fabriq_blob_gc_collected_total` growing at a healthy, bounded rate is
+expected in normal operation.
+
+## Relationship to the projection reconciler
+
+The blob reconciler follows the same "recompute from Postgres truth" discipline
+as the projection reconciler: `blob_objects` is the authoritative catalog (the
+command plane writes it), the ledger and byte store are derived, and the
+reconciler closes any gap. Both are leader-elected, run on the same interval,
+and repair idempotently. The blob GC extends this pattern into object storage.
+
+<Cards>
+  <Card title="Blobs" href="/docs/blobs">
+    The blob write path — how Store stamps blob_objects and blob_cas.
+  </Card>
+  <Card title="File Plane" href="/docs/file-plane">
+    Overview of the file plane: catalog, bytes, and the Trove integration.
+  </Card>
+  <Card title="Rebuild & Reconcile" href="/docs/rebuild-and-reconcile">
+    The projection reconciler — same "recompute from Postgres truth" discipline.
+  </Card>
+</Cards>
