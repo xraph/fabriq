@@ -1,0 +1,443 @@
+---
+title: FS Satellite Entities
+description: Reference for the five relational entities that orbit every FsNode — fs_permission, fs_share, fs_bookmark, blob_source, and mount points — plus the AES-256-GCM field encryption that protects blob_source credentials.
+---
+
+The satellite entities are implemented in `package fabriq` (the facade, files `fs_permission.go`, `fs_share.go`, `fs_bookmark.go`, `fs_source.go`, `fs_node_mount.go`) and in `core/crypto` (`crypto.go`, `aesgcm.go`). Their domain models live in `package domain` under the same names.
+
+<Callout type="info">
+**Data / enforcement boundary.** fabriq hosts the satellite *data*: tables, RLS policies with secondary-scope support, versioned events, and CRUD operations. Enforcement and engines live entirely in the consuming application seam. Concretely, fabriq does **not**: evaluate effective permissions or resolve ACL inheritance; generate or verify share tokens; hash or check share passwords; enforce share expiry or download caps; resolve blob_source storage connections; or run the mount sync loop. The facade calls listed below are pure data operations.
+</Callout>
+
+All five satellite tables carry `tenant_id`, `scope_id`, and `version`. Every table has a foreign-key reference to `fs_nodes(id) ON DELETE CASCADE` — a hard-delete of an `FsNode` cascades to all its satellites automatically. None of the satellites are projected to the graph, search, or vector planes; principals, tokens, and credentials are not fabriq entities.
+
+## fs_permission
+
+**Table:** `fs_permissions` · **Migration:** 0018
+
+An append-only ACL grant row. Granting = insert; revoking = delete. The table carries no "deny" rows and no inheritance graph — effective-permission evaluation is a seam concern.
+
+### Schema
+
+```sql
+CREATE TABLE fs_permissions (
+    id             TEXT PRIMARY KEY,
+    tenant_id      TEXT NOT NULL,
+    scope_id       TEXT,
+    version        BIGINT NOT NULL,
+    node_id        TEXT NOT NULL REFERENCES fs_nodes(id) ON DELETE CASCADE,
+    principal_type TEXT NOT NULL,   -- "user" | "role" | "team"
+    principal_id   TEXT NOT NULL,
+    permission     TEXT NOT NULL,   -- "read" | "write" | "delete" | "admin"
+    granted_by     TEXT NOT NULL DEFAULT '',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+Indexes: `(tenant_id, node_id)` and `(tenant_id, principal_type, principal_id)`.
+
+### Go model
+
+```go
+// domain.FsPermission
+type FsPermission struct {
+    grove.BaseModel `grove:"table:fs_permissions"`
+
+    ID            string    `grove:"id,pk"             json:"id"`
+    TenantID      string    `grove:"tenant_id,notnull" json:"tenantId"`
+    ScopeID       string    `grove:"scope_id"          json:"scopeId"`
+    Version       int64     `grove:"version,notnull"   json:"version"`
+    NodeID        string    `grove:"node_id,notnull"   json:"nodeId"`
+    PrincipalType string    `grove:"principal_type"    json:"principalType"`
+    PrincipalID   string    `grove:"principal_id"      json:"principalId"`
+    Permission    string    `grove:"permission"        json:"permission"`
+    GrantedBy     string    `grove:"granted_by"        json:"grantedBy"`
+    CreatedAt     time.Time `grove:"created_at"        json:"createdAt"`
+}
+```
+
+### Facade
+
+```go
+// Grant principal (type+id) permission on nodeID. Returns the new grant id.
+id, err := f.GrantPermission(ctx, nodeID, "user", userID, "write", grantedBy)
+
+// Revoke a grant by id.
+err = f.RevokePermission(ctx, id)
+
+// All grants on a node, ordered by created_at ASC.
+grants, err := f.ListNodePermissions(ctx, nodeID)
+
+// All grants held by a principal, ordered by created_at ASC.
+grants, err := f.ListPrincipalPermissions(ctx, "role", roleID)
+```
+
+`GrantPermission` returns `(string, error)`. `RevokePermission` returns `error`. Both list methods return `([]domain.FsPermission, error)` and wrap errors with the prefix `fabriq: ListNodePermissions:` / `fabriq: ListPrincipalPermissions:`.
+
+## fs_share
+
+**Table:** `fs_shares` · **Migration:** 0019
+
+A share-link record. fabriq persists exactly what the caller supplies. The seam generates the token (e.g. `crypto/rand` URL-safe base64) and bcrypts the password; fabriq stores them verbatim. Expiry checks, download-cap enforcement, and password verification are seam responsibilities.
+
+### Schema
+
+```sql
+CREATE TABLE fs_shares (
+    id             TEXT PRIMARY KEY,
+    tenant_id      TEXT NOT NULL,
+    scope_id       TEXT,
+    version        BIGINT NOT NULL,
+    node_id        TEXT NOT NULL REFERENCES fs_nodes(id) ON DELETE CASCADE,
+    token          TEXT NOT NULL,
+    permission     TEXT NOT NULL DEFAULT 'read',
+    expires_at     TIMESTAMPTZ,
+    max_downloads  INTEGER,
+    download_count INTEGER NOT NULL DEFAULT 0,
+    password_hash  TEXT NOT NULL DEFAULT '',
+    created_by     TEXT NOT NULL DEFAULT '',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+Unique index: `(tenant_id, token)`. Index: `(tenant_id, node_id)`.
+
+### Go model
+
+```go
+// domain.FsShare
+type FsShare struct {
+    grove.BaseModel `grove:"table:fs_shares"`
+
+    ID            string     `grove:"id,pk"             json:"id"`
+    TenantID      string     `grove:"tenant_id,notnull" json:"tenantId"`
+    ScopeID       string     `grove:"scope_id"          json:"scopeId"`
+    Version       int64      `grove:"version,notnull"   json:"version"`
+    NodeID        string     `grove:"node_id,notnull"   json:"nodeId"`
+    Token         string     `grove:"token,notnull"     json:"token"`
+    Permission    string     `grove:"permission"        json:"permission"`
+    ExpiresAt     *time.Time `grove:"expires_at"        json:"expiresAt"`
+    MaxDownloads  *int       `grove:"max_downloads"     json:"maxDownloads"`
+    DownloadCount int        `grove:"download_count"    json:"downloadCount"`
+    PasswordHash  string     `grove:"password_hash"     json:"-"` // never serialised to JSON
+    CreatedBy     string     `grove:"created_by"        json:"createdBy"`
+    CreatedAt     time.Time  `grove:"created_at"        json:"createdAt"`
+}
+```
+
+`PasswordHash` is tagged `json:"-"` and is intentionally absent from all JSON output.
+
+### Facade input type
+
+```go
+type CreateShareInput struct {
+    NodeID       string     `json:"nodeId"`
+    Token        string     `json:"token"`        // caller-generated
+    Permission   string     `json:"permission"`   // default "read"
+    ExpiresAt    *time.Time `json:"expiresAt"`
+    MaxDownloads *int       `json:"maxDownloads"`
+    PasswordHash string     `json:"-"`            // bcrypt output from seam
+    CreatedBy    string     `json:"createdBy"`
+}
+```
+
+### Facade
+
+```go
+// Persist a share. Returns the new share id.
+id, err := f.CreateShare(ctx, CreateShareInput{
+    NodeID: nodeID, Token: token, Permission: "read",
+    ExpiresAt: &exp, PasswordHash: hash, CreatedBy: userID,
+})
+
+// Data lookup by token (no expiry/cap/password check — seam's responsibility).
+share, err := f.GetShareByToken(ctx, token)
+// Returns fabriqerr.ErrNotFound when no row matches.
+
+// Atomically increment download_count with one optimistic-concurrency retry.
+err = f.IncrementShareDownload(ctx, shareID)
+
+// Delete a share record.
+err = f.DeleteShare(ctx, shareID)
+
+// All shares for a node, ordered by created_at ASC.
+shares, err := f.ListNodeShares(ctx, nodeID)
+```
+
+`IncrementShareDownload` retries once on `fabriqerr.ErrVersionConflict`. If the conflict persists after the retry it returns `"fabriq: IncrementShareDownload: version conflict after retry"`.
+
+## fs_bookmark
+
+**Table:** `fs_bookmarks` · **Migration:** 0020
+
+A user's favourite node (per-tenant, per-user, per-node uniqueness enforced by a unique index). `sort_order` is caller-managed; fabriq applies no ordering policy.
+
+### Schema
+
+```sql
+CREATE TABLE fs_bookmarks (
+    id         TEXT PRIMARY KEY,
+    tenant_id  TEXT NOT NULL,
+    scope_id   TEXT,
+    version    BIGINT NOT NULL,
+    user_id    TEXT NOT NULL,
+    node_id    TEXT NOT NULL REFERENCES fs_nodes(id) ON DELETE CASCADE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+Unique index: `(tenant_id, user_id, node_id)`. Index: `(tenant_id, user_id)`.
+
+### Go model
+
+```go
+// domain.FsBookmark
+type FsBookmark struct {
+    grove.BaseModel `grove:"table:fs_bookmarks"`
+
+    ID        string    `grove:"id,pk"             json:"id"`
+    TenantID  string    `grove:"tenant_id,notnull" json:"tenantId"`
+    ScopeID   string    `grove:"scope_id"          json:"scopeId"`
+    Version   int64     `grove:"version,notnull"   json:"version"`
+    UserID    string    `grove:"user_id,notnull"   json:"userId"`
+    NodeID    string    `grove:"node_id,notnull"   json:"nodeId"`
+    SortOrder int       `grove:"sort_order"        json:"sortOrder"`
+    CreatedAt time.Time `grove:"created_at"        json:"createdAt"`
+}
+```
+
+### Facade
+
+```go
+// Bookmark nodeID for userID. sortOrder is caller-supplied.
+// Errors with a unique-constraint violation if (tenant, user, node) already exists.
+id, err := f.AddBookmark(ctx, userID, nodeID, sortOrder)
+
+// All of userID's bookmarks, ordered by sort_order ASC, created_at ASC.
+bookmarks, err := f.ListUserBookmarks(ctx, userID)
+
+// Remove a bookmark by id.
+err = f.RemoveBookmark(ctx, id)
+```
+
+## blob_source
+
+**Table:** `blob_sources` · **Migration:** 0021
+
+An external-storage connection record (S3 bucket, GCS, MinIO, local filesystem, etc.). Credentials are stored exclusively as ciphertext in the `auth_enc` (`BYTEA`) column — the plaintext map never touches a database column. The storage resolver and sync loop that consume a `blob_source` live in the seam, not in fabriq.
+
+### Schema
+
+```sql
+CREATE TABLE blob_sources (
+    id           TEXT PRIMARY KEY,
+    tenant_id    TEXT NOT NULL,
+    scope_id     TEXT,
+    version      BIGINT NOT NULL,
+    project_id   TEXT NOT NULL DEFAULT '',
+    name         TEXT NOT NULL,
+    provider     TEXT NOT NULL DEFAULT '',
+    endpoint     TEXT NOT NULL DEFAULT '',
+    base_path    TEXT NOT NULL DEFAULT '',
+    auth_enc     BYTEA,              -- AES-256-GCM envelope; NULL when auth is empty
+    watch_config JSONB NOT NULL DEFAULT '{}',
+    file_filter  JSONB NOT NULL DEFAULT '{}',
+    tags         JSONB NOT NULL DEFAULT '{}',
+    enabled      BOOLEAN NOT NULL DEFAULT TRUE
+);
+```
+
+### Go model
+
+```go
+// domain.BlobSource — the storage model; auth_enc is never exposed directly.
+type BlobSource struct {
+    grove.BaseModel `grove:"table:blob_sources"`
+
+    ID          string            `grove:"id,pk"             json:"id"`
+    TenantID    string            `grove:"tenant_id,notnull" json:"tenantId"`
+    ScopeID     string            `grove:"scope_id"          json:"scopeId"`
+    Version     int64             `grove:"version,notnull"   json:"version"`
+    ProjectID   string            `grove:"project_id"        json:"projectId"`
+    Name        string            `grove:"name,notnull"      json:"name"`
+    Provider    string            `grove:"provider"          json:"provider"`
+    Endpoint    string            `grove:"endpoint"          json:"endpoint"`
+    BasePath    string            `grove:"base_path"         json:"basePath"`
+    AuthEnc     []byte            `grove:"auth_enc"          json:"-"` // ciphertext only
+    WatchConfig map[string]any    `grove:"watch_config"      json:"watchConfig"`
+    FileFilter  map[string]any    `grove:"file_filter"       json:"fileFilter"`
+    Tags        map[string]string `grove:"tags"              json:"tags"`
+    Enabled     bool              `grove:"enabled"           json:"enabled"`
+}
+```
+
+The facade types the caller sees are `SourceInput` (plaintext `Auth map[string]any`) and `BlobSourceView` (decrypted read output):
+
+```go
+type SourceInput struct {
+    ProjectID   string            `json:"projectId"`
+    Name        string            `json:"name"`
+    Provider    string            `json:"provider"`
+    Endpoint    string            `json:"endpoint"`
+    BasePath    string            `json:"basePath"`
+    Auth        map[string]any    `json:"auth"`        // plaintext; encrypted at boundary
+    WatchConfig map[string]any    `json:"watchConfig"`
+    FileFilter  map[string]any    `json:"fileFilter"`
+    Tags        map[string]string `json:"tags"`
+    Enabled     bool              `json:"enabled"`
+}
+
+type BlobSourceView struct {
+    ID          string            `json:"id"`
+    ProjectID   string            `json:"projectId"`
+    Name        string            `json:"name"`
+    Provider    string            `json:"provider"`
+    Endpoint    string            `json:"endpoint"`
+    BasePath    string            `json:"basePath"`
+    Auth        map[string]any    `json:"auth"`        // decrypted on read
+    WatchConfig map[string]any    `json:"watchConfig"`
+    FileFilter  map[string]any    `json:"fileFilter"`
+    Tags        map[string]string `json:"tags"`
+    Enabled     bool              `json:"enabled"`
+    Version     int64             `json:"version"`
+}
+
+type SourceRef struct {
+    ID      string `json:"id"`
+    Version int64  `json:"version"`
+}
+```
+
+### Facade
+
+```go
+// Persist a new source (auth encrypted at the boundary).
+// Returns crypto.ErrNotConfigured when in.Auth is non-empty and no key is configured.
+ref, err := f.CreateSource(ctx, SourceInput{
+    Name: "prod-s3", Provider: "s3", Endpoint: "https://s3.amazonaws.com",
+    BasePath: "tenant-data/", Auth: map[string]any{
+        "accessKeyId": "AKIA...", "secretAccessKey": "...",
+    }, Enabled: true,
+})
+// ref.ID, ref.Version
+
+// Read and decrypt a source.
+view, err := f.GetSource(ctx, ref.ID)
+// view.Auth is the decrypted map.
+
+// Read and decrypt all sources for the tenant, ordered by name ASC.
+views, err := f.ListSources(ctx)
+
+// Replace a source (re-encrypts auth), bumping version.
+ref, err = f.UpdateSource(ctx, ref.ID, updated)
+
+// Delete a source.
+err = f.DeleteSource(ctx, ref.ID)
+```
+
+<Callout type="warn">
+`CreateSource` and `UpdateSource` are **fail-closed**: if `SourceInput.Auth` is non-empty and no encryption key is configured, they return `crypto.ErrNotConfigured` before touching the database. There is no plaintext fallback.
+</Callout>
+
+## Mount points
+
+**Migration:** 0017 (adds `mount_config JSONB` to `fs_nodes`)
+
+A mount is an ordinary `FsNode` with `node_type = "mount"` and a `mount_config` JSONB column. fabriq stores the configuration; the sync engine that consumes it (connecting to a `blob_source`, walking a remote tree, materialising child nodes) lives in the seam.
+
+### Facade
+
+```go
+// Create a mount node under parentID.
+ref, err := f.CreateMount(ctx, parentID, "mounts/archive", map[string]any{
+    "sourceId": sourceID,
+    "syncMode": "read-only",
+})
+// ref.NodeType == "mount"
+// Errors with ErrNodeNameConflict if a sibling with the same name already exists.
+
+// Return a mount node's config. Errors if the node is not node_type=mount.
+config, err := f.ResolveMount(ctx, ref.ID)
+
+// Replace the config, bumping version.
+ref, err = f.UpdateMount(ctx, ref.ID, updatedConfig)
+```
+
+`CreateMount` calls `parentContext` and `siblingExists` internally, so it enforces the same name-collision and parent-existence invariants as `CreateNode`. `UpdateMount` returns `error` if the node's `node_type` is not `"mount"`.
+
+## Field encryption
+
+**Packages:** `core/crypto` (`Encryptor` interface, `AESGCM`, sentinel errors)
+
+Field encryption protects `blob_source.auth_enc`. The algorithm is AES-256-GCM with a versioned ciphertext envelope and the tenant id bound as additional authenticated data (AAD). The envelope layout is:
+
+```
+[1-byte keyVersion][12-byte random nonce][ciphertext + 16-byte GCM tag]
+```
+
+The `keyVersion` byte (currently `0x01`) allows a future key-rotation pass to identify ciphertext produced under each key without changing the envelope format. The tenant id AAD means a stolen ciphertext cannot be replayed into another tenant's row — `Decrypt` returns an AEAD authentication error if the AAD does not match.
+
+### Interface and errors
+
+```go
+// core/crypto.Encryptor
+type Encryptor interface {
+    Encrypt(plaintext, aad []byte) ([]byte, error)
+    Decrypt(ciphertext, aad []byte) ([]byte, error)
+}
+
+var (
+    ErrNotConfigured = errors.New("fabriq: encryption not configured")
+    ErrKeyVersion    = errors.New("fabriq: ciphertext key version not recognized")
+)
+```
+
+`AESGCM` is the only production implementation. It requires exactly 32 bytes (AES-256); `NewAESGCM` returns an error if the key length is wrong.
+
+```go
+enc, err := crypto.NewAESGCM(key32bytes) // key must be exactly 32 bytes
+```
+
+### Wiring
+
+`Open` decodes `Config.Encryption.Key` (base64-encoded 32-byte string) and calls `crypto.NewAESGCM`. The resulting `Encryptor` is passed to the facade via `WithEncryptor`. When the key is absent (`Config.Encryption.Key == ""`), `f.crypto` is nil and any `blob_source` write with a non-empty `Auth` map returns `crypto.ErrNotConfigured`.
+
+### Configuration
+
+<Callout type="info">The `fabriq` binary's environment loader covers the core stores only (see the [CLI reference](/docs/cli)). Storage, CAS, encryption, and blob-GC settings are configured via the library `Config` struct (or a `config.yaml` a future `fabriqd` loads).</Callout>
+
+<Tabs items={['Library (Go)', 'config.yaml']}>
+  <Tab value="Library (Go)">
+```go
+// Generate a key once and store it in a secrets manager:
+//   key := make([]byte, 32)
+//   io.ReadFull(rand.Reader, key)
+//   encoded := base64.StdEncoding.EncodeToString(key)
+
+cfg := fabriq.Config{
+    Postgres: fabriq.PostgresConfig{DSN: "postgres://..."},
+    Encryption: fabriq.EncryptionConfig{
+        Key: "base64-encoded-32-byte-key==",
+    },
+}
+f, stores, err := fabriq.Open(ctx, reg, cfg)
+```
+  </Tab>
+  <Tab value="config.yaml">
+```yaml
+encryption:
+  key: "base64-encoded-32-byte-key=="
+```
+  </Tab>
+</Tabs>
+
+<Callout type="info">
+Key rotation and per-tenant keys are noted future work. The versioned envelope (`keyVersion` byte) supports rotation without re-encoding existing rows: a rotation pass re-encrypts rows under the new key and updates the version byte, while the old key remains available for Decrypt until all rows are migrated.
+</Callout>
+
+<Cards>
+  <Card title="Filesystem Tree (FsNode)" href="/docs/fs-node">The parent entity every satellite foreign-keys into.</Card>
+  <Card title="File Plane" href="/docs/file-plane">Architecture overview — blob write path, CAS, tenancy, and ADR 0008.</Card>
+  <Card title="Tenancy" href="/docs/tenancy">Stamped transactions, RLS, and secondary scope that protect every satellite table.</Card>
+</Cards>

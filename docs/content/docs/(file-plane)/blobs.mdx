@@ -1,0 +1,327 @@
+---
+title: Blob Storage
+description: fabriq's byte-plane port (core/blob.Store) backed by Trove via adapters/trove, with an opt-in per-tenant content-addressable store that deduplicates bytes within a tenant's isolated bucket and tracks ref-counts in the blob_cas ledger.
+---
+
+fabriq's blob plane separates the catalog (Postgres, source of truth) from the bytes (object store). The `core/blob` package defines a storage-engine-agnostic `Store` port and a `CAS` interface; `adapters/trove` implements both over the Trove byte engine used as a library. The facade accessor is `f.Blob()`, which returns a `blob.Store` (or a not-configured sentinel when no driver is set). All blob operations are tenant-scoped — see [Tenancy](/docs/tenancy).
+
+## The blob.Store port
+
+`blob.Store` is the core byte-plane interface. Implementations stamp tenant and scope into keys structurally; callers pass already-derived keys.
+
+```go
+// core/blob/blob.go
+type Store interface {
+    Put(ctx context.Context, key string, r io.Reader, o PutOpts) (ObjectInfo, error)
+    Get(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error)
+    Head(ctx context.Context, key string) (ObjectInfo, error)
+    Delete(ctx context.Context, key string) error
+    List(ctx context.Context, prefix string) ([]ObjectInfo, error)
+    Copy(ctx context.Context, srcKey, dstKey string) (ObjectInfo, error)
+    Capabilities() Caps
+}
+
+type PutOpts struct {
+    ContentType string `json:"contentType"`
+    Size        int64  `json:"size"` // -1 when unknown
+}
+
+type ObjectInfo struct {
+    Key         string    `json:"key"`
+    Size        int64     `json:"size"`
+    Checksum    string    `json:"checksum"`
+    ContentType string    `json:"contentType"`
+    ModifiedAt  time.Time `json:"modifiedAt"`
+}
+```
+
+Not-found reads return `fabriqerr.ErrNotFound`. The `f.Blob()` accessor never returns `nil`; when `StorageDriver` is empty, it returns a not-configured sentinel whose every method returns `ErrStoreNotConfigured`.
+
+### Put
+
+Stores an object at `key`. `PutOpts.Size` may be `-1` if the reader length is unknown.
+
+```go
+info, err := f.Blob().Put(ctx, "uploads/abc123/photo.jpg", r, blob.PutOpts{
+    ContentType: "image/jpeg",
+    Size:        4_096_000,
+})
+```
+
+### Get
+
+Retrieves an object body and its metadata. The caller must close the returned `io.ReadCloser`.
+
+```go
+rc, info, err := f.Blob().Get(ctx, "uploads/abc123/photo.jpg")
+if err != nil {
+    return err
+}
+defer rc.Close()
+```
+
+### Head
+
+Returns metadata without transferring the body.
+
+```go
+info, err := f.Blob().Head(ctx, "uploads/abc123/photo.jpg")
+```
+
+### Delete
+
+Removes a single object.
+
+```go
+err := f.Blob().Delete(ctx, "uploads/abc123/photo.jpg")
+```
+
+### List
+
+Returns all objects whose keys share the given prefix.
+
+```go
+items, err := f.Blob().List(ctx, "uploads/abc123/")
+```
+
+### Copy
+
+Copies an object within the same bucket.
+
+```go
+info, err := f.Blob().Copy(ctx, "uploads/abc123/photo.jpg", "archive/abc123/photo.jpg")
+```
+
+## Optional capabilities
+
+A driver advertises its capabilities via `Capabilities() Caps`. Callers should check before casting to a sub-interface; calling a capability method on an unsupported driver returns `ErrUnsupported`.
+
+```go
+type Caps struct {
+    Presign   bool `json:"presign"`
+    Multipart bool `json:"multipart"`
+    Range     bool `json:"range"`
+}
+```
+
+Capability sub-interfaces:
+
+```go
+// Presigner — Caps.Presign == true
+type Presigner interface {
+    PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
+    PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error)
+}
+
+// Multipart — Caps.Multipart == true
+type Multipart interface {
+    InitiateMultipart(ctx context.Context, key string, o PutOpts) (uploadID string, err error)
+    UploadPart(ctx context.Context, key, uploadID string, part int, r io.Reader) (PartInfo, error)
+    CompleteMultipart(ctx context.Context, key, uploadID string, parts []PartInfo) (ObjectInfo, error)
+    AbortMultipart(ctx context.Context, key, uploadID string) error
+}
+
+// Ranger — Caps.Range == true
+type Ranger interface {
+    GetRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error)
+}
+```
+
+Usage pattern:
+
+```go
+caps := f.Blob().Capabilities()
+if caps.Presign {
+    ps := f.Blob().(blob.Presigner)
+    url, err := ps.PresignGet(ctx, key, 15*time.Minute)
+}
+```
+
+The `adapters/trove.Adapter` satisfies all three sub-interfaces at compile time and detects driver support by type-asserting the underlying Trove driver at call time.
+
+## The CAS layer
+
+When `enableCas: true`, `Open` wires a `CASStore` that implements `blob.CAS`:
+
+```go
+// core/blob/blob.go
+type CAS interface {
+    // Store writes content-addressed bytes; identical content increments the
+    // ref-count, it is NOT stored again. Returns the content hash and byte size.
+    Store(ctx context.Context, r io.Reader) (hash string, size int64, err error)
+    // Retrieve returns the bytes for a content hash. The caller must close the reader.
+    Retrieve(ctx context.Context, hash string) (io.ReadCloser, error)
+}
+```
+
+### Per-tenant isolation
+
+`CASStore` (in `adapters/trove`) gives **each tenant its own bucket**: `<defaultBucket>-<tenantID>`. Two tenants that upload identical bytes store them in separate buckets. Consequences:
+
+- Deduplication is tenant-scoped — identical content stored twice by the SAME tenant is deduplicated; across tenants it is not.
+- GC for tenant A can never touch tenant B's bytes, even when the hashes match.
+- S3-style bucket naming constraints are a noted future concern; the current local/mem drivers accept the derived names.
+
+### The blob_cas ledger
+
+Ref-counts live in a Postgres `blob_cas` table (one row per tenant × hash), managed by `CASIndex`. Row-Level Security scopes every query to the calling tenant; no explicit tenant predicate is needed.
+
+```sql
+-- schema
+blob_cas (
+  id         text PRIMARY KEY,
+  tenant_id  text NOT NULL,
+  hash       text NOT NULL,
+  bucket     text NOT NULL,
+  key        text NOT NULL,
+  size       bigint NOT NULL,
+  ref_count  int NOT NULL,
+  pinned     bool NOT NULL,
+  UNIQUE (tenant_id, hash)
+)
+```
+
+On duplicate writes `CASIndex.Put` upserts with `ref_count = ref_count + 1`. Entries with `ref_count = 0 AND pinned = false` are eligible for GC by the reconciler (see [Blob GC](/docs/blob-gc)).
+
+`CASIndex.Pin` / `CASIndex.Unpin` protect specific hashes from collection.
+
+## The facade write path
+
+`PutBlob`, `GetBlob`, and `DeleteBlob` are the high-level facade methods. They require both `Blob` and `CAS` ports; both return `ErrStoreNotConfigured` when either port is unconfigured.
+
+```go
+// BlobRef identifies a stored blob_object and its content.
+type BlobRef struct {
+    ID      string `json:"id"`
+    Hash    string `json:"hash"`
+    Size    int64  `json:"size"`
+    Version int64  `json:"version"`
+}
+
+type PutBlobOpts struct {
+    ContentType string `json:"contentType"`
+}
+```
+
+### PutBlob
+
+Bytes-first, then catalog. The command is the sole authority over the `blob_object` row — orphaned bytes (bytes written, command failed) are reconciled by the GC worker.
+
+```go
+ref, err := f.PutBlob(ctx, r, fabriq.PutBlobOpts{ContentType: "application/pdf"})
+// ref.ID  — blob_object aggregate ID
+// ref.Hash — content hash (stable across duplicate content for this tenant)
+// ref.Size — byte size
+// ref.Version — event version of the blob_object row
+```
+
+Order of operations:
+1. `CAS.Store(ctx, r)` — writes bytes to the tenant's bucket; if the hash already exists the ref-count is incremented and the bytes are not written again.
+2. `command.Exec` with `entity: blob_object, op: create` — creates the catalog row in one versioned event.
+
+### GetBlob
+
+Resolves the catalog row by ID, then streams bytes from CAS.
+
+```go
+rc, ref, err := f.GetBlob(ctx, blobObjectID)
+if errors.Is(err, fabriq.ErrNotFound) {
+    // catalog row absent
+}
+defer rc.Close()
+```
+
+### DeleteBlob
+
+Removes the catalog row (one versioned event). Byte GC and ref-count decrement are deferred to the reconciler.
+
+```go
+err := f.DeleteBlob(ctx, blobObjectID)
+```
+
+<Callout type="warn">
+`DeleteBlob` removes only the catalog row. The bytes in the object store remain until the GC reconciler runs. Do not assume bytes are gone immediately after a delete.
+</Callout>
+
+## The blob_object entity
+
+`domain.BlobObject` is the catalog row for a stored blob. Many `BlobObject` rows may share a `Hash` (within one tenant's dedup window); the canonical byte copy lives in the object store.
+
+```go
+// domain/blob.go
+type BlobObject struct {
+    grove.BaseModel `grove:"table:blob_objects"`
+
+    ID          string `grove:"id,pk"             json:"id"`
+    TenantID    string `grove:"tenant_id,notnull" json:"tenantId"`
+    ScopeID     string `grove:"scope_id"          json:"scopeId"`
+    Version     int64  `grove:"version,notnull"   json:"version"`
+    Hash        string `grove:"hash,notnull"      json:"hash"`
+    Size        int64  `grove:"size,notnull"      json:"size"`
+    ContentType string `grove:"content_type"      json:"contentType"`
+}
+```
+
+`ScopeID` carries the tenant's scope (set at write time from the command context).
+
+## Configuration
+
+`StorageConfig` controls both the object-store backend and the CAS layer. An empty `storageDriver` leaves the blob port unconfigured (shipped dark — `f.Blob()` returns the not-configured sentinel).
+
+```go
+// fabriq.go / config.go
+type StorageConfig struct {
+    StorageDriver string `yaml:"storageDriver" json:"storageDriver"`
+    DefaultBucket string `yaml:"defaultBucket" json:"defaultBucket"`
+    // EnableCas gates the content-addressable store layer.
+    // Requires a Postgres adapter (blob_cas ledger).
+    EnableCas bool `yaml:"enableCas" json:"enableCas"`
+}
+```
+
+<Callout type="info">The `fabriq` binary's environment loader covers the core stores only (see the [CLI reference](/docs/cli)). Storage, CAS, encryption, and blob-GC settings are configured via the library `Config` struct (or a `config.yaml` a future `fabriqd` loads).</Callout>
+
+<Tabs items={['Library (Go)', 'config.yaml']}>
+<Tab value="Library (Go)">
+```go
+f, err := fabriq.Open(ctx, fabriq.Config{
+    Postgres: fabriq.PostgresConfig{DSN: os.Getenv("DATABASE_URL")},
+    Storage: fabriq.StorageConfig{
+        StorageDriver: "file:///var/data/blobs",
+        DefaultBucket: "fabriq",
+        EnableCas:     true,
+    },
+})
+```
+
+Built-in schemes registered by `adapters/trove`:
+- `file://` / `local://` — local filesystem (via `trove/drivers/localdriver`)
+- `mem://` — in-process memory (via `trove/drivers/memdriver`; tests only)
+</Tab>
+<Tab value="config.yaml">
+```yaml
+storage:
+  storageDriver: "file:///var/data/blobs"
+  defaultBucket: "fabriq"
+  enableCas: true
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+`enableCas: true` requires a configured Postgres adapter (the `blob_cas` ledger is a Postgres table). Opening fabriq with `enableCas: true` and no Postgres DSN will fail at startup.
+</Callout>
+
+## Error reference
+
+| Error | Condition |
+|---|---|
+| `ErrStoreNotConfigured` | `StorageDriver` is empty; or CAS method called when `EnableCas` is false |
+| `fabriqerr.ErrNotFound` | Key or blob_object ID does not exist in this tenant's scope |
+| `trovestore.ErrUnsupported` | Capability method called on a driver that does not implement it |
+
+<Cards>
+  <Card title="File Plane" href="/docs/file-plane" />
+  <Card title="Blob GC" href="/docs/blob-gc" />
+  <Card title="FS Node" href="/docs/fs-node" />
+</Cards>
