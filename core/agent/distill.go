@@ -193,6 +193,7 @@ type persistArgs struct {
 	summaryText string
 	contentHash string
 	parents     []string
+	children    []string // ChildIDs for internal (rollup) nodes; nil for L0 leaves
 }
 
 // persistSummary stores a node's summary in CAS, embeds it, computes its
@@ -224,6 +225,7 @@ func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) (diges
 		SummaryHash: hash,
 		ContentHash: args.contentHash,
 		SemHash:     sem,
+		ChildIDs:    args.children,
 		ParentIDs:   args.parents,
 		UpdatedAt:   time.Now().UnixNano(),
 	}
