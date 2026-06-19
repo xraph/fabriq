@@ -75,14 +75,7 @@ func (t *Toolkit) Map(ctx context.Context, req MapRequest) ([]MapLine, error) {
 				continue
 			}
 		}
-		line := MapLine{
-			ID:          row.ID,
-			Level:       row.Level,
-			Kind:        row.Kind,
-			Scope:       row.ScopeID,
-			ContentHash: row.ContentHash,
-			SemHash:     row.SemHash,
-		}
+		line := mapLineFromRow(row)
 		if known, ok := req.KnownHashes[row.ID]; ok && known == row.ContentHash {
 			line.Unchanged = true
 		}
