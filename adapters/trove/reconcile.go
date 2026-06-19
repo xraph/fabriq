@@ -150,14 +150,22 @@ func (r *BlobReconciler) Reconcile(ctx context.Context, repair bool) (Report, er
 func (r *BlobReconciler) truthCounts(ctx context.Context) (map[string]int64, error) {
 	var rows []truthRow
 	err := r.run.TenantTxRaw(ctx, func(tx *pgdriver.PgTx) error {
-		return tx.NewRaw(`SELECT hash, COUNT(*) AS n FROM blob_objects GROUP BY hash`).Scan(ctx, &rows)
+		return tx.NewRaw(`
+			SELECT hash, COUNT(*) AS n FROM blob_objects GROUP BY hash
+			UNION ALL
+			SELECT summary_hash AS hash, COUNT(*) AS n FROM digest_nodes
+				WHERE summary_hash <> '' GROUP BY summary_hash
+		`).Scan(ctx, &rows)
 	})
 	if err != nil {
 		return nil, err
 	}
 	out := make(map[string]int64, len(rows))
 	for _, row := range rows {
-		out[row.Hash] = row.N
+		// Use += not = so that a hash present in both blob_objects AND digest_nodes
+		// produces the correct combined count rather than silently overwriting one
+		// source with the other (which could drop a still-live reference to zero).
+		out[row.Hash] += row.N
 	}
 	return out, nil
 }
