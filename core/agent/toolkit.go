@@ -4,9 +4,25 @@ package agent
 import (
 	"fmt"
 
+	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 )
+
+// WritePolicy is the opt-in allowlist for agent writes. An entity/op absent
+// from Allow is denied (deny-by-default).
+type WritePolicy struct {
+	Allow map[string][]command.Op
+}
+
+func (p WritePolicy) allows(entity string, op command.Op) bool {
+	for _, o := range p.Allow[entity] {
+		if o == op {
+			return true
+		}
+	}
+	return false
+}
 
 const (
 	defaultK          = 24
@@ -25,6 +41,7 @@ type Config struct {
 	Strict         bool               // fail on any channel error (default false: lenient)
 	GraphSeeds     int                // top seeds (vector+search) to expand in the graph channel (default 8)
 	GraphReverse   bool               // expand incoming (reverse) edges too; default false
+	Write          WritePolicy        // agent write allowlist; empty = no writes
 }
 
 func defaultTokenizer(b []byte) int { return (len(b) + 3) / 4 }

@@ -21,7 +21,7 @@ type Tool struct {
 
 // Tools returns the agent-facing tool surface. Phase 1b exposes recall plus
 // the four read primitives: vector_similar, search, graph_traverse, get.
-// list is intentionally deferred.
+// Phase 3 adds the guarded write tool: remember.
 func (t *Toolkit) Tools() []Tool {
 	return []Tool{
 		t.recallTool(),
@@ -29,6 +29,7 @@ func (t *Toolkit) Tools() []Tool {
 		t.searchTool(),
 		t.graphTraverseTool(),
 		t.getTool(),
+		t.rememberTool(),
 	}
 }
 
@@ -140,6 +141,21 @@ func (t *Toolkit) graphTraverseTool() Tool {
 				return nil, fmt.Errorf("agent: graph_traverse: %w", err)
 			}
 			return rows, nil
+		},
+	}
+}
+
+func (t *Toolkit) rememberTool() Tool {
+	return Tool{
+		Name:        "remember",
+		Description: "Create, update, upsert, or delete an entity (subject to the deployment's write policy).",
+		InputSchema: json.RawMessage(`{"type":"object","required":["entity","op"],"properties":{"entity":{"type":"string"},"op":{"type":"string","enum":["create","update","upsert","delete"]},"aggId":{"type":"string"},"payload":{"type":"object"},"expectedVersion":{"type":"integer"}}}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (any, error) {
+			var req RememberRequest
+			if err := json.Unmarshal(args, &req); err != nil {
+				return nil, fmt.Errorf("agent: remember args: %w", err)
+			}
+			return t.Remember(ctx, req)
 		},
 	}
 }
