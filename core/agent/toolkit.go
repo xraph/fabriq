@@ -24,6 +24,7 @@ type Config struct {
 	Tokenizer      func([]byte) int   // token estimator (default bytes/4)
 	Strict         bool               // fail on any channel error (default false: lenient)
 	GraphSeeds     int                // top seeds (vector+search) to expand in the graph channel (default 8)
+	GraphReverse   bool               // expand incoming (reverse) edges too; default false
 }
 
 func defaultTokenizer(b []byte) int { return (len(b) + 3) / 4 }
