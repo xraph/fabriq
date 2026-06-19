@@ -3,8 +3,11 @@ package forgeext
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/xraph/grove"
 
 	"github.com/xraph/fabriq/core/agent"
@@ -13,6 +16,7 @@ import (
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/internal/metrics"
 )
 
 type ewDoc struct {
@@ -67,7 +71,7 @@ func TestEmbedHandler_IndexesEventTenantScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handle := embedHandler(context.Background(), ix)
+	handle := embedHandler(context.Background(), ix, nil)
 
 	env := event.Envelope{TenantID: "acme", Aggregate: "ewdoc", AggID: "d1", Type: "ewdoc.created", Payload: json.RawMessage(`{"title":"hello"}`)}
 	if err := handle("stream-1", env); err != nil {
@@ -95,7 +99,7 @@ func TestEmbedHandler_TenantlessEventSkipped(t *testing.T) {
 	reg := embedReg(t)
 	w := fabriqtest.NewWorld(reg)
 	ix, _ := agent.NewIndexer(fabriqtest.NewFabric(w), reg, stubEmb{})
-	handle := embedHandler(context.Background(), ix)
+	handle := embedHandler(context.Background(), ix, nil)
 	// no TenantID → handler skips (returns nil, indexes nothing) rather than erroring the consumer
 	if err := handle("s", event.Envelope{Aggregate: "ewdoc", AggID: "x", Type: "ewdoc.created", Payload: json.RawMessage(`{"title":"t"}`)}); err != nil {
 		t.Fatalf("tenant-less event should be skipped, got %v", err)
@@ -110,7 +114,7 @@ func TestEmbedHandler_UnindexablePayloadSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handle := embedHandler(context.Background(), ix)
+	handle := embedHandler(context.Background(), ix, nil)
 
 	// Malformed JSON payload for an embeddable entity with a valid tenant id.
 	env := event.Envelope{
@@ -142,5 +146,51 @@ func TestWithEmbedder_SetsConfig(t *testing.T) {
 	WithEmbedder(stubEmb{})(&c)
 	if c.Embedder == nil {
 		t.Fatal("WithEmbedder did not set Config.Embedder")
+	}
+}
+
+type errEmb struct{}
+
+func (errEmb) Dims() int { return 3 }
+func (errEmb) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	return nil, errors.New("embedder down")
+}
+
+func TestEmbedHandler_Metrics(t *testing.T) {
+	reg := embedReg(t)
+	w := fabriqtest.NewWorld(reg)
+	m, err := metrics.New(prometheus.NewRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// success → EmbedEventsTotal++
+	ixOK, _ := agent.NewIndexer(fabriqtest.NewFabric(w), reg, stubEmb{})
+	hOK := embedHandler(context.Background(), ixOK, m)
+	if err := hOK("s", event.Envelope{TenantID: "acme", Aggregate: "ewdoc", AggID: "d1", Type: "ewdoc.created", Payload: json.RawMessage(`{"title":"hi"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := testutil.ToFloat64(m.EmbedEventsTotal); got != 1 {
+		t.Fatalf("EmbedEventsTotal = %v, want 1", got)
+	}
+
+	// transient failure → EmbedFailuresTotal++ and error propagates
+	ixErr, _ := agent.NewIndexer(fabriqtest.NewFabric(fabriqtest.NewWorld(reg)), reg, errEmb{})
+	hErr := embedHandler(context.Background(), ixErr, m)
+	if err := hErr("s", event.Envelope{TenantID: "acme", Aggregate: "ewdoc", AggID: "d2", Type: "ewdoc.created", Payload: json.RawMessage(`{"title":"x"}`)}); err == nil {
+		t.Fatal("want error from failing embedder")
+	}
+	if got := testutil.ToFloat64(m.EmbedFailuresTotal); got != 1 {
+		t.Fatalf("EmbedFailuresTotal = %v, want 1", got)
+	}
+}
+
+// TestEmbedHandler_NilMetrics verifies that passing nil metrics does not panic.
+func TestEmbedHandler_NilMetrics(t *testing.T) {
+	reg := embedReg(t)
+	ix, _ := agent.NewIndexer(fabriqtest.NewFabric(fabriqtest.NewWorld(reg)), reg, stubEmb{})
+	h := embedHandler(context.Background(), ix, nil)
+	if err := h("s", event.Envelope{TenantID: "acme", Aggregate: "ewdoc", AggID: "d", Type: "ewdoc.created", Payload: json.RawMessage(`{"title":"t"}`)}); err != nil {
+		t.Fatal(err)
 	}
 }
