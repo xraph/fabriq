@@ -97,11 +97,12 @@ var reindexBatch = 200
 // Reindex is tenant-scoped: it backfills only the tenant present in ctx. Call
 // once per tenant for a full cluster-wide backfill.
 //
-// NOTE: Reindex embeds one row per Embed call (the Embedder is batch-capable;
-// a batched backfill is a future optimisation for the forgeext worker). Rows
-// whose "id" field is empty or absent are silently skipped.
+// Each page of rows is submitted to the Embedder as a single batch call,
+// reducing round-trips from O(N) to O(N/page). Rows with an empty id or an
+// empty computed embed-text are skipped and not counted.
 func (ix *Indexer) Reindex(ctx context.Context, entity string) (int, error) {
-	if ix.embedSpec(entity) == nil {
+	spec := ix.embedSpec(entity)
+	if spec == nil {
 		return 0, nil
 	}
 	ent, ok := ix.reg.Get(entity)
@@ -115,15 +116,34 @@ func (ix *Indexer) Reindex(ctx context.Context, entity string) (int, error) {
 		if err != nil {
 			return indexed, fmt.Errorf("agent: reindex %q: %w", entity, err)
 		}
+		ids := make([]string, 0, len(rows))
+		texts := make([]string, 0, len(rows))
 		for _, vals := range rows {
 			id, _ := vals["id"].(string)
 			if id == "" {
 				continue
 			}
-			if err := ix.IndexRow(ctx, entity, id, vals); err != nil {
-				return indexed, err
+			text := embedTextFor(spec, vals)
+			if strings.TrimSpace(text) == "" {
+				continue
 			}
-			indexed++
+			ids = append(ids, id)
+			texts = append(texts, text)
+		}
+		if len(texts) > 0 {
+			vecs, eerr := ix.emb.Embed(ctx, texts)
+			if eerr != nil {
+				return indexed, fmt.Errorf("agent: reindex %q embed: %w", entity, eerr)
+			}
+			if len(vecs) != len(texts) {
+				return indexed, fmt.Errorf("agent: reindex %q: embedder returned %d vectors for %d inputs", entity, len(vecs), len(texts))
+			}
+			for i, id := range ids {
+				if uerr := ix.fab.Vector().Upsert(ctx, entity, id, vecs[i], nil); uerr != nil {
+					return indexed, fmt.Errorf("agent: reindex %q upsert %s: %w", entity, id, uerr)
+				}
+				indexed++
+			}
 		}
 		if len(rows) < batch {
 			return indexed, nil
