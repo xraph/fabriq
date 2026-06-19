@@ -58,6 +58,15 @@ func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, e
 		channels["search"] = srefs
 	}
 
+	grefs, gw, err := t.graphChannel(ctx, channels, req)
+	if err != nil {
+		return ContextPack{}, err
+	}
+	warnings = append(warnings, gw...)
+	if grefs != nil {
+		channels["graph"] = grefs
+	}
+
 	fused := fuse(channels, t.cfg.ChannelWeights)
 
 	// Hydrate every fused ref from the relational source of truth, batched per entity.

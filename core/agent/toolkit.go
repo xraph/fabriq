@@ -12,6 +12,7 @@ const (
 	defaultK          = 24
 	defaultHops       = 1
 	defaultVectorDims = 768
+	defaultGraphSeeds = 8
 )
 
 // Config tunes the toolkit. Zero values get sensible defaults via withDefaults.
@@ -22,6 +23,7 @@ type Config struct {
 	ChannelWeights map[string]float64 // per-channel RRF weight (default 1.0 each)
 	Tokenizer      func([]byte) int   // token estimator (default bytes/4)
 	Strict         bool               // fail on any channel error (default false: lenient)
+	GraphSeeds     int                // top seeds (vector+search) to expand in the graph channel (default 8)
 }
 
 func defaultTokenizer(b []byte) int { return (len(b) + 3) / 4 }
@@ -38,6 +40,9 @@ func (c *Config) withDefaults() {
 	}
 	if c.Tokenizer == nil {
 		c.Tokenizer = defaultTokenizer
+	}
+	if c.GraphSeeds <= 0 {
+		c.GraphSeeds = defaultGraphSeeds
 	}
 }
 
