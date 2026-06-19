@@ -162,3 +162,59 @@ func (f *Fabriq) ListChildren(ctx context.Context, parentID string, limit, offse
 	}
 	return rows, nil
 }
+
+// Ancestors returns the chain from the root down to (but excluding) the node,
+// by walking parent_id. O(depth) reads — fine for filesystem depths.
+// The returned slice is root→node order.
+func (f *Fabriq) Ancestors(ctx context.Context, id string) ([]domain.FsNode, error) {
+	node, err := f.GetNode(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: Ancestors: %w", err)
+	}
+	var chain []domain.FsNode
+	for node.ParentID != "" {
+		parent, err := f.GetNode(ctx, node.ParentID)
+		if err != nil {
+			return nil, fmt.Errorf("fabriq: Ancestors: %w", err)
+		}
+		chain = append(chain, parent)
+		node = parent
+	}
+	// chain is leaf→root; reverse to root→leaf.
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return chain, nil
+}
+
+// Descendants returns all live nodes under id (by path prefix), ordered by path.
+func (f *Fabriq) Descendants(ctx context.Context, id string) ([]domain.FsNode, error) {
+	node, err := f.GetNode(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: Descendants: %w", err)
+	}
+	var rows []domain.FsNode
+	err = f.Relational().List(ctx, "fs_node", query.ListQuery{
+		Where:   query.Where{query.Like("path", node.Path+"/%"), query.IsNull("deleted_at")},
+		OrderBy: "path ASC",
+	}, &rows)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: Descendants: %w", err)
+	}
+	return rows, nil
+}
+
+// SearchNodesByName does a live SQL ILIKE name search. The Elasticsearch
+// projection (Search Spec) is the scalable/fuzzy path when ES is configured.
+func (f *Fabriq) SearchNodesByName(ctx context.Context, q string, limit int) ([]domain.FsNode, error) {
+	var rows []domain.FsNode
+	err := f.Relational().List(ctx, "fs_node", query.ListQuery{
+		Where:   query.Where{query.ILike("name", "%"+q+"%"), query.IsNull("deleted_at")},
+		OrderBy: "name ASC",
+		Limit:   limit,
+	}, &rows)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: SearchNodesByName: %w", err)
+	}
+	return rows, nil
+}
