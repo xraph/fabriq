@@ -1,10 +1,4 @@
 {
   "title": "AI Agents",
-  "pages": [
-    "agent-toolkit",
-    "recall",
-    "distillation",
-    "remember",
-    "mcp"
-  ]
+  "pages": ["agent-toolkit", "recall", "distillation", "remember", "mcp"]
 }
