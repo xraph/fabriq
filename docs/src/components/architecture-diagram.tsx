@@ -261,10 +261,10 @@ export function ArchitectureDiagram() {
         <desc id="fabriq-arch-d">
           Application code and AI agents hold one facade over the
           engine-agnostic core kernel — registry, command, event, projection,
-          subscribe, query, cache, blob, and agent — which reaches the capability
-          ports, the adapter dialects (including trove for blob CAS and grove-kv
-          for the cache), and the backing engines, with Postgres the source of
-          truth.
+          subscribe, query, cache, blob, and agent — which reaches the
+          capability ports, the adapter dialects (including trove for blob CAS
+          and grove-kv for the cache), and the backing engines, with Postgres
+          the source of truth.
         </desc>
         <Defs />
 
@@ -387,9 +387,16 @@ export function ArchitectureDiagram() {
           stroke={LINE}
           strokeDasharray="5 4"
         />
-        <text x={480} y={307} textAnchor="middle" fontSize="11.5" fill={INK_MUTED}>
+        <text
+          x={480}
+          y={307}
+          textAnchor="middle"
+          fontSize="11.5"
+          fill={INK_MUTED}
+        >
           capability ports — relational · graph · search · vector · spatial ·
-          timeseries · document · cache · blob (one typed port each, no shared DSL)
+          timeseries · document · cache · blob (one typed port each, no shared
+          DSL)
         </text>
         <Arrow x1={480} y1={318} x2={480} y2={342} />
 
@@ -433,7 +440,14 @@ export function ArchitectureDiagram() {
                 strokeWidth={e.accent ? 1.4 : 1}
               />
               {e.accent ? (
-                <rect x={ex} y={430} width={ew} height={4} rx={2} fill={ACCENT} />
+                <rect
+                  x={ex}
+                  y={430}
+                  width={ew}
+                  height={4}
+                  rx={2}
+                  fill={ACCENT}
+                />
               ) : null}
               <text
                 x={ex + 14}
@@ -508,11 +522,24 @@ export function DataLifecycleDiagram() {
           sub="row + outbox · one tx"
           accent
         />
-        <text x={271} y={120} textAnchor="middle" fontSize="10.5" fill={INK_FAINT}>
+        <text
+          x={271}
+          y={120}
+          textAnchor="middle"
+          fontSize="10.5"
+          fill={INK_FAINT}
+        >
           in-tx: lifecycle hooks · validate
         </text>
         <Arrow x1={366} y1={69} x2={398} y2={69} accent />
-        <Node x={398} y={44} w={110} h={50} title="Relay" sub="leader-elected" />
+        <Node
+          x={398}
+          y={44}
+          w={110}
+          h={50}
+          title="Relay"
+          sub="leader-elected"
+        />
         <Arrow x1={508} y1={69} x2={540} y2={69} accent />
         <Node
           x={540}
@@ -670,7 +697,13 @@ export function DataLifecycleDiagram() {
         <text x={810} y={257} textAnchor="middle" fontSize="11.5" fill={INK}>
           Subscriptions · Live queries
         </text>
-        <text x={810} y={294} textAnchor="middle" fontSize="10" fill={INK_FAINT}>
+        <text
+          x={810}
+          y={294}
+          textAnchor="middle"
+          fontSize="10"
+          fill={INK_FAINT}
+        >
           SSE → clients (deltas)
         </text>
 
@@ -685,7 +718,13 @@ export function DataLifecycleDiagram() {
           stroke={LINE}
           strokeDasharray="5 4"
         />
-        <text x={480} y={356} textAnchor="middle" fontSize="11.5" fill={INK_MUTED}>
+        <text
+          x={480}
+          y={356}
+          textAnchor="middle"
+          fontSize="11.5"
+          fill={INK_MUTED}
+        >
           Reads bypass the stream — application → capability ports (read-through
           cache) → each engine directly
         </text>
