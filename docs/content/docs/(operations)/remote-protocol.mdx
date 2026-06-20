@@ -56,7 +56,7 @@ out of the core module — a service that only **embeds** the library never pull
 in `google.golang.org/grpc`.
 
 - **`remote`** (part of `github.com/xraph/fabriq`) — transport-neutral. The
-  `RemoteFabric` client (implements `query.Fabric`), the server-side `Handler`
+  `Fabric` client (implements `query.Fabric`), the server-side `Handler`
   (wraps a real facade), the codec-neutral `Transport` seam, and an in-process
   `Loopback` for testing. No gRPC import.
 - **`remote/grpc`** (its own `go.mod`, package `remotegrpc`) — the gRPC binding:
@@ -113,7 +113,7 @@ read whatever you stamp.
 
 ## Calling
 
-A client holds one multiplexed gRPC channel and a `RemoteFabric` over it. The
+A client holds one multiplexed gRPC channel and a `remote.Fabric` over it. The
 call sites match the embedded facade exactly.
 
 ```go

@@ -14,8 +14,11 @@ type Config struct {
 	Redis         RedisConfig
 	FalkorDB      FalkorDBConfig
 	Elasticsearch ElasticsearchConfig
+	Storage       StorageConfig
 	Projections   ProjectionsConfig
 	Subscriptions SubscriptionsConfig
+	Cache         CacheConfig
+	Encryption    EncryptionConfig
 }
 ```
 
@@ -95,6 +98,34 @@ Tunes the delta plane. YAML/JSON key: `subscriptions`. Each non-zero field is tr
 <Callout type="info">
 A zero value in `SubscriptionsConfig` means "leave the default". `Config.Options()` only emits an `Option` for a field that is strictly greater than zero, so the option defaults in `defaultSettings()` apply otherwise.
 </Callout>
+
+## StorageConfig
+
+Configures the object-store backend that fills `f.Blob()` (the [file-plane](/docs/file-plane) byte plane). YAML/JSON key: `storage`. An empty `StorageDriver` leaves the blob port unconfigured — the byte plane ships dark and `Blob()` calls return `ErrStoreNotConfigured`.
+
+| Field | Type | yaml/json key | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `StorageDriver` | `string` | `storageDriver` | `""` | Object-store driver name. Empty leaves the blob port unconfigured. |
+| `DefaultBucket` | `string` | `defaultBucket` | `""` | Bucket the byte plane writes to. |
+| `EnableCas` | `bool` | `enableCas` | `false` | When true, `Open()` wires a content-addressable store backed by the `blob_cas` ledger (requires a Postgres adapter). |
+
+## CacheConfig
+
+Tunes the optional L1 (per-node LRU) tier of the engine cache. YAML/JSON key: `cache`. The shared read-through cache is enabled by wiring a `cache.Cache` port; these fields add the in-process L1 tier on top.
+
+| Field | Type | yaml/json key | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `L1Enabled` | `bool` | `l1_enabled` | `false` | Gates the per-node LRU tier. Requires `Redis.Addr` (for cross-node L1 eviction). |
+| `L1Size` | `int` | `l1_size` | `0` | Max entries the LRU holds. Set a positive value when `L1Enabled` (0 = no entries). |
+| `L1TTL` | `time.Duration` | `l1_ttl` | `5m` (when `L1Enabled` and `<= 0`) | Per-entry TTL; also bounds the cold-start cross-node staleness window. |
+
+## EncryptionConfig
+
+Configures field-level encryption for `blob_source` credentials. YAML/JSON key: `encryption`.
+
+| Field | Type | yaml/json key | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `Key` | `string` | `key` | `""` | Base64-encoded 32-byte AES-256 data-encryption key. Empty disables encryption — writes that carry credentials then fail closed. |
 
 ## Functional Options
 
