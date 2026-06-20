@@ -230,22 +230,7 @@ Two **Merkle short-circuits** eliminate LLM calls:
 The **tenant root** (L2) is re-summarised at most once per debounce window,
 regardless of how many L0/L1 nodes changed in that window.
 
-```
-event stream (same as proj:embed)
-    │
-    ▼ debounce (5 s default)
-┌───────────────────────────────┐
-│  per-tenant single-flight run │
-│  1. collect dirty L0 nodes    │
-│  2. ContentHash short-circuit │
-│  3. Guard.GuardIngest         │
-│  4. Summarizer.Summarize      │
-│  5. Guard.GuardEmit           │
-│  6. CAS write → SummaryRef    │
-│  7. recompute L1 parents      │
-│  8. recompute L2 root (once)  │
-└───────────────────────────────┘
-```
+<DistillWorkerDiagram />
 
 ## The agent surface
 

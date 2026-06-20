@@ -20,19 +20,7 @@ Using only the library guarantees, by the compile-time dependency graph, that **
 
 ## Layering
 
-```
-config.yaml  storage.storageDriver / storage.defaultBucket / storage.enableCas
-     │
-     ▼
-forgeext storage provider   ← DI wiring (vessel.Provide / ProvideNamed)
-     │
-     ▼
-adapters/trove.Adapter      ← trovestore package; wraps trove.Trove + one bucket
-     │  capability-detect: Caps{Presign, Multipart, Range}
-     │  CAS path: CASStore → blob_cas table in Postgres
-     ▼
-core/blob.Store             ← pure fabriq port; no storage-engine types cross here
-```
+<FilePlaneLayeringDiagram />
 
 ### core/blob port
 
