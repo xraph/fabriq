@@ -17,7 +17,7 @@ func TestHydrate_TypedEntity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	res, err := ff.Exec(ctx, command.Command{Entity: "doc", Op: command.OpCreate, Payload: &tDoc{Title: "Hello", Body: "World"}})
 	if err != nil {
@@ -61,7 +61,7 @@ func TestHydrate_DynamicEntity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	res, err := ff.Exec(ctx, command.Command{
 		Entity:  "orders",
@@ -96,7 +96,7 @@ func TestHydrate_SkipsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	rows, err := tk.hydrate(ctx, "doc", []string{"nope"})
 	if err != nil {

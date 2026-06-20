@@ -49,7 +49,7 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 		}
 		cluster[cid] = true
 		for _, mid := range members {
-			if err := d.ensureParent(ctx, mid, cid); err != nil {
+			if err = d.ensureParent(ctx, mid, cid); err != nil {
 				return rep, fmt.Errorf("agent: rollup link cluster %s: %w", cid, err)
 			}
 		}
@@ -109,16 +109,16 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	//    below the noise floor (including to zero), is deleted; its remaining
 	//    members must not retain a stale parent link. Run BEFORE the tenant-root
 	//    build so the root's children reflect only L1 nodes that still exist.
-	if err := d.cleanupL1(ctx, scopeMembers, buckets, cluster); err != nil {
-		return rep, err
+	if cerr := d.cleanupL1(ctx, scopeMembers, buckets, cluster); cerr != nil {
+		return rep, cerr
 	}
 
 	// If no L0 nodes remain, the whole tenant tree is empty — delete the
 	// vestigial tenant root rather than summarizing empty children. deleteNode
 	// tolerates a missing root, so this is idempotent across repeated sweeps.
 	if len(l0s) == 0 {
-		if err := d.deleteNode(ctx, TenantRootID()); err != nil {
-			return rep, err
+		if derr := d.deleteNode(ctx, TenantRootID()); derr != nil {
+			return rep, derr
 		}
 		return rep, nil
 	}
@@ -190,7 +190,7 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashe
 	}
 
 	// Guard emit: check the generated summary BEFORE it is hashed + written.
-	ge, _ := applyGuard(ctx, d.guard, GuardInput{
+	ge := applyGuard(ctx, d.guard, GuardInput{
 		Stage: GuardEmit, TenantID: tenantOf(ctx),
 		Scope: ScopeRef{Name: args.scopeName, ID: args.scopeID},
 		Level: args.level, Text: summary,
@@ -208,7 +208,7 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashe
 	for _, c := range children {
 		args.children = append(args.children, c.ID)
 	}
-	if _, err := d.persistSummary(ctx, args); err != nil {
+	if err := d.persistSummary(ctx, args); err != nil {
 		return false, err
 	}
 	if d.obs != nil {

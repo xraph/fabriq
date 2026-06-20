@@ -13,25 +13,22 @@ func (denyGuard) Guard(context.Context, GuardInput) (GuardResult, error) {
 }
 
 func TestApplyGuard_NilIsIdentity(t *testing.T) {
-	r, err := applyGuard(context.Background(), nil, GuardInput{Text: "abc"}, false)
-	if err != nil || r.Blocked || r.Text != "abc" {
-		t.Fatalf("nil guard must pass through: %+v err=%v", r, err)
+	r := applyGuard(context.Background(), nil, GuardInput{Text: "abc"}, false)
+	if r.Blocked || r.Text != "abc" {
+		t.Fatalf("nil guard must pass through: %+v", r)
 	}
 }
 
 func TestApplyGuard_FailClosedOnError(t *testing.T) {
-	r, err := applyGuard(context.Background(), denyGuard{}, GuardInput{Text: "abc"}, false)
-	if err != nil {
-		t.Fatalf("fail-closed must not surface error to caller as failure: %v", err)
-	}
+	r := applyGuard(context.Background(), denyGuard{}, GuardInput{Text: "abc"}, false)
 	if !r.Blocked {
 		t.Fatal("fail-closed: a guard error must block the content")
 	}
 }
 
 func TestApplyGuard_FailOpenOnError(t *testing.T) {
-	r, err := applyGuard(context.Background(), denyGuard{}, GuardInput{Text: "abc"}, true)
-	if err != nil || r.Blocked || r.Text != "abc" {
-		t.Fatalf("fail-open must pass original text through: %+v err=%v", r, err)
+	r := applyGuard(context.Background(), denyGuard{}, GuardInput{Text: "abc"}, true)
+	if r.Blocked || r.Text != "abc" {
+		t.Fatalf("fail-open must pass original text through: %+v", r)
 	}
 }

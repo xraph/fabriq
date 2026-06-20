@@ -196,7 +196,7 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 	}
 
 	// Guard ingest: redact raw content BEFORE the model sees it.
-	gi, _ := applyGuard(ctx, d.guard, GuardInput{
+	gi := applyGuard(ctx, d.guard, GuardInput{
 		Stage: GuardIngest, TenantID: tenantOf(ctx), Level: LevelEntity, Text: raw,
 	}, d.cfg.FailOpenGuard)
 	if gi.Blocked {
@@ -221,7 +221,7 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 	}
 
 	// Guard emit: check the generated summary BEFORE it is hashed + written to CAS.
-	ge, _ := applyGuard(ctx, d.guard, GuardInput{
+	ge := applyGuard(ctx, d.guard, GuardInput{
 		Stage: GuardEmit, TenantID: tenantOf(ctx), Level: LevelEntity, Text: summary,
 	}, d.cfg.FailOpenGuard)
 	if ge.Blocked {
@@ -231,7 +231,7 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 		return false, nil // fail-closed: drop
 	}
 
-	if _, err := d.persistSummary(ctx, persistArgs{
+	if err := d.persistSummary(ctx, persistArgs{
 		id: nodeID, level: LevelEntity, kind: KindEntityNode,
 		sourceKind: entity, sourceID: id,
 		summaryText: ge.Text, contentHash: newContentHash,
@@ -264,18 +264,18 @@ type persistArgs struct {
 
 // persistSummary stores a node's summary in CAS, embeds it, computes its
 // SemHash, writes the digest_node row through the command plane, upserts the
-// node's vector, and back-links it into each parent. Returns the written row.
-func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) (digestRow, error) {
+// node's vector, and back-links it into each parent.
+func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) error {
 	hash, _, err := d.cas.Store(ctx, bytes.NewReader([]byte(args.summaryText)))
 	if err != nil {
-		return digestRow{}, fmt.Errorf("agent: cas store %s: %w", args.id, err)
+		return fmt.Errorf("agent: cas store %s: %w", args.id, err)
 	}
 	vecs, err := d.emb.Embed(ctx, []string{args.summaryText})
 	if err != nil {
-		return digestRow{}, fmt.Errorf("agent: embed summary %s: %w", args.id, err)
+		return fmt.Errorf("agent: embed summary %s: %w", args.id, err)
 	}
 	if len(vecs) != 1 {
-		return digestRow{}, fmt.Errorf("agent: embed summary %s: got %d vectors for 1 input", args.id, len(vecs))
+		return fmt.Errorf("agent: embed summary %s: got %d vectors for 1 input", args.id, len(vecs))
 	}
 	vec := vecs[0]
 	sem := FormatSemHash(SemHash(vec, d.planes))
@@ -296,19 +296,19 @@ func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) (diges
 		UpdatedAt:   time.Now().UnixNano(),
 	}
 	if err := d.upsertNode(ctx, row); err != nil {
-		return digestRow{}, err
+		return err
 	}
 	if err := d.fab.Vector().Upsert(ctx, DigestEntity, args.id, vec, nil); err != nil {
-		return digestRow{}, fmt.Errorf("agent: vector upsert %s: %w", args.id, err)
+		return fmt.Errorf("agent: vector upsert %s: %w", args.id, err)
 	}
 	// Back-link this node into each parent's ChildIDs. The parent nodes
 	// themselves (scope/cluster/tenant) are (re)summarized during rollup.
 	for _, pid := range args.parents {
 		if err := d.linkChild(ctx, pid, args.id); err != nil {
-			return digestRow{}, err
+			return err
 		}
 	}
-	return row, nil
+	return nil
 }
 
 // l0Parents returns the scope-node parents of an L0 leaf: one ScopeID per

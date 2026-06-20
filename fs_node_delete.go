@@ -141,7 +141,7 @@ func (f *Fabriq) ReplaceFile(ctx context.Context, id string, r io.Reader, opts C
 	if n.IsLocked {
 		return FsRef{}, ErrNodeLocked
 	}
-	blob, err := f.PutBlob(ctx, r, PutBlobOpts{ContentType: opts.ContentType})
+	blob, err := f.PutBlob(ctx, r, PutBlobOpts(opts))
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: ReplaceFile: put bytes: %w", err)
 	}

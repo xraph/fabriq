@@ -15,13 +15,13 @@ func TestDigest_SummaryAndChildren(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	// Build a minimal tree: one L0 note → rollup creates scope + tenant root.
-	if _, err := d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "A", "body": "hello", "site_id": "s1"}); err != nil {
+	if _, err = d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "A", "body": "hello", "site_id": "s1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Rollup(ctx); err != nil {
+	if _, err = d.Rollup(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -79,7 +79,7 @@ func TestDigest_NodeNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 	_, err = tk.Digest(ctx, "digest:2:tenant")
 	if err == nil {
 		t.Fatal("expected error for missing node, got nil")
@@ -95,13 +95,13 @@ func TestResolve_ExactAndNear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	// Build a minimal tree: one L0 note → rollup creates scope + tenant root.
-	if _, err := d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "A", "body": "hello", "site_id": "s1"}); err != nil {
+	if _, err = d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "A", "body": "hello", "site_id": "s1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Rollup(ctx); err != nil {
+	if _, err = d.Rollup(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,12 +155,12 @@ func TestMap_OutlineAndUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
-	if _, err := d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "A", "body": "x", "site_id": "s1"}); err != nil {
+	if _, err = d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "A", "body": "x", "site_id": "s1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Rollup(ctx); err != nil {
+	if _, err = d.Rollup(ctx); err != nil {
 		t.Fatal(err)
 	}
 

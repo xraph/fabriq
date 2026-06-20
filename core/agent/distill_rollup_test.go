@@ -14,7 +14,7 @@ func TestRollup_BuildsScopeAndTenant(t *testing.T) {
 	cas := fabriqtest.NewFakeCAS()
 	sum := &fakeSummarizer{}
 	d, w := newDistiller(t, r, cas, sum, nil)
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	// Two notes under site s1.
 	for _, n := range []map[string]any{

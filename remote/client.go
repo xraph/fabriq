@@ -13,25 +13,25 @@ import (
 	"github.com/xraph/fabriq/remote/fabriqpb"
 )
 
-// RemoteFabric is the client face: it implements core/query.Fabric by
+// Fabric is the client face: it implements core/query.Fabric by
 // marshaling each call onto a Transport. Application code holds it exactly as it
 // holds the embedded *fabriq.Fabriq — same interface, same call sites
 // (ADR 0009). For typed repositories use query.For[T](reg, f.Relational())
 // rather than fabriq.For[T], which is bound to the concrete embedded facade.
-type RemoteFabric struct {
+type Fabric struct {
 	t Transport
 }
 
-// New builds a RemoteFabric over a Transport (gRPC in production, Loopback in
+// New builds a Fabric over a Transport (gRPC in production, Loopback in
 // tests).
-func New(t Transport) *RemoteFabric {
-	return &RemoteFabric{t: t}
+func New(t Transport) *Fabric {
+	return &Fabric{t: t}
 }
 
-var _ query.Fabric = (*RemoteFabric)(nil)
+var _ query.Fabric = (*Fabric)(nil)
 
 // Exec sends one command and reconstructs the result (or typed error).
-func (r *RemoteFabric) Exec(ctx context.Context, cmd command.Command) (command.Result, error) {
+func (r *Fabric) Exec(ctx context.Context, cmd command.Command) (command.Result, error) {
 	pc, err := commandToProto(cmd)
 	if err != nil {
 		return command.Result{}, err
@@ -55,7 +55,7 @@ func (r *RemoteFabric) Exec(ctx context.Context, cmd command.Command) (command.R
 }
 
 // ExecBatch sends N commands to run in one server-side transaction.
-func (r *RemoteFabric) ExecBatch(ctx context.Context, cmds []command.Command) ([]command.Result, error) {
+func (r *Fabric) ExecBatch(ctx context.Context, cmds []command.Command) ([]command.Result, error) {
 	pcs := make([]*fabriqpb.Command, len(cmds))
 	for i, c := range cmds {
 		pc, err := commandToProto(c)
@@ -91,23 +91,23 @@ func (r *RemoteFabric) ExecBatch(ctx context.Context, cmds []command.Command) ([
 // blob plane are follow-ons whose calls return ErrNotImplemented until they
 // land (ADR 0009 sequencing). ---
 
-func (r *RemoteFabric) Relational() query.RelationalQuerier { return remoteRelational{t: r.t} }
-func (r *RemoteFabric) Graph() query.GraphQuerier           { return remoteGraph{t: r.t} }
-func (r *RemoteFabric) Search() query.SearchQuerier         { return remoteSearch{t: r.t} }
-func (r *RemoteFabric) Timeseries() query.TSQuerier         { return niTS{} }
-func (r *RemoteFabric) Vector() query.VectorQuerier         { return remoteVector{t: r.t} }
-func (r *RemoteFabric) Spatial() query.SpatialQuerier       { return niSpatial{} }
+func (r *Fabric) Relational() query.RelationalQuerier { return remoteRelational{t: r.t} }
+func (r *Fabric) Graph() query.GraphQuerier           { return remoteGraph{t: r.t} }
+func (r *Fabric) Search() query.SearchQuerier         { return remoteSearch{t: r.t} }
+func (r *Fabric) Timeseries() query.TSQuerier         { return niTS{} }
+func (r *Fabric) Vector() query.VectorQuerier         { return remoteVector{t: r.t} }
+func (r *Fabric) Spatial() query.SpatialQuerier       { return niSpatial{} }
 
 // Document returns nil until the document plane is wired. Blob streams bytes
 // (Put/Get) and the presign bypass over the transport; List/Copy are follow-ons.
-func (r *RemoteFabric) Document() document.Store { return nil }
-func (r *RemoteFabric) Blob() blob.Store         { return remoteBlobStore{t: r.t} }
+func (r *Fabric) Document() document.Store { return nil }
+func (r *Fabric) Blob() blob.Store         { return remoteBlobStore{t: r.t} }
 
 // Subscribe opens the conflated channel-delta stream. The first frame is a
 // handshake: a setup error (authz / scope resolution) returns synchronously,
 // mirroring the in-process contract; otherwise a goroutine drains delta frames
 // into the returned channel until the stream ends or ctx is cancelled.
-func (r *RemoteFabric) Subscribe(ctx context.Context, scope query.SubscribeScope) (<-chan query.Delta, error) {
+func (r *Fabric) Subscribe(ctx context.Context, scope query.SubscribeScope) (<-chan query.Delta, error) {
 	in, err := proto.Marshal(&fabriqpb.SubscribeRequest{Scope: scopeToProto(scope)})
 	if err != nil {
 		return nil, err
@@ -154,6 +154,6 @@ func (r *RemoteFabric) Subscribe(ctx context.Context, scope query.SubscribeScope
 }
 
 // WaitForProjection is a read-your-writes helper; it rides the read plane.
-func (r *RemoteFabric) WaitForProjection(_ context.Context, _, _, _ string, _ int64) error {
+func (r *Fabric) WaitForProjection(_ context.Context, _, _, _ string, _ int64) error {
 	return ErrNotImplemented
 }

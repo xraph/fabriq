@@ -11,7 +11,7 @@ var migration0018FsPermission = &migrate.Migration{
 	Version: "202606190018",
 	Comment: "fs_permission ACL grants (FK fs_node ON DELETE CASCADE)",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
-		stmts := []string{
+		stmts := append([]string{
 			`CREATE TABLE IF NOT EXISTS fs_permissions (
 				id             TEXT PRIMARY KEY,
 				tenant_id      TEXT NOT NULL,
@@ -26,8 +26,7 @@ var migration0018FsPermission = &migrate.Migration{
 			)`,
 			`CREATE INDEX IF NOT EXISTS fs_permissions_node_idx ON fs_permissions (tenant_id, node_id)`,
 			`CREATE INDEX IF NOT EXISTS fs_permissions_principal_idx ON fs_permissions (tenant_id, principal_type, principal_id)`,
-		}
-		stmts = append(stmts, ScopeAwareTenantPolicy("fs_permissions")...)
+		}, ScopeAwareTenantPolicy("fs_permissions")...)
 		return execAll(ctx, exec, stmts)
 	},
 	Down: func(ctx context.Context, exec migrate.Executor) error {

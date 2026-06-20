@@ -30,7 +30,7 @@ func TestRemember_DeniedByDefault(t *testing.T) {
 	reg := testRegistry(t) // "doc" searchable typed entity
 	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
 	tk, _ := NewToolkit(ff, reg, nil, Config{}) // empty WritePolicy → deny all
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	_, err := tk.Remember(ctx, RememberRequest{Entity: "doc", Op: "create", Payload: []byte(`{"title":"x"}`)})
 	var we *WriteError
@@ -44,7 +44,7 @@ func TestRemember_AllowedCreateTyped(t *testing.T) {
 	w := fabriqtest.NewWorld(reg)
 	ff := newFakeFabric(t, w)
 	tk, _ := NewToolkit(ff, reg, nil, Config{Write: writePolicy()})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	res, err := tk.Remember(ctx, RememberRequest{Entity: "doc", Op: "create", Payload: []byte(`{"title":"hello","body":"world"}`)})
 	if err != nil {
@@ -67,7 +67,7 @@ func TestRemember_InvalidOp(t *testing.T) {
 	reg := testRegistry(t)
 	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
 	tk, _ := NewToolkit(ff, reg, nil, Config{Write: writePolicy()})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 	_, err := tk.Remember(ctx, RememberRequest{Entity: "doc", Op: "frobnicate", Payload: []byte(`{}`)})
 	var we *WriteError
 	if !errors.As(err, &we) || we.Code != "validation_failed" {
@@ -81,7 +81,7 @@ func TestRemember_VersionConflict(t *testing.T) {
 	ff := newFakeFabric(t, w)
 	pol := WritePolicy{Allow: map[string][]command.Op{"doc": {command.OpCreate, command.OpUpdate}}}
 	tk, _ := NewToolkit(ff, reg, nil, Config{Write: pol})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	res, err := tk.Remember(ctx, RememberRequest{Entity: "doc", Op: "create", Payload: []byte(`{"title":"v1"}`)})
 	if err != nil {
@@ -106,7 +106,7 @@ func TestRemember_UnknownEntity(t *testing.T) {
 		"ghost": {command.OpCreate},
 	}}
 	tk, _ := NewToolkit(ff, reg, nil, Config{Write: pol})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	_, err := tk.Remember(ctx, RememberRequest{Entity: "ghost", Op: "create", Payload: []byte(`{"x":1}`)})
 	var we *WriteError
@@ -119,7 +119,7 @@ func TestRemember_EmptyPayload(t *testing.T) {
 	reg := testRegistry(t)
 	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
 	tk, _ := NewToolkit(ff, reg, nil, Config{Write: writePolicy()})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	_, err := tk.Remember(ctx, RememberRequest{Entity: "doc", Op: "create"}) // Payload is nil/empty
 	var we *WriteError
@@ -135,7 +135,7 @@ func TestRemember_LifecycleHookVeto(t *testing.T) {
 		return errors.New("vetoed by policy")
 	}))
 	tk, _ := NewToolkit(ff, reg, nil, Config{Write: writePolicy()})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	_, err := tk.Remember(ctx, RememberRequest{Entity: "doc", Op: "create", Payload: []byte(`{"title":"x"}`)})
 	var we *WriteError

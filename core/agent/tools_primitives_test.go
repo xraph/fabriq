@@ -45,7 +45,7 @@ func TestTools_GetDispatch(t *testing.T) {
 	w := fabriqtest.NewWorld(reg)
 	ff := newFakeFabric(t, w)
 	tk, _ := NewToolkit(ff, reg, nil, Config{})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	res, err := ff.Exec(ctx, command.Command{Entity: "doc", Op: command.OpCreate, Payload: &tDoc{Title: "T", Body: "B"}})
 	if err != nil {
@@ -74,13 +74,13 @@ func TestTools_SearchDispatch(t *testing.T) {
 	w := fabriqtest.NewWorld(reg)
 	ff := newFakeFabric(t, w)
 	tk, _ := NewToolkit(ff, reg, nil, Config{})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	res, err := ff.Exec(ctx, command.Command{Entity: "doc", Op: command.OpCreate, Payload: &tDoc{Title: "alpha", Body: "b"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Search.ApplyMutations(ctx, "docs", []projection.Mutation{
+	if err = w.Search.ApplyMutations(ctx, "docs", []projection.Mutation{
 		projection.DocIndex{Index: "docs", ID: res.AggID, Version: 1, Doc: map[string]any{
 			"id": res.AggID, "tenant_id": "acme", "title": "alpha", "body": "b",
 		}},

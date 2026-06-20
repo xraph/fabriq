@@ -11,7 +11,7 @@ var migration0014Blob = &migrate.Migration{
 	Version: "202606180014",
 	Comment: "blob_object aggregate + blob_cas per-tenant CAS ledger with RLS",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
-		stmts := []string{
+		stmts := append([]string{
 			`CREATE TABLE IF NOT EXISTS blob_objects (
 				id           TEXT PRIMARY KEY,
 				tenant_id    TEXT NOT NULL,
@@ -43,9 +43,8 @@ var migration0014Blob = &migrate.Migration{
 			`CREATE POLICY tenant_isolation ON blob_cas
 				USING ( tenant_id = current_setting('app.tenant_id', true) )
 				WITH CHECK ( tenant_id = current_setting('app.tenant_id', true) )`,
-		}
-		// blob_objects: scope-aware policy (matches other aggregates)
-		stmts = append(stmts, ScopeAwareTenantPolicy("blob_objects")...)
+			// blob_objects: scope-aware policy (matches other aggregates)
+		}, ScopeAwareTenantPolicy("blob_objects")...)
 		return execAll(ctx, exec, stmts)
 	},
 	Down: func(ctx context.Context, exec migrate.Executor) error {

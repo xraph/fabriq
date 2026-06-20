@@ -105,7 +105,7 @@ func TestGRPC_MTLSStampsTenantFromClientCert(t *testing.T) {
 
 // dialMTLS stands up a TLS-credentialed server (RequireAndVerifyClientCert) and
 // a client presenting the same cert, both over bufconn — a real mTLS handshake.
-func dialMTLS(t *testing.T, fab query.Fabric, auth remotegrpc.Authenticator) *remote.RemoteFabric {
+func dialMTLS(t *testing.T, fab query.Fabric, auth remotegrpc.Authenticator) *remote.Fabric {
 	t.Helper()
 	cert, pool := genTestCert(t)
 	serverTLS := &tls.Config{

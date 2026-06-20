@@ -12,7 +12,7 @@ import (
 // deterministically from seed. Persisting planes is equivalent to fixing the
 // seed, so callers get stable SemHashes across processes by passing a constant.
 func NewSemPlanes(dims int, seed int64) [64][]float32 {
-	r := rand.New(rand.NewSource(seed))
+	r := rand.New(rand.NewSource(seed)) //nolint:gosec // deterministic PRNG by design: a fixed seed yields stable hyperplanes across processes; not security-sensitive
 	var planes [64][]float32
 	for i := range planes {
 		p := make([]float32, dims)

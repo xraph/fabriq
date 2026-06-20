@@ -1,11 +1,11 @@
 // Package remote is the OPTIONAL server face of fabriq: it lets backend
 // services talk to a central, connection-owning fabriq deployment over gRPC
 // instead of embedding the library and owning their own datastore pools. It
-// changes the DEPLOYMENT TOPOLOGY, not the engine — RemoteFabric implements the
+// changes the DEPLOYMENT TOPOLOGY, not the engine — Fabric implements the
 // same core/query.Fabric interface application code already holds, so the call
 // sites are identical (ADR 0009).
 //
-// Layering. The client (RemoteFabric) and server (Handler) sit on a narrow,
+// Layering. The client (Fabric) and server (Handler) sit on a narrow,
 // codec-neutral Transport seam so the request/response envelope can be
 // exercised — and unit-tested via Loopback — before the gRPC+protobuf binding
 // (proto/fabriq/v1/fabriq.proto) is generated and wired. The production

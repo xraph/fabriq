@@ -24,7 +24,7 @@ func TestDistill_E2E_BuildEditGuard(t *testing.T) {
 	cas := fabriqtest.NewFakeCAS()
 	sum := &fakeSummarizer{}
 	d, _ := newDistiller(t, r, cas, sum, newFakeGuard())
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	notes := []map[string]any{
 		{"id": "n1", "title": "Pump A", "body": "ok", "site_id": "s1"},
@@ -45,10 +45,10 @@ func TestDistill_E2E_BuildEditGuard(t *testing.T) {
 	}
 
 	// Scenario 2: edit n1 only → only its branch re-rolls; n2/n3 L0 untouched.
-	n2hashBefore := mustNode(t, d, ctx, L0ID("note", "n2")).ContentHash
+	n2hashBefore := mustNode(ctx, t, d, L0ID("note", "n2")).ContentHash
 	// Snapshot untouched nodes in the OTHER scope (s2) so we can assert locality.
-	n3hashBefore := mustNode(t, d, ctx, L0ID("note", "n3")).ContentHash
-	s2hashBefore := mustNode(t, d, ctx, ScopeID("site", "s2")).ContentHash
+	n3hashBefore := mustNode(ctx, t, d, L0ID("note", "n3")).ContentHash
+	s2hashBefore := mustNode(ctx, t, d, ScopeID("site", "s2")).ContentHash
 	callsBefore := sum.calls
 	if _, err := d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "Pump A", "body": "CRITICAL", "site_id": "s1"}); err != nil {
 		t.Fatal(err)
@@ -56,15 +56,15 @@ func TestDistill_E2E_BuildEditGuard(t *testing.T) {
 	if _, err := d.Rollup(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if mustNode(t, d, ctx, L0ID("note", "n2")).ContentHash != n2hashBefore {
+	if mustNode(ctx, t, d, L0ID("note", "n2")).ContentHash != n2hashBefore {
 		t.Fatal("untouched n2 must keep its ContentHash")
 	}
 	// Multi-node locality: n3 and its scope (s2) are in a different branch from
 	// n1 (which lives under s1); editing n1 must NOT re-summarize them.
-	if mustNode(t, d, ctx, L0ID("note", "n3")).ContentHash != n3hashBefore {
+	if mustNode(ctx, t, d, L0ID("note", "n3")).ContentHash != n3hashBefore {
 		t.Fatal("untouched n3 (scope s2) must keep its ContentHash")
 	}
-	if mustNode(t, d, ctx, ScopeID("site", "s2")).ContentHash != s2hashBefore {
+	if mustNode(ctx, t, d, ScopeID("site", "s2")).ContentHash != s2hashBefore {
 		t.Fatal("untouched scope s2 must keep its ContentHash")
 	}
 	// Lower bound: at least one Summarize was triggered for n1's branch.
@@ -88,7 +88,7 @@ func TestDistill_E2E_BuildEditGuard(t *testing.T) {
 	}
 }
 
-func mustNode(t *testing.T, d *Distiller, ctx context.Context, id string) digestRow {
+func mustNode(ctx context.Context, t *testing.T, d *Distiller, id string) digestRow {
 	t.Helper()
 	n, ok, err := d.getNode(ctx, id)
 	if err != nil || !ok {

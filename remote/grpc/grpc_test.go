@@ -186,9 +186,9 @@ func (f *fakeRelational) List(_ context.Context, _ string, q query.ListQuery, in
 }
 
 // dial stands up a real gRPC server over an in-memory bufconn listener and
-// returns a RemoteFabric talking to it — the whole stack except the network
+// returns a Fabric talking to it — the whole stack except the network
 // socket, exercising actual gRPC framing/streaming.
-func dial(t *testing.T, fab query.Fabric, opts ...grpc.ServerOption) *remote.RemoteFabric {
+func dial(t *testing.T, fab query.Fabric, opts ...grpc.ServerOption) *remote.Fabric {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer(opts...)

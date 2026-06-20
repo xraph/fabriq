@@ -11,7 +11,7 @@ var migration0019FsShare = &migrate.Migration{
 	Version: "202606190019",
 	Comment: "fs_share share-link records (FK fs_node ON DELETE CASCADE)",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
-		stmts := []string{
+		stmts := append([]string{
 			`CREATE TABLE IF NOT EXISTS fs_shares (
 				id             TEXT PRIMARY KEY,
 				tenant_id      TEXT NOT NULL,
@@ -29,8 +29,7 @@ var migration0019FsShare = &migrate.Migration{
 			)`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS fs_shares_token_uniq ON fs_shares (tenant_id, token)`,
 			`CREATE INDEX IF NOT EXISTS fs_shares_node_idx ON fs_shares (tenant_id, node_id)`,
-		}
-		stmts = append(stmts, ScopeAwareTenantPolicy("fs_shares")...)
+		}, ScopeAwareTenantPolicy("fs_shares")...)
 		return execAll(ctx, exec, stmts)
 	},
 	Down: func(ctx context.Context, exec migrate.Executor) error {

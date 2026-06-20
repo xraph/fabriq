@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -405,14 +406,14 @@ func (h *Handler) PutBlob(ctx context.Context, recv func() ([]byte, error)) ([]b
 		return nil, fmt.Errorf("remote: put: missing metadata frame: %w", err)
 	}
 	var meta fabriqpb.BlobChunk
-	if err := proto.Unmarshal(first, &meta); err != nil {
+	if err = proto.Unmarshal(first, &meta); err != nil {
 		return nil, fmt.Errorf("remote: decode put metadata: %w", err)
 	}
 	pr, pw := io.Pipe()
 	go func() {
 		for {
 			frame, rerr := recv()
-			if rerr == io.EOF {
+			if errors.Is(rerr, io.EOF) {
 				_ = pw.Close()
 				return
 			}

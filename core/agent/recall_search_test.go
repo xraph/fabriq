@@ -22,13 +22,13 @@ func TestRecall_SearchChannelContributesRankedRefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	res, err := ff.Exec(ctx, command.Command{Entity: "doc", Op: command.OpCreate, Payload: &tDoc{Title: "alpha widget", Body: "the body"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Search.ApplyMutations(ctx, "docs", []projection.Mutation{
+	if err = w.Search.ApplyMutations(ctx, "docs", []projection.Mutation{
 		projection.DocIndex{Index: "docs", ID: res.AggID, Version: 1, Doc: map[string]any{
 			"id": res.AggID, "tenant_id": "acme", "title": "alpha widget", "body": "the body",
 		}},
@@ -86,7 +86,7 @@ func TestRecall_NonSearchableEntitySkippedSilently(t *testing.T) {
 	reg := nonSearchableRegistry(t)
 	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
 	tk, _ := NewToolkit(ff, reg, nil, Config{})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	pack, err := tk.Recall(ctx, RecallRequest{Query: "x", Budget: 100, Entities: []string{"thing"}})
 	if err != nil {

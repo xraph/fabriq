@@ -40,7 +40,7 @@ func embedRegistry(t testing.TB) *registry.Registry {
 }
 
 // indexed reports whether the vector store has an entry for entity/id near vec.
-func indexed(t testing.TB, w *fabriqtest.World, ctx context.Context, entity, id string, vec []float32) bool {
+func indexed(ctx context.Context, t testing.TB, w *fabriqtest.World, entity, id string, vec []float32) bool {
 	t.Helper()
 	var matches []query.VectorMatch
 	if err := w.Vector.Similar(ctx, query.VectorQuery{Entity: entity, Embedding: vec, K: 50}, &matches); err != nil {
@@ -63,12 +63,12 @@ func TestIndexer_IndexRowEmbedsAndUpserts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	if err := ix.IndexRow(ctx, "ixdoc", "d1", map[string]any{"title": "alpha", "body": "beta"}); err != nil {
 		t.Fatalf("IndexRow: %v", err)
 	}
-	if !indexed(t, w, ctx, "ixdoc", "d1", []float32{1, 0, 0}) {
+	if !indexed(ctx, t, w, "ixdoc", "d1", []float32{1, 0, 0}) {
 		t.Fatal("d1 not in vector store after IndexRow")
 	}
 }
@@ -78,12 +78,12 @@ func TestIndexer_IndexRowNoopForNonEmbeddable(t *testing.T) {
 	w := fabriqtest.NewWorld(reg)
 	ff := newFakeFabric(t, w)
 	ix, _ := NewIndexer(ff, reg, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	if err := ix.IndexRow(ctx, "plain", "p1", map[string]any{"title": "x"}); err != nil {
 		t.Fatalf("non-embeddable IndexRow should be a no-op, got %v", err)
 	}
-	if indexed(t, w, ctx, "plain", "p1", []float32{1, 0, 0}) {
+	if indexed(ctx, t, w, "plain", "p1", []float32{1, 0, 0}) {
 		t.Fatal("non-embeddable entity must not be indexed")
 	}
 }
@@ -93,13 +93,13 @@ func TestIndexer_IndexEventCreateIndexes(t *testing.T) {
 	w := fabriqtest.NewWorld(reg)
 	ff := newFakeFabric(t, w)
 	ix, _ := NewIndexer(ff, reg, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	created := event.Envelope{Aggregate: "ixdoc", AggID: "e1", Type: "ixdoc.created", Payload: json.RawMessage(`{"title":"hi","body":"there"}`)}
 	if err := ix.IndexEvent(ctx, created); err != nil {
 		t.Fatalf("IndexEvent created: %v", err)
 	}
-	if !indexed(t, w, ctx, "ixdoc", "e1", []float32{1, 0, 0}) {
+	if !indexed(ctx, t, w, "ixdoc", "e1", []float32{1, 0, 0}) {
 		t.Fatal("created event not indexed")
 	}
 }
@@ -129,14 +129,14 @@ func TestIndexer_DeleteEventUnindexes(t *testing.T) {
 	w := fabriqtest.NewWorld(reg)
 	ff := newFakeFabric(t, w)
 	ix, _ := NewIndexer(ff, reg, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	// index then delete via events
 	created := event.Envelope{Aggregate: "ixdoc", AggID: "d1", Type: "ixdoc.created", Payload: json.RawMessage(`{"title":"hi"}`)}
 	if err := ix.IndexEvent(ctx, created); err != nil {
 		t.Fatal(err)
 	}
-	if !indexed(t, w, ctx, "ixdoc", "d1", []float32{1, 0, 0}) {
+	if !indexed(ctx, t, w, "ixdoc", "d1", []float32{1, 0, 0}) {
 		t.Fatal("not indexed after create")
 	}
 
@@ -144,7 +144,7 @@ func TestIndexer_DeleteEventUnindexes(t *testing.T) {
 	if err := ix.IndexEvent(ctx, deleted); err != nil {
 		t.Fatalf("IndexEvent delete: %v", err)
 	}
-	if indexed(t, w, ctx, "ixdoc", "d1", []float32{1, 0, 0}) {
+	if indexed(ctx, t, w, "ixdoc", "d1", []float32{1, 0, 0}) {
 		t.Fatal("still indexed after delete event — should be unindexed")
 	}
 }
@@ -153,7 +153,7 @@ func TestIndexer_UnindexNonEmbeddableNoop(t *testing.T) {
 	reg := embedRegistry(t)
 	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
 	ix, _ := NewIndexer(ff, reg, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 	if err := ix.Unindex(ctx, "plain", "x"); err != nil {
 		t.Fatalf("Unindex on non-embeddable should be no-op, got %v", err)
 	}

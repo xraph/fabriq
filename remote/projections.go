@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 
 	"google.golang.org/protobuf/proto"
@@ -28,7 +29,14 @@ type remoteVector struct{ t Transport }
 var _ query.VectorQuerier = remoteVector{}
 
 func (r remoteVector) Similar(ctx context.Context, q query.VectorQuery, into any) error {
-	in, err := proto.Marshal(&fabriqpb.VectorSimilarRequest{Entity: q.Entity, Embedding: q.Embedding, K: int32(q.K)})
+	k := q.K
+	if k < 0 {
+		k = 0
+	}
+	if k > math.MaxInt32 {
+		k = math.MaxInt32
+	}
+	in, err := proto.Marshal(&fabriqpb.VectorSimilarRequest{Entity: q.Entity, Embedding: q.Embedding, K: int32(k)})
 	if err != nil {
 		return err
 	}

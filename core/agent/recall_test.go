@@ -33,14 +33,14 @@ func TestRecall_VectorChannelReturnsHydratedPack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	res, err := ff.Exec(ctx, command.Command{Entity: "doc", Op: command.OpCreate, Payload: &tDoc{Title: "Near", Body: "match"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Vector.Upsert(ctx, "doc", res.AggID, []float32{1, 0, 0}, nil); err != nil {
-		t.Fatal(err)
+	if uerr := w.Vector.Upsert(ctx, "doc", res.AggID, []float32{1, 0, 0}, nil); uerr != nil {
+		t.Fatal(uerr)
 	}
 
 	pack, err := tk.Recall(ctx, RecallRequest{Query: "anything", Budget: 10000, Entities: []string{"doc"}})
@@ -62,7 +62,7 @@ func TestRecall_NoEmbedderDegradesWithWarning(t *testing.T) {
 	reg := testRegistry(t)
 	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
 	tk, _ := NewToolkit(ff, reg, nil, Config{})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	pack, err := tk.Recall(ctx, RecallRequest{Query: "x", Budget: 100, Entities: []string{"doc"}})
 	if err != nil {
@@ -91,7 +91,7 @@ func TestRecall_StrictReturnsErrorOnChannelFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	_, recallErr := tk.Recall(ctx, RecallRequest{Query: "anything", Budget: 10000, Entities: []string{"doc"}})
 	if recallErr == nil {
@@ -103,7 +103,7 @@ func TestRecall_ValidatesInput(t *testing.T) {
 	reg := testRegistry(t)
 	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
 	tk, _ := NewToolkit(ff, reg, nil, Config{})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	if _, err := tk.Recall(ctx, RecallRequest{Budget: 100, Entities: []string{"doc"}}); err == nil {
 		t.Fatal("want error for empty query")

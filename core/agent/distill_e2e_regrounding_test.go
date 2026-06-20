@@ -19,7 +19,7 @@ func TestDistill_E2E_DeleteAndContentHashStability(t *testing.T) {
 	r := distillRegistry(t)
 	cas := fabriqtest.NewFakeCAS()
 	d, _ := newDistiller(t, r, cas, &fakeSummarizer{}, nil)
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	for _, n := range []map[string]any{
 		{"id": "n1", "title": "A", "body": "x", "site_id": "s1"},
@@ -34,14 +34,14 @@ func TestDistill_E2E_DeleteAndContentHashStability(t *testing.T) {
 	}
 
 	// Scenario 4: snapshot every node's ContentHash, re-roll unchanged → identical.
-	before := snapshotHashes(t, d, ctx)
+	before := snapshotHashes(ctx, t, d)
 	if len(before) == 0 {
 		t.Fatal("snapshotHashes captured no nodes — tree was not built")
 	}
 	if _, err := d.Rollup(ctx); err != nil {
 		t.Fatal(err)
 	}
-	after := snapshotHashes(t, d, ctx)
+	after := snapshotHashes(ctx, t, d)
 	for id, h := range before {
 		if after[id] != h {
 			t.Fatalf("unchanged subtree %s changed ContentHash %s -> %s", id, h, after[id])
@@ -61,11 +61,11 @@ func TestDistill_E2E_DeleteAndContentHashStability(t *testing.T) {
 }
 
 // snapshotHashes collects id→ContentHash for all digest nodes at every level.
-func snapshotHashes(t *testing.T, d *Distiller, ctx context.Context) map[string]string {
+func snapshotHashes(ctx context.Context, t *testing.T, d *Distiller) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	for _, lvl := range []int{LevelEntity, LevelScope, LevelTenant} {
-		for _, n := range mustListNodes(t, d, ctx, lvl) {
+		for _, n := range mustListNodes(ctx, t, d, lvl) {
 			out[n.ID] = n.ContentHash
 		}
 	}
@@ -73,7 +73,7 @@ func snapshotHashes(t *testing.T, d *Distiller, ctx context.Context) map[string]
 }
 
 // mustListNodes wraps d.listNodes and fatals on error.
-func mustListNodes(t *testing.T, d *Distiller, ctx context.Context, level int) []digestRow {
+func mustListNodes(ctx context.Context, t *testing.T, d *Distiller, level int) []digestRow {
 	t.Helper()
 	rows, err := d.listNodes(ctx, level)
 	if err != nil {

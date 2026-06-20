@@ -38,9 +38,9 @@ func (b remoteBlobStore) Put(ctx context.Context, key string, r io.Reader, o blo
 		_ = conn.Close()
 		return blob.ObjectInfo{}, err
 	}
-	if err := conn.Send(meta); err != nil {
+	if serr := conn.Send(meta); serr != nil {
 		_ = conn.Close()
-		return blob.ObjectInfo{}, err
+		return blob.ObjectInfo{}, serr
 	}
 	buf := make([]byte, blobChunkSize)
 	for {

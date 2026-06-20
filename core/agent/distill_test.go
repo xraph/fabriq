@@ -42,7 +42,7 @@ func TestDistillL0_SummarizesAndShortCircuits(t *testing.T) {
 	cas := fabriqtest.NewFakeCAS()
 	sum := &fakeSummarizer{}
 	d, _ := newDistiller(t, r, cas, sum, nil)
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	vals := map[string]any{"id": "n1", "title": "Pump", "body": "vibration high"}
 	changed, err := d.DistillL0(ctx, "note", "n1", vals)
@@ -79,7 +79,7 @@ func TestDistillL0_SummarizesAndShortCircuits(t *testing.T) {
 func TestDistillL0_NonDistillableIsNoop(t *testing.T) {
 	r := distillRegistry(t)
 	d, _ := newDistiller(t, r, fabriqtest.NewFakeCAS(), &fakeSummarizer{}, nil)
-	changed, err := d.DistillL0(testCtx(t, "acme"), "digest_node", "x", map[string]any{"id": "x"})
+	changed, err := d.DistillL0(testCtx(t), "digest_node", "x", map[string]any{"id": "x"})
 	if err != nil || changed {
 		t.Fatalf("non-distillable entity must be a no-op: changed=%v err=%v", changed, err)
 	}
@@ -90,7 +90,7 @@ func TestDistillL0_EmptyTextIsNoop(t *testing.T) {
 	cas := fabriqtest.NewFakeCAS()
 	sum := &fakeSummarizer{}
 	d, _ := newDistiller(t, r, cas, sum, nil)
-	changed, err := d.DistillL0(testCtx(t, "acme"), "note", "n1", map[string]any{"id": "n1"})
+	changed, err := d.DistillL0(testCtx(t), "note", "n1", map[string]any{"id": "n1"})
 	if err != nil || changed {
 		t.Fatalf("empty source text must be a no-op: changed=%v err=%v", changed, err)
 	}
@@ -106,7 +106,7 @@ func TestDistillL0_GuardBlockFailsClosed(t *testing.T) {
 	cas := fabriqtest.NewFakeCAS()
 	sum := &fakeSummarizer{}
 	d, w := newDistiller(t, r, cas, sum, newFakeGuard())
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	// Body contains SECRET -> emit-stage guard blocks (the summary echoes it).
 	vals := map[string]any{"id": "n1", "title": "Pump", "body": "the SECRET key"}
@@ -135,7 +135,7 @@ func TestDistillL0_GuardRedactsBeforeSummary(t *testing.T) {
 	cas := fabriqtest.NewFakeCAS()
 	sum := &fakeSummarizer{}
 	d, _ := newDistiller(t, r, cas, sum, newFakeGuard())
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	vals := map[string]any{"id": "n1", "title": "Pump", "body": "ssn 123456789"}
 	changed, err := d.DistillL0(ctx, "note", "n1", vals)

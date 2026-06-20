@@ -11,7 +11,7 @@ import (
 
 // seedNote creates a note row through the command plane using a typed *tDoc
 // payload. tDoc has fields ID, TenantID, Version, Title, Body — no site column.
-func seedNoteViaFab(t testing.TB, fab query.Fabric, ctx context.Context, id, title, body string) {
+func seedNoteViaFab(ctx context.Context, t testing.TB, fab query.Fabric, id, title, body string) {
 	t.Helper()
 	if _, err := fab.Exec(ctx, command.Command{
 		Entity:  "note",
@@ -31,11 +31,11 @@ func TestDistill_BackfillFromExistingRows(t *testing.T) {
 	r := distillRegistry(t)
 	w := fabriqtest.NewWorld(r)
 	fab := fabriqtest.NewFabric(w)
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	// Seed rows directly via the command plane (no distill worker running).
-	seedNoteViaFab(t, fab, ctx, "n1", "Pump", "ok")
-	seedNoteViaFab(t, fab, ctx, "n2", "Valve", "leak")
+	seedNoteViaFab(ctx, t, fab, "n1", "Pump", "ok")
+	seedNoteViaFab(ctx, t, fab, "n2", "Valve", "leak")
 
 	cas := fabriqtest.NewFakeCAS()
 	d, err := NewDistiller(fab, r, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}}, &fakeSummarizer{}, nil, cas, DistillConfig{VectorDims: 3})

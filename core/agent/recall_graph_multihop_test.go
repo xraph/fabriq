@@ -34,11 +34,11 @@ func TestRecall_GraphMultiHopForward(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	site, _ := ff.Exec(ctx, command.Command{Entity: "gsite", Op: command.OpCreate, Payload: &gSite{Name: "S"}})
 	asset, _ := ff.Exec(ctx, command.Command{Entity: "gasset", Op: command.OpCreate, Payload: &gAsset{Name: "A", SiteID: site.AggID}})
-	if err := w.Vector.Upsert(ctx, "gasset", asset.AggID, []float32{1, 0, 0}, nil); err != nil {
+	if err = w.Vector.Upsert(ctx, "gasset", asset.AggID, []float32{1, 0, 0}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Hops=2 → variable-length cypher
@@ -62,12 +62,12 @@ func TestRecall_GraphReverseExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	site, _ := ff.Exec(ctx, command.Command{Entity: "gsite", Op: command.OpCreate, Payload: &gSite{Name: "S"}})
 	asset, _ := ff.Exec(ctx, command.Command{Entity: "gasset", Op: command.OpCreate, Payload: &gAsset{Name: "A", SiteID: site.AggID}})
 	// seed the SITE (vector); reverse edge: gsite <-LOCATED_AT- gasset
-	if err := w.Vector.Upsert(ctx, "gsite", site.AggID, []float32{1, 0, 0}, nil); err != nil {
+	if err = w.Vector.Upsert(ctx, "gsite", site.AggID, []float32{1, 0, 0}, nil); err != nil {
 		t.Fatal(err)
 	}
 	w.Graph.Cann(expansionCypher("GSite", "LOCATED_AT", "GAsset", 1, true), []string{asset.AggID})

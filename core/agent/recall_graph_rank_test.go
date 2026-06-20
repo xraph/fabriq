@@ -36,7 +36,7 @@ func TestRecall_GraphSeedsRankOrdered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	sTop, _ := ff.Exec(ctx, command.Command{Entity: "gsite", Op: command.OpCreate, Payload: &gSite{Name: "top"}})
 	sLow, _ := ff.Exec(ctx, command.Command{Entity: "gsite", Op: command.OpCreate, Payload: &gSite{Name: "low"}})
@@ -44,10 +44,10 @@ func TestRecall_GraphSeedsRankOrdered(t *testing.T) {
 	aLow, _ := ff.Exec(ctx, command.Command{Entity: "gasset", Op: command.OpCreate, Payload: &gAsset{Name: "low", SiteID: sLow.AggID}})
 
 	// aLow is a vector hit; aTop is BOTH a vector hit and a search hit → higher fused score.
-	if err := w.Vector.Upsert(ctx, "gasset", aTop.AggID, []float32{1, 0, 0}, nil); err != nil {
+	if err = w.Vector.Upsert(ctx, "gasset", aTop.AggID, []float32{1, 0, 0}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Vector.Upsert(ctx, "gasset", aLow.AggID, []float32{0.9, 0.1, 0}, nil); err != nil {
+	if err = w.Vector.Upsert(ctx, "gasset", aLow.AggID, []float32{0.9, 0.1, 0}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// graph cann for BOTH assets' forward edge; only aTop's is expected to run
