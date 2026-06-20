@@ -39,13 +39,7 @@ Caching is **two-level** (the Russian-doll pattern). The two layers cache differ
 
 A query (`List`, `Traverse`, `Out`/`In`/`Reachable`, `Search`/`SearchWith`, `Similar`) caches only its **id-list**, then hydrates each id through the **row** cache:
 
-```text
-repo.List(ctx, q)
-   │
-   ├─ id-list cache  (fingerprint(q) → [id1, id2, id3])   ← result-set layer
-   │
-   └─ GetMany(ids)   (id → row, per id)                   ← row layer (warm)
-```
+<CacheLayersDiagram />
 
 This is what makes the design pay off: when one row changes, its entity's generation bumps so every cached id-list over that entity **re-resolves** — but **every unchanged row stays warm**, so the re-resolved lists hydrate from the row cache without touching the database. A pure re-read with no intervening write is a total cache hit.
 
@@ -57,11 +51,7 @@ This is what makes the design pay off: when one row changes, its entity's genera
 
 There is no manual cache-busting. The command plane runs a **post-commit hook** ([the same seam](/docs/commands-and-events) the chronicle and projection appliers use) that, for every committed change, fires two invalidations against the cache:
 
-```text
-f.Exec(...)  →  commit  →  post-commit hook:
-                              • bump generation(entity)   → busts the entity's cached id-lists
-                              • evict row(entity, aggID)   → drops just the changed row
-```
+<CacheInvalidationDiagram />
 
 Because the hook runs **after the transaction commits, on the writing request's goroutine**, the writing node sees its own change immediately — **read-your-writes**, with no before-commit race (the cache is busted only once the data is durable). The generation counter lives in shared Redis, so a bump on one node is visible to all nodes at once.
 

@@ -6,6 +6,13 @@ import {
   ArchitectureDiagram,
   DataLifecycleDiagram,
 } from "./architecture-diagram";
+import { BlobGcDiagram } from "./diagrams/blob-gc";
+import {
+  CacheInvalidationDiagram,
+  CacheLayersDiagram,
+} from "./diagrams/caching";
+import { DistillWorkerDiagram } from "./diagrams/distill-worker";
+import { FilePlaneLayeringDiagram } from "./diagrams/file-plane";
 
 export function getMDXComponents(components?: MDXComponents) {
   return {
@@ -16,6 +23,11 @@ export function getMDXComponents(components?: MDXComponents) {
     Tabs,
     ArchitectureDiagram,
     DataLifecycleDiagram,
+    BlobGcDiagram,
+    CacheInvalidationDiagram,
+    CacheLayersDiagram,
+    DistillWorkerDiagram,
+    FilePlaneLayeringDiagram,
     ...components,
   } satisfies MDXComponents;
 }

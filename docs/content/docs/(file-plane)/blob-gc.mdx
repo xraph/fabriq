@@ -123,12 +123,7 @@ The blob GC runs inside the Forge extension worker. It is enabled when
 `ReconcileInterval > 0` and `Stores.CAS != nil`. It shares the
 `ReconcileInterval` with the projection reconciler.
 
-```
-advisory lock 1004 (lockKeyBlobGC)
-    → runBlobGC (ticker at ReconcileInterval)
-        → gcBlobAll
-            → for each tenant: rec.Reconcile(tctx, repair=true)
-```
+<BlobGcDiagram />
 
 `gcBlobAll` falls back to a `BlobGCGrace` of `1h` when the configured value
 is zero. It calls `stores.BlobReconciler(grace)` to build the reconciler,
