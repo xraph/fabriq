@@ -113,6 +113,16 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 		return rep, err
 	}
 
+	// If no L0 nodes remain, the whole tenant tree is empty — delete the
+	// vestigial tenant root rather than summarizing empty children. deleteNode
+	// tolerates a missing root, so this is idempotent across repeated sweeps.
+	if len(l0s) == 0 {
+		if err := d.deleteNode(ctx, TenantRootID()); err != nil {
+			return rep, err
+		}
+		return rep, nil
+	}
+
 	// 5. Tenant root: children = all current L1 (scope + cluster) nodes.
 	l1s, err := d.listNodes(ctx, LevelScope)
 	if err != nil {
