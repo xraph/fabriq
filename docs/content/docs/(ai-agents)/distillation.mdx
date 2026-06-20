@@ -1,0 +1,351 @@
+---
+title: Context Distillation
+description: A per-tenant Merkle tree of AI-generated summaries — the "AI data fabric" — that lets agents navigate gigabytes of knowledge at altitude, transfer only what changed, and resolve any subtree from a single hash.
+---
+
+Context distillation is fabriq's answer to the scale problem: not every agent
+turn needs to read entity rows — often a well-placed **summary of a scope** is
+all the model needs, costing a fraction of the tokens. Distillation builds and
+maintains a **per-tenant Merkle tree of summaries** (`DigestNode`), stored
+content-addressed in the [file-plane CAS](/docs/files), and exposes it through
+the agent toolkit as altitude-aware recall and three dedicated tools.
+
+<Callout type="info">
+  Distillation does not replace [recall](/docs/recall). It adds a **high-altitude
+  layer** underneath it: when the token budget is tight, the agent reads a
+  summary tree instead of raw entity rows; when the budget is generous, it
+  descends to entities as usual. Both surfaces respect the same tenancy and
+  projection invariants.
+</Callout>
+
+## The Merkle tree of summaries
+
+Fabriq maintains a **three-level digest tree** for each tenant.
+
+| Level | Node type | Stable ID scheme | Content |
+| --- | --- | --- | --- |
+| L0 | Per entity row | `digest:0:{kind}:{id}` | Summary of a single entity row |
+| L1 | Declared scope or emergent cluster | `digest:1:scope:{name}:{id}` or `digest:1:cluster:{prefix}` | Rollup of a set of L0 (and nested L1) nodes |
+| L2 | Tenant root | `digest:2:tenant` | Rollup of all L1 nodes for the tenant |
+
+The tree is a **Merkle tree**: each node's `ContentHash` is a deterministic
+function of its children's hashes and a recipe version salt. This means the
+root hash changes if and only if something in the corpus changed (or the
+summarisation recipe changed). Agents can **remember** a root hash, hand it
+back on the next turn, and receive only the diff — re-grounding is proportional
+to what changed, not to the size of the corpus.
+
+```go
+// DigestNode is the entity persisted by the distillation worker.
+type DigestNode struct {
+    ID          string    // stable, e.g. "digest:0:asset:uuid-…"
+    Level       int       // 0, 1, or 2
+    Kind        string    // entity kind (L0), scope/cluster name (L1), "tenant" (L2)
+    ScopeOrKey  string    // scope name, cluster prefix, or ""
+    ContentHash string    // Merkle hash (see below)
+    SemHash     uint64    // 64-bit SimHash over the summary embedding
+    SummaryRef  string    // CAS address of the summary text in the file plane
+    ChildIDs    []string  // direct children in the tree
+    RecordedAt  time.Time
+}
+```
+
+## Opt-in with `DistillSpec`
+
+An entity participates in distillation only if it declares a `DistillSpec` on
+its registry descriptor. This mirrors the opt-in pattern of
+[`EmbedSpec`](/docs/agent-toolkit#the-embedder-seam): you never distill
+something you didn't ask for.
+
+```go
+type DistillSpec struct {
+    // SourceFields names the struct fields (or JSON keys) to include as the
+    // raw text fed to the Summarizer. Order is preserved.
+    SourceFields []string
+
+    // Text is a function alternative to SourceFields: return the verbatim
+    // text to summarise. SourceFields takes precedence if both are set.
+    Text func(row any) string
+
+    // Scopes names the L1 declared scopes this entity belongs to.
+    // An entity may belong to more than one scope.
+    Scopes []string
+
+    // Budget is the maximum number of tokens the Summarizer should target
+    // for the L0 summary. The worker passes this as a hint; the Summarizer
+    // is free to exceed it but should try to respect it.
+    Budget int
+}
+```
+
+Register it alongside the entity:
+
+```go
+registry.Register(fabriq.EntityDescriptor{
+    Kind: "asset",
+    // …vector, search, graph specs…
+    DistillSpec: &fabriq.DistillSpec{
+        SourceFields: []string{"Name", "Description", "Tags"},
+        Scopes:       []string{"site", "equipment-class"},
+        Budget:       256,
+    },
+})
+```
+
+## Three seams
+
+Distillation introduces two new seam interfaces and reuses one existing one.
+
+### Embedder (reused)
+
+The same `Embedder` the agent toolkit uses for [semantic recall](/docs/recall)
+is reused here: digests share the entity vector space. The `SemHash` of every
+`DigestNode` is computed from the summary's embedding. Wiring an `Embedder` is
+therefore a prerequisite for `SemHash`-based lookup and for emergent clustering;
+without one, `SemHash` is `0` and clustering is skipped.
+
+### Summarizer (new)
+
+```go
+// Summarizer generates a textual summary from raw source material.
+// The host supplies the model; fabriq stays model-agnostic.
+type Summarizer interface {
+    // Summarize receives the raw text (after Guard.GuardIngest), a token
+    // budget hint, and optional child summaries for roll-up nodes.
+    Summarize(ctx context.Context, req SummarizeRequest) (string, error)
+}
+
+type SummarizeRequest struct {
+    Level    int      // 0 = entity row, 1 = scope/cluster, 2 = tenant root
+    NodeID   string   // stable node ID
+    Text     string   // raw source text (already guarded)
+    Children []string // child summary texts (for L1 and L2 roll-ups)
+    Budget   int      // target token count (hint)
+}
+```
+
+### Guard (new, optional)
+
+The `Guard` is an optional, pluggable safety layer. When `nil`, it behaves as
+the identity function — raw content flows through unmodified. When set, it runs
+**two stages** for every L0 summarisation:
+
+```go
+// Guard controls what reaches the model and what leaves it.
+type Guard interface {
+    // GuardIngest redacts or transforms the raw source text before
+    // it is passed to the Summarizer. Use to strip PII, secrets, or
+    // content that must never enter the model.
+    GuardIngest(ctx context.Context, nodeID string, text string) (string, error)
+
+    // GuardEmit checks the generated summary before it is stored in CAS.
+    // Return an error to reject the summary (the node stays at its previous
+    // ContentHash). Use to enforce output policy (no hallucinated PII, etc.).
+    GuardEmit(ctx context.Context, nodeID string, summary string) (string, error)
+}
+```
+
+The worker is **fail-closed by default**: if either guard stage returns an
+error or times out, the content is dropped and the node is not updated.
+Set `Config.GuardFailOpen = true` to skip the guard on error instead of
+dropping the content — useful in development environments where the guard
+service is unavailable.
+
+<Callout type="warn">
+  `GuardIngest` sees raw entity field values; `GuardEmit` sees generated
+  summary text. Both can mutate their inputs — return the cleaned string, not
+  an error, for redaction. An error means "drop this node entirely", not
+  "pass through".
+</Callout>
+
+The `forgeext/shieldguard` sub-package provides a ready-made adapter over
+`github.com/xraph/shield` for deployments that already use Shield as their
+policy engine.
+
+## Two hashes
+
+Every `DigestNode` carries two orthogonal hashes that serve different agent
+needs.
+
+| Property | `ContentHash` | `SemHash` |
+| --- | --- | --- |
+| **Algorithm** | Merkle: `h(recipeVersion ‖ sorted child ContentHashes)` | 64-bit SimHash over the summary embedding |
+| **Equality semantics** | Byte-identical subtree | Semantically near-duplicate |
+| **What it gates** | Whether the Summarizer is called at all (freshness short-circuit) | Nearest-neighbour lookup and emergent clustering |
+| **Effect of model change** | `recipeVersion` salt invalidates the whole tree | Shifts naturally with new embeddings |
+| **Agent use** | Remember the root `ContentHash`; hand back to `map()` to get a Merkle diff | Remember a `SemHash`; pass to `resolve()` to find semantically related digests |
+
+`ContentHash` is the freshness oracle: if the entity row's hash hasn't changed
+since the last run, the worker skips the `Summarizer` call entirely — no LLM
+cost, no CAS write. If the `recipeVersion` component of the hash changes (e.g.
+you swap the summarisation prompt or model), the entire tree is invalidated on
+the next run and all nodes are re-summarised.
+
+`SemHash` is the contextual oracle: the Hamming distance between two `SemHash`
+values is a Hamming-graded approximation of semantic similarity. Agents can
+store a `SemHash` in long-term memory and later call `resolve(hash)` to find
+related digests without re-embedding — the "contextual hash" is cheap to
+persist and cheap to compare.
+
+## Emergent clusters
+
+Beyond declared `Scopes`, distillation identifies **emergent clusters**: groups
+of L0 nodes that are semantically similar even if they span different declared
+scopes or entity kinds.
+
+When a new or updated L0 node's embedding is computed, the top-`p` bits of its
+`SemHash` form its **bucket key** — the prefix IS the cluster ID. The prefix is
+stable across membership drift: entities that were in the cluster yesterday and
+left today do not change the cluster's identity, only its membership count.
+
+A bucket is promoted to a live `DigestNode` (with a proper summary) only when
+it meets the noise floor (`Config.ClusterMinSize`, default `4`). Below the
+floor the bucket exists only in the index; above it the worker issues a rollup
+summarisation on the next debounce tick.
+
+<Callout type="info">
+  Emergent clusters can cross declared scopes. A cluster might contain
+  `asset` nodes from three different sites and `note` nodes from two
+  different authors — fabriq makes no assumption about what belongs together,
+  the embedding space decides.
+</Callout>
+
+## The `proj:distill` worker
+
+The distillation worker runs inside the `forgeext` extension alongside
+`proj:embed`. It is a **debounced, batched, per-tenant single-flight consumer**
+over the same event stream: each entity write event that touches a
+distillation-enabled entity triggers the worker, which accumulates a batch over
+a debounce window (`Config.DebounceWindow`, default `5s`) before processing.
+
+Two **Merkle short-circuits** eliminate LLM calls:
+
+1. **Unchanged entity** — if the entity row's computed input hash matches the
+   stored `ContentHash`, the L0 node is skipped entirely (no `Summarizer` call,
+   no CAS write).
+2. **Unchanged parent** — if all dirty L0 children of an L1 or L2 node are
+   processed and their net hashes did not move the parent's input hash, the
+   parent rollup is also skipped.
+
+The **tenant root** (L2) is re-summarised at most once per debounce window,
+regardless of how many L0/L1 nodes changed in that window.
+
+```
+event stream (same as proj:embed)
+    │
+    ▼ debounce (5 s default)
+┌───────────────────────────────┐
+│  per-tenant single-flight run │
+│  1. collect dirty L0 nodes    │
+│  2. ContentHash short-circuit │
+│  3. Guard.GuardIngest         │
+│  4. Summarizer.Summarize      │
+│  5. Guard.GuardEmit           │
+│  6. CAS write → SummaryRef    │
+│  7. recompute L1 parents      │
+│  8. recompute L2 root (once)  │
+└───────────────────────────────┘
+```
+
+## The agent surface
+
+### `map(scope?)` — the tree as a compact outline
+
+Returns the distillation tree (or a subtree if `scope` is given) as a
+compact, line-per-node outline. Each line carries the node's ID, level,
+label, `ContentHash`, and `SemHash`. Pass `knownHashes` to receive a
+**Merkle diff**: nodes whose subtree `ContentHash` matches a hash in
+`knownHashes` are emitted as a single "unchanged" line — the agent only
+receives the diff, not the full tree.
+
+```go
+outline, err := tk.Map(ctx, agent.MapRequest{
+    Scope:       "site",           // optional; omit for the full tree
+    KnownHashes: []string{"h1…"},  // Merkle diff: skip unchanged subtrees
+})
+```
+
+Re-grounding cost is proportional to what changed: an agent that holds the
+previous root `ContentHash` pays only for new or modified nodes.
+
+### `digest(nodeId)` — a node's summary text
+
+Returns the stored summary text for a given `DigestNode` ID, fetched from the
+file-plane CAS by `SummaryRef`, plus the summaries of its immediate children.
+
+```go
+d, err := tk.Digest(ctx, "digest:1:scope:site:site-42")
+// d.Summary   — the scope rollup text
+// d.Children  — []ChildDigest{ID, Summary}
+```
+
+### `resolve(hash)` — from hash to node
+
+Two modes depending on the hash type passed:
+
+- **Exact `ContentHash`** — returns the `DigestNode` whose subtree hash
+  matches exactly. Useful for confirming that a remembered hash still points
+  to the same subtree.
+- **Nearest `SemHash`** — returns the semantically closest `DigestNode`
+  nodes by Hamming distance, without re-embedding. The agent supplies a
+  64-bit integer; fabriq returns a ranked list of near matches.
+
+```go
+// Exact content match
+node, err := tk.Resolve(ctx, agent.ResolveRequest{ContentHash: "abc123…"})
+
+// Semantic nearest neighbours (no embedding call)
+nodes, err := tk.Resolve(ctx, agent.ResolveRequest{
+    SemHash: 0xdeadbeef01234567,
+    TopK:    5,
+})
+```
+
+### Altitude-aware recall
+
+See the [altitude parameter on Recall](/docs/recall#altitude-aware-recall) for
+how the `altitude` field integrates with `RecallRequest` to drive descent
+through the digest tree. In short: `auto` uses the token budget to choose the
+right level; `scope` and `tenant` pin the agent to high-altitude digests
+regardless of budget.
+
+## Enabling distillation
+
+Wire the `Summarizer` (required) alongside the existing `Embedder`, and
+optionally a `Guard`, through the `forgeext` extension options:
+
+```go
+ext := forgeext.New(
+    forgeext.WithEmbedder(myEmbedder),
+    forgeext.WithSummarizer(mySummarizer),
+    forgeext.WithGuard(forgeext.NewShieldGuard(shieldClient)), // optional
+)
+```
+
+Summary text is stored **content-addressed** in the file-plane CAS. Live
+`DigestNode.SummaryRef` values are GC roots: the CAS garbage-collector will not
+collect a summary blob as long as a `DigestNode` references it — so safe
+deletion of a `DigestNode` also orphans the blob for eventual collection.
+
+<Callout type="info">
+  Distillation shares the `Embedder` with the rest of the agent toolkit. You
+  do not supply it twice; `forgeext.WithEmbedder` covers both auto-embedding
+  (`proj:embed`) and distillation (`proj:distill`).
+</Callout>
+
+## Metrics
+
+The `proj:distill` worker exposes the following Prometheus counters:
+
+| Metric | Description |
+| --- | --- |
+| `fabriq_distill_nodes_total` | Total `DigestNode` upserts (labels: `level`, `kind`) |
+| `fabriq_distill_summaries_total` | Summarizer calls that completed (labels: `level`) |
+| `fabriq_distill_shortcircuit_total` | Nodes skipped by ContentHash short-circuit (labels: `level`) |
+| `fabriq_distill_guard_blocked_total` | Nodes dropped by Guard (labels: `stage`: `ingest`/`emit`) |
+| `fabriq_distill_failures_total` | Worker errors (labels: `stage`: `summarize`/`cas`/`index`) |
+
+These counters ride the same Prometheus registry as the rest of fabriq's
+metrics. A high `shortcircuit_total` relative to `summaries_total` is healthy —
+it means the debounce and Merkle gates are doing their job and LLM calls are
+minimal.
