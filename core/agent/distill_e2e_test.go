@@ -46,6 +46,9 @@ func TestDistill_E2E_BuildEditGuard(t *testing.T) {
 
 	// Scenario 2: edit n1 only → only its branch re-rolls; n2/n3 L0 untouched.
 	n2hashBefore := mustNode(t, d, ctx, L0ID("note", "n2")).ContentHash
+	// Snapshot untouched nodes in the OTHER scope (s2) so we can assert locality.
+	n3hashBefore := mustNode(t, d, ctx, L0ID("note", "n3")).ContentHash
+	s2hashBefore := mustNode(t, d, ctx, ScopeID("site", "s2")).ContentHash
 	callsBefore := sum.calls
 	if _, err := d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "Pump A", "body": "CRITICAL", "site_id": "s1"}); err != nil {
 		t.Fatal(err)
@@ -56,9 +59,23 @@ func TestDistill_E2E_BuildEditGuard(t *testing.T) {
 	if mustNode(t, d, ctx, L0ID("note", "n2")).ContentHash != n2hashBefore {
 		t.Fatal("untouched n2 must keep its ContentHash")
 	}
-	// Re-summarized: n1 + site s1 + tenant (n3/site s2 unchanged). Bounded calls.
+	// Multi-node locality: n3 and its scope (s2) are in a different branch from
+	// n1 (which lives under s1); editing n1 must NOT re-summarize them.
+	if mustNode(t, d, ctx, L0ID("note", "n3")).ContentHash != n3hashBefore {
+		t.Fatal("untouched n3 (scope s2) must keep its ContentHash")
+	}
+	if mustNode(t, d, ctx, ScopeID("site", "s2")).ContentHash != s2hashBefore {
+		t.Fatal("untouched scope s2 must keep its ContentHash")
+	}
+	// Lower bound: at least one Summarize was triggered for n1's branch.
 	if sum.calls-callsBefore == 0 {
 		t.Fatal("editing n1 must trigger at least its branch re-summarization")
+	}
+	// Upper bound: editing n1 re-summarizes at most n1 L0 + scope-s1 + cluster +
+	// tenant root = 4 nodes (7 total). A removed Merkle short-circuit that
+	// re-summarizes everything (7 calls) would exceed this bound.
+	if sum.calls-callsBefore > 4 {
+		t.Fatalf("edit of n1 caused %d re-summarizations, want ≤4 (7 total nodes)", sum.calls-callsBefore)
 	}
 
 	// Scenario 6: a SECRET write is blocked.
