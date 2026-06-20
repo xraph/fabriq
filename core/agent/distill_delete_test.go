@@ -60,3 +60,52 @@ func TestDelete_RemovesL0AndCollapsesCluster(t *testing.T) {
 		t.Fatalf("second delete must be a no-op: removed=%v err=%v", again, err)
 	}
 }
+
+// TestRollup_CollapsesEmptyTenantRoot verifies that when all L0 nodes are
+// deleted and Rollup runs, the vestigial tenant root is removed rather than
+// re-summarized with empty children. A subsequent Rollup on an already-empty
+// tree is also a no-error no-op (idempotent).
+func TestRollup_CollapsesEmptyTenantRoot(t *testing.T) {
+	r := distillRegistry(t)
+	cas := fabriqtest.NewFakeCAS()
+	d, _ := newDistiller(t, r, cas, &fakeSummarizer{}, nil)
+	ctx := testCtx(t, "acme")
+
+	// Build two L0 nodes and roll up so the tenant root exists.
+	for _, n := range []map[string]any{
+		{"id": "n1", "title": "Alpha", "body": "aaa", "site_id": "s1"},
+		{"id": "n2", "title": "Beta", "body": "bbb", "site_id": "s1"},
+	} {
+		if _, err := d.DistillL0(ctx, "note", n["id"].(string), n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.Rollup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Tenant root must exist after the first rollup.
+	if _, ok, err := d.getNode(ctx, TenantRootID()); err != nil || !ok {
+		t.Fatalf("tenant root should exist after rollup: ok=%v err=%v", ok, err)
+	}
+
+	// Delete both L0 nodes then rollup — root must be gone.
+	for _, id := range []string{"n1", "n2"} {
+		if removed, err := d.DeleteL0(ctx, "note", id); err != nil || !removed {
+			t.Fatalf("delete %s: removed=%v err=%v", id, removed, err)
+		}
+	}
+	if _, err := d.Rollup(ctx); err != nil {
+		t.Fatalf("rollup after full delete: %v", err)
+	}
+	if _, ok, _ := d.getNode(ctx, TenantRootID()); ok {
+		t.Fatal("tenant root must be gone after all L0 nodes are deleted")
+	}
+
+	// Rollup again on empty tree — no error and root stays gone (idempotent).
+	if _, err := d.Rollup(ctx); err != nil {
+		t.Fatalf("second rollup on empty tree: %v", err)
+	}
+	if _, ok, _ := d.getNode(ctx, TenantRootID()); ok {
+		t.Fatal("tenant root must still be gone after second empty rollup")
+	}
+}
