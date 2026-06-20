@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Agents } from "@/components/landing/agents";
 import { BentoFooter } from "@/components/landing/footer";
 import { LandingHero } from "@/components/landing/hero";
 import { Invariants } from "@/components/landing/invariants";
@@ -9,7 +10,7 @@ import { WritePath } from "@/components/landing/write-path";
 export const metadata: Metadata = {
   title: "Fabriq — one write path, every engine in step",
   description:
-    "Fabriq is a standalone data fabric for Go: commands commit once through a transactional outbox, then fan out to relational, time-series, vector, graph, and search engines — versioned, tenant-scoped, always rebuildable.",
+    "Fabriq is a standalone data fabric for Go — and the brain your AI agents think through. Commands commit once through a transactional outbox, then fan out to relational, time-series, vector, graph, search, and file engines, versioned and tenant-scoped. Agents reach the same fabric through fused recall, guarded memory, and live awareness.",
 };
 
 export default function HomePage() {
@@ -19,6 +20,7 @@ export default function HomePage() {
       <Invariants />
       <WritePath />
       <Ports />
+      <Agents />
       <Stats />
       <BentoFooter />
     </main>

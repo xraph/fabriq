@@ -46,6 +46,11 @@ const ports = [
     engine: "Merge engine",
   },
   {
+    method: "f.Blob()",
+    body: "External byte storage — put/get, presign, multipart, and range with content-addressable dedup. Files, folders, and shares stay cataloged in Postgres; bytes never touch it.",
+    engine: "Object store · CAS",
+  },
+  {
     method: "f.Subscribe()",
     body: "Conflated live deltas with Last-Event-ID resume over SSE.",
     engine: "Redis Streams",

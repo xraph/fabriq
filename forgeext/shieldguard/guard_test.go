@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/shield/scan"
+
+	"github.com/xraph/fabriq/core/agent"
 )
 
 type fakeScanner struct{ in, out *scan.Result }

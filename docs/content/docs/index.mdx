@@ -1,13 +1,15 @@
 ---
 title: Introduction
-description: Fabriq is a standalone data fabric for Go — the single module through which application code talks to every datastore, enforcing tenancy, eventing, and projection invariants across all of them.
+description: Fabriq is a standalone data fabric for Go — one facade your application code uses to reach every datastore (tenancy, eventing, and projection invariants held across all of them), and that AI agents use as a brain: fused recall, guarded memory, and live awareness.
 ---
 
-Fabriq is the **single module through which application code talks to every
-datastore**. Application code never opens a connection, writes SQL, or calls
-Redis directly — it holds one facade and reaches every store through typed
-capability ports. In exchange, fabriq guarantees a small set of invariants
-that are otherwise impossible to hold across five different engines.
+Fabriq is the **single data fabric for your application _and_ its agents**.
+Application code never opens a connection, writes SQL, or calls Redis directly —
+it holds one facade and reaches every store through typed capability ports. AI
+agents reach the *same* fabric as a **brain**: fused semantic, lexical, and graph
+recall, guarded memory formation, and a live watch stream — in-process or over
+[MCP](/docs/mcp). Both ride one small set of invariants that are otherwise
+impossible to hold across many engines.
 
 ## The three invariants
 
@@ -56,11 +58,30 @@ engine types appear in any signature, so adapters stay swappable.
 | [Vector](/docs/vector) | pgvector | Embedding upsert and nearest-neighbour search. |
 | [Spatial](/docs/spatial) | PostGIS | Geometry upsert/delete and GiST-accelerated radius search. WKT+SRID, engine-neutral. SRID 4326 → true metres (geography); other SRIDs → planar metres. |
 | [Document](/docs/documents) | Postgres + grove CRDT | Collaborative CRDT documents that materialize into ordinary events. |
+| [Blob](/docs/file-plane) | Object store (via Trove) | External byte storage as `f.Blob()`: put/get/head/delete/list/copy, with presign, multipart, and range detected per driver, plus content-addressable dedup. Bytes never touch Postgres. |
 
 Reads over opted-in entities are transparently **[cached](/docs/caching)** — a two-level
 (per-id rows + query result-sets), write-invalidated read-through cache behind these
 ports, with an optional per-node in-process L1. Off by default; a registration flag, not
 a code change.
+
+## Files and blobs
+
+Beyond structured records, fabriq has a full **[file plane](/docs/file-plane)**.
+The catalog — files, folders, permissions, shares, and bookmarks — lives in
+Postgres as ordinary tenant-scoped entities, so it keeps every fabriq invariant:
+versioned events, RLS, graph and search projections, and live queries. The raw
+bytes live in an external object store reached through the `f.Blob()` port and
+never touch Postgres — content-addressed, reference-counted, and reclaimed by a
+reconciler-driven garbage collector. It is shipped dark: the blob port is `nil`
+until a storage driver is configured.
+
+<Callout type="info">
+  ADR 0008 amends ADR 0007 with one bounded exception — *referenced external
+  blobs* — fenced by three disciplines: opaque (no catalog authority),
+  checksum-verifiable, and reconciled rather than rebuilt. See the
+  [File Plane](/docs/file-plane) overview.
+</Callout>
 
 ## A first taste
 
@@ -149,6 +170,10 @@ pack, _ := tk.Recall(tenantCtx, agent.RecallRequest{
   <Card title="Data Planes" href="/docs/relational">
     Per-port guides: relational, graph, search, timeseries, vector, spatial,
     and the CRDT document plane.
+  </Card>
+  <Card title="File Plane" href="/docs/file-plane">
+    Files, folders, shares, and blobs: a Postgres catalog over an external
+    object store, with content-addressable dedup and reconciler-driven GC.
   </Card>
   <Card title="AI Agents" href="/docs/agent-toolkit">
     Use fabriq as an agent's brain: fused recall, guarded memory, a live watch
