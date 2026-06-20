@@ -35,6 +35,9 @@ func TestDistill_E2E_DeleteAndContentHashStability(t *testing.T) {
 
 	// Scenario 4: snapshot every node's ContentHash, re-roll unchanged → identical.
 	before := snapshotHashes(t, d, ctx)
+	if len(before) == 0 {
+		t.Fatal("snapshotHashes captured no nodes — tree was not built")
+	}
 	if _, err := d.Rollup(ctx); err != nil {
 		t.Fatal(err)
 	}
