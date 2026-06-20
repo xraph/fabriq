@@ -100,36 +100,36 @@ type RecallRequest struct {
     K        int
     Hops     int
     Filters  query.Where
-    Altitude string // "auto" | "entity" | "scope" | "tenant"
+    Altitude agent.Altitude // AltAuto (default) | AltEntity | AltScope | AltTenant
 }
 ```
 
 | Value | Behaviour |
 | --- | --- |
-| `""` / `"entity"` | Default — recall raw entity rows as usual; the digest tree is not consulted. |
-| `"scope"` | Return L1 scope/cluster digest summaries only; entity rows are not loaded. |
-| `"tenant"` | Return the L2 tenant-root summary only; useful for orientation queries. |
-| `"auto"` | Token budget drives descent: a **tight budget** (below `Config.AltitudeBudgetThreshold`) returns high-altitude digest summaries; a **generous budget** descends to entity rows. The cut-off is tunable and defaults to `2000` tokens. |
+| `AltAuto` (default, zero value) | Token budget drives descent: if the candidate entity rows fit within `Budget`, recall descends to raw entity rows (`AltEntity`); otherwise it climbs to the tenant-root digest summary (`AltTenant`). |
+| `AltEntity` | Raw entity rows only — digest items are dropped. |
+| `AltScope` | Scope/cluster digest summaries are kept; the entity rows they cover are dropped (when at least one digest is present). |
+| `AltTenant` | The tenant-root digest only; covered entity rows are dropped (when a digest is present). |
 
-In `auto` mode, a digest and any entity row it covers are **never both
-included** in the same `ContextPack` — the packer promotes the digest when the
-entity level would exceed the budget, and omits the underlying entities.
+In all non-`AltAuto` modes, a digest and any entity row it covers are **never
+both included** in the same `ContextPack`. If no digest items are present the
+behaviour gracefully falls back to returning whatever was found.
 
 ```go
-// Tight budget: get a scope-level summary, not 50 raw asset rows.
+// Tight budget: AltAuto climbs to the tenant digest when entity rows don't fit.
 pack, err := tk.Recall(ctx, agent.RecallRequest{
     Query:    "north site equipment status",
     Budget:   1500,
     Entities: []string{"asset"},
-    Altitude: "auto",
+    Altitude: agent.AltAuto,
 })
 
-// Generous budget: descend to entities as normal.
+// Generous budget: AltAuto descends to entity rows when they fit.
 pack, err := tk.Recall(ctx, agent.RecallRequest{
     Query:    "north site equipment status",
     Budget:   12000,
     Entities: []string{"asset"},
-    Altitude: "auto",
+    Altitude: agent.AltAuto,
 })
 ```
 
