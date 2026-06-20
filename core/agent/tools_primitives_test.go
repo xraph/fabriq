@@ -25,10 +25,10 @@ func TestTools_ListsAllPrimitives(t *testing.T) {
 	tk, _ := NewToolkit(ff, reg, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}}, Config{VectorDims: 3})
 
 	tools := tk.Tools()
-	if len(tools) != 6 {
-		t.Fatalf("want 6 tools, got %d", len(tools))
+	if len(tools) != 9 {
+		t.Fatalf("want 9 tools, got %d", len(tools))
 	}
-	for _, name := range []string{"recall", "vector_similar", "search", "graph_traverse", "get", "remember"} {
+	for _, name := range []string{"recall", "vector_similar", "search", "graph_traverse", "get", "remember", "map", "digest", "resolve"} {
 		tl, ok := toolByName(tools, name)
 		if !ok {
 			t.Fatalf("missing tool %q", name)

@@ -191,6 +191,16 @@ func (r *Registry) Validate() error {
 				}
 			}
 		}
+		if e.Spec.Distill != nil && e.Spec.Distill.Text == nil {
+			if len(e.Spec.Distill.SourceFields) == 0 {
+				return fmt.Errorf("fabriq: entity %q: Distill needs SourceFields or Text", name)
+			}
+			for _, f := range e.Spec.Distill.SourceFields {
+				if !e.Binding.HasColumn(f) {
+					return fmt.Errorf("fabriq: entity %q: Distill field %q is not a column", name, f)
+				}
+			}
+		}
 	}
 	return nil
 }

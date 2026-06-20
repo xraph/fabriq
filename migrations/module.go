@@ -55,6 +55,7 @@ func Group() *migrate.Group {
 			migration0019FsShare,
 			migration0020FsBookmark,
 			migration0021BlobSource,
+			migration0022DigestNode,
 		)
 	})
 	return group

@@ -23,6 +23,18 @@ type Config struct {
 	// Embedder enables the embedding worker: each write to an entity with an
 	// EmbedSpec is embedded + vector-upserted asynchronously. Nil = disabled.
 	Embedder agent.Embedder
+	// Summarizer enables the distillation worker: each write to an entity with
+	// a DistillSpec is summarized into its digest tree asynchronously (debounced,
+	// per-tenant single-flight). Nil = distillation disabled.
+	Summarizer agent.Summarizer
+	// Guard is the optional PII/guardrail seam for distillation (nil = identity).
+	Guard agent.Guard
+	// DistillFailOpenGuard flips the guard from fail-closed (default) to fail-open.
+	DistillFailOpenGuard bool
+	// DistillRecipeVersion salts the digest ContentHash; bump to rebuild the tree.
+	DistillRecipeVersion string
+	// DistillDebounce is the per-tenant coalescing window for L0+rollup sweeps.
+	DistillDebounce time.Duration
 }
 
 // Option is a functional option for Config.
@@ -49,6 +61,22 @@ func WithBlobGCGrace(d time.Duration) Option {
 // WithEmbedder enables the embedding worker: each write to an entity with an
 // EmbedSpec is embedded + vector-upserted asynchronously. Nil = disabled.
 func WithEmbedder(e agent.Embedder) Option { return func(o *Config) { o.Embedder = e } }
+
+// WithSummarizer enables the distillation worker: each write to an entity with
+// a DistillSpec is summarized into its digest tree asynchronously. Nil = disabled.
+func WithSummarizer(s agent.Summarizer) Option { return func(o *Config) { o.Summarizer = s } }
+
+// WithGuard sets the optional PII/guardrail seam for distillation.
+func WithGuard(g agent.Guard) Option { return func(o *Config) { o.Guard = g } }
+
+// WithDistillFailOpenGuard flips the guard from fail-closed (default) to fail-open.
+func WithDistillFailOpenGuard(v bool) Option { return func(o *Config) { o.DistillFailOpenGuard = v } }
+
+// WithDistillRecipeVersion salts the digest ContentHash; bump to rebuild the tree.
+func WithDistillRecipeVersion(v string) Option { return func(o *Config) { o.DistillRecipeVersion = v } }
+
+// WithDistillDebounce sets the per-tenant coalescing window for L0+rollup sweeps.
+func WithDistillDebounce(d time.Duration) Option { return func(o *Config) { o.DistillDebounce = d } }
 
 // WithCustomAppliers appends consumer-supplied projection appliers to the
 // fabriq config. They are unioned after the built-in declarative applier for

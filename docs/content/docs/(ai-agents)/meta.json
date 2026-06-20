@@ -3,6 +3,7 @@
   "pages": [
     "agent-toolkit",
     "recall",
+    "distillation",
     "remember",
     "mcp"
   ]

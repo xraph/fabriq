@@ -102,6 +102,12 @@ func (e *Extension) Start(_ context.Context) error {
 	if f == nil {
 		return fmt.Errorf("fabriq-agent-mcp: requires the fabriq facade (started)")
 	}
+	// Wire CAS from the opened stores so that the "digest" tool can retrieve
+	// summary text. Guard against a nil concrete pointer before assigning into
+	// the blob.CAS interface to avoid a non-nil interface wrapping a nil pointer.
+	if stores := e.fab.Stores(); stores != nil && stores.CAS != nil {
+		e.cfg.Toolkit.CAS = stores.CAS
+	}
 	tk, err := agent.NewToolkit(f, f.Registry(), e.cfg.Embedder, e.cfg.Toolkit)
 	if err != nil {
 		return fmt.Errorf("fabriq-agent-mcp: build toolkit: %w", err)

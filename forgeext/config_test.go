@@ -61,3 +61,18 @@ func TestLoadConfig_PrefixedKey(t *testing.T) {
 		t.Fatalf("LoadConfig prefixed: expected DSN %q, got %q", "postgres://ext/db", got.Postgres.DSN)
 	}
 }
+
+func TestOptions_Distill(t *testing.T) {
+	var cfg forgeext.Config
+	for _, o := range []forgeext.Option{
+		forgeext.WithSummarizer(nil), forgeext.WithGuard(nil),
+		forgeext.WithDistillFailOpenGuard(true),
+		forgeext.WithDistillRecipeVersion("v2"),
+		forgeext.WithDistillDebounce(2 * time.Second),
+	} {
+		o(&cfg)
+	}
+	if !cfg.DistillFailOpenGuard || cfg.DistillRecipeVersion != "v2" || cfg.DistillDebounce != 2*time.Second {
+		t.Fatalf("distill options not applied: %+v", cfg)
+	}
+}

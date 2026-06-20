@@ -169,6 +169,11 @@ type EntitySpec struct {
 
 	// Embed opts the entity into vector embedding (auto-indexing). Nil = not embedded.
 	Embed *EmbedSpec
+
+	// Distill opts the entity into context distillation: each row gets an
+	// L0 digest summary; declared Scopes form L1 backbone nodes. Nil = not
+	// distilled. The distillation layer supplies the Summarizer/Guard.
+	Distill *DistillSpec
 }
 
 // LiveSpec opts an entity into the live query engine (nil = disabled).
@@ -196,4 +201,17 @@ type CacheSpec struct {
 type EmbedSpec struct {
 	Fields []string
 	Text   func(vals map[string]any) string
+}
+
+// DistillSpec opts an entity into context distillation. Declarative metadata
+// only — the distillation layer supplies the summarization model and the guard.
+// SourceFields names the columns concatenated into the L0 source text; Text,
+// when set, overrides SourceFields. Scopes names the declared scope names that
+// form L1 backbone digest nodes. Budget is the L0 summary token budget
+// (0 = config default).
+type DistillSpec struct {
+	SourceFields []string
+	Text         func(vals map[string]any) string
+	Scopes       []string
+	Budget       int
 }
