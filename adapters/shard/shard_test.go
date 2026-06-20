@@ -46,6 +46,10 @@ func (s *stub) Similar(_ context.Context, q query.VectorQuery, _ any) error {
 	s.calls = append(s.calls, "Similar:"+q.Entity)
 	return nil
 }
+func (s *stub) Delete(_ context.Context, entity, _ string) error {
+	s.calls = append(s.calls, "Delete:"+entity)
+	return nil
+}
 func (s *stub) BulkWrite(_ context.Context, series string, _ []query.Point) error {
 	s.calls = append(s.calls, "BulkWrite:"+series)
 	return nil
