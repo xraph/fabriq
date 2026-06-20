@@ -472,8 +472,8 @@ func (r digestRow) toVals() map[string]any {
 		"summary_hash": r.SummaryHash,
 		"content_hash": r.ContentHash,
 		"sem_hash":     r.SemHash,
-		"child_ids":    r.ChildIDs,
-		"parent_ids":   r.ParentIDs,
+		"child_ids":    nonNilStrings(r.ChildIDs),
+		"parent_ids":   nonNilStrings(r.ParentIDs),
 		"updated_at":   r.UpdatedAt,
 	}
 }
@@ -497,6 +497,16 @@ func digestRowFromVals(m map[string]any) digestRow {
 		ParentIDs:   asStrings(m["parent_ids"]),
 		UpdatedAt:   asInt64(m["updated_at"]),
 	}
+}
+
+// nonNilStrings returns an empty (non-nil) slice for a nil input so the
+// JSONB NOT NULL columns digest_nodes.child_ids / parent_ids receive '[]'
+// rather than SQL NULL. Read-back stays []string (asStrings-compatible).
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // getNode reads a digest_node row by id, returning (zero, false, nil) when the

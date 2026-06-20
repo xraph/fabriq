@@ -146,3 +146,31 @@ func TestDistillL0_GuardRedactsBeforeSummary(t *testing.T) {
 		t.Fatalf("expected 1 redacted blob, got %d", cas.Len())
 	}
 }
+
+// TestToVals_NilChildParentBecomeEmptySlices verifies that a digestRow with nil
+// ChildIDs/ParentIDs produces non-nil []string values in toVals(), satisfying
+// the JSONB NOT NULL constraint on digest_nodes.child_ids / parent_ids.
+func TestToVals_NilChildParentBecomeEmptySlices(t *testing.T) {
+	r := digestRow{ID: "digest:0:note:x", Level: 0, Kind: "entity"} // ChildIDs/ParentIDs nil
+	v := r.toVals()
+
+	ci, ok := v["child_ids"].([]string)
+	if !ok || ci == nil {
+		t.Fatalf("child_ids = %#v, want non-nil []string", v["child_ids"])
+	}
+	if len(ci) != 0 {
+		t.Fatalf("child_ids len = %d, want 0", len(ci))
+	}
+
+	pi, ok := v["parent_ids"].([]string)
+	if !ok || pi == nil {
+		t.Fatalf("parent_ids = %#v, want non-nil []string", v["parent_ids"])
+	}
+	if len(pi) != 0 {
+		t.Fatalf("parent_ids len = %d, want 0", len(pi))
+	}
+
+	// Round-trip: asStrings must not panic and the type must be []string.
+	_ = asStrings(v["child_ids"])
+	_ = asStrings(v["parent_ids"])
+}
