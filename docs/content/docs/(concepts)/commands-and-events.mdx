@@ -24,10 +24,13 @@ const (
 	OpCreate Op = iota // inserts a new aggregate (version 1)
 	OpUpdate           // replaces an existing aggregate's row (version+1)
 	OpDelete           // removes the row; the deletion is still a versioned event
+	OpUpsert           // insert-if-absent / update-if-present; idempotent by AggID
 )
 
 func (o Op) Verb() string // OpCreate -> "created", OpUpdate -> "updated", OpDelete -> "deleted"
 ```
+
+`OpUpsert` resolves to `created` or `updated` at apply time depending on whether the aggregate already exists, so it is idempotent by `AggID`.
 
 The result reports the outcome of one command:
 
@@ -131,6 +134,7 @@ Each applied command appends one `event.Envelope` — the wire shape of one doma
 type Envelope struct {
 	ID                   string          // ULID: lexically sortable, minted at command time
 	TenantID             string          // consumers never re-derive it from the payload
+	ScopeID              string          // optional secondary scope (sub-tenant partition); empty when unscoped
 	Aggregate            string          // registry entity name, e.g. "asset"
 	AggID                string          // aggregate instance id
 	Version              int64           // the aggregate version after this event

@@ -35,7 +35,10 @@ type SearchSpec struct {
 type SearchQuery struct {
 	Entity string
 	Query  string
-	Limit  int
+	Filter Where  // narrows with the same Cond vocabulary as relational List (indexed fields)
+	Sort   string // indexed column, optionally " DESC"; empty sorts by relevance score
+	Limit  int    // page size (adapter default when <= 0)
+	Offset int    // rows to skip
 }
 ```
 

@@ -34,18 +34,20 @@ The filter columns are validated against the entity (the injection guard, via `q
 
 ```go
 func (f *Fabriq) LiveQuery(ctx context.Context, q livequery.LiveQuery) (
-	livequery.Snapshot, <-chan livequery.LiveDelta, func(), error)
+	livequery.Snapshot, <-chan livequery.LiveDelta, *livequery.Handle, error)
 ```
 
+The third return is a `*livequery.Handle`: call `Close()` to tear the subscription down, and `Reanchor(ctx, *Cursor, limit)` to refill a fresh window when deep-scrolling.
+
 ```go
-snap, deltas, cancel, err := f.LiveQuery(tenantCtx, livequery.LiveQuery{
+snap, deltas, handle, err := f.LiveQuery(tenantCtx, livequery.LiveQuery{
 	Entity: "asset",
 	Where:  query.Where{query.Eq("kind", "pump"), query.Eq("site_id", siteID)},
 	Sort:   []livequery.SortKey{{Column: "name"}},
 	Limit:  50,
 })
 if err != nil { /* unknown entity, no LiveSpec, bad column, denied authz, not configured */ }
-defer cancel()
+defer handle.Close()
 
 render(snap.Rows)            // the initial ordered window, straight from Postgres
 for d := range deltas {       // then splice each delta into the rendered list

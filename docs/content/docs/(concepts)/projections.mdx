@@ -13,7 +13,7 @@ Appliers are pure: `apply(Event) -> []Mutation`. A `Mutation` carries no engine 
 type Mutation interface{ isMutation() }
 
 // graph mutations
-type NodeUpsert struct { Label string; ID string; Props map[string]any; Version int64 }
+type NodeUpsert struct { Label string; ExtraLabels []string; ID string; Props map[string]any; Version int64 }
 type EdgeUpsert struct { Rel, FromLabel, FromID, ToLabel, ToID string; Version int64 }
 type NodeDelete struct { Label, ID string }
 type EdgeDelete struct { Rel, FromLabel, FromID string; Version int64 }

@@ -16,8 +16,11 @@ type Config struct {
 	Redis         RedisConfig         // event fan-out; required for subscriptions + projections
 	FalkorDB      FalkorDBConfig      // graph projection engine
 	Elasticsearch ElasticsearchConfig // search projection engine
+	Storage       StorageConfig       // blob/CAS byte plane (file-plane storage)
 	Projections   ProjectionsConfig   // Graph/Search on-off toggles
 	Subscriptions SubscriptionsConfig // delta-plane tuning
+	Cache         CacheConfig         // engine cache (result-set caching at Repo[T])
+	Encryption    EncryptionConfig    // at-rest encryption for blob-source credentials
 }
 ```
 
