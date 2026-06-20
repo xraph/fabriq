@@ -13,6 +13,6 @@ func (e embedderStub) Embed(_ context.Context, texts []string) ([][]float32, err
 	return out, nil
 }
 
-func TestEmbedder_SatisfiedByStub(t *testing.T) {
+func TestEmbedder_SatisfiedByStub(_ *testing.T) {
 	var _ Embedder = embedderStub{dims: 768}
 }

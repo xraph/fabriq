@@ -20,7 +20,7 @@ func packEntities(p ContextPack) map[string]int {
 
 // noteTokens builds the pack once at a huge budget and returns the token count
 // of the (single) note item, so the test can pick budget thresholds robustly.
-func noteTokens(t *testing.T, tk *Toolkit, ctx context.Context) int {
+func noteTokens(ctx context.Context, t *testing.T, tk *Toolkit) int {
 	t.Helper()
 	pack, err := tk.Recall(ctx, RecallRequest{
 		Query: "pump", Budget: 1 << 20, Entities: []string{"note"}, Altitude: AltAuto,
@@ -45,7 +45,7 @@ func TestRecall_AltitudeAuto_BudgetDrivesLayer(t *testing.T) {
 	w := fabriqtest.NewWorld(r)
 	fab := fabriqtest.NewFabric(w)
 	cas := fabriqtest.NewFakeCAS()
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	// A long body makes the note row's token count exceed any single digest
 	// row's (digest_node has many fixed columns but its summary lives in CAS, so
@@ -72,10 +72,10 @@ func TestRecall_AltitudeAuto_BudgetDrivesLayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new distiller: %v", err)
 	}
-	if _, err := d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "Pump", "body": body}); err != nil {
+	if _, err = d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "Pump", "body": body}); err != nil {
 		t.Fatalf("distill L0: %v", err)
 	}
-	if _, err := d.Rollup(ctx); err != nil {
+	if _, err = d.Rollup(ctx); err != nil {
 		t.Fatalf("rollup: %v", err)
 	}
 
@@ -84,7 +84,7 @@ func TestRecall_AltitudeAuto_BudgetDrivesLayer(t *testing.T) {
 		t.Fatalf("new toolkit: %v", err)
 	}
 
-	nTok := noteTokens(t, tk, ctx)
+	nTok := noteTokens(ctx, t, tk)
 
 	// Generous budget → AltEntity: pack has the note, no digest_node.
 	generous, err := tk.Recall(ctx, RecallRequest{

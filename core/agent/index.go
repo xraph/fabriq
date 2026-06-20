@@ -214,7 +214,7 @@ func (ix *Indexer) IndexEvent(ctx context.Context, env event.Envelope) error {
 	}
 	var vals map[string]any
 	if err := json.Unmarshal(env.Payload, &vals); err != nil {
-		return fmt.Errorf("%w: %v", ErrUnindexablePayload, err)
+		return fmt.Errorf("%w: %w", ErrUnindexablePayload, err)
 	}
 	if len(vals) == 0 {
 		return nil

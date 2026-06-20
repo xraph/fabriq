@@ -7,7 +7,6 @@ import (
 	"github.com/xraph/grove"
 
 	"github.com/xraph/fabriq/core/command"
-	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/fabriqtest"
@@ -27,7 +26,7 @@ func TestNewFabric_ExecThenGet(t *testing.T) {
 	if err := r.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	var fab query.Fabric = fabriqtest.NewFabric(fabriqtest.NewWorld(r))
+	fab := fabriqtest.NewFabric(fabriqtest.NewWorld(r))
 	ctx, err := tenant.WithTenant(context.Background(), "acme")
 	if err != nil {
 		t.Fatal(err)

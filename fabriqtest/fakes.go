@@ -314,8 +314,8 @@ func (r *FakeRelational) List(ctx context.Context, entity string, q query.ListQu
 		return err
 	}
 
-	if err := query.ValidateConds(q.Where, ent.Binding.HasColumn); err != nil {
-		return err
+	if verr := query.ValidateConds(q.Where, ent.Binding.HasColumn); verr != nil {
+		return verr
 	}
 
 	// Dynamic entities use map-native hydration: into must be *[]map[string]any.

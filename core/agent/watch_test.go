@@ -14,7 +14,7 @@ func TestWatch_DeliversDeltasAndPassesScope(t *testing.T) {
 	w := fabriqtest.NewWorld(reg)
 	ff := newFakeFabric(t, w)
 	tk, _ := NewToolkit(ff, reg, nil, Config{})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	scope := query.SubscribeScope{Entity: "doc", Scope: "tenant"}
 	ch, err := tk.Watch(ctx, scope)

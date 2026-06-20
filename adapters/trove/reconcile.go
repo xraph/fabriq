@@ -88,7 +88,7 @@ func (r *BlobReconciler) Reconcile(ctx context.Context, repair bool) (Report, er
 		if row.RefCount != t {
 			rep.RefsCorrected++
 			if repair && t > 0 {
-				if err := r.setRefCount(ctx, row.Hash, t); err != nil {
+				if err = r.setRefCount(ctx, row.Hash, t); err != nil {
 					return rep, fmt.Errorf("fabriq: blob reconcile: correct ref_count %q: %w", row.Hash, err)
 				}
 			}
@@ -99,10 +99,10 @@ func (r *BlobReconciler) Reconcile(ctx context.Context, repair bool) (Report, er
 			rep.GCCount++
 			rep.BytesFreed += row.Size
 			if repair {
-				if err := r.deleteByte(ctx, row.Bucket, row.Key); err != nil {
+				if err = r.deleteByte(ctx, row.Bucket, row.Key); err != nil {
 					return rep, fmt.Errorf("fabriq: blob reconcile: gc byte %q: %w", row.Hash, err)
 				}
-				if err := r.deleteRow(ctx, row.Hash); err != nil {
+				if err = r.deleteRow(ctx, row.Hash); err != nil {
 					return rep, fmt.Errorf("fabriq: blob reconcile: gc row %q: %w", row.Hash, err)
 				}
 			}
@@ -111,9 +111,9 @@ func (r *BlobReconciler) Reconcile(ctx context.Context, repair bool) (Report, er
 
 		// 2. Broken-row: a referenced hash whose bytes are missing.
 		if t > 0 {
-			ok, err := r.byteExists(ctx, row.Bucket, row.Key)
-			if err != nil {
-				return rep, fmt.Errorf("fabriq: blob reconcile: head %q: %w", row.Hash, err)
+			ok, berr := r.byteExists(ctx, row.Bucket, row.Key)
+			if berr != nil {
+				return rep, fmt.Errorf("fabriq: blob reconcile: head %q: %w", row.Hash, berr)
 			}
 			if !ok {
 				rep.Broken = append(rep.Broken, row.Hash)

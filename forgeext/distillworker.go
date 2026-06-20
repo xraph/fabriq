@@ -74,10 +74,10 @@ type distillSweeper struct {
 	timers map[string]*time.Timer
 }
 
-// NewDistillSweeper builds a sweeper over a Distiller. A non-positive debounce
+// newDistillSweeper builds a sweeper over a Distiller. A non-positive debounce
 // defaults to one second. When metrics are supplied, an observer adapter is
 // attached to the Distiller so per-node counters increment from inside core.
-func NewDistillSweeper(d *agent.Distiller, debounce time.Duration, m *metrics.Metrics) *distillSweeper {
+func newDistillSweeper(d *agent.Distiller, debounce time.Duration, m *metrics.Metrics) *distillSweeper {
 	if debounce <= 0 {
 		debounce = time.Second
 	}

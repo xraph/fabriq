@@ -209,7 +209,7 @@ func entityIDs(items []ContextItem) []string {
 func TestDedupeByAltitude_EdgeCases(t *testing.T) {
 	// empty input — must not panic
 	out := dedupeByAltitude(nil, AltEntity)
-	if out != nil && len(out) != 0 {
+	if len(out) != 0 {
 		t.Fatalf("expected empty output for nil input, got %v", out)
 	}
 

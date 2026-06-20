@@ -9,7 +9,7 @@ import (
 // RegisterAll registers the TWINOS domain pack. Call it once at startup;
 // follow with reg.Validate() (fabriq.New does both).
 func RegisterAll(reg *registry.Registry) error {
-	specs := make([]registry.EntitySpec, 0, 6)
+	specs := make([]registry.EntitySpec, 0, 12)
 	specs = append(specs, []registry.EntitySpec{
 		{
 			Name:      "site",
@@ -59,65 +59,65 @@ func RegisterAll(reg *registry.Registry) error {
 			Model:     (*BlobObject)(nil),
 			Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},
 		},
+		{
+			Name:      "fs_node",
+			Kind:      registry.KindAggregate,
+			Model:     (*FsNode)(nil),
+			GraphNode: "FsNode",
+			Edges: []registry.EdgeSpec{
+				{Field: "parent_id", Rel: "CHILD_OF", Target: "fs_node"},
+			},
+			Search:    registry.SearchSpec{Index: "fs_nodes", Fields: []string{"name", "content_type"}},
+			Subscribe: []registry.Scope{registry.ByID, registry.ByField("parent", "parent_id"), registry.ByTenant},
+			Live: &registry.LiveSpec{
+				Filterable: []string{"parent_id", "node_type", "name", "deleted_at"},
+				Sortable:   []string{"name", "size", "updated_at", "node_type"},
+				MaxWindow:  500,
+			},
+		},
+		{
+			Name:  "page",
+			Kind:  registry.KindDocument,
+			Model: (*Page)(nil),
+			CRDT: &registry.CRDTSpec{
+				Engine:        "grove-crdt",
+				SnapshotEvery: 64,
+				QuietWindow:   2 * time.Second,
+			},
+			Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},
+		},
+		{
+			Name:      "blob_source",
+			Kind:      registry.KindAggregate,
+			Model:     (*BlobSource)(nil),
+			Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},
+		},
+		{
+			Name:      "fs_permission",
+			Kind:      registry.KindAggregate,
+			Model:     (*FsPermission)(nil),
+			Subscribe: []registry.Scope{registry.ByID, registry.ByField("node", "node_id"), registry.ByTenant},
+		},
+		{
+			Name:      "fs_share",
+			Kind:      registry.KindAggregate,
+			Model:     (*FsShare)(nil),
+			Subscribe: []registry.Scope{registry.ByID, registry.ByField("node", "node_id"), registry.ByTenant},
+		},
+		{
+			Name:      "fs_bookmark",
+			Kind:      registry.KindAggregate,
+			Model:     (*FsBookmark)(nil),
+			Subscribe: []registry.Scope{registry.ByID, registry.ByField("user", "user_id"), registry.ByTenant},
+		},
+		{
+			Name:      "digest_node",
+			Kind:      registry.KindAggregate,
+			Model:     (*DigestNode)(nil),
+			GraphNode: "DigestNode",
+			Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},
+		},
 	}...)
-	specs = append(specs, registry.EntitySpec{
-		Name:      "fs_node",
-		Kind:      registry.KindAggregate,
-		Model:     (*FsNode)(nil),
-		GraphNode: "FsNode",
-		Edges: []registry.EdgeSpec{
-			{Field: "parent_id", Rel: "CHILD_OF", Target: "fs_node"},
-		},
-		Search:    registry.SearchSpec{Index: "fs_nodes", Fields: []string{"name", "content_type"}},
-		Subscribe: []registry.Scope{registry.ByID, registry.ByField("parent", "parent_id"), registry.ByTenant},
-		Live: &registry.LiveSpec{
-			Filterable: []string{"parent_id", "node_type", "name", "deleted_at"},
-			Sortable:   []string{"name", "size", "updated_at", "node_type"},
-			MaxWindow:  500,
-		},
-	})
-	specs = append(specs, registry.EntitySpec{
-		Name:  "page",
-		Kind:  registry.KindDocument,
-		Model: (*Page)(nil),
-		CRDT: &registry.CRDTSpec{
-			Engine:        "grove-crdt",
-			SnapshotEvery: 64,
-			QuietWindow:   2 * time.Second,
-		},
-		Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},
-	})
-	specs = append(specs, registry.EntitySpec{
-		Name:      "blob_source",
-		Kind:      registry.KindAggregate,
-		Model:     (*BlobSource)(nil),
-		Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},
-	})
-	specs = append(specs, registry.EntitySpec{
-		Name:      "fs_permission",
-		Kind:      registry.KindAggregate,
-		Model:     (*FsPermission)(nil),
-		Subscribe: []registry.Scope{registry.ByID, registry.ByField("node", "node_id"), registry.ByTenant},
-	})
-	specs = append(specs, registry.EntitySpec{
-		Name:      "fs_share",
-		Kind:      registry.KindAggregate,
-		Model:     (*FsShare)(nil),
-		Subscribe: []registry.Scope{registry.ByID, registry.ByField("node", "node_id"), registry.ByTenant},
-	})
-	specs = append(specs, registry.EntitySpec{
-		Name:      "fs_bookmark",
-		Kind:      registry.KindAggregate,
-		Model:     (*FsBookmark)(nil),
-		Subscribe: []registry.Scope{registry.ByID, registry.ByField("user", "user_id"), registry.ByTenant},
-	})
-	specs = append(specs, registry.EntitySpec{
-		Name:      "digest_node",
-		Kind:      registry.KindAggregate,
-		Model:     (*DigestNode)(nil),
-		GraphNode: "DigestNode",
-		Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},
-	})
 	for _, spec := range specs {
 		if err := reg.Register(spec); err != nil {
 			return err

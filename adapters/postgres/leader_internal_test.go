@@ -93,7 +93,7 @@ func TestElector_DedicatedConnNotUsedConcurrentlyOnAbdication(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := e.campaign(ctx, func(leadCtx context.Context) error {
+	err := e.campaign(ctx, func(_ context.Context) error {
 		// Abdicate only once the watchdog is demonstrably inside a query.
 		<-watchdogTicked
 		return nil

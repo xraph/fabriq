@@ -13,7 +13,9 @@ func TestDigestIDDerivation(t *testing.T) {
 		t.Fatalf("tenant id: %s", TenantRootID())
 	}
 	// Cluster id is stable for the same prefix/p (membership drift must not move it).
-	if ClusterID(uint64(0xF)<<60, 4) != ClusterID(uint64(0xF)<<60, 4) {
+	first := ClusterID(uint64(0xF)<<60, 4)
+	again := ClusterID(uint64(0xF)<<60, 4)
+	if first != again {
 		t.Fatal("cluster id must be stable")
 	}
 	if ClusterID(uint64(0xF)<<60, 4) == ClusterID(uint64(0xE)<<60, 4) {

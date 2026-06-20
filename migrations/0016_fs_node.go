@@ -11,7 +11,7 @@ var migration0016FsNode = &migrate.Migration{
 	Version: "202606180016",
 	Comment: "fs_node filesystem tree: adjacency + materialized path + scope RLS",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
-		stmts := []string{
+		stmts := append([]string{
 			`CREATE TABLE IF NOT EXISTS fs_nodes (
 				id           TEXT PRIMARY KEY,
 				tenant_id    TEXT NOT NULL,
@@ -37,8 +37,7 @@ var migration0016FsNode = &migrate.Migration{
 			`CREATE INDEX IF NOT EXISTS fs_nodes_children_idx ON fs_nodes (tenant_id, parent_id) WHERE deleted_at IS NULL`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS fs_nodes_sibling_uniq ON fs_nodes (tenant_id, parent_id, name) WHERE deleted_at IS NULL`,
 			`CREATE INDEX IF NOT EXISTS fs_nodes_path_idx ON fs_nodes (tenant_id, path text_pattern_ops)`,
-		}
-		stmts = append(stmts, ScopeAwareTenantPolicy("fs_nodes")...)
+		}, ScopeAwareTenantPolicy("fs_nodes")...)
 		return execAll(ctx, exec, stmts)
 	},
 	Down: func(ctx context.Context, exec migrate.Executor) error {

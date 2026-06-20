@@ -25,7 +25,7 @@ var _ blob.CAS = (*FakeCAS)(nil)
 func NewFakeCAS() *FakeCAS { return &FakeCAS{data: map[string][]byte{}} }
 
 // Store writes content-addressed bytes and returns the sha256 hex hash.
-func (c *FakeCAS) Store(_ context.Context, r io.Reader) (string, int64, error) {
+func (c *FakeCAS) Store(_ context.Context, r io.Reader) (hash string, size int64, err error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return "", 0, err

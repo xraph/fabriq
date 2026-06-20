@@ -99,9 +99,9 @@ func testRegistry(t testing.TB) *registry.Registry {
 	return r
 }
 
-func testCtx(t testing.TB, tid string) context.Context {
+func testCtx(t testing.TB) context.Context {
 	t.Helper()
-	ctx, err := tenant.WithTenant(context.Background(), tid)
+	ctx, err := tenant.WithTenant(context.Background(), "acme")
 	if err != nil {
 		t.Fatal(err)
 	}

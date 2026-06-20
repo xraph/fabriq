@@ -15,10 +15,10 @@ func TestIndexer_ReindexBackfillsAllRows(t *testing.T) {
 	w := fabriqtest.NewWorld(reg)
 	ff := newFakeFabric(t, w)
 	ix, _ := NewIndexer(ff, reg, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	// Seed 3 ixdoc rows via the command path (vectors NOT auto-written — no wiring).
-	var ids []string
+	ids := make([]string, 0, 3)
 	for _, title := range []string{"a", "b", "c"} {
 		res, err := ff.Exec(ctx, command.Command{Entity: "ixdoc", Op: command.OpCreate, Payload: &ixDoc{Title: title, Body: "body"}})
 		if err != nil {
@@ -27,7 +27,7 @@ func TestIndexer_ReindexBackfillsAllRows(t *testing.T) {
 		ids = append(ids, res.AggID)
 	}
 	// Before backfill: nothing indexed.
-	if indexed(t, w, ctx, "ixdoc", ids[0], []float32{1, 0, 0}) {
+	if indexed(ctx, t, w, "ixdoc", ids[0], []float32{1, 0, 0}) {
 		t.Fatal("expected empty vector store before Reindex")
 	}
 
@@ -39,7 +39,7 @@ func TestIndexer_ReindexBackfillsAllRows(t *testing.T) {
 		t.Fatalf("want 3 indexed, got %d", n)
 	}
 	for _, id := range ids {
-		if !indexed(t, w, ctx, "ixdoc", id, []float32{1, 0, 0}) {
+		if !indexed(ctx, t, w, "ixdoc", id, []float32{1, 0, 0}) {
 			t.Fatalf("id %q not indexed after Reindex", id)
 		}
 	}
@@ -49,7 +49,7 @@ func TestIndexer_ReindexNonEmbeddableIsZero(t *testing.T) {
 	reg := embedRegistry(t)
 	ff := newFakeFabric(t, fabriqtest.NewWorld(reg))
 	ix, _ := NewIndexer(ff, reg, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 	n, err := ix.Reindex(ctx, "plain")
 	if err != nil || n != 0 {
 		t.Fatalf("want 0 indexed / nil err for non-embeddable, got %d / %v", n, err)
@@ -67,10 +67,10 @@ func TestIndexer_ReindexPaginates(t *testing.T) {
 	w := fabriqtest.NewWorld(reg)
 	ff := newFakeFabric(t, w)
 	ix, _ := NewIndexer(ff, reg, stubEmbedder{dims: 3, vec: []float32{1, 0, 0}})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	// Seed 5 rows — 3 pages at batch=2 (pages of 2, 2, 1).
-	var ids []string
+	ids := make([]string, 0, 5)
 	for _, title := range []string{"p", "q", "r", "s", "u"} {
 		res, err := ff.Exec(ctx, command.Command{Entity: "ixdoc", Op: command.OpCreate, Payload: &ixDoc{Title: title, Body: "body"}})
 		if err != nil {
@@ -87,7 +87,7 @@ func TestIndexer_ReindexPaginates(t *testing.T) {
 		t.Fatalf("want 5 indexed, got %d", n)
 	}
 	for _, id := range ids {
-		if !indexed(t, w, ctx, "ixdoc", id, []float32{1, 0, 0}) {
+		if !indexed(ctx, t, w, "ixdoc", id, []float32{1, 0, 0}) {
 			t.Fatalf("id %q not indexed after paginated Reindex", id)
 		}
 	}
@@ -115,7 +115,7 @@ func TestIndexer_ReindexBatchesEmbedCalls(t *testing.T) {
 	ff := newFakeFabric(t, w)
 	emb := &countingEmbedder{}
 	ix, _ := NewIndexer(ff, reg, emb)
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	orig := reindexBatch
 	reindexBatch = 2
@@ -160,9 +160,9 @@ func TestIndexer_ReindexDynamicEntity(t *testing.T) {
 	w := fabriqtest.NewWorld(reg)
 	ff := newFakeFabric(t, w)
 	ix, _ := NewIndexer(ff, reg, stubEmbedder{dims: 3, vec: []float32{0, 1, 0}})
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
-	var ids []string
+	ids := make([]string, 0, 2)
 	for _, label := range []string{"alpha", "beta"} {
 		res, err := ff.Exec(ctx, command.Command{
 			Entity:  "ditem",
@@ -183,7 +183,7 @@ func TestIndexer_ReindexDynamicEntity(t *testing.T) {
 		t.Fatalf("want 2 indexed, got %d", n)
 	}
 	for _, id := range ids {
-		if !indexed(t, w, ctx, "ditem", id, []float32{0, 1, 0}) {
+		if !indexed(ctx, t, w, "ditem", id, []float32{0, 1, 0}) {
 			t.Fatalf("dynamic id %q not indexed after Reindex", id)
 		}
 	}

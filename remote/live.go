@@ -48,7 +48,7 @@ func (h *LiveHandle) Reanchor(context.Context, *livequery.Cursor, int) (livequer
 // enter/leave/move/update deltas, and a handle to tear it down. It mirrors
 // *fabriq.Fabriq.LiveQuery, except the handle is a remote *LiveHandle (no
 // Reanchor yet). Close the handle — or cancel ctx — to end the subscription.
-func (r *RemoteFabric) LiveQuery(ctx context.Context, q livequery.LiveQuery) (livequery.Snapshot, <-chan livequery.LiveDelta, *LiveHandle, error) {
+func (r *Fabric) LiveQuery(ctx context.Context, q livequery.LiveQuery) (livequery.Snapshot, <-chan livequery.LiveDelta, *LiveHandle, error) {
 	body, err := json.Marshal(q)
 	if err != nil {
 		return livequery.Snapshot{}, nil, nil, err

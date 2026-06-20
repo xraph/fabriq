@@ -50,7 +50,7 @@ func TestRecall_GraphChannelExpandsToNeighbor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	site, err := ff.Exec(ctx, command.Command{Entity: "gsite", Op: command.OpCreate, Payload: &gSite{Name: "Plant A"}})
 	if err != nil {
@@ -61,7 +61,7 @@ func TestRecall_GraphChannelExpandsToNeighbor(t *testing.T) {
 		t.Fatal(err)
 	}
 	// asset is the vector seed
-	if err := w.Vector.Upsert(ctx, "gasset", asset.AggID, []float32{1, 0, 0}, nil); err != nil {
+	if err = w.Vector.Upsert(ctx, "gasset", asset.AggID, []float32{1, 0, 0}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// graph: gasset --LOCATED_AT--> gsite (canned to the EXACT cypher the channel builds)
@@ -94,7 +94,7 @@ func TestRecall_GraphChannelStrictReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	site, err := ff.Exec(ctx, command.Command{Entity: "gsite", Op: command.OpCreate, Payload: &gSite{Name: "Plant B"}})
 	if err != nil {
@@ -105,7 +105,7 @@ func TestRecall_GraphChannelStrictReturnsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	// asset is the vector seed — no Graph.Cann, so FakeGraph returns an error
-	if err := w.Vector.Upsert(ctx, "gasset", asset.AggID, []float32{1, 0, 0}, nil); err != nil {
+	if err = w.Vector.Upsert(ctx, "gasset", asset.AggID, []float32{1, 0, 0}, nil); err != nil {
 		t.Fatal(err)
 	}
 

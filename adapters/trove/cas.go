@@ -77,7 +77,7 @@ func (s *CASStore) forTenant(ctx context.Context, tenantID string) (*trovecas.CA
 // CASIndex.Put); the returned hash is stable across duplicate writes. The
 // trove *driver.ObjectInfo is unwrapped internally; callers receive only
 // fabriq types.
-func (s *CASStore) Store(ctx context.Context, r io.Reader) (string, int64, error) {
+func (s *CASStore) Store(ctx context.Context, r io.Reader) (hash string, size int64, err error) {
 	tid, err := tenant.Require(ctx)
 	if err != nil {
 		return "", 0, err
@@ -90,7 +90,6 @@ func (s *CASStore) Store(ctx context.Context, r io.Reader) (string, int64, error
 	if err != nil {
 		return "", 0, err
 	}
-	var size int64
 	if info != nil {
 		size = info.Size
 	}

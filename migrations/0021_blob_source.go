@@ -11,7 +11,7 @@ var migration0021BlobSource = &migrate.Migration{
 	Version: "202606190021",
 	Comment: "blob_source external-storage connection records (encrypted auth)",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
-		stmts := []string{
+		stmts := append([]string{
 			`CREATE TABLE IF NOT EXISTS blob_sources (
 				id           TEXT PRIMARY KEY,
 				tenant_id    TEXT NOT NULL,
@@ -30,8 +30,7 @@ var migration0021BlobSource = &migrate.Migration{
 			)`,
 			`CREATE INDEX IF NOT EXISTS blob_sources_tenant_idx ON blob_sources (tenant_id)`,
 			`CREATE INDEX IF NOT EXISTS blob_sources_project_idx ON blob_sources (tenant_id, project_id)`,
-		}
-		stmts = append(stmts, ScopeAwareTenantPolicy("blob_sources")...)
+		}, ScopeAwareTenantPolicy("blob_sources")...)
 		return execAll(ctx, exec, stmts)
 	},
 	Down: func(ctx context.Context, exec migrate.Executor) error {

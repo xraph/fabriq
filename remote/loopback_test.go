@@ -272,10 +272,10 @@ func (f *fakeFabric) ExecBatch(_ context.Context, cmds []command.Command) ([]com
 	return out, nil
 }
 
-// wire builds a RemoteFabric talking to a Handler over the in-process Loopback
+// wire builds a Fabric talking to a Handler over the in-process Loopback
 // transport — the whole client→envelope→server→envelope→client round trip with
 // no network.
-func wire(t *testing.T, fab query.Fabric) *remote.RemoteFabric {
+func wire(t *testing.T, fab query.Fabric) *remote.Fabric {
 	t.Helper()
 	h := remote.NewHandler(fab, assetRegistry(t))
 	return remote.New(remote.Loopback{Handler: h})

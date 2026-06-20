@@ -19,12 +19,14 @@ function Chip({
   w,
   h,
   label,
+  accent,
 }: {
   x: number;
   y: number;
   w: number;
   h: number;
   label: string;
+  accent?: boolean;
 }) {
   return (
     <g>
@@ -35,7 +37,8 @@ function Chip({
         height={h}
         rx={9}
         fill={RAISED}
-        stroke={LINE}
+        stroke={accent ? ACCENT : LINE}
+        strokeWidth={accent ? 1.4 : 1}
       />
       <text
         x={x + w / 2}
@@ -43,7 +46,7 @@ function Chip({
         textAnchor="middle"
         fontFamily={MONO}
         fontSize="12.5"
-        fill={INK}
+        fill={accent ? ACCENT : INK}
       >
         {label}
       </text>
@@ -139,229 +142,6 @@ function Defs() {
   );
 }
 
-/** The layered fabric: facade → core kernel → ports → adapters → engines. */
-export function ArchitectureDiagram() {
-  const coreChips = [
-    "registry",
-    "command",
-    "event",
-    "projection",
-    "subscribe",
-    "query",
-  ];
-  const cw = 116;
-  const cgap = 12;
-  const cStart = 60;
-
-  const adapters = ["postgres · grove", "redis", "falkordb", "elastic"];
-  const aw = 176;
-  const agap = 14;
-  const aStart = 52;
-
-  const engines = [
-    {
-      title: "Postgres",
-      line2: "+ Timescale · pgvector · PostGIS",
-      role: "source of truth · outbox",
-      accent: true,
-    },
-    { title: "Redis Streams", line2: "", role: "event fan-out", accent: false },
-    { title: "FalkorDB", line2: "", role: "graph projection", accent: false },
-    {
-      title: "Elasticsearch",
-      line2: "",
-      role: "search projection",
-      accent: false,
-    },
-  ];
-  const ew = 184;
-  const egap = 12;
-
-  return (
-    <figure className="my-6 not-prose">
-      <svg
-        viewBox="0 0 860 540"
-        width="100%"
-        role="img"
-        aria-labelledby="fabriq-arch-t fabriq-arch-d"
-        style={{ maxWidth: "100%", height: "auto" }}
-        fontFamily={SANS}
-      >
-        <title id="fabriq-arch-t">The layered fabriq architecture</title>
-        <desc id="fabriq-arch-d">
-          Application code holds one facade over the engine-agnostic core
-          kernel, the capability ports, the adapter dialects, and the backing
-          engines — Postgres being the source of truth.
-        </desc>
-        <Defs />
-
-        {/* Application */}
-        <TierTag x={20} y={26} text="application" />
-        <rect
-          x={300}
-          y={14}
-          width={260}
-          height={52}
-          rx={12}
-          fill={RAISED}
-          stroke={LINE}
-        />
-        <text
-          x={430}
-          y={36}
-          textAnchor="middle"
-          fontSize="14"
-          fontWeight={600}
-          fill={INK_STRONG}
-        >
-          Your application
-        </text>
-        <text
-          x={430}
-          y={53}
-          textAnchor="middle"
-          fontSize="11.5"
-          fill={INK_MUTED}
-          fontFamily={MONO}
-        >
-          one facade — query.Fabric
-        </text>
-        <Arrow x1={430} y1={66} x2={430} y2={98} />
-
-        {/* Core kernel */}
-        <TierTag x={20} y={118} text="core" />
-        <rect
-          x={40}
-          y={102}
-          width={780}
-          height={118}
-          rx={16}
-          fill={SUNKEN}
-          stroke={ACCENT}
-          strokeWidth={1.4}
-        />
-        <text x={60} y={126} fontSize="12" fill={INK_MUTED} fontFamily={MONO}>
-          fabriq · core/ — engine- &amp; domain-agnostic kernel
-        </text>
-        {coreChips.map((c, i) => (
-          <Chip
-            key={c}
-            x={cStart + i * (cw + cgap)}
-            y={138}
-            w={cw}
-            h={40}
-            label={c}
-          />
-        ))}
-        <text x={60} y={206} fontSize="11" fill={INK_FAINT}>
-          + lifecycle hooks · validate · upcasters · dynamic entities ·
-          structural tenancy
-        </text>
-        <Arrow x1={430} y1={220} x2={430} y2={246} />
-
-        {/* Ports */}
-        <TierTag x={20} y={264} text="ports" />
-        <rect
-          x={40}
-          y={248}
-          width={780}
-          height={30}
-          rx={9}
-          fill={RAISED}
-          stroke={LINE}
-          strokeDasharray="5 4"
-        />
-        <text
-          x={430}
-          y={267}
-          textAnchor="middle"
-          fontSize="11.5"
-          fill={INK_MUTED}
-        >
-          capability ports · one typed port per capability — no shared query DSL
-        </text>
-        <Arrow x1={430} y1={278} x2={430} y2={302} />
-
-        {/* Adapters */}
-        <TierTag x={20} y={322} text="adapters" />
-        <rect
-          x={40}
-          y={306}
-          width={780}
-          height={58}
-          rx={16}
-          fill="none"
-          stroke={LINE}
-        />
-        {adapters.map((a, i) => (
-          <Chip
-            key={a}
-            x={aStart + i * (aw + agap)}
-            y={320}
-            w={aw}
-            h={32}
-            label={a}
-          />
-        ))}
-        <Arrow x1={430} y1={364} x2={430} y2={390} dashed />
-
-        {/* Engines */}
-        <TierTag x={20} y={410} text="engines" />
-        {engines.map((e, i) => {
-          const ex = 40 + i * (ew + egap);
-          return (
-            <g key={e.title}>
-              <rect
-                x={ex}
-                y={394}
-                width={ew}
-                height={96}
-                rx={12}
-                fill={RAISED}
-                stroke={e.accent ? ACCENT : LINE}
-                strokeWidth={e.accent ? 1.4 : 1}
-              />
-              {e.accent ? (
-                <rect
-                  x={ex}
-                  y={394}
-                  width={ew}
-                  height={4}
-                  rx={2}
-                  fill={ACCENT}
-                />
-              ) : null}
-              <text
-                x={ex + 14}
-                y={426}
-                fontSize="13.5"
-                fontWeight={600}
-                fill={INK_STRONG}
-              >
-                {e.title}
-              </text>
-              {e.line2 ? (
-                <text x={ex + 14} y={444} fontSize="11" fill={INK_MUTED}>
-                  {e.line2}
-                </text>
-              ) : null}
-              <text
-                x={ex + 14}
-                y={476}
-                fontSize="11"
-                fontFamily={MONO}
-                fill={e.accent ? ACCENT : INK_MUTED}
-              >
-                {e.role}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </figure>
-  );
-}
-
 function Node({
   x,
   y,
@@ -420,17 +200,283 @@ function Node({
   );
 }
 
-/** The data lifecycle: every runtime use case from a write to projections and deltas. */
+/** The layered fabric: application + agents → core kernel → ports → adapters → engines. */
+export function ArchitectureDiagram() {
+  // Core kernel: kernel concerns (row 1) + capability surfaces (row 2).
+  const coreRow1 = ["registry", "command", "event", "projection", "subscribe"];
+  const coreRow2 = ["query", "cache", "blob", "agent"];
+  const cw = 120;
+  const cgap = 14;
+  const cStart = 60;
+
+  const adapters = [
+    "postgres · grove",
+    "redis",
+    "falkordb",
+    "elastic",
+    "trove",
+    "grove-kv",
+  ];
+  const aw = 130;
+  const agap = 12;
+  const aStart = 60;
+
+  const engines = [
+    {
+      title: "Postgres",
+      line2: "+ Timescale · pgvector · PostGIS",
+      role: "source of truth · outbox",
+      accent: true,
+    },
+    { title: "Redis", line2: "", role: "event fan-out · cache", accent: false },
+    { title: "FalkorDB", line2: "", role: "graph projection", accent: false },
+    {
+      title: "Elasticsearch",
+      line2: "",
+      role: "search projection",
+      accent: false,
+    },
+    {
+      title: "Blob store",
+      line2: "filesystem · S3 · trove",
+      role: "CAS · file plane",
+      accent: false,
+    },
+  ];
+  const ew = 164;
+  const egap = 14;
+  const eStart = 42;
+
+  return (
+    <figure className="my-6 not-prose">
+      <svg
+        viewBox="0 0 960 560"
+        width="100%"
+        role="img"
+        aria-labelledby="fabriq-arch-t fabriq-arch-d"
+        style={{ maxWidth: "100%", height: "auto" }}
+        fontFamily={SANS}
+      >
+        <title id="fabriq-arch-t">The layered fabriq architecture</title>
+        <desc id="fabriq-arch-d">
+          Application code and AI agents hold one facade over the
+          engine-agnostic core kernel — registry, command, event, projection,
+          subscribe, query, cache, blob, and agent — which reaches the capability
+          ports, the adapter dialects (including trove for blob CAS and grove-kv
+          for the cache), and the backing engines, with Postgres the source of
+          truth.
+        </desc>
+        <Defs />
+
+        {/* Application + agents */}
+        <TierTag x={20} y={28} text="application" />
+        <rect
+          x={232}
+          y={16}
+          width={228}
+          height={54}
+          rx={12}
+          fill={RAISED}
+          stroke={LINE}
+        />
+        <text
+          x={346}
+          y={40}
+          textAnchor="middle"
+          fontSize="14"
+          fontWeight={600}
+          fill={INK_STRONG}
+        >
+          Your application
+        </text>
+        <text
+          x={346}
+          y={58}
+          textAnchor="middle"
+          fontSize="11.5"
+          fill={INK_MUTED}
+          fontFamily={MONO}
+        >
+          one facade · query.Fabric
+        </text>
+        <rect
+          x={492}
+          y={16}
+          width={228}
+          height={54}
+          rx={12}
+          fill={RAISED}
+          stroke={ACCENT}
+          strokeWidth={1.4}
+        />
+        <rect x={492} y={16} width={228} height={4} rx={2} fill={ACCENT} />
+        <text
+          x={606}
+          y={40}
+          textAnchor="middle"
+          fontSize="14"
+          fontWeight={600}
+          fill={INK_STRONG}
+        >
+          AI agents
+        </text>
+        <text
+          x={606}
+          y={58}
+          textAnchor="middle"
+          fontSize="11.5"
+          fill={INK_MUTED}
+          fontFamily={MONO}
+        >
+          agent toolkit · recall · distill
+        </text>
+        <Arrow x1={346} y1={70} x2={346} y2={102} />
+        <Arrow x1={606} y1={70} x2={606} y2={102} accent />
+
+        {/* Core kernel */}
+        <TierTag x={20} y={126} text="core" />
+        <rect
+          x={40}
+          y={106}
+          width={880}
+          height={158}
+          rx={16}
+          fill={SUNKEN}
+          stroke={ACCENT}
+          strokeWidth={1.4}
+        />
+        <text x={60} y={130} fontSize="12" fill={INK_MUTED} fontFamily={MONO}>
+          fabriq · core/ — engine- &amp; domain-agnostic kernel
+        </text>
+        {coreRow1.map((c, i) => (
+          <Chip
+            key={c}
+            x={cStart + i * (cw + cgap)}
+            y={142}
+            w={cw}
+            h={38}
+            label={c}
+          />
+        ))}
+        {coreRow2.map((c, i) => (
+          <Chip
+            key={c}
+            x={cStart + i * (cw + cgap)}
+            y={190}
+            w={cw}
+            h={38}
+            label={c}
+            accent={c === "cache" || c === "blob" || c === "agent"}
+          />
+        ))}
+        <text x={60} y={250} fontSize="11" fill={INK_FAINT}>
+          + lifecycle hooks · validate · upcasters · dynamic entities ·
+          structural tenancy
+        </text>
+        <Arrow x1={480} y1={264} x2={480} y2={288} />
+
+        {/* Ports */}
+        <TierTag x={20} y={306} text="ports" />
+        <rect
+          x={40}
+          y={288}
+          width={880}
+          height={30}
+          rx={9}
+          fill={RAISED}
+          stroke={LINE}
+          strokeDasharray="5 4"
+        />
+        <text x={480} y={307} textAnchor="middle" fontSize="11.5" fill={INK_MUTED}>
+          capability ports — relational · graph · search · vector · spatial ·
+          timeseries · document · cache · blob (one typed port each, no shared DSL)
+        </text>
+        <Arrow x1={480} y1={318} x2={480} y2={342} />
+
+        {/* Adapters */}
+        <TierTag x={20} y={360} text="adapters" />
+        <rect
+          x={40}
+          y={342}
+          width={880}
+          height={58}
+          rx={16}
+          fill="none"
+          stroke={LINE}
+        />
+        {adapters.map((a, i) => (
+          <Chip
+            key={a}
+            x={aStart + i * (aw + agap)}
+            y={356}
+            w={aw}
+            h={32}
+            label={a}
+          />
+        ))}
+        <Arrow x1={480} y1={400} x2={480} y2={426} dashed />
+
+        {/* Engines */}
+        <TierTag x={20} y={446} text="engines" />
+        {engines.map((e, i) => {
+          const ex = eStart + i * (ew + egap);
+          return (
+            <g key={e.title}>
+              <rect
+                x={ex}
+                y={430}
+                width={ew}
+                height={100}
+                rx={12}
+                fill={RAISED}
+                stroke={e.accent ? ACCENT : LINE}
+                strokeWidth={e.accent ? 1.4 : 1}
+              />
+              {e.accent ? (
+                <rect x={ex} y={430} width={ew} height={4} rx={2} fill={ACCENT} />
+              ) : null}
+              <text
+                x={ex + 14}
+                y={462}
+                fontSize="13.5"
+                fontWeight={600}
+                fill={INK_STRONG}
+              >
+                {e.title}
+              </text>
+              {e.line2 ? (
+                <text x={ex + 14} y={480} fontSize="10.5" fill={INK_MUTED}>
+                  {e.line2}
+                </text>
+              ) : null}
+              <text
+                x={ex + 14}
+                y={512}
+                fontSize="11"
+                fontFamily={MONO}
+                fill={e.accent ? ACCENT : INK_MUTED}
+              >
+                {e.role}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </figure>
+  );
+}
+
+/** The data lifecycle: a write fans out to projections, agent workers, and the delta plane. */
 export function DataLifecycleDiagram() {
-  const targets = [
-    { name: "FalkorDB", role: "graph projection", x: 56 },
-    { name: "Elasticsearch", role: "search projection", x: 206 },
-    { name: "pgvector", role: "vector index", x: 356 },
+  const projTargets = [
+    { name: "FalkorDB", role: "graph", x: 40 },
+    { name: "Elasticsearch", role: "search", x: 142 },
+    { name: "pgvector", role: "vector", x: 244 },
   ];
   return (
     <figure className="my-6 not-prose">
       <svg
-        viewBox="0 0 860 420"
+        viewBox="0 0 960 470"
         width="100%"
         role="img"
         aria-labelledby="fabriq-flow-t fabriq-flow-d"
@@ -440,160 +486,208 @@ export function DataLifecycleDiagram() {
         <title id="fabriq-flow-t">The fabriq data lifecycle</title>
         <desc id="fabriq-flow-d">
           A command writes a row and an outbox event in one transaction; the
-          leader-elected relay publishes to Redis Streams, which fans out to the
-          projection engine (graph, search, vector) and the subscription hub
-          (subscriptions and live queries over SSE). Reads bypass the stream
-          through capability ports.
+          leader-elected relay publishes to Redis Streams, which fans out to
+          three independent consumers — the projection engine (graph, search,
+          vector), the agent workers (auto-embed to pgvector and auto-distill to
+          the CAS digest tree), and the subscription hub (subscriptions and live
+          queries over SSE). Reads bypass the stream through capability ports,
+          with a read-through cache.
         </desc>
         <Defs />
 
         {/* Write pipeline */}
         <TierTag x={20} y={26} text="write → event" />
-        <Node x={24} y={44} w={122} h={50} title="Exec" sub="command plane" />
-        <Arrow x1={146} y1={69} x2={178} y2={69} accent />
+        <Node x={24} y={44} w={120} h={50} title="Exec" sub="command plane" />
+        <Arrow x1={144} y1={69} x2={176} y2={69} accent />
         <Node
-          x={178}
+          x={176}
           y={36}
-          w={196}
+          w={190}
           h={66}
           title="Postgres"
           sub="row + outbox · one tx"
           accent
         />
-        <text
-          x={276}
-          y={120}
-          textAnchor="middle"
-          fontSize="10.5"
-          fill={INK_FAINT}
-        >
+        <text x={271} y={120} textAnchor="middle" fontSize="10.5" fill={INK_FAINT}>
           in-tx: lifecycle hooks · validate
         </text>
-        <Arrow x1={374} y1={69} x2={406} y2={69} accent />
+        <Arrow x1={366} y1={69} x2={398} y2={69} accent />
+        <Node x={398} y={44} w={110} h={50} title="Relay" sub="leader-elected" />
+        <Arrow x1={508} y1={69} x2={540} y2={69} accent />
         <Node
-          x={406}
-          y={44}
-          w={112}
-          h={50}
-          title="Relay"
-          sub="leader-elected"
-        />
-        <Arrow x1={518} y1={69} x2={550} y2={69} accent />
-        <Node
-          x={550}
+          x={540}
           y={36}
-          w={158}
+          w={170}
           h={66}
           title="Redis Streams"
           sub="event fan-out"
         />
 
-        {/* Fan-out to the two consumer lanes */}
-        <Arrow x1={585} y1={102} x2={216} y2={172} />
-        <Arrow x1={648} y1={102} x2={662} y2={172} />
+        {/* Fan-out to the three consumer lanes */}
+        <Arrow x1={580} y1={102} x2={170} y2={156} />
+        <Arrow x1={620} y1={102} x2={484} y2={156} />
+        <Arrow x1={660} y1={102} x2={800} y2={156} />
 
         {/* Lane A — projections */}
-        <TierTag x={20} y={162} text="projections" />
+        <TierTag x={20} y={150} text="projections" />
         <Node
-          x={120}
-          y={176}
-          w={192}
-          h={44}
+          x={40}
+          y={158}
+          w={300}
+          h={42}
           title="Projection engine"
           sub="version-gated apply"
         />
-        <Arrow x1={216} y1={220} x2={126} y2={248} />
-        <Arrow x1={216} y1={220} x2={276} y2={248} />
-        <Arrow x1={216} y1={220} x2={426} y2={248} />
-        {targets.map((t) => (
+        <Arrow x1={190} y1={200} x2={86} y2={230} />
+        <Arrow x1={190} y1={200} x2={188} y2={230} />
+        <Arrow x1={190} y1={200} x2={290} y2={230} />
+        {projTargets.map((t) => (
           <g key={t.name}>
             <rect
               x={t.x}
-              y={250}
-              width={140}
+              y={232}
+              width={92}
               height={40}
               rx={9}
               fill={RAISED}
               stroke={LINE}
             />
             <text
-              x={t.x + 70}
-              y={268}
+              x={t.x + 46}
+              y={250}
               textAnchor="middle"
               fontFamily={MONO}
-              fontSize="12"
+              fontSize="10.5"
               fill={INK}
             >
               {t.name}
             </text>
             <text
-              x={t.x + 70}
-              y={282}
+              x={t.x + 46}
+              y={263}
               textAnchor="middle"
-              fontSize="9.5"
+              fontSize="9"
               fill={INK_FAINT}
             >
               {t.role}
             </text>
           </g>
         ))}
-        <text x={56} y={314} fontSize="10.5" fill={INK_FAINT}>
+        <text x={40} y={294} fontSize="10" fill={INK_FAINT}>
           reconciler · blue-green rebuild keep projections converged
         </text>
 
-        {/* Lane B — delta plane */}
-        <TierTag x={566} y={162} text="delta plane" />
+        {/* Lane B — agent workers */}
+        <TierTag x={372} y={150} text="agent workers" />
         <Node
-          x={560}
-          y={176}
-          w={210}
-          h={44}
-          title="Subscription hub"
-          sub="conflate · resume"
+          x={372}
+          y={158}
+          w={130}
+          h={42}
+          title="proj:embed"
+          sub="embed → vector"
+          accent
         />
-        <Arrow x1={665} y1={220} x2={665} y2={250} />
+        <Node
+          x={516}
+          y={158}
+          w={130}
+          h={42}
+          title="proj:distill"
+          sub="summarize → tree"
+          accent
+        />
+        <Arrow x1={437} y1={200} x2={437} y2={230} accent />
+        <Arrow x1={581} y1={200} x2={581} y2={230} accent />
         <rect
-          x={560}
-          y={252}
-          width={210}
-          height={34}
+          x={372}
+          y={232}
+          width={130}
+          height={40}
           rx={9}
           fill={RAISED}
           stroke={LINE}
         />
-        <text x={665} y={273} textAnchor="middle" fontSize="11.5" fill={INK}>
+        <text
+          x={437}
+          y={250}
+          textAnchor="middle"
+          fontFamily={MONO}
+          fontSize="10.5"
+          fill={INK}
+        >
+          pgvector
+        </text>
+        <text x={437} y={263} textAnchor="middle" fontSize="9" fill={INK_FAINT}>
+          embeddings
+        </text>
+        <rect
+          x={516}
+          y={232}
+          width={130}
+          height={40}
+          rx={9}
+          fill={RAISED}
+          stroke={LINE}
+        />
+        <text
+          x={581}
+          y={250}
+          textAnchor="middle"
+          fontFamily={MONO}
+          fontSize="10.5"
+          fill={INK}
+        >
+          CAS · trove
+        </text>
+        <text x={581} y={263} textAnchor="middle" fontSize="9" fill={INK_FAINT}>
+          summary blobs
+        </text>
+        <text x={372} y={294} fontSize="10" fill={INK_FAINT}>
+          auto-embed + auto-distill ride the same event stream
+        </text>
+
+        {/* Lane C — delta plane */}
+        <TierTag x={700} y={150} text="delta plane" />
+        <Node
+          x={700}
+          y={158}
+          w={220}
+          h={42}
+          title="Subscription hub"
+          sub="conflate · resume"
+        />
+        <Arrow x1={810} y1={200} x2={810} y2={232} />
+        <rect
+          x={700}
+          y={232}
+          width={220}
+          height={40}
+          rx={9}
+          fill={RAISED}
+          stroke={LINE}
+        />
+        <text x={810} y={257} textAnchor="middle" fontSize="11.5" fill={INK}>
           Subscriptions · Live queries
         </text>
-        <text
-          x={665}
-          y={312}
-          textAnchor="middle"
-          fontSize="10.5"
-          fill={INK_FAINT}
-        >
+        <text x={810} y={294} textAnchor="middle" fontSize="10" fill={INK_FAINT}>
           SSE → clients (deltas)
         </text>
 
         {/* Reads */}
         <rect
           x={40}
-          y={350}
-          width={780}
-          height={40}
+          y={330}
+          width={880}
+          height={42}
           rx={12}
           fill={SUNKEN}
           stroke={LINE}
           strokeDasharray="5 4"
         />
-        <text
-          x={430}
-          y={374}
-          textAnchor="middle"
-          fontSize="11.5"
-          fill={INK_MUTED}
-        >
-          Reads bypass the stream — application → capability ports → each engine
-          directly
+        <text x={480} y={356} textAnchor="middle" fontSize="11.5" fill={INK_MUTED}>
+          Reads bypass the stream — application → capability ports (read-through
+          cache) → each engine directly
         </text>
       </svg>
     </figure>

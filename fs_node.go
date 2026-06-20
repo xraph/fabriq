@@ -79,8 +79,8 @@ func (f *Fabriq) CreateFolder(ctx context.Context, parentID, name string) (FsRef
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: CreateFolder: %w", err)
 	}
-	if exists, err := f.siblingExists(ctx, parentID, name); err != nil {
-		return FsRef{}, fmt.Errorf("fabriq: CreateFolder: %w", err)
+	if exists, serr := f.siblingExists(ctx, parentID, name); serr != nil {
+		return FsRef{}, fmt.Errorf("fabriq: CreateFolder: %w", serr)
 	} else if exists {
 		return FsRef{}, ErrNodeNameConflict
 	}
@@ -103,12 +103,12 @@ func (f *Fabriq) CreateFile(ctx context.Context, parentID, name string, r io.Rea
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: CreateFile: %w", err)
 	}
-	if exists, err := f.siblingExists(ctx, parentID, name); err != nil {
-		return FsRef{}, fmt.Errorf("fabriq: CreateFile: %w", err)
+	if exists, serr := f.siblingExists(ctx, parentID, name); serr != nil {
+		return FsRef{}, fmt.Errorf("fabriq: CreateFile: %w", serr)
 	} else if exists {
 		return FsRef{}, ErrNodeNameConflict
 	}
-	blob, err := f.PutBlob(ctx, r, PutBlobOpts{ContentType: opts.ContentType})
+	blob, err := f.PutBlob(ctx, r, PutBlobOpts(opts))
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: CreateFile: put bytes: %w", err)
 	}

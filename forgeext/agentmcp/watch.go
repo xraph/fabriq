@@ -64,7 +64,7 @@ func (c *watchController) Stream(ctx forge.Context) error {
 		return forge.InternalError(err)
 	}
 	var scope query.SubscribeScope
-	if err := json.NewDecoder(ctx.Request().Body).Decode(&scope); err != nil {
+	if err = json.NewDecoder(ctx.Request().Body).Decode(&scope); err != nil {
 		return forge.BadRequest("invalid subscribe scope: " + err.Error())
 	}
 	ch, err := tk.Watch(ctx.Request().Context(), scope)

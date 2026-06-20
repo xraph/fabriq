@@ -90,7 +90,7 @@ func TestDistillSweeper_MarkSweepBuildsTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sw := NewDistillSweeper(d, 5*time.Millisecond, nil)
+	sw := newDistillSweeper(d, 5*time.Millisecond, nil)
 	handle := distillHandler(context.Background(), sw)
 
 	env := event.Envelope{TenantID: "acme", Aggregate: "note", AggID: "n1", Type: "note.created",
@@ -134,7 +134,7 @@ func TestDistillSweeper_IncrementsMetrics(t *testing.T) {
 	}
 
 	// Non-nil metrics wires the distillMetricsObserver into the Distiller.
-	sw := NewDistillSweeper(d, 5*time.Millisecond, m)
+	sw := newDistillSweeper(d, 5*time.Millisecond, m)
 	handle := distillHandler(context.Background(), sw)
 
 	env := event.Envelope{
@@ -230,7 +230,7 @@ func TestDistillSweeper_ConcurrentMarksAreRaceFree(t *testing.T) {
 	}
 
 	// Small debounce so sweeps fire quickly; nil metrics (not under test here).
-	sw := NewDistillSweeper(d, 5*time.Millisecond, nil)
+	sw := newDistillSweeper(d, 5*time.Millisecond, nil)
 	handle := distillHandler(context.Background(), sw)
 
 	// Build tenant IDs up front.

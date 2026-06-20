@@ -15,7 +15,7 @@ func TestDelete_RemovesL0AndCollapsesCluster(t *testing.T) {
 	r := distillRegistry(t)
 	cas := fabriqtest.NewFakeCAS()
 	d, w := newDistiller(t, r, cas, &fakeSummarizer{}, nil)
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	for _, n := range []map[string]any{
 		{"id": "n1", "title": "A", "body": "x", "site_id": "s1"},
@@ -69,7 +69,7 @@ func TestRollup_CollapsesEmptyTenantRoot(t *testing.T) {
 	r := distillRegistry(t)
 	cas := fabriqtest.NewFakeCAS()
 	d, _ := newDistiller(t, r, cas, &fakeSummarizer{}, nil)
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	// Build two L0 nodes and roll up so the tenant root exists.
 	for _, n := range []map[string]any{

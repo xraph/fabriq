@@ -37,7 +37,7 @@ func TestTools_IncludesDistillTools(t *testing.T) {
 		}
 	}
 
-	ctx := testCtx(t, "acme")
+	ctx := testCtx(t)
 
 	// --- map: empty args must not panic and must return a nil/empty slice (no tree seeded) ---
 	mapTool, ok := toolByName(tk.Tools(), "map")
@@ -45,7 +45,7 @@ func TestTools_IncludesDistillTools(t *testing.T) {
 		t.Fatal("map tool not found")
 	}
 	var mapSchema map[string]any
-	if err := json.Unmarshal(mapTool.InputSchema, &mapSchema); err != nil {
+	if err = json.Unmarshal(mapTool.InputSchema, &mapSchema); err != nil {
 		t.Fatalf("map: invalid InputSchema: %v", err)
 	}
 	out, err := mapTool.Handler(ctx, json.RawMessage(`{}`))
@@ -53,8 +53,8 @@ func TestTools_IncludesDistillTools(t *testing.T) {
 		t.Fatalf("map handler with empty tree: %v", err)
 	}
 	if out != nil {
-		lines, ok := out.([]MapLine)
-		if !ok {
+		lines, isLines := out.([]MapLine)
+		if !isLines {
 			t.Fatalf("map returned %T, want []MapLine or nil", out)
 		}
 		if len(lines) != 0 {
@@ -75,7 +75,7 @@ func TestTools_IncludesDistillTools(t *testing.T) {
 		t.Fatal("digest tool not found")
 	}
 	var digestSchema map[string]any
-	if err := json.Unmarshal(digestTool.InputSchema, &digestSchema); err != nil {
+	if err = json.Unmarshal(digestTool.InputSchema, &digestSchema); err != nil {
 		t.Fatalf("digest: invalid InputSchema: %v", err)
 	}
 	_, err = digestTool.Handler(ctx, json.RawMessage(`{"nodeId":"nonexistent"}`))
@@ -89,7 +89,7 @@ func TestTools_IncludesDistillTools(t *testing.T) {
 		t.Fatal("resolve tool not found")
 	}
 	var resolveSchema map[string]any
-	if err := json.Unmarshal(resolveTool.InputSchema, &resolveSchema); err != nil {
+	if err = json.Unmarshal(resolveTool.InputSchema, &resolveSchema); err != nil {
 		t.Fatalf("resolve: invalid InputSchema: %v", err)
 	}
 	out3, err := resolveTool.Handler(ctx, json.RawMessage(`{"hash":"deadbeef"}`))
