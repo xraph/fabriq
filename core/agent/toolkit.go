@@ -4,6 +4,7 @@ package agent
 import (
 	"fmt"
 
+	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
@@ -42,6 +43,8 @@ type Config struct {
 	GraphSeeds     int                // top seeds (vector+search) to expand in the graph channel (default 8)
 	GraphReverse   bool               // expand incoming (reverse) edges too; default false
 	Write          WritePolicy        // agent write allowlist; empty = no writes
+	Altitude       Altitude           // distillation layer to surface (default AltAuto: budget decides)
+	CAS            blob.CAS           // content-addressed store for digest summaries (optional; nil = no CAS-backed ops)
 }
 
 func defaultTokenizer(b []byte) int { return (len(b) + 3) / 4 }
@@ -70,6 +73,7 @@ type Toolkit struct {
 	reg      *registry.Registry
 	emb      Embedder
 	cfg      Config
+	cas      blob.CAS
 	revEdges map[string][]reverseEdge // cached result of reverseEdgeIndex(reg); built once in NewToolkit
 }
 
@@ -85,5 +89,5 @@ func NewToolkit(fab query.Fabric, reg *registry.Registry, emb Embedder, cfg Conf
 	if emb != nil && emb.Dims() != cfg.VectorDims {
 		return nil, fmt.Errorf("agent: embedder dims %d != configured vector dims %d", emb.Dims(), cfg.VectorDims)
 	}
-	return &Toolkit{fab: fab, reg: reg, emb: emb, cfg: cfg, revEdges: reverseEdgeIndex(reg)}, nil
+	return &Toolkit{fab: fab, reg: reg, emb: emb, cfg: cfg, cas: cfg.CAS, revEdges: reverseEdgeIndex(reg)}, nil
 }

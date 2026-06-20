@@ -86,6 +86,60 @@ a dependency-free `bytes/4` heuristic. Wire an exact tokenizer (tiktoken, etc.)
 for precise budgets. The packer stops at the first row that would overflow,
 preserving fused-rank order, and reports the remainder as `Omitted`.
 
+## Altitude-aware recall
+
+When [context distillation](/docs/distillation) is enabled, `RecallRequest`
+accepts an `altitude` parameter that controls which layer of the digest tree
+is consulted before (or instead of) raw entity rows:
+
+```go
+type RecallRequest struct {
+    Query    string
+    Budget   int
+    Entities []string
+    K        int
+    Hops     int
+    Filters  query.Where
+    Altitude agent.Altitude // AltAuto (default) | AltEntity | AltScope | AltTenant
+}
+```
+
+| Value | Behaviour |
+| --- | --- |
+| `AltAuto` (default, zero value) | Token budget drives descent: if the candidate entity rows fit within `Budget`, recall descends to raw entity rows (`AltEntity`); otherwise it climbs to the tenant-root digest summary (`AltTenant`). |
+| `AltEntity` | Raw entity rows only — digest items are dropped. |
+| `AltScope` | Scope/cluster digest summaries are kept; the entity rows they cover are dropped (when at least one digest is present). |
+| `AltTenant` | The tenant-root digest only; covered entity rows are dropped (when a digest is present). |
+
+In all non-`AltAuto` modes, a digest and any entity row it covers are **never
+both included** in the same `ContextPack`. If no digest items are present the
+behaviour gracefully falls back to returning whatever was found.
+
+```go
+// Tight budget: AltAuto climbs to the tenant digest when entity rows don't fit.
+pack, err := tk.Recall(ctx, agent.RecallRequest{
+    Query:    "north site equipment status",
+    Budget:   1500,
+    Entities: []string{"asset"},
+    Altitude: agent.AltAuto,
+})
+
+// Generous budget: AltAuto descends to entity rows when they fit.
+pack, err := tk.Recall(ctx, agent.RecallRequest{
+    Query:    "north site equipment status",
+    Budget:   12000,
+    Entities: []string{"asset"},
+    Altitude: agent.AltAuto,
+})
+```
+
+<Callout type="info">
+  Auto-distillation rides the **same write events** as auto-embedding: the
+  `proj:distill` worker consumes the same event stream as `proj:embed`, so a
+  write that triggers re-indexing also triggers re-summarisation. No extra
+  wiring is needed to keep the two in sync.
+</Callout>
+
 ## Read primitives
 
 For agents that want manual control, the same tool surface exposes the raw

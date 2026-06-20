@@ -22,6 +22,7 @@ type Tool struct {
 // Tools returns the agent-facing tool surface. Phase 1b exposes recall plus
 // the four read primitives: vector_similar, search, graph_traverse, get.
 // Phase 3 adds the guarded write tool: remember.
+// Phase 4 adds the context-distillation tools: map, digest, resolve.
 func (t *Toolkit) Tools() []Tool {
 	return []Tool{
 		t.recallTool(),
@@ -30,6 +31,9 @@ func (t *Toolkit) Tools() []Tool {
 		t.graphTraverseTool(),
 		t.getTool(),
 		t.rememberTool(),
+		t.mapTool(),
+		t.digestTool(),
+		t.resolveTool(),
 	}
 }
 
@@ -185,6 +189,61 @@ func (t *Toolkit) getTool() Tool {
 				return nil, fmt.Errorf("agent: get: %s %q not found", a.Entity, a.ID)
 			}
 			return raw, nil
+		},
+	}
+}
+
+// mapTool returns the "map" tool descriptor. No required fields: all
+// MapRequest fields are optional. Tolerates nil/empty args gracefully.
+func (t *Toolkit) mapTool() Tool {
+	return Tool{
+		Name:        "map",
+		Description: "Bird's-eye outline of the distillation tree (tenant → scope/cluster → entity), each line carrying its ContentHash + SemHash. Pass knownHashes to get a Merkle diff (unchanged subtrees flagged).",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","description":"restrict outline to nodes matching this scope_id (plus the tenant root)"},"knownHashes":{"type":"object","additionalProperties":{"type":"string"},"description":"caller's local snapshot map[nodeID]contentHash — matching nodes are marked unchanged"}}}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (any, error) {
+			var req MapRequest
+			if len(args) > 0 {
+				if err := json.Unmarshal(args, &req); err != nil {
+					return nil, fmt.Errorf("agent: map args: %w", err)
+				}
+			}
+			return t.Map(ctx, req)
+		},
+	}
+}
+
+// digestTool returns the "digest" tool descriptor. Requires nodeId.
+func (t *Toolkit) digestTool() Tool {
+	return Tool{
+		Name:        "digest",
+		Description: "Drill into one context-distillation node: returns its MapLine, summary text (from CAS when configured), and immediate children with their hashes and summaries.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["nodeId"],"properties":{"nodeId":{"type":"string","description":"id of the digest_node to inspect"}}}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (any, error) {
+			var a struct {
+				NodeID string `json:"nodeId"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return nil, fmt.Errorf("agent: digest args: %w", err)
+			}
+			return t.Digest(ctx, a.NodeID)
+		},
+	}
+}
+
+// resolveTool returns the "resolve" tool descriptor. Requires hash.
+func (t *Toolkit) resolveTool() Tool {
+	return Tool{
+		Name:        "resolve",
+		Description: "Quick hash reference lookup: Exact match on ContentHash + Near match on SemHash (Hamming distance ≤ 8). No re-embedding required.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["hash"],"properties":{"hash":{"type":"string","description":"ContentHash or 16-hex SemHash to look up"}}}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (any, error) {
+			var a struct {
+				Hash string `json:"hash"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return nil, fmt.Errorf("agent: resolve args: %w", err)
+			}
+			return t.Resolve(ctx, a.Hash)
 		},
 	}
 }

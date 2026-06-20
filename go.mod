@@ -18,6 +18,7 @@ require (
 	github.com/xraph/grove/drivers/pgdriver v1.5.7
 	github.com/xraph/grove/kv v1.5.7
 	github.com/xraph/grove/kv/drivers/redisdriver v1.5.7
+	github.com/xraph/shield v1.5.1
 	github.com/xraph/trove v1.5.1
 	github.com/xraph/vessel v1.0.2
 	go.opentelemetry.io/otel v1.44.0
@@ -142,7 +143,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
-	golang.org/x/exp v0.0.0-20250808145144-a408d31f581a // indirect
+	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
@@ -164,3 +165,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/xraph/shield => /Users/rexraphael/Work/xraph/forgery/shield

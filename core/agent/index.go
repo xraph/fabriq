@@ -151,20 +151,28 @@ func (ix *Indexer) Reindex(ctx context.Context, entity string) (int, error) {
 	}
 }
 
-// listVals lists one page of an entity's rows as column-keyed maps, handling
-// both typed (Go-model) and dynamic entities — the same split as hydrate.
+// listVals lists one page of an entity's rows as column-keyed maps. It
+// delegates to the package-level listEntityVals so Distiller can reuse the
+// same logic without duplicating it.
 func (ix *Indexer) listVals(ctx context.Context, ent *registry.Entity, limit, offset int) ([]map[string]any, error) {
+	return listEntityVals(ctx, ix.fab.Relational(), ent, limit, offset)
+}
+
+// listEntityVals pages one batch of an entity's rows into column-keyed maps,
+// handling both typed (Go-model) and dynamic entities — the same split as
+// hydrate. Shared by Indexer.listVals (via Reindex) and Distiller.Distill.
+func listEntityVals(ctx context.Context, rel query.RelationalQuerier, ent *registry.Entity, limit, offset int) ([]map[string]any, error) {
 	q := query.ListQuery{Limit: limit, Offset: offset}
 	if ent.Binding.IsDynamic() {
 		var maps []map[string]any
-		if err := ix.fab.Relational().List(ctx, ent.Spec.Name, q, &maps); err != nil {
+		if err := rel.List(ctx, ent.Spec.Name, q, &maps); err != nil {
 			return nil, err
 		}
 		return maps, nil
 	}
 	mt := ent.Binding.ModelType()
 	slicePtr := reflect.New(reflect.SliceOf(mt))
-	if err := ix.fab.Relational().List(ctx, ent.Spec.Name, q, slicePtr.Interface()); err != nil {
+	if err := rel.List(ctx, ent.Spec.Name, q, slicePtr.Interface()); err != nil {
 		return nil, err
 	}
 	slice := slicePtr.Elem()
