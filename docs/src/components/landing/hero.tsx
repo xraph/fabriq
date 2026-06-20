@@ -110,7 +110,7 @@ export function LandingHero() {
               NEW
             </span>
             <span className="font-mono text-xs text-ember-800 dark:text-ember-100/90">
-              CRDT document plane — collaborative state, ordinary events
+              Agent toolkit — the data fabric as an AI agent&apos;s brain
             </span>
           </TimelineAnimation>
 
@@ -133,10 +133,12 @@ export function LandingHero() {
             customVariants={reveal}
             className="max-w-xl text-lg leading-relaxed font-light text-ink-muted md:text-xl"
           >
-            Fabriq is a standalone data fabric for Go. Commands commit once
-            through a transactional outbox, then fan out to relational,
-            time-series, vector, graph, and search engines — versioned,
-            tenant-scoped, always rebuildable.
+            Fabriq is a standalone data fabric for Go — and the brain your AI
+            agents think through. Commands commit once through a transactional
+            outbox, then fan out to relational, time-series, vector, graph,
+            search, and file engines — versioned, tenant-scoped, always
+            rebuildable. Agents reach that same fabric through fused recall,
+            guarded memory, and a live watch stream.
           </TimelineAnimation>
 
           <div className="mt-10 flex flex-col items-start gap-4 sm:flex-row">

@@ -7,9 +7,10 @@ import (
 	"context"
 	"strings"
 
-	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/shield"
 	"github.com/xraph/shield/scan"
+
+	"github.com/xraph/fabriq/core/agent"
 )
 
 // Scanner is the subset of *engine.Engine this adapter needs (so it is testable

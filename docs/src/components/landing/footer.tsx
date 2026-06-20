@@ -73,9 +73,9 @@ export function BentoFooter() {
                 <em className="not-italic text-accent">you can trust.</em>
               </h3>
               <p className="max-w-md text-pretty leading-relaxed text-ink-muted">
-                Start with Postgres and Redis. Add graph, search, vectors, and
-                live documents when you need them — the invariants come
-                standard.
+                Start with Postgres and Redis. Add graph, search, vectors,
+                files, and an agent brain when you need them — the invariants
+                come standard.
               </p>
             </div>
             <div className="mt-12 flex flex-wrap gap-4">
