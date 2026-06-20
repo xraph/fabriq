@@ -59,6 +59,13 @@ func digestLevel(row json.RawMessage) int {
 //     item is present; if no digest items exist leave everything as-is.
 //   - AltAuto: pass through unchanged (callers must resolve AltAuto first).
 //
+// Simplification (deliberate): at explicit AltScope/AltTenant this is a layer
+// collapse — the presence of ANY digest drops ALL entity rows, rather than only
+// the entity rows a given digest actually covers (the spec's coverage-aware
+// dedup keyed on tree-path / SemHash bucket membership). Digest items are always
+// retained, so it never drops everything; the budget-driven AltAuto path (the
+// default) is exact. Coverage-aware pruning at explicit altitudes is a follow-up.
+//
 // The function is total: it never panics on nil/empty input.
 func dedupeByAltitude(items []ContextItem, alt Altitude) []ContextItem {
 	if len(items) == 0 {
