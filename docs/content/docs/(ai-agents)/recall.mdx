@@ -86,6 +86,60 @@ a dependency-free `bytes/4` heuristic. Wire an exact tokenizer (tiktoken, etc.)
 for precise budgets. The packer stops at the first row that would overflow,
 preserving fused-rank order, and reports the remainder as `Omitted`.
 
+## Altitude-aware recall
+
+When [context distillation](/docs/distillation) is enabled, `RecallRequest`
+accepts an `altitude` parameter that controls which layer of the digest tree
+is consulted before (or instead of) raw entity rows:
+
+```go
+type RecallRequest struct {
+    Query    string
+    Budget   int
+    Entities []string
+    K        int
+    Hops     int
+    Filters  query.Where
+    Altitude string // "auto" | "entity" | "scope" | "tenant"
+}
+```
+
+| Value | Behaviour |
+| --- | --- |
+| `""` / `"entity"` | Default — recall raw entity rows as usual; the digest tree is not consulted. |
+| `"scope"` | Return L1 scope/cluster digest summaries only; entity rows are not loaded. |
+| `"tenant"` | Return the L2 tenant-root summary only; useful for orientation queries. |
+| `"auto"` | Token budget drives descent: a **tight budget** (below `Config.AltitudeBudgetThreshold`) returns high-altitude digest summaries; a **generous budget** descends to entity rows. The cut-off is tunable and defaults to `2000` tokens. |
+
+In `auto` mode, a digest and any entity row it covers are **never both
+included** in the same `ContextPack` — the packer promotes the digest when the
+entity level would exceed the budget, and omits the underlying entities.
+
+```go
+// Tight budget: get a scope-level summary, not 50 raw asset rows.
+pack, err := tk.Recall(ctx, agent.RecallRequest{
+    Query:    "north site equipment status",
+    Budget:   1500,
+    Entities: []string{"asset"},
+    Altitude: "auto",
+})
+
+// Generous budget: descend to entities as normal.
+pack, err := tk.Recall(ctx, agent.RecallRequest{
+    Query:    "north site equipment status",
+    Budget:   12000,
+    Entities: []string{"asset"},
+    Altitude: "auto",
+})
+```
+
+<Callout type="info">
+  Auto-distillation rides the **same write events** as auto-embedding: the
+  `proj:distill` worker consumes the same event stream as `proj:embed`, so a
+  write that triggers re-indexing also triggers re-summarisation. No extra
+  wiring is needed to keep the two in sync.
+</Callout>
+
 ## Read primitives
 
 For agents that want manual control, the same tool surface exposes the raw
