@@ -494,9 +494,13 @@ func (d *Distiller) cleanupL1(ctx context.Context, scopeMembers, linkedClusters 
 				continue // deleted → not a survivor
 			}
 			// Intermediate adaptive-depth nodes (id contains "#") are neither isScopeID
-			// nor isClusterID, so this switch falls through to survivors. They are rebuilt
-			// deterministically each pass; a dedicated GC for orphaned intermediates is a
-			// documented follow-up.
+			// nor isClusterID, so this switch falls through to survivors. They are
+			// rebuilt only when the partition geometry is unchanged (same member set and
+			// SemHashes). When a node's members or SemHashes drift across passes, the
+			// OLD parentID#oldPrefix node is neither rebuilt nor GC'd here — it lingers
+			// as an orphan survivor (still a valid digest, harmless to recall, but can
+			// transiently appear in the tenant-root child set). GC of orphaned
+			// intermediates is a documented follow-up.
 		}
 		survivors = append(survivors, n)
 	}
