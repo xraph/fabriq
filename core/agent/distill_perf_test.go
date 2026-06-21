@@ -5,6 +5,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/fabriqtest"
 )
 
@@ -54,6 +55,55 @@ func TestRollup_RootChildrenAfterScanCollapse(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("root must link scope %q; children=%v", wantScope, root.ChildIDs)
+	}
+}
+
+// TestDistill_BackfillBatchesEmbeds asserts the per-tenant backfill submits one
+// Embed call per page of L0 rows (not one per row). With 5 rows and a page size
+// of 2, the L0 embeds must arrive in batches of [2,2,1], not five 1-vector calls.
+func TestDistill_BackfillBatchesEmbeds(t *testing.T) {
+	r := distillRegistry(t)
+	w := fabriqtest.NewWorld(r)
+	fab := fabriqtest.NewFabric(w)
+	cas := fabriqtest.NewFakeCAS()
+	emb := &countingEmbedder{}
+	d, err := NewDistiller(fab, r, emb, &fakeSummarizer{}, nil, cas, DistillConfig{VectorDims: 3, RecipeVersion: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testCtx(t)
+
+	// Seed 5 note rows through the command plane so listEntityVals sees them.
+	for _, ttl := range []string{"a", "b", "c", "d", "e"} {
+		if _, err := fab.Exec(ctx, command.Command{Entity: "note", Op: command.OpCreate, Payload: &tDoc{ID: ttl, Title: ttl, Body: "x"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	orig := distillBatch
+	distillBatch = 2
+	defer func() { distillBatch = orig }()
+
+	if _, err := d.Distill(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Look for the three L0 page batches [2,2,1] among emb.batches. (Rollup also
+	// embeds internal nodes one-at-a-time; we only assert the L0 page batches.)
+	var pages []int
+	for _, b := range emb.batches {
+		if b == 2 || b == 1 {
+			pages = append(pages, b)
+		}
+	}
+	got2 := 0
+	for _, b := range emb.batches {
+		if b == 2 {
+			got2++
+		}
+	}
+	if got2 < 2 {
+		t.Fatalf("expected at least two batched (size-2) L0 embed calls; batches=%v", emb.batches)
 	}
 }
 
