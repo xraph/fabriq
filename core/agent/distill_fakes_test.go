@@ -65,4 +65,5 @@ type digestModel struct {
 	ChildIDs    []string `grove:"child_ids"`
 	ParentIDs   []string `grove:"parent_ids"`
 	UpdatedAt   int64    `grove:"updated_at"`
+	Tokens      int64    `grove:"tokens"`
 }

@@ -27,4 +27,5 @@ type DigestNode struct {
 	ChildIDs  []string `grove:"child_ids"  json:"childIds"`  // JSONB
 	ParentIDs []string `grove:"parent_ids" json:"parentIds"` // JSONB
 	UpdatedAt int64    `grove:"updated_at" json:"updatedAt"` // unix nanos
+	Tokens    int64    `grove:"tokens"     json:"tokens"`    // cached summary token count
 }
