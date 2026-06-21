@@ -69,6 +69,29 @@ func distillReg(t testing.TB) *registry.Registry {
 	return r
 }
 
+func TestNextFireDelay(t *testing.T) {
+	base := time.Unix(1000, 0)
+	debounce := 100 * time.Millisecond
+	cases := []struct {
+		name     string
+		now      time.Time
+		deadline time.Time
+		want     time.Duration
+	}{
+		{"debounce fits before deadline", base, base.Add(time.Second), debounce},
+		{"deadline closer than debounce", base, base.Add(40 * time.Millisecond), 40 * time.Millisecond},
+		{"deadline already passed clamps to zero", base, base.Add(-time.Second), 0},
+		{"deadline exactly debounce away", base, base.Add(debounce), debounce},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := nextFireDelay(c.now, c.deadline, debounce); got != c.want {
+				t.Fatalf("nextFireDelay = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestHasDistillableEntity(t *testing.T) {
 	if !hasDistillableEntity(distillReg(t)) {
 		t.Fatal("want true for a registry with a Distill entity")
@@ -90,7 +113,7 @@ func TestDistillSweeper_MarkSweepBuildsTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sw := newDistillSweeper(d, 5*time.Millisecond, nil)
+	sw := newDistillSweeper(d, 5*time.Millisecond, 50*time.Millisecond, nil)
 	handle := distillHandler(context.Background(), sw)
 
 	env := event.Envelope{TenantID: "acme", Aggregate: "note", AggID: "n1", Type: "note.created",
@@ -134,7 +157,7 @@ func TestDistillSweeper_IncrementsMetrics(t *testing.T) {
 	}
 
 	// Non-nil metrics wires the distillMetricsObserver into the Distiller.
-	sw := newDistillSweeper(d, 5*time.Millisecond, m)
+	sw := newDistillSweeper(d, 5*time.Millisecond, 50*time.Millisecond, m)
 	handle := distillHandler(context.Background(), sw)
 
 	env := event.Envelope{
@@ -230,7 +253,7 @@ func TestDistillSweeper_ConcurrentMarksAreRaceFree(t *testing.T) {
 	}
 
 	// Small debounce so sweeps fire quickly; nil metrics (not under test here).
-	sw := newDistillSweeper(d, 5*time.Millisecond, nil)
+	sw := newDistillSweeper(d, 5*time.Millisecond, 50*time.Millisecond, nil)
 	handle := distillHandler(context.Background(), sw)
 
 	// Build tenant IDs up front.

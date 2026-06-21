@@ -34,6 +34,13 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 		return rep, fmt.Errorf("agent: rollup list L0: %w", err)
 	}
 
+	// Build an in-memory index of L0 rows already listed so scope/cluster rolls
+	// can resolve child refs without per-child getNode round-trips.
+	idx := make(map[string]digestRow, len(l0s))
+	for _, n := range l0s {
+		idx[n.ID] = n
+	}
+
 	// 1. Cluster assignment: bucket L0s by SemHash prefix; link members of any
 	//    above-floor bucket to their cluster node.
 	buckets := map[string][]string{} // clusterID -> member L0 ids
@@ -55,13 +62,6 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 		}
 	}
 
-	// Re-list L0s after cluster linking so member ParentIDs reflect the cluster
-	// assignment when we gather scope/cluster membership below.
-	l0s, err = d.listNodes(ctx, LevelEntity)
-	if err != nil {
-		return rep, fmt.Errorf("agent: rollup relist L0: %w", err)
-	}
-
 	// 2. Scope nodes: one per distinct digest:1:scope:* id in L0 ParentIDs.
 	scopeMembers := map[string][]string{}
 	for _, n := range l0s {
@@ -73,11 +73,11 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	}
 	for sid := range scopeMembers {
 		name, id := parseScopeID(sid)
-		rolled, scErr := d.rollupFromMembers(ctx, persistArgs{
+		rolled, scErr := d.rollupFromIndex(ctx, persistArgs{
 			id: sid, level: LevelScope, kind: KindScopeNode,
 			scopeName: name, scopeID: id,
 			parents: []string{TenantRootID()},
-		}, scopeMembers[sid])
+		}, idx, scopeMembers[sid])
 		if scErr != nil {
 			return rep, scErr
 		}
@@ -90,10 +90,10 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 
 	// 3. Cluster nodes: one per above-floor bucket.
 	for cid := range cluster {
-		rolled, cErr := d.rollupFromMembers(ctx, persistArgs{
+		rolled, cErr := d.rollupFromIndex(ctx, persistArgs{
 			id: cid, level: LevelScope, kind: KindClusterNode,
 			parents: []string{TenantRootID()},
-		}, buckets[cid])
+		}, idx, buckets[cid])
 		if cErr != nil {
 			return rep, cErr
 		}
@@ -109,7 +109,8 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	//    below the noise floor (including to zero), is deleted; its remaining
 	//    members must not retain a stale parent link. Run BEFORE the tenant-root
 	//    build so the root's children reflect only L1 nodes that still exist.
-	if cerr := d.cleanupL1(ctx, scopeMembers, buckets, cluster); cerr != nil {
+	survivors, cerr := d.cleanupL1(ctx, scopeMembers, buckets, cluster)
+	if cerr != nil {
 		return rep, cerr
 	}
 
@@ -124,17 +125,18 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	}
 
 	// 5. Tenant root: children = all current L1 (scope + cluster) nodes.
-	l1s, err := d.listNodes(ctx, LevelScope)
-	if err != nil {
-		return rep, fmt.Errorf("agent: rollup list L1: %w", err)
+	// Add survivors (the freshly-written L1 nodes) to the index so the root roll
+	// sees current ContentHashes without additional getNode reads.
+	for _, n := range survivors {
+		idx[n.ID] = n
 	}
-	l1IDs := make([]string, 0, len(l1s))
-	for _, n := range l1s {
+	l1IDs := make([]string, 0, len(survivors))
+	for _, n := range survivors {
 		l1IDs = append(l1IDs, n.ID)
 	}
-	rolled, err := d.rollupFromMembers(ctx, persistArgs{
+	rolled, err := d.rollupFromIndex(ctx, persistArgs{
 		id: TenantRootID(), level: LevelTenant, kind: KindTenantNode,
-	}, l1IDs)
+	}, idx, l1IDs)
 	if err != nil {
 		return rep, err
 	}
@@ -147,25 +149,54 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	return rep, nil
 }
 
-// rollupFromMembers loads the member nodes' ContentHashes + summaries, then runs
-// the shared short-circuit/summarize/persist path. memberIDs may be in any
-// order; child hashes are sorted for an order-independent Merkle hash.
-func (d *Distiller) rollupFromMembers(ctx context.Context, args persistArgs, memberIDs []string) (bool, error) {
-	children, childHashes, err := d.childDigests(ctx, memberIDs)
-	if err != nil {
-		return false, fmt.Errorf("agent: rollup children for %s: %w", args.id, err)
-	}
-	return d.rollupNode(ctx, args, childHashes, children)
+// childRef is a child node's identity + hashes, loaded WITHOUT its CAS summary.
+// The summary bytes are fetched lazily in rollupNode only when a re-summarize is
+// actually needed (i.e. after the Merkle short-circuit has been ruled out).
+type childRef struct {
+	ID          string
+	Kind        string
+	SummaryHash string
+	ContentHash string
 }
 
-// rollupNode is the shared internal-node path: Merkle short-circuit, summarize,
-// guard-emit, persist. Returns rolled=true only when a new summary was written;
-// false on a short-circuit or a guard block (fail-closed).
-func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashes []string, children []ChildDigest) (bool, error) {
+// childRefsFrom resolves child refs from an already-loaded node index, skipping
+// ids absent from the index (race / unmaterialized), preserving id order. This
+// avoids a per-child getNode round-trip when Rollup has already listed the nodes.
+func childRefsFrom(idx map[string]digestRow, ids []string) []childRef {
+	refs := make([]childRef, 0, len(ids))
+	for _, id := range ids {
+		node, ok := idx[id]
+		if !ok {
+			continue
+		}
+		refs = append(refs, childRef{
+			ID: node.ID, Kind: node.Kind,
+			SummaryHash: node.SummaryHash, ContentHash: node.ContentHash,
+		})
+	}
+	return refs
+}
+
+// rollupFromIndex resolves child refs from a preloaded node index and runs the
+// shared short-circuit/summarize/persist path. Identical output to a getNode-per-child
+// approach; eliminates per-child round-trips when Rollup has already listed the nodes.
+func (d *Distiller) rollupFromIndex(ctx context.Context, args persistArgs, idx map[string]digestRow, memberIDs []string) (bool, error) {
+	return d.rollupNode(ctx, args, childRefsFrom(idx, memberIDs))
+}
+
+// rollupNode is the shared internal-node path: Merkle short-circuit, then (only
+// if not short-circuited) fetch child summaries from CAS, summarize, guard-emit,
+// persist. Returns rolled=true only when a new summary was written; false on a
+// short-circuit or a guard block (fail-closed).
+func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, refs []childRef) (bool, error) {
+	childHashes := make([]string, len(refs))
+	for i, r := range refs {
+		childHashes[i] = r.ContentHash
+	}
 	ch := RollupContentHash(d.cfg.RecipeVersion, childHashes)
 
 	// Merkle short-circuit: an internal node whose sorted child hashes are
-	// unchanged is not re-summarized.
+	// unchanged is not re-summarized — and pays NO CAS I/O.
 	if existing, ok, err := d.getNode(ctx, args.id); err != nil {
 		return false, err
 	} else if ok && existing.ContentHash == ch {
@@ -178,6 +209,17 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashe
 	if d.obs != nil {
 		d.obs.Summarized()
 	}
+
+	// We are re-summarizing: only now read each child's summary text from CAS.
+	children := make([]ChildDigest, 0, len(refs))
+	for _, r := range refs {
+		summary, err := d.retrieveSummary(ctx, r.SummaryHash)
+		if err != nil {
+			return false, err
+		}
+		children = append(children, ChildDigest{ID: r.ID, Kind: r.Kind, Summary: summary})
+	}
+
 	summary, err := d.sum.Summarize(ctx, SummaryInput{
 		Level:    args.level,
 		Kind:     args.kind,
@@ -204,9 +246,9 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashe
 
 	args.summaryText = ge.Text
 	args.contentHash = ch
-	args.children = make([]string, 0, len(children))
-	for _, c := range children {
-		args.children = append(args.children, c.ID)
+	args.children = make([]string, 0, len(refs))
+	for _, r := range refs {
+		args.children = append(args.children, r.ID)
 	}
 	if err := d.persistSummary(ctx, args); err != nil {
 		return false, err
@@ -215,30 +257,6 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashe
 		d.obs.NodeBuilt()
 	}
 	return true, nil
-}
-
-// childDigests loads each member node and its summary text from CAS, returning
-// the ChildDigest fan-in for summarization plus the sorted-for-Merkle child
-// ContentHashes. Missing members (race / unmaterialized) are skipped.
-func (d *Distiller) childDigests(ctx context.Context, ids []string) ([]ChildDigest, []string, error) {
-	children := make([]ChildDigest, 0, len(ids))
-	hashes := make([]string, 0, len(ids))
-	for _, id := range ids {
-		node, ok, err := d.getNode(ctx, id)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !ok {
-			continue
-		}
-		summary, err := d.retrieveSummary(ctx, node.SummaryHash)
-		if err != nil {
-			return nil, nil, err
-		}
-		children = append(children, ChildDigest{ID: node.ID, Kind: node.Kind, Summary: summary})
-		hashes = append(hashes, node.ContentHash)
-	}
-	return children, hashes, nil
 }
 
 // retrieveSummary reads a summary blob's text from CAS by content hash.
@@ -321,36 +339,37 @@ func (d *Distiller) ensureParent(ctx context.Context, memberID, parentID string)
 // scopeMembers maps live scope ids -> member L0 ids; buckets maps every cluster
 // id (above or below floor) -> member L0 ids; cluster is the set of above-floor
 // cluster ids that were (re)summarized this pass.
-func (d *Distiller) cleanupL1(ctx context.Context, scopeMembers, buckets map[string][]string, cluster map[string]bool) error {
+func (d *Distiller) cleanupL1(ctx context.Context, scopeMembers, buckets map[string][]string, cluster map[string]bool) ([]digestRow, error) {
 	l1s, err := d.listNodes(ctx, LevelScope)
 	if err != nil {
-		return fmt.Errorf("agent: rollup cleanup list L1: %w", err)
+		return nil, fmt.Errorf("agent: rollup cleanup list L1: %w", err)
 	}
+	survivors := make([]digestRow, 0, len(l1s))
 	for _, n := range l1s {
 		switch {
 		case isScopeID(n.ID):
 			if _, live := scopeMembers[n.ID]; !live {
 				if err := d.deleteNode(ctx, n.ID); err != nil {
-					return fmt.Errorf("agent: rollup collapse scope %s: %w", n.ID, err)
+					return nil, fmt.Errorf("agent: rollup collapse scope %s: %w", n.ID, err)
 				}
+				continue // deleted → not a survivor
 			}
 		case isClusterID(n.ID):
-			if cluster[n.ID] {
-				continue // still above floor — keep it
-			}
-			// Below floor (or vanished): unlink it from any members that still
-			// reference it, then delete the cluster node.
-			for _, mid := range buckets[n.ID] {
-				if err := d.removeParent(ctx, mid, n.ID); err != nil {
-					return fmt.Errorf("agent: rollup unlink cluster %s: %w", n.ID, err)
+			if !cluster[n.ID] {
+				for _, mid := range buckets[n.ID] {
+					if err := d.removeParent(ctx, mid, n.ID); err != nil {
+						return nil, fmt.Errorf("agent: rollup unlink cluster %s: %w", n.ID, err)
+					}
 				}
-			}
-			if err := d.deleteNode(ctx, n.ID); err != nil {
-				return fmt.Errorf("agent: rollup collapse cluster %s: %w", n.ID, err)
+				if err := d.deleteNode(ctx, n.ID); err != nil {
+					return nil, fmt.Errorf("agent: rollup collapse cluster %s: %w", n.ID, err)
+				}
+				continue // deleted → not a survivor
 			}
 		}
+		survivors = append(survivors, n)
 	}
-	return nil
+	return survivors, nil
 }
 
 // removeParent strips parentID from a member node's ParentIDs (idempotently),

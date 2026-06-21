@@ -165,37 +165,36 @@ func distillTextFor(spec *registry.DistillSpec, vals map[string]any) string {
 	return strings.Join(parts, " ")
 }
 
-// DistillL0 distills one source row into its L0 digest node. Returns changed=true
-// when the node was (re)summarized and persisted; false on a Merkle
-// short-circuit (unchanged source), on a guard block (fail-closed: nothing is
-// stored), for non-distillable entities, or for empty source text.
-func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[string]any) (bool, error) {
+// prepareL0 runs the L0 Merkle short-circuit, guard-ingest, summarize, and
+// guard-emit for one row, returning the persistArgs (with summaryText set) and
+// build=true when a node must be (re)written. build=false means skip: a
+// short-circuit (unchanged source), a guard block (fail-closed), a
+// non-distillable entity, an empty id, or empty source text. It performs NO
+// embedding and NO persistence — the caller embeds (batched) and persists.
+func (d *Distiller) prepareL0(ctx context.Context, entity, id string, vals map[string]any) (persistArgs, string, bool, error) {
 	spec := d.distillSpec(entity)
 	if spec == nil {
-		return false, nil
+		return persistArgs{}, "", false, nil
 	}
 	if id == "" {
-		return false, fmt.Errorf("agent: distill %q: empty id", entity)
+		return persistArgs{}, "", false, fmt.Errorf("agent: distill %q: empty id", entity)
 	}
 	raw := distillTextFor(spec, vals)
 	if strings.TrimSpace(raw) == "" {
-		return false, nil
+		return persistArgs{}, "", false, nil
 	}
 	nodeID := L0ID(entity, id)
 
-	// Merkle short-circuit: the ContentHash is structural (over the source, not
-	// the non-deterministic summary), so an unchanged row never calls the model.
 	newContentHash := L0ContentHash(d.cfg.RecipeVersion, SourceFieldHash(raw))
 	if existing, ok, err := d.getNode(ctx, nodeID); err != nil {
-		return false, err
+		return persistArgs{}, "", false, err
 	} else if ok && existing.ContentHash == newContentHash {
 		if d.obs != nil {
 			d.obs.ShortCircuited()
 		}
-		return false, nil // unchanged — no LLM call
+		return persistArgs{}, "", false, nil
 	}
 
-	// Guard ingest: redact raw content BEFORE the model sees it.
 	gi := applyGuard(ctx, d.guard, GuardInput{
 		Stage: GuardIngest, TenantID: tenantOf(ctx), Level: LevelEntity, Text: raw,
 	}, d.cfg.FailOpenGuard)
@@ -203,7 +202,7 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 		if d.obs != nil {
 			d.obs.GuardBlocked()
 		}
-		return false, nil // fail-closed: drop
+		return persistArgs{}, "", false, nil
 	}
 
 	budget := spec.Budget
@@ -217,10 +216,9 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 		Level: LevelEntity, Kind: KindEntityNode, Raw: []byte(gi.Text), Budget: budget,
 	})
 	if err != nil {
-		return false, fmt.Errorf("agent: summarize %q/%s: %w", entity, id, err)
+		return persistArgs{}, "", false, fmt.Errorf("agent: summarize %q/%s: %w", entity, id, err)
 	}
 
-	// Guard emit: check the generated summary BEFORE it is hashed + written to CAS.
 	ge := applyGuard(ctx, d.guard, GuardInput{
 		Stage: GuardEmit, TenantID: tenantOf(ctx), Level: LevelEntity, Text: summary,
 	}, d.cfg.FailOpenGuard)
@@ -228,15 +226,29 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 		if d.obs != nil {
 			d.obs.GuardBlocked()
 		}
-		return false, nil // fail-closed: drop
+		return persistArgs{}, "", false, nil
 	}
 
-	if err := d.persistSummary(ctx, persistArgs{
+	args := persistArgs{
 		id: nodeID, level: LevelEntity, kind: KindEntityNode,
 		sourceKind: entity, sourceID: id,
-		summaryText: ge.Text, contentHash: newContentHash,
-		parents: d.l0Parents(spec, vals),
-	}); err != nil {
+		contentHash: newContentHash,
+		parents:     d.l0Parents(spec, vals),
+	}
+	args.summaryText = ge.Text
+	return args, ge.Text, true, nil
+}
+
+// DistillL0 distills one source row into its L0 digest node. Returns changed=true
+// when the node was (re)summarized and persisted; false on a Merkle
+// short-circuit (unchanged source), on a guard block (fail-closed: nothing is
+// stored), for non-distillable entities, or for empty source text.
+func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[string]any) (bool, error) {
+	args, _, build, err := d.prepareL0(ctx, entity, id, vals)
+	if err != nil || !build {
+		return false, err
+	}
+	if err := d.persistSummary(ctx, args); err != nil {
 		return false, err
 	}
 	if d.obs != nil {
@@ -262,14 +274,9 @@ type persistArgs struct {
 	children    []string // ChildIDs for internal (rollup) nodes; nil for L0 leaves
 }
 
-// persistSummary stores a node's summary in CAS, embeds it, computes its
-// SemHash, writes the digest_node row through the command plane, upserts the
-// node's vector, and back-links it into each parent.
+// persistSummary embeds the summary then persists the node (CAS + row + vector +
+// parent back-links). Used by the single-write path (one summary, no batching).
 func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) error {
-	hash, _, err := d.cas.Store(ctx, bytes.NewReader([]byte(args.summaryText)))
-	if err != nil {
-		return fmt.Errorf("agent: cas store %s: %w", args.id, err)
-	}
 	vecs, err := d.emb.Embed(ctx, []string{args.summaryText})
 	if err != nil {
 		return fmt.Errorf("agent: embed summary %s: %w", args.id, err)
@@ -277,7 +284,18 @@ func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) error 
 	if len(vecs) != 1 {
 		return fmt.Errorf("agent: embed summary %s: got %d vectors for 1 input", args.id, len(vecs))
 	}
-	vec := vecs[0]
+	return d.persistSummaryVec(ctx, args, vecs[0])
+}
+
+// persistSummaryVec persists a node whose summary has ALREADY been embedded
+// (vec). It stores the summary in CAS, computes the SemHash, writes the row
+// through the command plane, upserts the vector, and back-links into parents.
+// Used by the batched backfill path (one Embed call per page).
+func (d *Distiller) persistSummaryVec(ctx context.Context, args persistArgs, vec []float32) error {
+	hash, _, err := d.cas.Store(ctx, bytes.NewReader([]byte(args.summaryText)))
+	if err != nil {
+		return fmt.Errorf("agent: cas store %s: %w", args.id, err)
+	}
 	sem := FormatSemHash(SemHash(vec, d.planes))
 
 	row := digestRow{
@@ -301,8 +319,6 @@ func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) error 
 	if err := d.fab.Vector().Upsert(ctx, DigestEntity, args.id, vec, nil); err != nil {
 		return fmt.Errorf("agent: vector upsert %s: %w", args.id, err)
 	}
-	// Back-link this node into each parent's ChildIDs. The parent nodes
-	// themselves (scope/cluster/tenant) are (re)summarized during rollup.
 	for _, pid := range args.parents {
 		if err := d.linkChild(ctx, pid, args.id); err != nil {
 			return err
@@ -635,17 +651,39 @@ func (d *Distiller) Distill(ctx context.Context) (BackfillReport, error) {
 			if err != nil {
 				return rep, fmt.Errorf("agent: distill %q list: %w", e.Spec.Name, err)
 			}
+			pendingArgs := make([]persistArgs, 0, len(rows))
+			pendingText := make([]string, 0, len(rows))
 			for _, vals := range rows {
 				id, _ := vals["id"].(string)
 				if id == "" {
 					continue
 				}
 				rep.Rows++
-				changed, err := d.DistillL0(ctx, e.Spec.Name, id, vals)
-				if err != nil {
-					return rep, fmt.Errorf("agent: distill %q/%s: %w", e.Spec.Name, id, err)
+				args, text, build, perr := d.prepareL0(ctx, e.Spec.Name, id, vals)
+				if perr != nil {
+					return rep, fmt.Errorf("agent: distill %q/%s: %w", e.Spec.Name, id, perr)
 				}
-				if changed {
+				if !build {
+					continue
+				}
+				pendingArgs = append(pendingArgs, args)
+				pendingText = append(pendingText, text)
+			}
+			if len(pendingText) > 0 {
+				vecs, eerr := d.emb.Embed(ctx, pendingText)
+				if eerr != nil {
+					return rep, fmt.Errorf("agent: distill %q embed: %w", e.Spec.Name, eerr)
+				}
+				if len(vecs) != len(pendingText) {
+					return rep, fmt.Errorf("agent: distill %q: embedder returned %d vectors for %d inputs", e.Spec.Name, len(vecs), len(pendingText))
+				}
+				for i := range pendingArgs {
+					if perr := d.persistSummaryVec(ctx, pendingArgs[i], vecs[i]); perr != nil {
+						return rep, fmt.Errorf("agent: distill %q/%s: %w", e.Spec.Name, pendingArgs[i].id, perr)
+					}
+					if d.obs != nil {
+						d.obs.NodeBuilt()
+					}
 					rep.Built++
 				}
 			}

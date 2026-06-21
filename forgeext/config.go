@@ -35,6 +35,10 @@ type Config struct {
 	DistillRecipeVersion string
 	// DistillDebounce is the per-tenant coalescing window for L0+rollup sweeps.
 	DistillDebounce time.Duration
+	// DistillMaxWait caps how long a continuously-written tenant's sweep can be
+	// deferred by debounce resets. Zero falls back to 10×DistillDebounce.
+	// A value smaller than DistillDebounce is clamped up to DistillDebounce.
+	DistillMaxWait time.Duration
 }
 
 // Option is a functional option for Config.
@@ -77,6 +81,11 @@ func WithDistillRecipeVersion(v string) Option { return func(o *Config) { o.Dist
 
 // WithDistillDebounce sets the per-tenant coalescing window for L0+rollup sweeps.
 func WithDistillDebounce(d time.Duration) Option { return func(o *Config) { o.DistillDebounce = d } }
+
+// WithDistillMaxWait caps how long a continuously-written tenant's sweep can be
+// deferred by debounce resets. Zero falls back to 10×DistillDebounce.
+// A value smaller than DistillDebounce is clamped up to DistillDebounce.
+func WithDistillMaxWait(d time.Duration) Option { return func(o *Config) { o.DistillMaxWait = d } }
 
 // WithCustomAppliers appends consumer-supplied projection appliers to the
 // fabriq config. They are unioned after the built-in declarative applier for
