@@ -6,14 +6,34 @@ import (
 )
 
 func TestResolveAltitude_BudgetDrivesDescent(t *testing.T) {
-	if got := resolveAltitude(AltAuto, 100, 1000); got != AltEntity {
+	if got := resolveAltitude(AltAuto, 100, 0, 1000); got != AltEntity {
 		t.Fatalf("generous budget should descend to entities, got %v", got)
 	}
-	if got := resolveAltitude(AltAuto, 100000, 500); got != AltTenant {
+	// both entity and backbone exceed the budget → falls to AltTenant.
+	if got := resolveAltitude(AltAuto, 100000, 80000, 500); got != AltTenant {
 		t.Fatalf("tight budget should climb to tenant, got %v", got)
 	}
-	if got := resolveAltitude(AltScope, 1, 1); got != AltScope {
+	if got := resolveAltitude(AltScope, 1, 0, 1); got != AltScope {
 		t.Fatalf("explicit altitude must pass through, got %v", got)
+	}
+}
+
+func TestResolveAltitude_ThreeTier(t *testing.T) {
+	// entities don't fit, backbone does → AltScope (the new middle rung).
+	if got := resolveAltitude(AltAuto, 100, 30, 50); got != AltScope {
+		t.Fatalf("entities>budget, backbone<=budget → AltScope; got %v", got)
+	}
+	// entities fit → AltEntity.
+	if got := resolveAltitude(AltAuto, 40, 30, 50); got != AltEntity {
+		t.Fatalf("entities<=budget → AltEntity; got %v", got)
+	}
+	// neither fits → AltTenant.
+	if got := resolveAltitude(AltAuto, 100, 80, 50); got != AltTenant {
+		t.Fatalf("neither fits → AltTenant; got %v", got)
+	}
+	// explicit altitude passes through.
+	if got := resolveAltitude(AltEntity, 100, 80, 50); got != AltEntity {
+		t.Fatalf("explicit altitude passes through; got %v", got)
 	}
 }
 
