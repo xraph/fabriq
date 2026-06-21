@@ -390,7 +390,7 @@ func TestLoopback_SubscribeStreamsDeltas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	var got []string
+	got := make([]string, 0, 2)
 	for d := range out {
 		got = append(got, d.AggID)
 	}
@@ -527,7 +527,7 @@ func TestLoopback_LiveQueryStreamsSnapshotAndDeltas(t *testing.T) {
 	if _, rerr := h.Reanchor(context.Background(), nil, 20); !errors.Is(rerr, remote.ErrNotImplemented) {
 		t.Errorf("Reanchor err = %v, want ErrNotImplemented", rerr)
 	}
-	var ops []livequery.DeltaOp
+	ops := make([]livequery.DeltaOp, 0, 2)
 	for d := range live {
 		ops = append(ops, d.Op)
 	}
