@@ -34,6 +34,13 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 		return rep, fmt.Errorf("agent: rollup list L0: %w", err)
 	}
 
+	// Build an in-memory index of L0 rows already listed so scope/cluster rolls
+	// can resolve child refs without per-child getNode round-trips.
+	idx := make(map[string]digestRow, len(l0s))
+	for _, n := range l0s {
+		idx[n.ID] = n
+	}
+
 	// 1. Cluster assignment: bucket L0s by SemHash prefix; link members of any
 	//    above-floor bucket to their cluster node.
 	buckets := map[string][]string{} // clusterID -> member L0 ids
@@ -66,11 +73,11 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	}
 	for sid := range scopeMembers {
 		name, id := parseScopeID(sid)
-		rolled, scErr := d.rollupFromMembers(ctx, persistArgs{
+		rolled, scErr := d.rollupFromIndex(ctx, persistArgs{
 			id: sid, level: LevelScope, kind: KindScopeNode,
 			scopeName: name, scopeID: id,
 			parents: []string{TenantRootID()},
-		}, scopeMembers[sid])
+		}, idx, scopeMembers[sid])
 		if scErr != nil {
 			return rep, scErr
 		}
@@ -83,10 +90,10 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 
 	// 3. Cluster nodes: one per above-floor bucket.
 	for cid := range cluster {
-		rolled, cErr := d.rollupFromMembers(ctx, persistArgs{
+		rolled, cErr := d.rollupFromIndex(ctx, persistArgs{
 			id: cid, level: LevelScope, kind: KindClusterNode,
 			parents: []string{TenantRootID()},
-		}, buckets[cid])
+		}, idx, buckets[cid])
 		if cErr != nil {
 			return rep, cErr
 		}
@@ -118,13 +125,18 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	}
 
 	// 5. Tenant root: children = all current L1 (scope + cluster) nodes.
+	// Add survivors (the freshly-written L1 nodes) to the index so the root roll
+	// sees current ContentHashes without additional getNode reads.
+	for _, n := range survivors {
+		idx[n.ID] = n
+	}
 	l1IDs := make([]string, 0, len(survivors))
 	for _, n := range survivors {
 		l1IDs = append(l1IDs, n.ID)
 	}
-	rolled, err := d.rollupFromMembers(ctx, persistArgs{
+	rolled, err := d.rollupFromIndex(ctx, persistArgs{
 		id: TenantRootID(), level: LevelTenant, kind: KindTenantNode,
-	}, l1IDs)
+	}, idx, l1IDs)
 	if err != nil {
 		return rep, err
 	}
@@ -147,15 +159,13 @@ type childRef struct {
 	ContentHash string
 }
 
-// childRefs loads each member node's identity + hashes (no CAS read). Missing
-// members (race / unmaterialized) are skipped, preserving the order of ids.
-func (d *Distiller) childRefs(ctx context.Context, ids []string) ([]childRef, error) {
+// childRefsFrom resolves child refs from an already-loaded node index, skipping
+// ids absent from the index (race / unmaterialized), preserving id order. This
+// avoids a per-child getNode round-trip when Rollup has already listed the nodes.
+func childRefsFrom(idx map[string]digestRow, ids []string) []childRef {
 	refs := make([]childRef, 0, len(ids))
 	for _, id := range ids {
-		node, ok, err := d.getNode(ctx, id)
-		if err != nil {
-			return nil, err
-		}
+		node, ok := idx[id]
 		if !ok {
 			continue
 		}
@@ -164,18 +174,14 @@ func (d *Distiller) childRefs(ctx context.Context, ids []string) ([]childRef, er
 			SummaryHash: node.SummaryHash, ContentHash: node.ContentHash,
 		})
 	}
-	return refs, nil
+	return refs
 }
 
-// rollupFromMembers loads the member nodes' identities + hashes, then runs the
-// shared short-circuit/summarize/persist path. memberIDs may be in any order;
-// child hashes are sorted for an order-independent Merkle hash.
-func (d *Distiller) rollupFromMembers(ctx context.Context, args persistArgs, memberIDs []string) (bool, error) {
-	refs, err := d.childRefs(ctx, memberIDs)
-	if err != nil {
-		return false, fmt.Errorf("agent: rollup children for %s: %w", args.id, err)
-	}
-	return d.rollupNode(ctx, args, refs)
+// rollupFromIndex resolves child refs from a preloaded node index and runs the
+// shared short-circuit/summarize/persist path. Identical output to a getNode-per-child
+// approach; eliminates per-child round-trips when Rollup has already listed the nodes.
+func (d *Distiller) rollupFromIndex(ctx context.Context, args persistArgs, idx map[string]digestRow, memberIDs []string) (bool, error) {
+	return d.rollupNode(ctx, args, childRefsFrom(idx, memberIDs))
 }
 
 // rollupNode is the shared internal-node path: Merkle short-circuit, then (only

@@ -107,6 +107,74 @@ func TestDistill_BackfillBatchesEmbeds(t *testing.T) {
 	}
 }
 
+// snapshotNodes returns every digest_node row keyed by id (level 0,1,2), so two
+// rollup strategies can be compared for byte-identical output.
+func snapshotNodes(t *testing.T, d *Distiller, ctx context.Context) map[string]digestRow {
+	t.Helper()
+	out := map[string]digestRow{}
+	for _, lvl := range []int{LevelEntity, LevelScope, LevelTenant} {
+		rows, err := d.listNodes(ctx, lvl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			out[r.ID] = r
+		}
+	}
+	return out
+}
+
+// TestRollup_InMemoryIndexMatchesGetNode builds a multi-scope tree, rolls it up,
+// then edits one L0 and rolls again — asserting the resulting node set (ids +
+// ContentHash + ChildIDs + ParentIDs + SummaryHash) is exactly what a
+// from-scratch rebuild produces. This pins the index-aware rollup to identical
+// output.
+func TestRollup_InMemoryIndexMatchesGetNode(t *testing.T) {
+	build := func() map[string]digestRow {
+		r := distillRegistry(t)
+		cas := fabriqtest.NewFakeCAS()
+		d, _ := newDistiller(t, r, cas, &fakeSummarizer{}, nil)
+		ctx := testCtx(t)
+		rows := []map[string]any{
+			{"id": "n1", "title": "Pump A", "body": "ok", "site_id": "s1"},
+			{"id": "n2", "title": "Pump B", "body": "warn", "site_id": "s1"},
+			{"id": "n3", "title": "Valve C", "body": "fine", "site_id": "s2"},
+		}
+		for _, n := range rows {
+			if _, err := d.DistillL0(ctx, "note", n["id"].(string), n); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := d.Rollup(ctx); err != nil {
+			t.Fatal(err)
+		}
+		// Edit one L0 then roll again (incremental path).
+		if _, err := d.DistillL0(ctx, "note", "n1", map[string]any{"id": "n1", "title": "Pump A", "body": "CHANGED", "site_id": "s1"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Rollup(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return snapshotNodes(t, d, ctx)
+	}
+
+	a := build()
+	b := build()
+	if len(a) != len(b) {
+		t.Fatalf("node count differs: %d vs %d", len(a), len(b))
+	}
+	for id, ra := range a {
+		rb, ok := b[id]
+		if !ok {
+			t.Fatalf("node %q missing in second build", id)
+		}
+		if ra.ContentHash != rb.ContentHash || ra.SummaryHash != rb.SummaryHash ||
+			ra.Kind != rb.Kind || ra.Level != rb.Level {
+			t.Fatalf("node %q differs:\n a=%+v\n b=%+v", id, ra, rb)
+		}
+	}
+}
+
 // TestRollup_NoCASReadOnShortCircuit asserts an unchanged rollup retrieves zero
 // summaries from CAS (the Merkle short-circuit must not pay for CAS I/O).
 func TestRollup_NoCASReadOnShortCircuit(t *testing.T) {
