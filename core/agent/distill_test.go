@@ -3,6 +3,7 @@ package agent
 import (
 	"testing"
 
+	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/fabriqtest"
 )
@@ -26,7 +27,7 @@ func distillRegistry(t testing.TB) *registry.Registry {
 	return r
 }
 
-func newDistiller(t testing.TB, r *registry.Registry, cas *fabriqtest.FakeCAS, sum Summarizer, g Guard) (*Distiller, *fabriqtest.World) {
+func newDistiller(t testing.TB, r *registry.Registry, cas blob.CAS, sum Summarizer, g Guard) (*Distiller, *fabriqtest.World) {
 	t.Helper()
 	w := fabriqtest.NewWorld(r)
 	fab := fabriqtest.NewFabric(w)

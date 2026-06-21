@@ -147,25 +147,60 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	return rep, nil
 }
 
-// rollupFromMembers loads the member nodes' ContentHashes + summaries, then runs
-// the shared short-circuit/summarize/persist path. memberIDs may be in any
-// order; child hashes are sorted for an order-independent Merkle hash.
+// childRef is a child node's identity + hashes, loaded WITHOUT its CAS summary.
+// The summary bytes are fetched lazily in rollupNode only when a re-summarize is
+// actually needed (i.e. after the Merkle short-circuit has been ruled out).
+type childRef struct {
+	ID          string
+	Kind        string
+	SummaryHash string
+	ContentHash string
+}
+
+// childRefs loads each member node's identity + hashes (no CAS read). Missing
+// members (race / unmaterialized) are skipped, preserving the order of ids.
+func (d *Distiller) childRefs(ctx context.Context, ids []string) ([]childRef, error) {
+	refs := make([]childRef, 0, len(ids))
+	for _, id := range ids {
+		node, ok, err := d.getNode(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		refs = append(refs, childRef{
+			ID: node.ID, Kind: node.Kind,
+			SummaryHash: node.SummaryHash, ContentHash: node.ContentHash,
+		})
+	}
+	return refs, nil
+}
+
+// rollupFromMembers loads the member nodes' identities + hashes, then runs the
+// shared short-circuit/summarize/persist path. memberIDs may be in any order;
+// child hashes are sorted for an order-independent Merkle hash.
 func (d *Distiller) rollupFromMembers(ctx context.Context, args persistArgs, memberIDs []string) (bool, error) {
-	children, childHashes, err := d.childDigests(ctx, memberIDs)
+	refs, err := d.childRefs(ctx, memberIDs)
 	if err != nil {
 		return false, fmt.Errorf("agent: rollup children for %s: %w", args.id, err)
 	}
-	return d.rollupNode(ctx, args, childHashes, children)
+	return d.rollupNode(ctx, args, refs)
 }
 
-// rollupNode is the shared internal-node path: Merkle short-circuit, summarize,
-// guard-emit, persist. Returns rolled=true only when a new summary was written;
-// false on a short-circuit or a guard block (fail-closed).
-func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashes []string, children []ChildDigest) (bool, error) {
+// rollupNode is the shared internal-node path: Merkle short-circuit, then (only
+// if not short-circuited) fetch child summaries from CAS, summarize, guard-emit,
+// persist. Returns rolled=true only when a new summary was written; false on a
+// short-circuit or a guard block (fail-closed).
+func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, refs []childRef) (bool, error) {
+	childHashes := make([]string, len(refs))
+	for i, r := range refs {
+		childHashes[i] = r.ContentHash
+	}
 	ch := RollupContentHash(d.cfg.RecipeVersion, childHashes)
 
 	// Merkle short-circuit: an internal node whose sorted child hashes are
-	// unchanged is not re-summarized.
+	// unchanged is not re-summarized — and pays NO CAS I/O.
 	if existing, ok, err := d.getNode(ctx, args.id); err != nil {
 		return false, err
 	} else if ok && existing.ContentHash == ch {
@@ -178,6 +213,17 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashe
 	if d.obs != nil {
 		d.obs.Summarized()
 	}
+
+	// We are re-summarizing: only now read each child's summary text from CAS.
+	children := make([]ChildDigest, 0, len(refs))
+	for _, r := range refs {
+		summary, err := d.retrieveSummary(ctx, r.SummaryHash)
+		if err != nil {
+			return false, err
+		}
+		children = append(children, ChildDigest{ID: r.ID, Kind: r.Kind, Summary: summary})
+	}
+
 	summary, err := d.sum.Summarize(ctx, SummaryInput{
 		Level:    args.level,
 		Kind:     args.kind,
@@ -204,9 +250,9 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashe
 
 	args.summaryText = ge.Text
 	args.contentHash = ch
-	args.children = make([]string, 0, len(children))
-	for _, c := range children {
-		args.children = append(args.children, c.ID)
+	args.children = make([]string, 0, len(refs))
+	for _, r := range refs {
+		args.children = append(args.children, r.ID)
 	}
 	if err := d.persistSummary(ctx, args); err != nil {
 		return false, err
@@ -215,30 +261,6 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, childHashe
 		d.obs.NodeBuilt()
 	}
 	return true, nil
-}
-
-// childDigests loads each member node and its summary text from CAS, returning
-// the ChildDigest fan-in for summarization plus the sorted-for-Merkle child
-// ContentHashes. Missing members (race / unmaterialized) are skipped.
-func (d *Distiller) childDigests(ctx context.Context, ids []string) ([]ChildDigest, []string, error) {
-	children := make([]ChildDigest, 0, len(ids))
-	hashes := make([]string, 0, len(ids))
-	for _, id := range ids {
-		node, ok, err := d.getNode(ctx, id)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !ok {
-			continue
-		}
-		summary, err := d.retrieveSummary(ctx, node.SummaryHash)
-		if err != nil {
-			return nil, nil, err
-		}
-		children = append(children, ChildDigest{ID: node.ID, Kind: node.Kind, Summary: summary})
-		hashes = append(hashes, node.ContentHash)
-	}
-	return children, hashes, nil
 }
 
 // retrieveSummary reads a summary blob's text from CAS by content hash.
