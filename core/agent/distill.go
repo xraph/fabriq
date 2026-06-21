@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -218,6 +219,31 @@ func (d *Distiller) prepareL0(ctx context.Context, entity, id string, vals map[s
 		return persistArgs{}, "", false, nil
 	}
 
+	// Exact-source dedup: if another node already summarized byte-identical
+	// source (same ContentHash), reuse its summary blob — skip summarize + guard
+	// (an identical source yields identical guard verdicts; the donor passed both
+	// stages). Still embed (caller) for this node's own vector/SemHash.
+	if donor, ok, err := d.getByContentHash(ctx, newContentHash); err != nil {
+		return persistArgs{}, "", false, err
+	} else if ok && donor.SummaryHash != "" {
+		donorText, rerr := d.retrieveSummary(ctx, donor.SummaryHash)
+		if rerr != nil {
+			return persistArgs{}, "", false, rerr
+		}
+		if d.obs != nil {
+			d.obs.Deduped()
+		}
+		args := persistArgs{
+			id: nodeID, level: LevelEntity, kind: KindEntityNode,
+			sourceKind: entity, sourceID: id,
+			contentHash:      newContentHash,
+			reuseSummaryHash: donor.SummaryHash,
+			parents:          d.l0Parents(spec, vals),
+		}
+		args.summaryText = donorText
+		return args, donorText, true, nil
+	}
+
 	gi := applyGuard(ctx, d.guard, GuardInput{
 		Stage: GuardIngest, TenantID: tenantOf(ctx), Level: LevelEntity, Text: raw,
 	}, d.cfg.FailOpenGuard)
@@ -284,17 +310,18 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 // already-guarded summary text, the structural ContentHash, and the parent
 // scope/cluster ids to back-link.
 type persistArgs struct {
-	id          string
-	level       int
-	kind        string
-	scopeName   string
-	scopeID     string
-	sourceKind  string
-	sourceID    string
-	summaryText string
-	contentHash string
-	parents     []string
-	children    []string // ChildIDs for internal (rollup) nodes; nil for L0 leaves
+	id               string
+	level            int
+	kind             string
+	scopeName        string
+	scopeID          string
+	sourceKind       string
+	sourceID         string
+	summaryText      string
+	contentHash      string
+	reuseSummaryHash string
+	parents          []string
+	children         []string // ChildIDs for internal (rollup) nodes; nil for L0 leaves
 }
 
 // persistSummary embeds the summary then persists the node (CAS + row + vector +
@@ -315,9 +342,13 @@ func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) error 
 // through the command plane, upserts the vector, and back-links into parents.
 // Used by the batched backfill path (one Embed call per page).
 func (d *Distiller) persistSummaryVec(ctx context.Context, args persistArgs, vec []float32) error {
-	hash, _, err := d.cas.Store(ctx, bytes.NewReader([]byte(args.summaryText)))
-	if err != nil {
-		return fmt.Errorf("agent: cas store %s: %w", args.id, err)
+	hash := args.reuseSummaryHash
+	if hash == "" {
+		stored, _, err := d.cas.Store(ctx, bytes.NewReader([]byte(args.summaryText)))
+		if err != nil {
+			return fmt.Errorf("agent: cas store %s: %w", args.id, err)
+		}
+		hash = stored
 	}
 	sem := FormatSemHash(SemHash(vec, d.planes))
 
@@ -571,6 +602,31 @@ func (d *Distiller) getNode(ctx context.Context, id string) (digestRow, bool, er
 		return digestRow{}, false, err
 	}
 	vals, err := ent.Binding.ValuesByColumn(model)
+	if err != nil {
+		return digestRow{}, false, err
+	}
+	return digestRowFromVals(vals), true, nil
+}
+
+// getByContentHash returns any existing digest node (this tenant) whose
+// ContentHash equals the argument — used by exact-source dedup to reuse a
+// summary. Returns (zero,false,nil) when none exists.
+func (d *Distiller) getByContentHash(ctx context.Context, contentHash string) (digestRow, bool, error) {
+	ent, ok := d.reg.Get(DigestEntity)
+	if !ok {
+		return digestRow{}, false, fmt.Errorf("agent: %q not registered", DigestEntity)
+	}
+	q := query.ListQuery{Where: query.Where{query.Eq("content_hash", contentHash)}, Limit: 1}
+	mt := ent.Binding.ModelType()
+	slicePtr := reflect.New(reflect.SliceOf(mt))
+	if err := d.fab.Relational().List(ctx, DigestEntity, q, slicePtr.Interface()); err != nil {
+		return digestRow{}, false, err
+	}
+	slice := slicePtr.Elem()
+	if slice.Len() == 0 {
+		return digestRow{}, false, nil
+	}
+	vals, err := ent.Binding.ValuesByColumn(slice.Index(0).Interface())
 	if err != nil {
 		return digestRow{}, false, err
 	}

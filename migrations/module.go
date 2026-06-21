@@ -57,6 +57,7 @@ func Group() *migrate.Group {
 			migration0021BlobSource,
 			migration0022DigestNode,
 			migration0023DigestTokens,
+			migration0024DigestContentHashIdx,
 		)
 	})
 	return group
