@@ -63,7 +63,7 @@ func newProbeDistiller(t *testing.T, r *registry.Registry, cas *fabriqtest.FakeC
 	w := fabriqtest.NewWorld(r)
 	fab := fabriqtest.NewFabric(w)
 	d, err := NewDistiller(fab, r, variedEmbedder{dims: 8}, &fakeSummarizer{}, nil, cas,
-		DistillConfig{VectorDims: 8, RecipeVersion: "v1", ClusterBits: 4, NoiseFloor: 2, ProbeRadius: 1})
+		DistillConfig{VectorDims: 8, RecipeVersion: "v1", ClusterBits: 4, NoiseFloor: 2, ProbeRadius: probe})
 	if err != nil {
 		t.Fatal(err)
 	}

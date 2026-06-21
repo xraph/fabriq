@@ -50,7 +50,8 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	buckets := map[string][]string{} // primary: clusterID -> member L0 ids
 	for _, n := range l0s {
 		prefix := ClusterPrefix(parseSemOrZero(n.SemHash), d.cfg.ClusterBits)
-		buckets[ClusterID(prefix, d.cfg.ClusterBits)] = append(buckets[ClusterID(prefix, d.cfg.ClusterBits)], n.ID)
+		cid := ClusterID(prefix, d.cfg.ClusterBits)
+		buckets[cid] = append(buckets[cid], n.ID)
 	}
 	cluster := map[string]bool{} // above-floor cluster ids (gated on PRIMARY count)
 	for cid, members := range buckets {
@@ -145,8 +146,10 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	//    below the noise floor (including to zero), is deleted; its remaining
 	//    members must not retain a stale parent link. Run BEFORE the tenant-root
 	//    build so the root's children reflect only L1 nodes that still exist.
-	// Map each cluster id to the L0s that currently link it (from ParentIDs),
-	// so cleanup can unlink probe members too, not just primary ones.
+	// linkedClusters maps each cluster id to the L0s linking it as of the start of
+	// this pass (l0s carries pre-pass ParentIDs). That is exactly what cleanup needs:
+	// a cluster being collapsed existed in a prior pass, so its members' links are
+	// already present here; clusters newly above-floor this pass are not collapsed.
 	linkedClusters := map[string][]string{}
 	for _, n := range l0s {
 		for _, pid := range n.ParentIDs {
