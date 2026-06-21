@@ -90,12 +90,6 @@ func TestDistill_BackfillBatchesEmbeds(t *testing.T) {
 
 	// Look for the three L0 page batches [2,2,1] among emb.batches. (Rollup also
 	// embeds internal nodes one-at-a-time; we only assert the L0 page batches.)
-	var pages []int
-	for _, b := range emb.batches {
-		if b == 2 || b == 1 {
-			pages = append(pages, b)
-		}
-	}
 	got2 := 0
 	for _, b := range emb.batches {
 		if b == 2 {
@@ -125,10 +119,9 @@ func snapshotNodes(t *testing.T, d *Distiller, ctx context.Context) map[string]d
 }
 
 // TestRollup_InMemoryIndexMatchesGetNode builds a multi-scope tree, rolls it up,
-// then edits one L0 and rolls again — asserting the resulting node set (ids +
-// ContentHash + ChildIDs + ParentIDs + SummaryHash) is exactly what a
-// from-scratch rebuild produces. This pins the index-aware rollup to identical
-// output.
+// then edits one L0 and rolls again — asserting the resulting node set
+// (ContentHash, SummaryHash, Kind, Level) is exactly what a from-scratch rebuild
+// produces. This pins the index-aware rollup to identical output.
 func TestRollup_InMemoryIndexMatchesGetNode(t *testing.T) {
 	build := func() map[string]digestRow {
 		r := distillRegistry(t)
