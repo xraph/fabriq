@@ -110,11 +110,11 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	}
 	for sid := range scopeMembers {
 		name, id := parseScopeID(sid)
-		rolled, scErr := d.rollupFromIndex(ctx, persistArgs{
+		rolled, scErr := d.rollupGroup(ctx, persistArgs{
 			id: sid, level: LevelScope, kind: KindScopeNode,
 			scopeName: name, scopeID: id,
 			parents: []string{TenantRootID()},
-		}, idx, scopeMembers[sid])
+		}, idx, scopeMembers[sid], d.cfg.ClusterBits)
 		if scErr != nil {
 			return rep, scErr
 		}
@@ -127,10 +127,10 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 
 	// 3. Cluster nodes: one per above-floor bucket, over effective membership.
 	for cid := range cluster {
-		rolled, cErr := d.rollupFromIndex(ctx, persistArgs{
+		rolled, cErr := d.rollupGroup(ctx, persistArgs{
 			id: cid, level: LevelScope, kind: KindClusterNode,
 			parents: []string{TenantRootID()},
-		}, idx, clusterMembers[cid])
+		}, idx, clusterMembers[cid], d.cfg.ClusterBits)
 		if cErr != nil {
 			return rep, cErr
 		}
@@ -183,9 +183,9 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	for _, n := range survivors {
 		l1IDs = append(l1IDs, n.ID)
 	}
-	rolled, err := d.rollupFromIndex(ctx, persistArgs{
+	rolled, err := d.rollupGroup(ctx, persistArgs{
 		id: TenantRootID(), level: LevelTenant, kind: KindTenantNode,
-	}, idx, l1IDs)
+	}, idx, l1IDs, d.cfg.ClusterBits)
 	if err != nil {
 		return rep, err
 	}
@@ -231,6 +231,83 @@ func childRefsFrom(idx map[string]digestRow, ids []string) []childRef {
 // approach; eliminates per-child round-trips when Rollup has already listed the nodes.
 func (d *Distiller) rollupFromIndex(ctx context.Context, args persistArgs, idx map[string]digestRow, memberIDs []string) (bool, error) {
 	return d.rollupNode(ctx, args, childRefsFrom(idx, memberIDs))
+}
+
+// intermediateID derives a stable, collision-free id for an adaptive-depth
+// sub-node: parent id + "#" + the sub-bucket prefix. Distinct from the flat
+// ClusterID scheme so a depth sub-cluster (grouping L0s) can never collide with
+// a tenant-root super-cluster (grouping L1 nodes).
+func intermediateID(parentID string, subPrefix uint64) string {
+	return parentID + "#" + FormatSemHash(subPrefix)
+}
+
+// groupFits reports whether a set of children can be summarized as one node:
+// child-summary tokens within SummarizerInputBudget AND count within MaxFanIn.
+// Tokens come from the cached digest row (idx) — never from CAS.
+func (d *Distiller) groupFits(refs []childRef, idx map[string]digestRow) bool {
+	if len(refs) > d.cfg.MaxFanIn {
+		return false
+	}
+	total := 0
+	for _, r := range refs {
+		total += int(idx[r.ID].Tokens)
+	}
+	return total <= d.cfg.SummarizerInputBudget
+}
+
+// rollupGroup summarizes `members` under `args.id`, inserting intermediate
+// `cluster`-kind nodes when the group overflows the fan-in cap. On overflow it
+// partitions members by a longer SimHash prefix (prefixBits+Δ) into parent-scoped
+// sub-nodes, recurses, then summarizes args.id over the sub-nodes. Reuses
+// rollupNode (Merkle short-circuit + lazy CAS) at every node. Terminates when the
+// group fits, the partition makes no progress, or the prefix reaches 64 bits.
+func (d *Distiller) rollupGroup(ctx context.Context, args persistArgs, idx map[string]digestRow, members []string, prefixBits int) (bool, error) {
+	refs := childRefsFrom(idx, members)
+	if len(refs) == 0 || prefixBits >= 64 || d.groupFits(refs, idx) {
+		return d.rollupNode(ctx, args, refs)
+	}
+	subBits := prefixBits + d.cfg.ClusterSubBits
+	if subBits > 64 {
+		subBits = 64
+	}
+	sub := map[uint64][]string{}
+	var order []uint64
+	for _, r := range refs {
+		sp := ClusterPrefix(parseSemOrZero(idx[r.ID].SemHash), subBits)
+		if _, seen := sub[sp]; !seen {
+			order = append(order, sp)
+		}
+		sub[sp] = append(sub[sp], r.ID)
+	}
+	if len(sub) <= 1 {
+		// No progress: members are identical in the top subBits — summarize as-is
+		// rather than recurse forever.
+		return d.rollupNode(ctx, args, refs)
+	}
+	if d.obs != nil {
+		d.obs.Split()
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	childGroupIDs := make([]string, 0, len(order))
+	for _, sp := range order {
+		subID := intermediateID(args.id, sp)
+		subArgs := persistArgs{
+			id: subID, level: LevelScope, kind: KindClusterNode,
+			scopeName: args.scopeName, scopeID: args.scopeID,
+			parents: []string{args.id},
+		}
+		if _, err := d.rollupGroup(ctx, subArgs, idx, sub[sp], subBits); err != nil {
+			return false, err
+		}
+		// Make the freshly-built sub-node visible to the parent roll.
+		if row, ok, err := d.getNode(ctx, subID); err != nil {
+			return false, err
+		} else if ok {
+			idx[subID] = row
+		}
+		childGroupIDs = append(childGroupIDs, subID)
+	}
+	return d.rollupNode(ctx, args, childRefsFrom(idx, childGroupIDs))
 }
 
 // rollupNode is the shared internal-node path: Merkle short-circuit, then (only
@@ -416,6 +493,10 @@ func (d *Distiller) cleanupL1(ctx context.Context, scopeMembers, linkedClusters 
 				}
 				continue // deleted → not a survivor
 			}
+			// Intermediate adaptive-depth nodes (id contains "#") are neither isScopeID
+			// nor isClusterID, so this switch falls through to survivors. They are rebuilt
+			// deterministically each pass; a dedicated GC for orphaned intermediates is a
+			// documented follow-up.
 		}
 		survivors = append(survivors, n)
 	}
