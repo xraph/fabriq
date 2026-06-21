@@ -34,3 +34,37 @@ func TestTokenize_Default(t *testing.T) {
 		t.Fatalf("default tokenize counts words; want 3 got %d", n)
 	}
 }
+
+// TestExactDedup_ReusesSummary asserts two byte-identical sources trigger exactly
+// one Summarize call (the second reuses the first's summary blob).
+func TestExactDedup_ReusesSummary(t *testing.T) {
+	r := distillRegistry(t)
+	cas := fabriqtest.NewFakeCAS()
+	sum := &fakeSummarizer{}
+	d, _ := newDistiller(t, r, cas, sum, nil)
+	ctx := testCtx(t)
+
+	same := map[string]any{"title": "Identical Pump", "body": "identical body text", "site_id": "s1"}
+	a := map[string]any{"id": "a"}
+	b := map[string]any{"id": "b"}
+	for k, v := range same {
+		a[k] = v
+		b[k] = v
+	}
+	if _, err := d.DistillL0(ctx, "note", "a", a); err != nil {
+		t.Fatal(err)
+	}
+	callsAfterFirst := sum.calls
+	if _, err := d.DistillL0(ctx, "note", "b", b); err != nil {
+		t.Fatal(err)
+	}
+	if sum.calls != callsAfterFirst {
+		t.Fatalf("identical source must reuse the summary (no new Summarize); calls %d→%d", callsAfterFirst, sum.calls)
+	}
+	// Both nodes exist and share the same summary blob.
+	ra, _, _ := d.getNode(ctx, L0ID("note", "a"))
+	rb, _, _ := d.getNode(ctx, L0ID("note", "b"))
+	if ra.SummaryHash == "" || ra.SummaryHash != rb.SummaryHash {
+		t.Fatalf("deduped nodes must share a SummaryHash; a=%q b=%q", ra.SummaryHash, rb.SummaryHash)
+	}
+}
