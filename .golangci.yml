@@ -118,6 +118,8 @@ linters:
         - G104
         - G304
         - G117 # config structs legitimately carry credential fields
+        - G602 # false-positives on fixed-size array indexing (e.g. for i := range arr { arr[i] = … })
+        - G705 # experimental XSS taint rule; our HTTP responses are JSON/SSE APIs, never HTML sinks
 
     errcheck:
       check-type-assertions: true
@@ -144,6 +146,12 @@ linters:
       # internal/metrics is the spec'd package layout; it never collides in
       # practice (internal import path, no dot-imports allowed).
       - path: internal/metrics/
+        text: "avoid package names that conflict"
+        linters: [revive]
+      # core/crypto is a deliberate package name; it is always imported with the
+      # crypto. qualifier (never dot-imported) and no importer also pulls in the
+      # stdlib crypto package, so there is no real collision.
+      - path: core/crypto/
         text: "avoid package names that conflict"
         linters: [revive]
 
