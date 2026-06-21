@@ -61,39 +61,66 @@ func (g *tenantGate) Do(tenantID string, fn func()) {
 // ref identifies a source aggregate (entity + id) within a tenant.
 type ref struct{ entity, id string }
 
+// nextFireDelay returns how long to wait before the next sweep: the debounce
+// window, but never past the tenant's deadline (firstMark + maxWait). A deadline
+// already in the past clamps to zero (fire immediately).
+func nextFireDelay(now, deadline time.Time, debounce time.Duration) time.Duration {
+	d := debounce
+	if rem := deadline.Sub(now); rem < d {
+		d = rem
+	}
+	if d < 0 {
+		d = 0
+	}
+	return d
+}
+
 // distillSweeper coalesces write events per tenant into debounced single-flight
 // sweeps.
 type distillSweeper struct {
 	d        *agent.Distiller
 	debounce time.Duration
+	maxWait  time.Duration
 	gate     *tenantGate
 	m        *metrics.Metrics
 
-	mu     sync.Mutex
-	dirty  map[string]map[ref]event.Envelope // tenant -> ref -> LATEST envelope
-	timers map[string]*time.Timer
+	mu       sync.Mutex
+	dirty    map[string]map[ref]event.Envelope // tenant -> ref -> LATEST envelope
+	timers   map[string]*time.Timer
+	deadline map[string]time.Time // tenant -> firstMark + maxWait
 }
 
 // newDistillSweeper builds a sweeper over a Distiller. A non-positive debounce
-// defaults to one second. When metrics are supplied, an observer adapter is
-// attached to the Distiller so per-node counters increment from inside core.
-func newDistillSweeper(d *agent.Distiller, debounce time.Duration, m *metrics.Metrics) *distillSweeper {
+// defaults to one second. A non-positive maxWait defaults to 10×debounce; a
+// maxWait smaller than debounce is clamped up to debounce. When metrics are
+// supplied, an observer adapter is attached to the Distiller so per-node
+// counters increment from inside core.
+func newDistillSweeper(d *agent.Distiller, debounce, maxWait time.Duration, m *metrics.Metrics) *distillSweeper {
 	if debounce <= 0 {
 		debounce = time.Second
+	}
+	if maxWait <= 0 {
+		maxWait = 10 * debounce
+	}
+	if maxWait < debounce {
+		maxWait = debounce
 	}
 	if m != nil {
 		d.SetObserver(distillMetricsObserver{m})
 	}
 	return &distillSweeper{
-		d: d, debounce: debounce, gate: newTenantGate(), m: m,
-		dirty:  map[string]map[ref]event.Envelope{},
-		timers: map[string]*time.Timer{},
+		d: d, debounce: debounce, maxWait: maxWait, gate: newTenantGate(), m: m,
+		dirty:    map[string]map[ref]event.Envelope{},
+		timers:   map[string]*time.Timer{},
+		deadline: map[string]time.Time{},
 	}
 }
 
 // MarkAndSchedule records the latest envelope for a ref and (re)arms the
 // tenant's debounce timer. Latest-wins coalesces a burst of edits to the final
-// payload, so a sweep summarizes each ref at most once per window.
+// payload, so a sweep summarizes each ref at most once per window. The timer
+// is capped to the per-tenant deadline (firstMark + maxWait) to prevent
+// continuous writes from starving a tenant's sweep indefinitely.
 func (s *distillSweeper) MarkAndSchedule(env event.Envelope) {
 	r := ref{entity: env.Aggregate, id: env.AggID}
 	s.mu.Lock()
@@ -101,11 +128,16 @@ func (s *distillSweeper) MarkAndSchedule(env event.Envelope) {
 		s.dirty[env.TenantID] = map[ref]event.Envelope{}
 	}
 	s.dirty[env.TenantID][r] = env
+	now := time.Now()
+	if _, ok := s.deadline[env.TenantID]; !ok {
+		s.deadline[env.TenantID] = now.Add(s.maxWait) // first mark sets the cap
+	}
 	if t := s.timers[env.TenantID]; t != nil {
 		t.Stop()
 	}
 	tenantID := env.TenantID
-	s.timers[env.TenantID] = time.AfterFunc(s.debounce, func() { s.sweep(tenantID) })
+	delay := nextFireDelay(now, s.deadline[env.TenantID], s.debounce)
+	s.timers[env.TenantID] = time.AfterFunc(delay, func() { s.sweep(tenantID) })
 	s.mu.Unlock()
 }
 
@@ -117,6 +149,7 @@ func (s *distillSweeper) sweep(tenantID string) {
 	envs := s.dirty[tenantID]
 	delete(s.dirty, tenantID)
 	delete(s.timers, tenantID)
+	delete(s.deadline, tenantID)
 	s.mu.Unlock()
 	if len(envs) == 0 {
 		return
