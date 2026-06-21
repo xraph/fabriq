@@ -32,6 +32,8 @@ type DistillObserver interface {
 	ShortCircuited() // a Merkle hash matched — the node was not re-summarized
 	NodeBuilt()      // a node summary was persisted (CAS + vector + row)
 	GuardBlocked()   // a guard vetoed an ingest or emit (fail-closed drop)
+	Split()          // an aggregating node overflowed and was split into intermediate nodes
+	Deduped()        // an L0 reused an existing summary via exact source-hash match
 }
 
 // DistillConfig tunes the Distiller. Zero values get defaults via withDefaults.
@@ -44,6 +46,11 @@ type DistillConfig struct {
 	ProbeRadius   int // multi-probe Hamming radius for cluster membership (0 = single-bucket, today's behavior)
 	FailOpenGuard bool
 	Budget        int // default L0 summary token budget
+
+	SummarizerInputBudget int              // max child-summary tokens before a node splits (adaptive depth)
+	MaxFanIn              int              // max children before a node splits (adaptive depth backstop)
+	ClusterSubBits        int              // prefix-bit increment per split level (Δ)
+	Tokenizer             func(string) int // summary token counter; nil = whitespace-word default
 }
 
 func (c *DistillConfig) withDefaults() {
@@ -67,6 +74,18 @@ func (c *DistillConfig) withDefaults() {
 	}
 	if c.Budget <= 0 {
 		c.Budget = 256
+	}
+	if c.SummarizerInputBudget <= 0 {
+		c.SummarizerInputBudget = 6000
+	}
+	if c.MaxFanIn <= 0 {
+		c.MaxFanIn = 32
+	}
+	if c.ClusterSubBits <= 0 {
+		c.ClusterSubBits = 4
+	}
+	if c.Tokenizer == nil {
+		c.Tokenizer = func(s string) int { return len(strings.Fields(s)) }
 	}
 }
 
@@ -316,6 +335,7 @@ func (d *Distiller) persistSummaryVec(ctx context.Context, args persistArgs, vec
 		ChildIDs:    args.children,
 		ParentIDs:   args.parents,
 		UpdatedAt:   time.Now().UnixNano(),
+		Tokens:      int64(d.tokenize(args.summaryText)),
 	}
 	if err := d.upsertNode(ctx, row); err != nil {
 		return err
@@ -460,6 +480,9 @@ func tenantOf(ctx context.Context) string {
 	return id
 }
 
+// tokenize counts the tokens of a summary via the configured Tokenizer.
+func (d *Distiller) tokenize(s string) int { return d.cfg.Tokenizer(s) }
+
 // digestRow is the in-package, domain-free projection of a digest_node row.
 // Exported fields let white-box tests assert on the Merkle/scope state.
 type digestRow struct {
@@ -476,6 +499,7 @@ type digestRow struct {
 	ChildIDs    []string
 	ParentIDs   []string
 	UpdatedAt   int64
+	Tokens      int64
 }
 
 // toVals renders the row as a column-keyed map for Binding.Populate. It omits
@@ -495,6 +519,7 @@ func (r digestRow) toVals() map[string]any {
 		"child_ids":    nonNilStrings(r.ChildIDs),
 		"parent_ids":   nonNilStrings(r.ParentIDs),
 		"updated_at":   r.UpdatedAt,
+		"tokens":       r.Tokens,
 	}
 }
 
@@ -516,6 +541,7 @@ func digestRowFromVals(m map[string]any) digestRow {
 		ChildIDs:    asStrings(m["child_ids"]),
 		ParentIDs:   asStrings(m["parent_ids"]),
 		UpdatedAt:   asInt64(m["updated_at"]),
+		Tokens:      asInt64(m["tokens"]),
 	}
 }
 
