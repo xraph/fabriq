@@ -101,9 +101,13 @@ func TestRecall_AltitudeAuto_BudgetDrivesLayer(t *testing.T) {
 		t.Fatalf("generous budget must NOT surface digest_node; entities=%v", ge)
 	}
 
-	// Tight budget (< the note's token count) → AltTenant: pack climbs to a
-	// digest, no note. Use note-tokens-1 so resolveAltitude picks AltTenant
-	// (entityTokens=nTok > budget) while still affording the (smaller) digest row.
+	// Tight budget (< the note's token count) → AltScope: pack climbs to a
+	// digest, no note. Use note-tokens-1 so resolveAltitude picks AltScope
+	// (entityTokens=nTok > budget, and backboneTokens=0 because there is no L1
+	// backbone node in this single-note fixture) while still affording the
+	// (smaller) digest row. dedupeByAltitude treats AltScope and AltTenant
+	// identically when digests are present, so the observable output (digest kept,
+	// note dropped) is unchanged regardless of which altitude resolves.
 	tight, err := tk.Recall(ctx, RecallRequest{
 		Query: "pump", Budget: nTok - 1, Entities: []string{"note"}, Altitude: AltAuto,
 	})

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -32,6 +33,8 @@ type DistillObserver interface {
 	ShortCircuited() // a Merkle hash matched — the node was not re-summarized
 	NodeBuilt()      // a node summary was persisted (CAS + vector + row)
 	GuardBlocked()   // a guard vetoed an ingest or emit (fail-closed drop)
+	Split()          // an aggregating node overflowed and was split into intermediate nodes
+	Deduped()        // an L0 reused an existing summary via exact source-hash match
 }
 
 // DistillConfig tunes the Distiller. Zero values get defaults via withDefaults.
@@ -41,8 +44,14 @@ type DistillConfig struct {
 	SemSeed       int64
 	ClusterBits   int // top-p SemHash bits used as the cluster bucket key
 	NoiseFloor    int // min members for a bucket to become a cluster node
+	ProbeRadius   int // multi-probe Hamming radius for cluster membership (0 = single-bucket, today's behavior)
 	FailOpenGuard bool
 	Budget        int // default L0 summary token budget
+
+	SummarizerInputBudget int              // max child-summary tokens before a node splits (adaptive depth)
+	MaxFanIn              int              // max children before a node splits (adaptive depth backstop)
+	ClusterSubBits        int              // prefix-bit increment per split level (Δ)
+	Tokenizer             func(string) int // summary token counter; nil = whitespace-word default
 }
 
 func (c *DistillConfig) withDefaults() {
@@ -61,8 +70,30 @@ func (c *DistillConfig) withDefaults() {
 	if c.NoiseFloor <= 0 {
 		c.NoiseFloor = 2
 	}
+	if c.ProbeRadius < 0 {
+		c.ProbeRadius = 0
+	}
 	if c.Budget <= 0 {
 		c.Budget = 256
+	}
+	if c.SummarizerInputBudget <= 0 {
+		c.SummarizerInputBudget = 6000
+	}
+	if c.MaxFanIn <= 0 {
+		c.MaxFanIn = 32
+	}
+	if c.ClusterSubBits <= 0 {
+		// Default Δ=4 satisfies the design assumption: 2^ClusterSubBits ≤ MaxFanIn
+		// (16 ≤ 32). When rollupGroup partitions an overflowing node it produces at
+		// most 2^ClusterSubBits sub-groups, so the synthetic parent that summarizes
+		// those sub-groups stays within MaxFanIn and does not itself need splitting.
+		// Violating this (ClusterSubBits > log2(MaxFanIn)) is harmless — the parent
+		// simply exceeds MaxFanIn and triggers another split — but defeats the intent
+		// of the fan-in cap.
+		c.ClusterSubBits = 4
+	}
+	if c.Tokenizer == nil {
+		c.Tokenizer = func(s string) int { return len(strings.Fields(s)) }
 	}
 }
 
@@ -195,6 +226,31 @@ func (d *Distiller) prepareL0(ctx context.Context, entity, id string, vals map[s
 		return persistArgs{}, "", false, nil
 	}
 
+	// Exact-source dedup: if another node already summarized byte-identical
+	// source (same ContentHash), reuse its summary blob — skip summarize + guard
+	// (an identical source yields identical guard verdicts; the donor passed both
+	// stages). Still embed (caller) for this node's own vector/SemHash.
+	if donor, ok, err := d.getByContentHash(ctx, newContentHash); err != nil {
+		return persistArgs{}, "", false, err
+	} else if ok && donor.SummaryHash != "" {
+		donorText, rerr := d.retrieveSummary(ctx, donor.SummaryHash)
+		if rerr != nil {
+			return persistArgs{}, "", false, rerr
+		}
+		if d.obs != nil {
+			d.obs.Deduped()
+		}
+		args := persistArgs{
+			id: nodeID, level: LevelEntity, kind: KindEntityNode,
+			sourceKind: entity, sourceID: id,
+			contentHash:      newContentHash,
+			reuseSummaryHash: donor.SummaryHash,
+			parents:          d.l0Parents(spec, vals),
+		}
+		args.summaryText = donorText
+		return args, donorText, true, nil
+	}
+
 	gi := applyGuard(ctx, d.guard, GuardInput{
 		Stage: GuardIngest, TenantID: tenantOf(ctx), Level: LevelEntity, Text: raw,
 	}, d.cfg.FailOpenGuard)
@@ -261,17 +317,18 @@ func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[s
 // already-guarded summary text, the structural ContentHash, and the parent
 // scope/cluster ids to back-link.
 type persistArgs struct {
-	id          string
-	level       int
-	kind        string
-	scopeName   string
-	scopeID     string
-	sourceKind  string
-	sourceID    string
-	summaryText string
-	contentHash string
-	parents     []string
-	children    []string // ChildIDs for internal (rollup) nodes; nil for L0 leaves
+	id               string
+	level            int
+	kind             string
+	scopeName        string
+	scopeID          string
+	sourceKind       string
+	sourceID         string
+	summaryText      string
+	contentHash      string
+	reuseSummaryHash string
+	parents          []string
+	children         []string // ChildIDs for internal (rollup) nodes; nil for L0 leaves
 }
 
 // persistSummary embeds the summary then persists the node (CAS + row + vector +
@@ -292,9 +349,13 @@ func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) error 
 // through the command plane, upserts the vector, and back-links into parents.
 // Used by the batched backfill path (one Embed call per page).
 func (d *Distiller) persistSummaryVec(ctx context.Context, args persistArgs, vec []float32) error {
-	hash, _, err := d.cas.Store(ctx, bytes.NewReader([]byte(args.summaryText)))
-	if err != nil {
-		return fmt.Errorf("agent: cas store %s: %w", args.id, err)
+	hash := args.reuseSummaryHash
+	if hash == "" {
+		stored, _, err := d.cas.Store(ctx, bytes.NewReader([]byte(args.summaryText)))
+		if err != nil {
+			return fmt.Errorf("agent: cas store %s: %w", args.id, err)
+		}
+		hash = stored
 	}
 	sem := FormatSemHash(SemHash(vec, d.planes))
 
@@ -312,6 +373,7 @@ func (d *Distiller) persistSummaryVec(ctx context.Context, args persistArgs, vec
 		ChildIDs:    args.children,
 		ParentIDs:   args.parents,
 		UpdatedAt:   time.Now().UnixNano(),
+		Tokens:      int64(d.tokenize(args.summaryText)),
 	}
 	if err := d.upsertNode(ctx, row); err != nil {
 		return err
@@ -456,6 +518,9 @@ func tenantOf(ctx context.Context) string {
 	return id
 }
 
+// tokenize counts the tokens of a summary via the configured Tokenizer.
+func (d *Distiller) tokenize(s string) int { return d.cfg.Tokenizer(s) }
+
 // digestRow is the in-package, domain-free projection of a digest_node row.
 // Exported fields let white-box tests assert on the Merkle/scope state.
 type digestRow struct {
@@ -472,6 +537,7 @@ type digestRow struct {
 	ChildIDs    []string
 	ParentIDs   []string
 	UpdatedAt   int64
+	Tokens      int64
 }
 
 // toVals renders the row as a column-keyed map for Binding.Populate. It omits
@@ -491,6 +557,7 @@ func (r digestRow) toVals() map[string]any {
 		"child_ids":    nonNilStrings(r.ChildIDs),
 		"parent_ids":   nonNilStrings(r.ParentIDs),
 		"updated_at":   r.UpdatedAt,
+		"tokens":       r.Tokens,
 	}
 }
 
@@ -512,6 +579,7 @@ func digestRowFromVals(m map[string]any) digestRow {
 		ChildIDs:    asStrings(m["child_ids"]),
 		ParentIDs:   asStrings(m["parent_ids"]),
 		UpdatedAt:   asInt64(m["updated_at"]),
+		Tokens:      asInt64(m["tokens"]),
 	}
 }
 
@@ -541,6 +609,31 @@ func (d *Distiller) getNode(ctx context.Context, id string) (digestRow, bool, er
 		return digestRow{}, false, err
 	}
 	vals, err := ent.Binding.ValuesByColumn(model)
+	if err != nil {
+		return digestRow{}, false, err
+	}
+	return digestRowFromVals(vals), true, nil
+}
+
+// getByContentHash returns any existing digest node (this tenant) whose
+// ContentHash equals the argument — used by exact-source dedup to reuse a
+// summary. Returns (zero,false,nil) when none exists.
+func (d *Distiller) getByContentHash(ctx context.Context, contentHash string) (digestRow, bool, error) {
+	ent, ok := d.reg.Get(DigestEntity)
+	if !ok {
+		return digestRow{}, false, fmt.Errorf("agent: %q not registered", DigestEntity)
+	}
+	q := query.ListQuery{Where: query.Where{query.Eq("content_hash", contentHash)}, Limit: 1}
+	mt := ent.Binding.ModelType()
+	slicePtr := reflect.New(reflect.SliceOf(mt))
+	if err := d.fab.Relational().List(ctx, DigestEntity, q, slicePtr.Interface()); err != nil {
+		return digestRow{}, false, err
+	}
+	slice := slicePtr.Elem()
+	if slice.Len() == 0 {
+		return digestRow{}, false, nil
+	}
+	vals, err := ent.Binding.ValuesByColumn(slice.Index(0).Interface())
 	if err != nil {
 		return digestRow{}, false, err
 	}

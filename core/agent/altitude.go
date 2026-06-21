@@ -22,15 +22,18 @@ const (
 	AltTenant
 )
 
-// resolveAltitude returns the effective Altitude to use.
-// For AltAuto: returns AltEntity when entityTokens fits within budget, otherwise
-// AltTenant. Non-auto altitudes pass through unchanged.
-func resolveAltitude(req Altitude, entityTokens, budget int) Altitude {
+// resolveAltitude returns the effective Altitude. For AltAuto the budget drives
+// descent: entities when they fit, else the backbone (scope/cluster) tier when it
+// fits, else the single tenant digest. Non-auto altitudes pass through unchanged.
+func resolveAltitude(req Altitude, entityTokens, backboneTokens, budget int) Altitude {
 	if req != AltAuto {
 		return req
 	}
 	if entityTokens <= budget {
 		return AltEntity
+	}
+	if backboneTokens <= budget {
+		return AltScope
 	}
 	return AltTenant
 }

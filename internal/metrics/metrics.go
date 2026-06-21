@@ -43,6 +43,8 @@ type Metrics struct {
 	DistillShortCircuitTotal prometheus.Counter
 	DistillGuardBlockedTotal prometheus.Counter
 	DistillFailuresTotal     prometheus.Counter
+	DistillSplitsTotal       prometheus.Counter
+	DistillDedupTotal        prometheus.Counter
 }
 
 // New creates and registers the instruments on reg.
@@ -106,12 +108,17 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fabriq_distill_guard_blocked_total", Help: "Contents dropped by the guard (fail-closed or block)."}),
 		DistillFailuresTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "fabriq_distill_failures_total", Help: "Events the distill worker failed to process (transient)."}),
+		DistillSplitsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_distill_splits_total", Help: "Adaptive-depth node splits performed by the distill worker."}),
+		DistillDedupTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_distill_dedup_total", Help: "L0 summaries reused via exact source-hash dedup."}),
 	}
 	for _, c := range []prometheus.Collector{
 		m.OutboxBacklog, m.TenantHookTrips, m.ConflationDepth, m.ProjectionLag, m.RelayPublished,
 		m.BlobGCBytesFreed, m.BlobGCCollected, m.BlobGCRefDriftCorrected, m.BlobGCBroken, m.BlobGCOrphans,
 		m.EmbedEventsTotal, m.EmbedFailuresTotal,
 		m.DistillNodesTotal, m.DistillSummariesTotal, m.DistillShortCircuitTotal, m.DistillGuardBlockedTotal, m.DistillFailuresTotal,
+		m.DistillSplitsTotal, m.DistillDedupTotal,
 	} {
 		if err := reg.Register(c); err != nil {
 			return nil, err
