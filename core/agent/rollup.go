@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/xraph/fabriq/core/query"
@@ -41,21 +42,56 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 		idx[n.ID] = n
 	}
 
-	// 1. Cluster assignment: bucket L0s by SemHash prefix; link members of any
-	//    above-floor bucket to their cluster node.
-	buckets := map[string][]string{} // clusterID -> member L0 ids
+	// 1. Cluster assignment. Primary bucket = top-p SimHash prefix. A bucket
+	//    becomes a cluster only if its PRIMARY membership clears the noise floor.
+	//    With ProbeRadius>0 a node ALSO joins any already-above-floor cluster
+	//    whose prefix is within Hamming ProbeRadius of its primary prefix —
+	//    probes never create a cluster, only widen an existing one.
+	buckets := map[string][]string{} // primary: clusterID -> member L0 ids
 	for _, n := range l0s {
 		prefix := ClusterPrefix(parseSemOrZero(n.SemHash), d.cfg.ClusterBits)
-		cid := ClusterID(prefix, d.cfg.ClusterBits)
-		buckets[cid] = append(buckets[cid], n.ID)
+		buckets[ClusterID(prefix, d.cfg.ClusterBits)] = append(buckets[ClusterID(prefix, d.cfg.ClusterBits)], n.ID)
 	}
-	cluster := map[string]bool{} // above-floor cluster ids
+	cluster := map[string]bool{} // above-floor cluster ids (gated on PRIMARY count)
 	for cid, members := range buckets {
-		if !NoiseFloorMet(len(members), d.cfg.NoiseFloor) {
-			continue
+		if NoiseFloorMet(len(members), d.cfg.NoiseFloor) {
+			cluster[cid] = true
 		}
-		cluster[cid] = true
-		for _, mid := range members {
+	}
+	// Effective membership: primary ∪ probe (probe only into existing clusters).
+	effective := map[string]map[string]bool{}
+	addEff := func(cid, mid string) {
+		if effective[cid] == nil {
+			effective[cid] = map[string]bool{}
+		}
+		effective[cid][mid] = true
+	}
+	for cid := range cluster {
+		for _, mid := range buckets[cid] {
+			addEff(cid, mid)
+		}
+	}
+	if d.cfg.ProbeRadius > 0 {
+		for _, n := range l0s {
+			prefix := ClusterPrefix(parseSemOrZero(n.SemHash), d.cfg.ClusterBits)
+			for _, pp := range probePrefixes(prefix, d.cfg.ClusterBits, d.cfg.ProbeRadius) {
+				cid := ClusterID(pp, d.cfg.ClusterBits)
+				if cluster[cid] {
+					addEff(cid, n.ID)
+				}
+			}
+		}
+	}
+	// Link effective members; build deterministic member lists for rollup.
+	clusterMembers := map[string][]string{}
+	for cid := range cluster {
+		mids := make([]string, 0, len(effective[cid]))
+		for mid := range effective[cid] {
+			mids = append(mids, mid)
+		}
+		sort.Strings(mids)
+		clusterMembers[cid] = mids
+		for _, mid := range mids {
 			if err = d.ensureParent(ctx, mid, cid); err != nil {
 				return rep, fmt.Errorf("agent: rollup link cluster %s: %w", cid, err)
 			}
@@ -88,12 +124,12 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 		}
 	}
 
-	// 3. Cluster nodes: one per above-floor bucket.
+	// 3. Cluster nodes: one per above-floor bucket, over effective membership.
 	for cid := range cluster {
 		rolled, cErr := d.rollupFromIndex(ctx, persistArgs{
 			id: cid, level: LevelScope, kind: KindClusterNode,
 			parents: []string{TenantRootID()},
-		}, idx, buckets[cid])
+		}, idx, clusterMembers[cid])
 		if cErr != nil {
 			return rep, cErr
 		}
@@ -109,7 +145,17 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	//    below the noise floor (including to zero), is deleted; its remaining
 	//    members must not retain a stale parent link. Run BEFORE the tenant-root
 	//    build so the root's children reflect only L1 nodes that still exist.
-	survivors, cerr := d.cleanupL1(ctx, scopeMembers, buckets, cluster)
+	// Map each cluster id to the L0s that currently link it (from ParentIDs),
+	// so cleanup can unlink probe members too, not just primary ones.
+	linkedClusters := map[string][]string{}
+	for _, n := range l0s {
+		for _, pid := range n.ParentIDs {
+			if isClusterID(pid) {
+				linkedClusters[pid] = append(linkedClusters[pid], n.ID)
+			}
+		}
+	}
+	survivors, cerr := d.cleanupL1(ctx, scopeMembers, linkedClusters, cluster)
 	if cerr != nil {
 		return rep, cerr
 	}
@@ -336,10 +382,11 @@ func (d *Distiller) ensureParent(ctx context.Context, memberID, parentID string)
 //     the stale cluster parent link is stripped from any remaining members so the
 //     next pass does not re-derive a phantom membership.
 //
-// scopeMembers maps live scope ids -> member L0 ids; buckets maps every cluster
-// id (above or below floor) -> member L0 ids; cluster is the set of above-floor
-// cluster ids that were (re)summarized this pass.
-func (d *Distiller) cleanupL1(ctx context.Context, scopeMembers, buckets map[string][]string, cluster map[string]bool) ([]digestRow, error) {
+// scopeMembers maps live scope ids -> member L0 ids; linkedClusters maps every
+// cluster id currently referenced in L0 ParentIDs -> the L0 ids that link it
+// (primary OR probe); cluster is the set of above-floor cluster ids that were
+// (re)summarized this pass.
+func (d *Distiller) cleanupL1(ctx context.Context, scopeMembers, linkedClusters map[string][]string, cluster map[string]bool) ([]digestRow, error) {
 	l1s, err := d.listNodes(ctx, LevelScope)
 	if err != nil {
 		return nil, fmt.Errorf("agent: rollup cleanup list L1: %w", err)
@@ -356,7 +403,7 @@ func (d *Distiller) cleanupL1(ctx context.Context, scopeMembers, buckets map[str
 			}
 		case isClusterID(n.ID):
 			if !cluster[n.ID] {
-				for _, mid := range buckets[n.ID] {
+				for _, mid := range linkedClusters[n.ID] {
 					if err := d.removeParent(ctx, mid, n.ID); err != nil {
 						return nil, fmt.Errorf("agent: rollup unlink cluster %s: %w", n.ID, err)
 					}
@@ -389,6 +436,33 @@ func (d *Distiller) removeParent(ctx context.Context, memberID, parentID string)
 	}
 	node.ParentIDs = filtered
 	return d.upsertNode(ctx, node)
+}
+
+// probePrefixes returns every prefix within Hamming `radius` of `prefix` over the
+// top `bits` bits (excluding `prefix` itself). Bounded by Σ_{i=1..radius} C(bits,i).
+// radius<=0 or bits<=0 → nil (probing disabled).
+func probePrefixes(prefix uint64, bits, radius int) []uint64 {
+	if radius <= 0 || bits <= 0 {
+		return nil
+	}
+	if radius > bits {
+		radius = bits
+	}
+	var out []uint64
+	var combo func(start, depth int, mask uint64)
+	combo = func(start, depth int, mask uint64) {
+		if depth > 0 {
+			out = append(out, prefix^mask)
+		}
+		if depth == radius {
+			return
+		}
+		for i := start; i < bits; i++ {
+			combo(i+1, depth+1, mask|(uint64(1)<<uint(63-i)))
+		}
+	}
+	combo(0, 0, 0)
+	return out
 }
 
 // isClusterID reports whether id is a cluster (L1) node id (digest:1:cluster:*).

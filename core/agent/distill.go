@@ -41,6 +41,7 @@ type DistillConfig struct {
 	SemSeed       int64
 	ClusterBits   int // top-p SemHash bits used as the cluster bucket key
 	NoiseFloor    int // min members for a bucket to become a cluster node
+	ProbeRadius   int // multi-probe Hamming radius for cluster membership (0 = single-bucket, today's behavior)
 	FailOpenGuard bool
 	Budget        int // default L0 summary token budget
 }
@@ -60,6 +61,9 @@ func (c *DistillConfig) withDefaults() {
 	}
 	if c.NoiseFloor <= 0 {
 		c.NoiseFloor = 2
+	}
+	if c.ProbeRadius < 0 {
+		c.ProbeRadius = 0
 	}
 	if c.Budget <= 0 {
 		c.Budget = 256
