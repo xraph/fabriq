@@ -55,13 +55,6 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 		}
 	}
 
-	// Re-list L0s after cluster linking so member ParentIDs reflect the cluster
-	// assignment when we gather scope/cluster membership below.
-	l0s, err = d.listNodes(ctx, LevelEntity)
-	if err != nil {
-		return rep, fmt.Errorf("agent: rollup relist L0: %w", err)
-	}
-
 	// 2. Scope nodes: one per distinct digest:1:scope:* id in L0 ParentIDs.
 	scopeMembers := map[string][]string{}
 	for _, n := range l0s {
@@ -109,7 +102,8 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	//    below the noise floor (including to zero), is deleted; its remaining
 	//    members must not retain a stale parent link. Run BEFORE the tenant-root
 	//    build so the root's children reflect only L1 nodes that still exist.
-	if cerr := d.cleanupL1(ctx, scopeMembers, buckets, cluster); cerr != nil {
+	survivors, cerr := d.cleanupL1(ctx, scopeMembers, buckets, cluster)
+	if cerr != nil {
 		return rep, cerr
 	}
 
@@ -124,12 +118,8 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	}
 
 	// 5. Tenant root: children = all current L1 (scope + cluster) nodes.
-	l1s, err := d.listNodes(ctx, LevelScope)
-	if err != nil {
-		return rep, fmt.Errorf("agent: rollup list L1: %w", err)
-	}
-	l1IDs := make([]string, 0, len(l1s))
-	for _, n := range l1s {
+	l1IDs := make([]string, 0, len(survivors))
+	for _, n := range survivors {
 		l1IDs = append(l1IDs, n.ID)
 	}
 	rolled, err := d.rollupFromMembers(ctx, persistArgs{
@@ -343,36 +333,37 @@ func (d *Distiller) ensureParent(ctx context.Context, memberID, parentID string)
 // scopeMembers maps live scope ids -> member L0 ids; buckets maps every cluster
 // id (above or below floor) -> member L0 ids; cluster is the set of above-floor
 // cluster ids that were (re)summarized this pass.
-func (d *Distiller) cleanupL1(ctx context.Context, scopeMembers, buckets map[string][]string, cluster map[string]bool) error {
+func (d *Distiller) cleanupL1(ctx context.Context, scopeMembers, buckets map[string][]string, cluster map[string]bool) ([]digestRow, error) {
 	l1s, err := d.listNodes(ctx, LevelScope)
 	if err != nil {
-		return fmt.Errorf("agent: rollup cleanup list L1: %w", err)
+		return nil, fmt.Errorf("agent: rollup cleanup list L1: %w", err)
 	}
+	survivors := make([]digestRow, 0, len(l1s))
 	for _, n := range l1s {
 		switch {
 		case isScopeID(n.ID):
 			if _, live := scopeMembers[n.ID]; !live {
 				if err := d.deleteNode(ctx, n.ID); err != nil {
-					return fmt.Errorf("agent: rollup collapse scope %s: %w", n.ID, err)
+					return nil, fmt.Errorf("agent: rollup collapse scope %s: %w", n.ID, err)
 				}
+				continue // deleted → not a survivor
 			}
 		case isClusterID(n.ID):
-			if cluster[n.ID] {
-				continue // still above floor — keep it
-			}
-			// Below floor (or vanished): unlink it from any members that still
-			// reference it, then delete the cluster node.
-			for _, mid := range buckets[n.ID] {
-				if err := d.removeParent(ctx, mid, n.ID); err != nil {
-					return fmt.Errorf("agent: rollup unlink cluster %s: %w", n.ID, err)
+			if !cluster[n.ID] {
+				for _, mid := range buckets[n.ID] {
+					if err := d.removeParent(ctx, mid, n.ID); err != nil {
+						return nil, fmt.Errorf("agent: rollup unlink cluster %s: %w", n.ID, err)
+					}
 				}
-			}
-			if err := d.deleteNode(ctx, n.ID); err != nil {
-				return fmt.Errorf("agent: rollup collapse cluster %s: %w", n.ID, err)
+				if err := d.deleteNode(ctx, n.ID); err != nil {
+					return nil, fmt.Errorf("agent: rollup collapse cluster %s: %w", n.ID, err)
+				}
+				continue // deleted → not a survivor
 			}
 		}
+		survivors = append(survivors, n)
 	}
-	return nil
+	return survivors, nil
 }
 
 // removeParent strips parentID from a member node's ParentIDs (idempotently),
