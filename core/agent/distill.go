@@ -83,6 +83,13 @@ func (c *DistillConfig) withDefaults() {
 		c.MaxFanIn = 32
 	}
 	if c.ClusterSubBits <= 0 {
+		// Default Δ=4 satisfies the design assumption: 2^ClusterSubBits ≤ MaxFanIn
+		// (16 ≤ 32). When rollupGroup partitions an overflowing node it produces at
+		// most 2^ClusterSubBits sub-groups, so the synthetic parent that summarizes
+		// those sub-groups stays within MaxFanIn and does not itself need splitting.
+		// Violating this (ClusterSubBits > log2(MaxFanIn)) is harmless — the parent
+		// simply exceeds MaxFanIn and triggers another split — but defeats the intent
+		// of the fan-in cap.
 		c.ClusterSubBits = 4
 	}
 	if c.Tokenizer == nil {
