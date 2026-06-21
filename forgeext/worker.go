@@ -192,7 +192,7 @@ func (e *Extension) Run(ctx context.Context) error {
 			cancel()
 			return derr
 		}
-		sw := newDistillSweeper(dist, e.cfg.DistillDebounce, e.metrics)
+		sw := newDistillSweeper(dist, e.cfg.DistillDebounce, e.cfg.DistillMaxWait, e.metrics)
 		handle := distillHandler(runCtx, sw)
 		wg.Add(1)
 		go func() {
