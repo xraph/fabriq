@@ -122,13 +122,16 @@ func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, e
 	if alt == AltAuto {
 		alt = t.cfg.Altitude
 	}
-	entityTokens := 0
+	entityTokens, backboneTokens := 0, 0
 	for _, it := range items {
-		if !isDigest(it.Entity) {
+		switch {
+		case !isDigest(it.Entity):
 			entityTokens += it.Tokens
+		case digestLevel(it.Row) == LevelScope:
+			backboneTokens += it.Tokens
 		}
 	}
-	items = dedupeByAltitude(items, resolveAltitude(alt, entityTokens, req.Budget))
+	items = dedupeByAltitude(items, resolveAltitude(alt, entityTokens, backboneTokens, req.Budget))
 
 	kept, omitted, used := pack(items, req.Budget)
 	return ContextPack{Items: kept, Omitted: omitted, Tokens: used, Warnings: warnings}, nil
