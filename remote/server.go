@@ -72,6 +72,8 @@ func (h *Handler) Dispatch(ctx context.Context, method string, in []byte) ([]byt
 		return h.VectorUpsert(ctx, in)
 	case MethodVectorDelete:
 		return h.VectorDelete(ctx, in)
+	case MethodVectorDeleteByMeta:
+		return h.VectorDeleteByMeta(ctx, in)
 	case MethodVectorGet:
 		return h.VectorGet(ctx, in)
 	case MethodSearch:
@@ -304,8 +306,14 @@ func (h *Handler) VectorSimilar(ctx context.Context, in []byte) ([]byte, error) 
 	if err := proto.Unmarshal(in, &req); err != nil {
 		return nil, fmt.Errorf("remote: decode vectorSimilar request: %w", err)
 	}
+	vq := query.VectorQuery{Entity: req.Entity, Embedding: req.Embedding, K: int(req.K)}
+	if len(req.Filter) > 0 {
+		if err := json.Unmarshal(req.Filter, &vq.Filter); err != nil {
+			return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(fmt.Errorf("remote: decode vector filter: %w", err))})
+		}
+	}
 	var matches []query.VectorMatch
-	if err := h.fab.Vector().Similar(ctx, query.VectorQuery{Entity: req.Entity, Embedding: req.Embedding, K: int(req.K)}, &matches); err != nil {
+	if err := h.fab.Vector().Similar(ctx, vq, &matches); err != nil {
 		return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(err)})
 	}
 	row, err := json.Marshal(matches)
@@ -313,6 +321,20 @@ func (h *Handler) VectorSimilar(ctx context.Context, in []byte) ([]byte, error) 
 		return nil, fmt.Errorf("remote: marshal matches: %w", err)
 	}
 	return proto.Marshal(&fabriqpb.RowReply{Row: row})
+}
+
+func (h *Handler) VectorDeleteByMeta(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.VectorDeleteByMetaRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode vectorDeleteByMeta request: %w", err)
+	}
+	var filter map[string]string
+	if len(req.Filter) > 0 {
+		if err := json.Unmarshal(req.Filter, &filter); err != nil {
+			return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(fmt.Errorf("remote: decode deleteByMeta filter: %w", err))})
+		}
+	}
+	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Vector().DeleteByMeta(ctx, req.Entity, filter))})
 }
 
 func (h *Handler) VectorUpsert(ctx context.Context, in []byte) ([]byte, error) {

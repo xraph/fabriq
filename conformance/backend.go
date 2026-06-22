@@ -90,6 +90,11 @@ type Env struct {
 	Projection  projection.StateReader
 	Blob        blob.Store // nil → blob suite skips
 	GraphTarget string     // fresh graph/projection target for this case
+	// EmbeddingDim is the dimension required by the vector store.
+	// 0 means "no fixed dimension" (the fake accepts any size; RunVector uses
+	// 3-dimensional test vectors). Set to 768 for the postgres backend, which
+	// enforces the schema-declared vector(768) column.
+	EmbeddingDim int
 }
 
 // Degradation describes what a backend lacking a case's required capability

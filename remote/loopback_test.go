@@ -105,6 +105,9 @@ type fakeRetrieval struct {
 	// Programmed responses for Vector().Get; when vecStore is non-nil the Get
 	// method looks up the id in the map. An absent id returns ErrNotFound.
 	vecStore map[string][]float32
+	// gotDelByMetaEntity and gotDelByMetaFilter record the last DeleteByMeta call.
+	gotDelByMetaEntity string
+	gotDelByMetaFilter map[string]string
 }
 
 func (f *fakeRetrieval) Similar(_ context.Context, q query.VectorQuery, into any) error {
@@ -121,6 +124,11 @@ func (f *fakeRetrieval) Upsert(_ context.Context, _ string, id string, vec []flo
 	return nil
 }
 func (f *fakeRetrieval) Delete(context.Context, string, string) error { return nil }
+func (f *fakeRetrieval) DeleteByMeta(_ context.Context, entity string, filter map[string]string) error {
+	f.gotDelByMetaEntity = entity
+	f.gotDelByMetaFilter = filter
+	return nil
+}
 func (f *fakeRetrieval) Get(_ context.Context, _ string, id string) ([]float32, error) {
 	if f.vecStore == nil {
 		return nil, nil
@@ -731,6 +739,49 @@ func TestLoopback_VectorGetRoundTrip(t *testing.T) {
 	_, err = client.Vector().Get(ctx, "asset", "missing")
 	if !errors.Is(err, fabriqerr.ErrNotFound) {
 		t.Fatalf("Get missing err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestLoopback_VectorSimilarFilter proves that a non-empty Filter crosses the
+// envelope and arrives at the server: the filter map is JSON-marshalled on the
+// client side, carried in VectorSimilarRequest.filter, and unmarshalled back
+// into VectorQuery.Filter before the real port is called.
+func TestLoopback_VectorSimilarFilter(t *testing.T) {
+	retr := &fakeRetrieval{matches: []query.VectorMatch{{ID: "x", Score: 0.95}}}
+	client := wire(t, &fakeFabric{retr: retr})
+
+	filter := map[string]string{"kind": "pump", "region": "eu"}
+	var got []query.VectorMatch
+	if err := client.Vector().Similar(context.Background(),
+		query.VectorQuery{Entity: "asset", Embedding: []float32{0.5}, K: 3, Filter: filter}, &got); err != nil {
+		t.Fatalf("Similar with filter: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "x" {
+		t.Fatalf("matches lost: %+v", got)
+	}
+	// The server must have received the filter intact.
+	if retr.gotVecQ.Filter["kind"] != "pump" || retr.gotVecQ.Filter["region"] != "eu" {
+		t.Fatalf("filter not forwarded: %+v", retr.gotVecQ.Filter)
+	}
+}
+
+// TestLoopback_VectorDeleteByMeta proves the DeleteByMeta RPC path end-to-end:
+// the filter map is marshalled by the client, carried in
+// VectorDeleteByMetaRequest.filter, unmarshalled by the server, and forwarded
+// to the backing store with entity and filter intact.
+func TestLoopback_VectorDeleteByMeta(t *testing.T) {
+	retr := &fakeRetrieval{}
+	client := wire(t, &fakeFabric{retr: retr})
+
+	filter := map[string]string{"owner": "acme", "model": "v2"}
+	if err := client.Vector().DeleteByMeta(context.Background(), "asset", filter); err != nil {
+		t.Fatalf("DeleteByMeta: %v", err)
+	}
+	if retr.gotDelByMetaEntity != "asset" {
+		t.Errorf("entity = %q, want %q", retr.gotDelByMetaEntity, "asset")
+	}
+	if retr.gotDelByMetaFilter["owner"] != "acme" || retr.gotDelByMetaFilter["model"] != "v2" {
+		t.Fatalf("filter not forwarded: %+v", retr.gotDelByMetaFilter)
 	}
 }
 
