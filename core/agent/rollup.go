@@ -205,13 +205,6 @@ func childRefsFrom(idx map[string]digestRow, ids []string) []childRef {
 	return refs
 }
 
-// rollupFromIndex resolves child refs from a preloaded node index and runs the
-// shared short-circuit/summarize/persist path. Identical output to a getNode-per-child
-// approach; eliminates per-child round-trips when Rollup has already listed the nodes.
-func (d *Distiller) rollupFromIndex(ctx context.Context, args persistArgs, idx map[string]digestRow, memberIDs []string) (bool, error) {
-	return d.rollupNode(ctx, args, childRefsFrom(idx, memberIDs))
-}
-
 // intermediateID derives a stable, collision-free id for an adaptive-depth
 // sub-node: parent id + "#" + the sub-bucket prefix. Distinct from the flat
 // ClusterID scheme so a depth sub-cluster (grouping L0s) can never collide with
@@ -534,7 +527,7 @@ func probePrefixes(prefix uint64, bits, radius int) []uint64 {
 			return
 		}
 		for i := start; i < bits; i++ {
-			combo(i+1, depth+1, mask|(uint64(1)<<uint(63-i)))
+			combo(i+1, depth+1, mask|(uint64(1)<<uint(63-i))) //nolint:gosec // bits<=64 (SimHash is 64-bit), so 63-i is in [0,63]
 		}
 	}
 	combo(0, 0, 0)

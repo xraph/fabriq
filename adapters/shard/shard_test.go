@@ -96,6 +96,10 @@ func (v vectorStub) Delete(_ context.Context, entity, _ string) error {
 	v.parent.calls = append(v.parent.calls, "Delete:"+entity)
 	return nil
 }
+func (v vectorStub) DeleteByMeta(_ context.Context, entity string, _ map[string]string) error {
+	v.parent.calls = append(v.parent.calls, "DeleteByMeta:"+entity)
+	return nil
+}
 func (v vectorStub) Get(_ context.Context, entity, _ string) ([]float32, error) {
 	v.parent.calls = append(v.parent.calls, "VectorGet:"+entity)
 	return nil, nil
