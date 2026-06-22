@@ -130,6 +130,7 @@ func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, e
 				}
 				if row, found, err := t.getDigestRow(ctx, L0ID(items[i].Entity, items[i].ID)); err == nil && found {
 					items[i].Bucket = parseSemOrZero(row.SemHash)
+					items[i].BucketSet = true
 				}
 			}
 		}

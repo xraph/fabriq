@@ -102,7 +102,7 @@ func digestCovers(digestRow json.RawMessage, ent ContextItem) bool {
 		if d.Kind == KindScopeNode && d.ScopeID != "" {
 			return rowHasValue(ent.Row, d.ScopeID)
 		}
-		if d.Kind == KindClusterNode {
+		if d.Kind == KindClusterNode && ent.BucketSet {
 			if prefix, bits, ok := ParseClusterID(d.ID); ok {
 				return ClusterPrefix(ent.Bucket, bits) == prefix
 			}
