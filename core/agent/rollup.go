@@ -47,11 +47,20 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 	built := map[string]bool{}
 
 	// 1. Cluster assignment via the configured Clusterer (default: multi-probe
-	//    SimHash). Vector population (for vector-based clusterers) is wired in the
-	//    gmmclusterer task; the default needs no vectors.
+	//    SimHash). Vector population (for vector-based clusterers) is wired here:
+	//    when the clusterer needs vectors (NeedsVectors()=true) each L0 node's
+	//    stored embedding is fetched and attached. The default SimHashClusterer
+	//    returns false so this path is a no-op for the common case.
 	inputs := make([]ClusterInput, 0, len(l0s))
+	needVec := d.clusterer.NeedsVectors()
 	for _, n := range l0s {
-		inputs = append(inputs, ClusterInput{ID: n.ID, SemHash: parseSemOrZero(n.SemHash)})
+		in := ClusterInput{ID: n.ID, SemHash: parseSemOrZero(n.SemHash)}
+		if needVec {
+			if vec, verr := d.fab.Vector().Get(ctx, DigestEntity, n.ID); verr == nil {
+				in.Vector = vec
+			}
+		}
+		inputs = append(inputs, in)
 	}
 	clusters, clErr := d.clusterer.Cluster(ctx, inputs, d.cfg.NoiseFloor)
 	if clErr != nil {
