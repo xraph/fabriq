@@ -133,6 +133,15 @@ func (v *Vector) Get(ctx context.Context, entity, id string) ([]float32, error) 
 	return sh.Vector.Get(ctx, entity, id)
 }
 
+// DeleteByMeta routes a metadata-filtered delete to the tenant's shard.
+func (v *Vector) DeleteByMeta(ctx context.Context, entity string, filter map[string]string) error {
+	sh, err := v.set.For(ctx)
+	if err != nil {
+		return err
+	}
+	return sh.Vector.DeleteByMeta(ctx, entity, filter)
+}
+
 // BulkWrite routes a telemetry batch.
 func (t *Timeseries) BulkWrite(ctx context.Context, series string, points []query.Point) error {
 	sh, err := t.set.For(ctx)

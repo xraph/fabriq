@@ -62,6 +62,9 @@ func (notConfiguredVector) Delete(context.Context, string, string) error {
 func (notConfiguredVector) Get(context.Context, string, string) ([]float32, error) {
 	return nil, ErrStoreNotConfigured
 }
+func (notConfiguredVector) DeleteByMeta(context.Context, string, map[string]string) error {
+	return errPort("vector")
+}
 
 type notConfiguredSpatial struct{}
 
