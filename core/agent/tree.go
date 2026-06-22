@@ -1,6 +1,10 @@
 package agent
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // DigestEntity is the registry entity name of the distillation tree node.
 const DigestEntity = "digest_node"
@@ -42,3 +46,27 @@ func TenantRootID() string { return "digest:2:tenant" }
 // NoiseFloorMet reports whether a SemHash bucket has enough members to become a
 // cluster node (singletons get no digest).
 func NoiseFloorMet(members, floor int) bool { return members >= floor }
+
+// ParseClusterID parses a flat cluster node id "digest:1:cluster:<hex>:<bits>"
+// into its SemHash prefix and bit-count. Returns ok=false for non-cluster ids,
+// or adaptive-depth intermediate ids (which contain '#').
+func ParseClusterID(id string) (prefix uint64, bits int, ok bool) {
+	const p = "digest:1:cluster:"
+	if !strings.HasPrefix(id, p) || strings.Contains(id, "#") {
+		return 0, 0, false
+	}
+	rest := id[len(p):] // "<hex>:<bits>"
+	i := strings.LastIndex(rest, ":")
+	if i < 0 {
+		return 0, 0, false
+	}
+	h, err := ParseSemHash(rest[:i])
+	if err != nil {
+		return 0, 0, false
+	}
+	b, err := strconv.Atoi(rest[i+1:])
+	if err != nil || b < 0 || b > 64 {
+		return 0, 0, false
+	}
+	return h, b, true
+}

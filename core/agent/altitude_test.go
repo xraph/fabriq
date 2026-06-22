@@ -226,6 +226,43 @@ func entityIDs(items []ContextItem) []string {
 	return out
 }
 
+// TestDigestCovers_Cluster: a flat SimHash cluster digest covers an entity whose
+// Bucket falls in its prefix; not one outside; intermediate "#" ids never cover.
+func TestDigestCovers_Cluster(t *testing.T) {
+	p := ClusterPrefix(^uint64(0), 4) // top-4-bits cluster
+	cid := ClusterID(p, 4)
+	clusterRow := []byte(`{"id":"` + cid + `","level":1,"kind":"cluster"}`)
+
+	inBucket := ContextItem{Entity: "note", ID: "n1", Bucket: ^uint64(0)} // top 4 bits set
+	outBucket := ContextItem{Entity: "note", ID: "n2", Bucket: 0}         // top 4 bits clear
+
+	if !digestCovers(clusterRow, inBucket) {
+		t.Fatal("cluster must cover an entity whose Bucket matches its prefix")
+	}
+	if digestCovers(clusterRow, outBucket) {
+		t.Fatal("cluster must NOT cover an entity outside its prefix")
+	}
+	interRow := []byte(`{"id":"` + cid + `#0000000000000000","level":1,"kind":"cluster"}`)
+	if digestCovers(interRow, inBucket) {
+		t.Fatal("intermediate (#) cluster ids must never prune")
+	}
+}
+
+// TestParseClusterID covers the flat form and rejects intermediate/non-cluster ids.
+func TestParseClusterID(t *testing.T) {
+	p := ClusterPrefix(^uint64(0), 4)
+	pr, bits, ok := ParseClusterID(ClusterID(p, 4))
+	if !ok || pr != p || bits != 4 {
+		t.Fatalf("flat parse wrong: pr=%x bits=%d ok=%v", pr, bits, ok)
+	}
+	if _, _, ok := ParseClusterID("digest:1:scope:site:s1"); ok {
+		t.Fatal("scope id must not parse as cluster")
+	}
+	if _, _, ok := ParseClusterID(ClusterID(p, 4) + "#abc"); ok {
+		t.Fatal("intermediate id must not parse as flat cluster")
+	}
+}
+
 func TestDedupeByAltitude_EdgeCases(t *testing.T) {
 	// empty input — must not panic
 	out := dedupeByAltitude(nil, AltEntity)

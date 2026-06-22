@@ -26,6 +26,7 @@ type ContextItem struct {
 	Score  float64         `json:"score"`
 	Source []string        `json:"source"`
 	Tokens int             `json:"tokens"`
+	Bucket uint64          `json:"bucket,omitempty"` // entity's L0-digest SemHash, for cluster-coverage dedup
 }
 
 // ContextPack is the token-budgeted recall result.
