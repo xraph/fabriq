@@ -198,5 +198,6 @@ func (o distillMetricsObserver) NodeBuilt()      { o.m.DistillNodesTotal.Inc() }
 func (o distillMetricsObserver) GuardBlocked()   { o.m.DistillGuardBlockedTotal.Inc() }
 func (o distillMetricsObserver) Split()          { o.m.DistillSplitsTotal.Inc() }
 func (o distillMetricsObserver) Deduped()        { o.m.DistillDedupTotal.Inc() }
+func (o distillMetricsObserver) GCed()           { o.m.DistillIntermediateGCTotal.Inc() }
 
 var _ agent.DistillObserver = distillMetricsObserver{}

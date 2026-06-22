@@ -124,6 +124,15 @@ func (v *Vector) Delete(ctx context.Context, entity, id string) error {
 	return sh.Vector.Delete(ctx, entity, id)
 }
 
+// Get routes an embedding lookup to the tenant's shard.
+func (v *Vector) Get(ctx context.Context, entity, id string) ([]float32, error) {
+	sh, err := v.set.For(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return sh.Vector.Get(ctx, entity, id)
+}
+
 // BulkWrite routes a telemetry batch.
 func (t *Timeseries) BulkWrite(ctx context.Context, series string, points []query.Point) error {
 	sh, err := t.set.For(ctx)

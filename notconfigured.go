@@ -59,6 +59,9 @@ func (notConfiguredVector) Similar(context.Context, query.VectorQuery, any) erro
 func (notConfiguredVector) Delete(context.Context, string, string) error {
 	return errPort("vector")
 }
+func (notConfiguredVector) Get(context.Context, string, string) ([]float32, error) {
+	return nil, ErrStoreNotConfigured
+}
 
 type notConfiguredSpatial struct{}
 

@@ -35,6 +35,7 @@ type DistillObserver interface {
 	GuardBlocked()   // a guard vetoed an ingest or emit (fail-closed drop)
 	Split()          // an aggregating node overflowed and was split into intermediate nodes
 	Deduped()        // an L0 reused an existing summary via exact source-hash match
+	GCed()           // an orphaned adaptive-depth intermediate node was garbage-collected
 }
 
 // DistillConfig tunes the Distiller. Zero values get defaults via withDefaults.
@@ -52,6 +53,7 @@ type DistillConfig struct {
 	MaxFanIn              int              // max children before a node splits (adaptive depth backstop)
 	ClusterSubBits        int              // prefix-bit increment per split level (Δ)
 	Tokenizer             func(string) int // summary token counter; nil = whitespace-word default
+	Clusterer             Clusterer        // nil = default SimHashClusterer from ClusterBits/ProbeRadius
 }
 
 func (c *DistillConfig) withDefaults() {
@@ -103,15 +105,16 @@ func (c *DistillConfig) withDefaults() {
 // keeps re-distillation cheap, and a two-stage Guard (ingest + emit) fences PII
 // out of both the model and the content-addressed store.
 type Distiller struct {
-	fab    query.Fabric
-	reg    *registry.Registry
-	emb    Embedder
-	sum    Summarizer
-	guard  Guard
-	cas    blob.CAS
-	cfg    DistillConfig
-	planes [64][]float32
-	obs    DistillObserver // optional; nil = no instrumentation
+	fab       query.Fabric
+	reg       *registry.Registry
+	emb       Embedder
+	sum       Summarizer
+	guard     Guard
+	cas       blob.CAS
+	cfg       DistillConfig
+	planes    [64][]float32
+	obs       DistillObserver // optional; nil = no instrumentation
+	clusterer Clusterer
 }
 
 // SetObserver attaches an optional DistillObserver for metrics/audit. Pass nil
@@ -132,9 +135,14 @@ func NewDistiller(fab query.Fabric, reg *registry.Registry, emb Embedder, sum Su
 	if emb.Dims() != cfg.VectorDims {
 		return nil, fmt.Errorf("agent: distiller embedder dims %d != configured %d", emb.Dims(), cfg.VectorDims)
 	}
+	clusterer := cfg.Clusterer
+	if clusterer == nil {
+		clusterer = NewSimHashClusterer(cfg.ClusterBits, cfg.ProbeRadius)
+	}
 	return &Distiller{
 		fab: fab, reg: reg, emb: emb, sum: sum, guard: guard, cas: cas, cfg: cfg,
-		planes: NewSemPlanes(cfg.VectorDims, cfg.SemSeed),
+		planes:    NewSemPlanes(cfg.VectorDims, cfg.SemSeed),
+		clusterer: clusterer,
 	}, nil
 }
 
@@ -248,6 +256,9 @@ func (d *Distiller) prepareL0(ctx context.Context, entity, id string, vals map[s
 			parents:          d.l0Parents(spec, vals),
 		}
 		args.summaryText = donorText
+		if vec, verr := d.fab.Vector().Get(ctx, DigestEntity, donor.ID); verr == nil {
+			args.reuseVector = vec // skip the embed; nil on miss → re-embed
+		}
 		return args, donorText, true, nil
 	}
 
@@ -327,21 +338,28 @@ type persistArgs struct {
 	summaryText      string
 	contentHash      string
 	reuseSummaryHash string
+	reuseVector      []float32 // non-nil → skip the Embed call; still upserted as this node's vector
 	parents          []string
 	children         []string // ChildIDs for internal (rollup) nodes; nil for L0 leaves
 }
 
 // persistSummary embeds the summary then persists the node (CAS + row + vector +
 // parent back-links). Used by the single-write path (one summary, no batching).
+// When args.reuseVector is non-nil the Embed call is skipped and the donor's
+// vector is used directly (exact-source-dedup fast path).
 func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) error {
-	vecs, err := d.emb.Embed(ctx, []string{args.summaryText})
-	if err != nil {
-		return fmt.Errorf("agent: embed summary %s: %w", args.id, err)
+	vec := args.reuseVector
+	if vec == nil {
+		vecs, err := d.emb.Embed(ctx, []string{args.summaryText})
+		if err != nil {
+			return fmt.Errorf("agent: embed summary %s: %w", args.id, err)
+		}
+		if len(vecs) != 1 {
+			return fmt.Errorf("agent: embed summary %s: got %d vectors for 1 input", args.id, len(vecs))
+		}
+		vec = vecs[0]
 	}
-	if len(vecs) != 1 {
-		return fmt.Errorf("agent: embed summary %s: got %d vectors for 1 input", args.id, len(vecs))
-	}
-	return d.persistSummaryVec(ctx, args, vecs[0])
+	return d.persistSummaryVec(ctx, args, vec)
 }
 
 // persistSummaryVec persists a node whose summary has ALREADY been embedded

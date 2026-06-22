@@ -73,7 +73,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		}
 		shardPG[sc.ID] = a
 		ids = append(ids, sc.ID)
-		shardList = append(shardList, shard.Shard{ID: sc.ID, Store: a, Relational: a, Vector: a, Timeseries: a, Spatial: postgres.NewSpatialAdapter(a)})
+		shardList = append(shardList, shard.Shard{ID: sc.ID, Store: a, Relational: a, Vector: postgres.NewVectorAdapter(a), Timeseries: a, Spatial: postgres.NewSpatialAdapter(a)})
 	}
 	sort.Strings(ids)
 	pg := shardPG[ids[0]] // primary: health, migrations CLI, document plane

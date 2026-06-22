@@ -69,14 +69,17 @@ func digestLevel(row json.RawMessage) int {
 //     the scope's non-empty scopeId as one of its field values. This is a
 //     heuristic — scope ids are specific enough that a value match is a reliable
 //     proxy for "this entity belongs to that scope" without a join.
-//   - cluster digest (level 1, kind "cluster"): coverage would need the entity's
-//     SemHash bucket, which entity rows don't carry, so a cluster digest is
-//     treated as NOT covering any entity (it never prunes on its own).
+//   - cluster digest (level 1, kind "cluster"): covers an entity when the entity's
+//     Bucket (its L0-digest SemHash) falls within the cluster's prefix, parsed
+//     from the digest's id via ParseClusterID. Intermediate ids (containing '#')
+//     and unparseable ids never prune. Bucket=0 (unset) may match a zero-prefix
+//     cluster but not others.
 //
 // An unparseable digest row covers nothing. The function is total: it never
 // panics on nil/empty rows.
 func digestCovers(digestRow json.RawMessage, ent ContextItem) bool {
 	var d struct {
+		ID         string `json:"id"`
 		Level      int    `json:"level"`
 		Kind       string `json:"kind"`
 		ScopeID    string `json:"scopeId"`
@@ -96,10 +99,15 @@ func digestCovers(digestRow json.RawMessage, ent ContextItem) bool {
 	case LevelEntity:
 		return ent.Entity == d.SourceKind && ent.ID == d.SourceID
 	case LevelScope:
-		if d.Kind != KindScopeNode || d.ScopeID == "" {
-			return false // cluster (or unknown) L1 nodes do not prune entities
+		if d.Kind == KindScopeNode && d.ScopeID != "" {
+			return rowHasValue(ent.Row, d.ScopeID)
 		}
-		return rowHasValue(ent.Row, d.ScopeID)
+		if d.Kind == KindClusterNode && ent.BucketSet {
+			if prefix, bits, ok := ParseClusterID(d.ID); ok {
+				return ClusterPrefix(ent.Bucket, bits) == prefix
+			}
+		}
+		return false // intermediate / unknown L1 nodes do not prune
 	default:
 		return false
 	}
@@ -133,11 +141,11 @@ func rowHasValue(row json.RawMessage, target string) bool {
 //     as-is so the caller still gets something useful.
 //   - AltAuto: pass through unchanged (callers must resolve AltAuto first).
 //
-// Coverage-aware pruning (AltScope/AltTenant) is exact for tenant and L0 digests
-// and heuristic for scope digests (scopeId value-match). Limitation: cluster
-// digests (level 1, kind "cluster") never prune entities because entity rows
-// carry no SemHash bucket to test membership against — so an entity that is only
-// represented by a cluster digest survives.
+// Coverage-aware pruning (AltScope/AltTenant) is exact for tenant and L0 digests,
+// heuristic for scope digests (scopeId value-match), and prefix-based for cluster
+// digests (entity Bucket vs cluster prefix via ParseClusterID). Cluster pruning
+// requires that entity items carry a non-zero Bucket; recall.go populates Bucket
+// via a gated batched L0-digest lookup when cluster digests are present.
 //
 // The function is total: it never panics on nil/empty input or rows.
 func dedupeByAltitude(items []ContextItem, alt Altitude) []ContextItem {
