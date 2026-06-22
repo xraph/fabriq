@@ -113,6 +113,28 @@ func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, e
 		})
 	}
 
+	// Cluster-coverage support: if digests are present and any is a cluster, load
+	// each entity item's L0-digest SemHash so a cluster digest can prune it.
+	if _, ok := t.reg.Get(DigestEntity); ok {
+		hasCluster := false
+		for _, it := range items {
+			if isDigest(it.Entity) && digestLevel(it.Row) == LevelScope {
+				hasCluster = true
+				break
+			}
+		}
+		if hasCluster {
+			for i := range items {
+				if isDigest(items[i].Entity) {
+					continue
+				}
+				if row, found, err := t.getDigestRow(ctx, L0ID(items[i].Entity, items[i].ID)); err == nil && found {
+					items[i].Bucket = parseSemOrZero(row.SemHash)
+				}
+			}
+		}
+	}
+
 	// Altitude resolution: collapse the digest tree to a single layer before
 	// packing so a digest and the entities it covers never both surface. AltAuto
 	// lets the budget decide — descend to entities when their tokens fit, else
