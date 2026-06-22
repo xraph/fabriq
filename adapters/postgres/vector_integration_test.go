@@ -120,3 +120,57 @@ func TestVector_Delete(t *testing.T) {
 		t.Fatalf("delete missing id should be no-op, got %v", err)
 	}
 }
+
+// TestVector_SimilarFilter_Integration verifies that VectorQuery.Filter
+// narrows Similar results to entries whose meta contains all filter key/value
+// pairs.
+func TestVector_SimilarFilter_Integration(t *testing.T) {
+	a := newVectorHarness(t)
+	ctx := vectorCtx(t, "acme")
+
+	if err := a.Upsert(ctx, "doc", "a", emb768(1, 0), map[string]any{"kind": "note"}); err != nil {
+		t.Fatalf("Upsert a: %v", err)
+	}
+	if err := a.Upsert(ctx, "doc", "b", emb768(1, 0), map[string]any{"kind": "task"}); err != nil {
+		t.Fatalf("Upsert b: %v", err)
+	}
+
+	var got []query.VectorMatch
+	if err := a.Similar(ctx, query.VectorQuery{
+		Entity:    "doc",
+		Embedding: emb768(1, 0),
+		K:         10,
+		Filter:    map[string]string{"kind": "note"},
+	}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("filtered Similar = %+v, want only a", got)
+	}
+}
+
+// TestVector_DeleteByMeta_Integration verifies that DeleteByMeta removes only
+// entries whose meta matches the filter, leaving others intact.
+func TestVector_DeleteByMeta_Integration(t *testing.T) {
+	a := newVectorHarness(t)
+	ctx := vectorCtx(t, "acme")
+	vec := postgres.NewVectorAdapter(a)
+
+	if err := a.Upsert(ctx, "doc", "a", emb768(1, 0), map[string]any{"kind": "note"}); err != nil {
+		t.Fatalf("Upsert a: %v", err)
+	}
+	if err := a.Upsert(ctx, "doc", "b", emb768(1, 0), map[string]any{"kind": "task"}); err != nil {
+		t.Fatalf("Upsert b: %v", err)
+	}
+
+	if err := a.DeleteByMeta(ctx, "doc", map[string]string{"kind": "note"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := vec.Get(ctx, "doc", "a"); err == nil {
+		t.Fatalf("a should be gone after DeleteByMeta")
+	}
+	if _, err := vec.Get(ctx, "doc", "b"); err != nil {
+		t.Fatalf("b should survive DeleteByMeta: %v", err)
+	}
+}
