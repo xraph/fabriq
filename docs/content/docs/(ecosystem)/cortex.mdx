@@ -1,0 +1,72 @@
+---
+title: Cortex (agent brain)
+description: Plug fabriq in as a plug-n-play brain for cortex agents — multi-channel recall, rich tools, and a learning loop — via the fabriqbrain adapter.
+---
+
+[Cortex](https://github.com/xraph/cortex) is a human-emulating agent-orchestration framework. The **`fabriqbrain`** adapter (`github.com/xraph/cortex/integrations/fabriq`, lives in the cortex repo) wires fabriq into cortex as a living brain. With one call your agents gain fabriq-backed:
+
+- **Recall** — fabriq's multi-channel [agent toolkit](/docs/agent-toolkit) recall (vector + full-text + graph, RRF-fused, [distillation](/docs/distillation)-aware) exposed as cortex's `knowledge_search` tool and injected into prompts.
+- **Rich tools** — fabriq's `graph_traverse`, guarded `remember`, and the distillation tools `map`/`digest`/`resolve`, registered as native cortex tools.
+- **Learning loop** — a cortex `plugin.Extension` writes each agent run back into the fabric, where the embed + distillation workers turn it into future recall material.
+
+Fabriq stays standalone — the adapter lives in cortex and depends on fabriq, never the reverse.
+
+## One-line wiring
+
+`EngineOptions` auto-discovers the started `*fabriq.Fabriq` facade from the DI container and returns the full brain (knowledge provider + tools + learning-loop plugin). It is a no-op when no facade is present, so it is always safe to include.
+
+```go
+import (
+	"github.com/xraph/cortex/engine"
+	fabriqbrain "github.com/xraph/cortex/integrations/fabriq"
+	"github.com/xraph/fabriq/core/agent"
+	"github.com/xraph/fabriq/core/command"
+)
+
+eng, err := engine.New(append(
+	[]engine.Option{engine.WithStore(store), engine.WithLLM(client)},
+	fabriqbrain.EngineOptions(container,
+		fabriqbrain.WithEmbedder(emb),                       // same embedder fabriq indexed with
+		fabriqbrain.WithEntities("doc", "note", "agent_memory"),
+		fabriqbrain.WithWritePolicy(fabriqbrain.MemoryWritePolicy("agent_memory")),
+	)...,
+)...)
+```
+
+Use `EngineOption` (singular) to wire only the knowledge provider, mirroring cortex's `knowledge/weave` adapter.
+
+## Recall
+
+When the knowledge provider is wired, the cortex engine exposes a `knowledge_search` tool and injects matching context into agent prompts. Each call runs fabriq's `Toolkit.Recall` — vector + search + graph fused by Reciprocal Rank Fusion, hydrated from the relational source of truth, and packed to a token budget. See [Recall](/docs/recall).
+
+## Learning loop
+
+The plugin persists every run to a fabriq **memory entity** (default `agent_memory`) as a `{content, meta}` row; fabriq's embed worker vectorizes `content` and [distillation](/docs/distillation) rolls it up, so the next recall surfaces it. To enable it the host:
+
+1. Registers the memory entity (a [dynamic entity](/docs/dynamic-entities) with a vector-indexed `content` column) — `fabriqbrain` ships `MemorySpec(name)` for this:
+
+```go
+reg.MustRegister(fabriqbrain.MemorySpec("agent_memory"))
+```
+
+2. Provisions its table (a migration, or `postgres.Adapter.EnsureDynamic` in setup — `fabriq.Open` does not auto-create dynamic tables).
+3. Allows writes via `fabriqbrain.MemoryWritePolicy("agent_memory")` (deny-by-default; only `create` on the memory entity).
+
+## Options
+
+| Option | Purpose |
+|---|---|
+| `WithEmbedder(agent.Embedder)` | Embedding model for recall's vector channel. Must match the embedder fabriq indexed with. |
+| `WithEntities(...string)` | Entity types recall searches and `ListCollections` reports. |
+| `WithWritePolicy(agent.WritePolicy)` | Allowlist for the `remember` tool and learning-loop writes (deny-by-default). |
+| `WithMemoryEntity(string)` | Entity the learning loop writes to (default `agent_memory`). |
+| `WithBudget(int)` | Token budget per recall (default 4096). |
+| `WithRenderer(func(agent.ContextItem) string)` | Override how a recalled row becomes chunk text. |
+| `WithTenantMapper(func(ctx) ctx)` / `WithLogger(...)` | Translate request context to fabriq scope; surface swallowed memory-write failures. |
+
+<Cards>
+  <Card title="Agent toolkit" href="/docs/agent-toolkit">The transport-agnostic brain the adapter is built on.</Card>
+  <Card title="Recall" href="/docs/recall">Multi-channel recall + RRF fusion.</Card>
+  <Card title="Distillation" href="/docs/distillation">How agent activity is rolled up into summaries.</Card>
+  <Card title="Weave vector store" href="/docs/weave">The other ecosystem integration — fabriq under weave's RAG pipeline.</Card>
+</Cards>
