@@ -58,6 +58,22 @@ func digestLevel(row json.RawMessage) int {
 	return v.Level
 }
 
+// digestKind parses the "kind" field from a digest node's row JSON.
+// Returns "" if the field is absent or the JSON is unparseable — mirrors
+// digestLevel exactly.
+func digestKind(row json.RawMessage) string {
+	if len(row) == 0 {
+		return ""
+	}
+	var v struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(row, &v); err != nil {
+		return ""
+	}
+	return v.Kind
+}
+
 // digestCovers reports whether the digest node (its row JSON) covers the entity
 // item — i.e. whether surfacing the digest makes that entity row redundant.
 // Coverage is computed purely from the rows:
