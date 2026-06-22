@@ -51,6 +51,9 @@ func (v *vectorStub) Similar(_ context.Context, _ VectorQuery, into any) error {
 }
 
 func (v *vectorStub) Delete(_ context.Context, _, _ string) error { return nil }
+func (v *vectorStub) DeleteByMeta(_ context.Context, _ string, _ map[string]string) error {
+	return nil
+}
 func (v *vectorStub) Get(_ context.Context, _, _ string) ([]float32, error) {
 	return nil, nil
 }
