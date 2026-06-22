@@ -527,7 +527,9 @@ func probePrefixes(prefix uint64, bits, radius int) []uint64 {
 			return
 		}
 		for i := start; i < bits; i++ {
-			combo(i+1, depth+1, mask|(uint64(1)<<uint(63-i))) //nolint:gosec // bits<=64 (SimHash is 64-bit), so 63-i is in [0,63]
+			// 63-i is a bit index in [0,63] (bits<=64; SimHash is 64-bit): a signed
+			// shift count avoids the int->uint conversion gosec flags.
+			combo(i+1, depth+1, mask|(uint64(1)<<(63-i)))
 		}
 	}
 	combo(0, 0, 0)
