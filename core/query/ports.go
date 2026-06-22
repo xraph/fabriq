@@ -191,6 +191,10 @@ type VectorQuerier interface {
 	// Get returns the stored embedding for (entity, id), or a *fabriqerr.NotFoundError
 	// when absent. Mirrors RelationalQuerier.Get's get-by-id + NotFound convention.
 	Get(ctx context.Context, entity, id string) ([]float32, error)
+	// DeleteByMeta removes every embedding for (tenant, entity) whose meta
+	// contains all key/value pairs in filter (AND-of-equals). An empty filter
+	// deletes ALL embeddings for (tenant, entity) — scope intentionally.
+	DeleteByMeta(ctx context.Context, entity string, filter map[string]string) error
 }
 
 // VectorQuery is a nearest-neighbour search.
@@ -198,6 +202,9 @@ type VectorQuery struct {
 	Entity    string
 	Embedding []float32
 	K         int
+	// Filter restricts matches to embeddings whose meta contains all of these
+	// key/value pairs (exact-match, AND-of-equals). Empty/nil = no filter.
+	Filter map[string]string
 }
 
 // VectorMatch is one nearest-neighbour hit, best first.

@@ -60,6 +60,11 @@ func (v *VectorAdapter) Delete(ctx context.Context, entity, id string) error {
 	return v.a.Delete(ctx, entity, id)
 }
 
+// DeleteByMeta implements query.VectorQuerier.
+func (v *VectorAdapter) DeleteByMeta(ctx context.Context, entity string, filter map[string]string) error {
+	return v.a.DeleteByMeta(ctx, entity, filter)
+}
+
 // Get implements query.VectorQuerier. Returns the stored embedding for
 // (entity, id) as []float32, or *fabriqerr.NotFoundError on miss.
 func (v *VectorAdapter) Get(ctx context.Context, entity, id string) ([]float32, error) {
@@ -168,13 +173,18 @@ func (a *Adapter) Similar(ctx context.Context, q query.VectorQuery, into any) er
 	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
+		filterJSON, ferr := metaFilterJSON(q.Filter)
+		if ferr != nil {
+			return ferr
+		}
 		var rows []vectorRow
 		const sql = `SELECT id, 1 - (embedding <=> $1::vector) AS score, meta::text AS meta
 			FROM fabriq_embeddings
 			WHERE tenant_id = $2 AND entity = $3
+			  AND ($5::jsonb = '{}'::jsonb OR meta @> $5::jsonb)
 			ORDER BY embedding <=> $1::vector ASC
 			LIMIT $4`
-		if err := tx.NewRaw(sql, vectorLiteral(q.Embedding), tid, q.Entity, k).Scan(ctx, &rows); err != nil {
+		if err := tx.NewRaw(sql, vectorLiteral(q.Embedding), tid, q.Entity, k, string(filterJSON)).Scan(ctx, &rows); err != nil {
 			return fmt.Errorf("fabriq: similar %s: %w", q.Entity, err)
 		}
 		for _, r := range rows {
@@ -203,6 +213,41 @@ func (a *Adapter) Delete(ctx context.Context, entity, id string) error {
 		}
 		return nil
 	})
+}
+
+// DeleteByMeta removes embeddings for (tenant, entity) matching the meta filter.
+func (a *Adapter) DeleteByMeta(ctx context.Context, entity string, filter map[string]string) error {
+	if _, err := tenant.Require(ctx); err != nil {
+		return err
+	}
+	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		tid, _ := tenant.FromContext(ctx)
+		filterJSON, ferr := metaFilterJSON(filter)
+		if ferr != nil {
+			return ferr
+		}
+		const sql = `DELETE FROM fabriq_embeddings
+			WHERE tenant_id=$1 AND entity=$2
+			  AND ($3::jsonb = '{}'::jsonb OR meta @> $3::jsonb)`
+		if _, err := tx.NewRaw(sql, tid, entity, string(filterJSON)).Exec(ctx); err != nil {
+			return fmt.Errorf("fabriq: delete-by-meta %s: %w", entity, err)
+		}
+		return nil
+	})
+}
+
+// metaFilterJSON renders a metadata filter as a JSON object for `meta @>`
+// containment. An empty/nil filter yields "{}" (matches everything). A marshal
+// failure is propagated so callers fail closed rather than silently widening.
+func metaFilterJSON(filter map[string]string) ([]byte, error) {
+	if len(filter) == 0 {
+		return []byte("{}"), nil
+	}
+	b, err := json.Marshal(filter)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 // parsePGTime parses Postgres text timestamps in the formats time::text

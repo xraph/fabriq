@@ -8,13 +8,22 @@ import (
 )
 
 // RunAll runs every applicable port suite against b. Ports the backend does
-// not implement (nil Env field) are skipped wholesale. Follow-on plans add
-// RunGraph, RunSearch, RunVector, RunSpatial, RunTimeseries,
-// RunCommandStore and RunProjectionState here.
+// not implement (nil Env field) are skipped wholesale. Each port is probed
+// before calling its suite so one unimplemented port does not halt the
+// others via a suite-level t.Skip. Follow-on plans add RunGraph, RunSearch,
+// RunSpatial, RunTimeseries, RunCommandStore and RunProjectionState here.
 func RunAll(t *testing.T, b Backend) {
 	t.Helper()
-	RunRelational(t, b)
-	RunBlob(t, b)
+	env := b.Setup(t)
+	if env.Relational != nil {
+		RunRelational(t, b)
+	}
+	if env.Blob != nil {
+		RunBlob(t, b)
+	}
+	if env.Vector != nil {
+		RunVector(t, b)
+	}
 }
 
 // seedAssets creates each asset via the command path and returns a map from
