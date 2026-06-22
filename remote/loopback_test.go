@@ -102,6 +102,9 @@ type fakeRetrieval struct {
 	gotVecQ    query.VectorQuery
 	gotSearchQ query.SearchQuery
 	gotCypher  string
+	// Programmed responses for Vector().Get; when vecStore is non-nil the Get
+	// method looks up the id in the map. An absent id returns ErrNotFound.
+	vecStore map[string][]float32
 }
 
 func (f *fakeRetrieval) Similar(_ context.Context, q query.VectorQuery, into any) error {
@@ -111,12 +114,22 @@ func (f *fakeRetrieval) Similar(_ context.Context, q query.VectorQuery, into any
 	}
 	return nil
 }
-func (f *fakeRetrieval) Upsert(context.Context, string, string, []float32, map[string]any) error {
+func (f *fakeRetrieval) Upsert(_ context.Context, _ string, id string, vec []float32, _ map[string]any) error {
+	if f.vecStore != nil {
+		f.vecStore[id] = vec
+	}
 	return nil
 }
 func (f *fakeRetrieval) Delete(context.Context, string, string) error { return nil }
-func (f *fakeRetrieval) Get(context.Context, string, string) ([]float32, error) {
-	return nil, nil
+func (f *fakeRetrieval) Get(_ context.Context, _ string, id string) ([]float32, error) {
+	if f.vecStore == nil {
+		return nil, nil
+	}
+	vec, ok := f.vecStore[id]
+	if !ok {
+		return nil, fabriqerr.ErrNotFound
+	}
+	return vec, nil
 }
 
 func (f *fakeRetrieval) Search(_ context.Context, q query.SearchQuery, into any) error {
@@ -679,6 +692,45 @@ func TestLoopback_GraphQueryRows(t *testing.T) {
 	}
 	if len(got) != 1 || got[0]["name"] != "a" {
 		t.Fatalf("rows lost: %+v", got)
+	}
+}
+
+// TestLoopback_VectorGetRoundTrip proves Vector().Get over the Loopback wire:
+//   - Upsert a vector then Get it back — the returned []float32 must match.
+//   - Get a missing id — errors.Is(err, fabriqerr.ErrNotFound) must hold, proving
+//     the NotFound taxonomy survives the VectorGetReply error envelope.
+//
+// Implementation note: the fakeRetrieval.vecStore map stands in for the real
+// vector store; Upsert writes into it, Get reads from it. The Wire transport
+// used by this test drives the full client→proto→server→proto→client round trip
+// via the in-process Loopback transport.
+func TestLoopback_VectorGetRoundTrip(t *testing.T) {
+	retr := &fakeRetrieval{vecStore: map[string][]float32{}}
+	client := wire(t, &fakeFabric{retr: retr})
+	ctx := context.Background()
+
+	want := []float32{0.1, 0.2, 0.3}
+	if err := client.Vector().Upsert(ctx, "asset", "v1", want, nil); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	got, err := client.Vector().Get(ctx, "asset", "v1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Get returned %d floats, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+
+	// Missing id must return ErrNotFound through the wire.
+	_, err = client.Vector().Get(ctx, "asset", "missing")
+	if !errors.Is(err, fabriqerr.ErrNotFound) {
+		t.Fatalf("Get missing err = %v, want ErrNotFound", err)
 	}
 }
 

@@ -115,10 +115,13 @@ func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, e
 
 	// Cluster-coverage support: if digests are present and any is a cluster, load
 	// each entity item's L0-digest SemHash so a cluster digest can prune it.
+	// Scope-only recalls (kind="scope") use rowHasValue, not Bucket, so they
+	// must NOT trigger the per-entity L0-SemHash lookup — check the kind
+	// explicitly to avoid K wasted Gets when only scope digests are present.
 	if _, ok := t.reg.Get(DigestEntity); ok {
 		hasCluster := false
 		for _, it := range items {
-			if isDigest(it.Entity) && digestLevel(it.Row) == LevelScope {
+			if isDigest(it.Entity) && digestKind(it.Row) == KindClusterNode {
 				hasCluster = true
 				break
 			}
