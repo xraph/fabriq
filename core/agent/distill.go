@@ -210,7 +210,14 @@ func distillTextFor(spec *registry.DistillSpec, vals map[string]any) string {
 // short-circuit (unchanged source), a guard block (fail-closed), a
 // non-distillable entity, an empty id, or empty source text. It performs NO
 // embedding and NO persistence — the caller embeds (batched) and persists.
-func (d *Distiller) prepareL0(ctx context.Context, entity, id string, vals map[string]any) (persistArgs, string, bool, error) {
+//
+// fetchDonorVector controls whether, on an exact-dedup hit, the donor's stored
+// vector is fetched and placed in args.reuseVector (allowing the single-write
+// path in DistillL0 to skip its Embed call). The batched backfill path (Distill)
+// passes false: it batch-embeds every pending summary and calls
+// persistSummaryVec directly, so fetching the donor vector would be wasted.
+// Both paths still use args.reuseSummaryHash to skip the cas.Store call.
+func (d *Distiller) prepareL0(ctx context.Context, entity, id string, vals map[string]any, fetchDonorVector bool) (persistArgs, string, bool, error) {
 	spec := d.distillSpec(entity)
 	if spec == nil {
 		return persistArgs{}, "", false, nil
@@ -256,8 +263,10 @@ func (d *Distiller) prepareL0(ctx context.Context, entity, id string, vals map[s
 			parents:          d.l0Parents(spec, vals),
 		}
 		args.summaryText = donorText
-		if vec, verr := d.fab.Vector().Get(ctx, DigestEntity, donor.ID); verr == nil {
-			args.reuseVector = vec // skip the embed; nil on miss → re-embed
+		if fetchDonorVector {
+			if vec, verr := d.fab.Vector().Get(ctx, DigestEntity, donor.ID); verr == nil {
+				args.reuseVector = vec // skip the embed; nil on miss → re-embed
+			}
 		}
 		return args, donorText, true, nil
 	}
@@ -311,7 +320,7 @@ func (d *Distiller) prepareL0(ctx context.Context, entity, id string, vals map[s
 // short-circuit (unchanged source), on a guard block (fail-closed: nothing is
 // stored), for non-distillable entities, or for empty source text.
 func (d *Distiller) DistillL0(ctx context.Context, entity, id string, vals map[string]any) (bool, error) {
-	args, _, build, err := d.prepareL0(ctx, entity, id, vals)
+	args, _, build, err := d.prepareL0(ctx, entity, id, vals, true)
 	if err != nil || !build {
 		return false, err
 	}
@@ -770,7 +779,7 @@ func (d *Distiller) Distill(ctx context.Context) (BackfillReport, error) {
 					continue
 				}
 				rep.Rows++
-				args, text, build, perr := d.prepareL0(ctx, e.Spec.Name, id, vals)
+				args, text, build, perr := d.prepareL0(ctx, e.Spec.Name, id, vals, false)
 				if perr != nil {
 					return rep, fmt.Errorf("agent: distill %q/%s: %w", e.Spec.Name, id, perr)
 				}

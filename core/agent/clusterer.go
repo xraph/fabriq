@@ -23,6 +23,17 @@ type Cluster struct {
 
 // Clusterer groups L0 nodes into above-noise-floor clusters. The default is the
 // in-core multi-probe SimHashClusterer; a host may inject a vector-based one.
+//
+// Coverage note: recall's cluster-coverage pruning (digestCovers / digestKind ==
+// KindClusterNode) is effective ONLY for SimHash-prefix-shaped cluster ids
+// produced by the in-core SimHashClusterer. A vector-based Clusterer (e.g.
+// forgeext/gmmclusterer) derives its cluster ids from centroid hashes that share
+// the same wire format (ClusterID) but live in a different keyspace, so
+// ParseClusterID may decode them yet the prefix will rarely match an entity's
+// Bucket. This is a safe no-op — it under-prunes (leaves a few redundant entity
+// rows in the recall window) but NEVER false-prunes (never drops a relevant
+// entity). No correctness fix is required; the note is here so maintainers
+// understand the pruning asymmetry when wiring a custom Clusterer.
 type Clusterer interface {
 	Cluster(ctx context.Context, inputs []ClusterInput, noiseFloor int) ([]Cluster, error)
 	NeedsVectors() bool
