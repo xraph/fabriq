@@ -233,8 +233,8 @@ func TestDigestCovers_Cluster(t *testing.T) {
 	cid := ClusterID(p, 4)
 	clusterRow := []byte(`{"id":"` + cid + `","level":1,"kind":"cluster"}`)
 
-	inBucket := ContextItem{Entity: "note", ID: "n1", Bucket: ^uint64(0)} // top 4 bits set
-	outBucket := ContextItem{Entity: "note", ID: "n2", Bucket: 0}         // top 4 bits clear
+	inBucket := ContextItem{Entity: "note", ID: "n1", Bucket: ^uint64(0), BucketSet: true} // top 4 bits set, bucket known
+	outBucket := ContextItem{Entity: "note", ID: "n2", Bucket: 0}                          // top 4 bits clear, BucketSet=false
 
 	if !digestCovers(clusterRow, inBucket) {
 		t.Fatal("cluster must cover an entity whose Bucket matches its prefix")
@@ -245,6 +245,26 @@ func TestDigestCovers_Cluster(t *testing.T) {
 	interRow := []byte(`{"id":"` + cid + `#0000000000000000","level":1,"kind":"cluster"}`)
 	if digestCovers(interRow, inBucket) {
 		t.Fatal("intermediate (#) cluster ids must never prune")
+	}
+}
+
+// TestDigestCovers_ClusterBucketSetGuard verifies the BucketSet guard: an entity
+// with BucketSet=false and Bucket=0 must NOT be pruned by a genuine zero-prefix
+// cluster, while an entity with BucketSet=true and Bucket=0 IS pruned.
+func TestDigestCovers_ClusterBucketSetGuard(t *testing.T) {
+	zeroCID := ClusterID(0, 4) // zero-prefix cluster (top 4 bits = 0)
+	zeroClusterRow := []byte(`{"id":"` + zeroCID + `","level":1,"kind":"cluster"}`)
+
+	// Miss: Bucket=0 because no L0 digest was found — must NOT be covered.
+	miss := ContextItem{Entity: "note", ID: "miss", Bucket: 0, BucketSet: false}
+	if digestCovers(zeroClusterRow, miss) {
+		t.Fatal("BucketSet=false, Bucket=0: must NOT be pruned by a zero-prefix cluster (guard must fire)")
+	}
+
+	// Genuine zero: Bucket=0 because the entity's SemHash is 0 — MUST be covered.
+	genuineZero := ContextItem{Entity: "note", ID: "zero", Bucket: 0, BucketSet: true}
+	if !digestCovers(zeroClusterRow, genuineZero) {
+		t.Fatal("BucketSet=true, Bucket=0: must be pruned by a zero-prefix cluster (genuine zero-hash)")
 	}
 }
 
