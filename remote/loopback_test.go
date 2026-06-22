@@ -115,6 +115,9 @@ func (f *fakeRetrieval) Upsert(context.Context, string, string, []float32, map[s
 	return nil
 }
 func (f *fakeRetrieval) Delete(context.Context, string, string) error { return nil }
+func (f *fakeRetrieval) Get(context.Context, string, string) ([]float32, error) {
+	return nil, nil
+}
 
 func (f *fakeRetrieval) Search(_ context.Context, q query.SearchQuery, into any) error {
 	f.gotSearchQ = q
