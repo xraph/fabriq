@@ -39,6 +39,8 @@ type Config struct {
 	// deferred by debounce resets. Zero falls back to 10×DistillDebounce.
 	// A value smaller than DistillDebounce is clamped up to DistillDebounce.
 	DistillMaxWait time.Duration
+	// Clusterer overrides the default in-core multi-probe SimHash clusterer.
+	Clusterer agent.Clusterer
 }
 
 // Option is a functional option for Config.
@@ -86,6 +88,10 @@ func WithDistillDebounce(d time.Duration) Option { return func(o *Config) { o.Di
 // deferred by debounce resets. Zero falls back to 10×DistillDebounce.
 // A value smaller than DistillDebounce is clamped up to DistillDebounce.
 func WithDistillMaxWait(d time.Duration) Option { return func(o *Config) { o.DistillMaxWait = d } }
+
+// WithClusterer overrides the default multi-probe SimHash clusterer (e.g. a
+// vector-based gmmclusterer). Nil = default.
+func WithClusterer(c agent.Clusterer) Option { return func(o *Config) { o.Clusterer = c } }
 
 // WithCustomAppliers appends consumer-supplied projection appliers to the
 // fabriq config. They are unioned after the built-in declarative applier for

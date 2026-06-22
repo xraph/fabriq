@@ -188,6 +188,9 @@ type VectorQuerier interface {
 	// Delete removes the embedding for (tenant, entity, id). Deleting a missing
 	// id is a no-op. Mirrors SpatialQuerier.Delete.
 	Delete(ctx context.Context, entity, id string) error
+	// Get returns the stored embedding for (entity, id), or a *fabriqerr.NotFoundError
+	// when absent. Mirrors RelationalQuerier.Get's get-by-id + NotFound convention.
+	Get(ctx context.Context, entity, id string) ([]float32, error)
 }
 
 // VectorQuery is a nearest-neighbour search.

@@ -6,6 +6,38 @@ import (
 	"github.com/xraph/fabriq/fabriqtest"
 )
 
+// TestExactDedup_ReusesVector: a 2nd byte-identical source reuses the donor's
+// vector — ZERO embed calls — while still getting its own vector row.
+func TestExactDedup_ReusesVector(t *testing.T) {
+	r := distillRegistry(t)
+	w := fabriqtest.NewWorld(r)
+	fab := fabriqtest.NewFabric(w)
+	cas := fabriqtest.NewFakeCAS()
+	emb := &countingEmbedder{}
+	d, err := NewDistiller(fab, r, emb, &fakeSummarizer{}, nil, cas, DistillConfig{VectorDims: 3, RecipeVersion: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testCtx(t)
+	src := func(id string) map[string]any {
+		return map[string]any{"id": id, "title": "Same Pump", "body": "same body", "site_id": "s1"}
+	}
+	if _, err := d.DistillL0(ctx, "note", "a", src("a")); err != nil {
+		t.Fatal(err)
+	}
+	embAfterFirst := emb.calls
+	if _, err := d.DistillL0(ctx, "note", "b", src("b")); err != nil {
+		t.Fatal(err)
+	}
+	if emb.calls != embAfterFirst {
+		t.Fatalf("dedup must reuse donor vector (no embed); calls %d→%d", embAfterFirst, emb.calls)
+	}
+	// b still has its own vector.
+	if _, err := w.Vector.Get(ctx, DigestEntity, L0ID("note", "b")); err != nil {
+		t.Fatalf("deduped node must still have a vector: %v", err)
+	}
+}
+
 // TestPersist_PopulatesTokens asserts a built L0 node stores a positive token
 // count (so the adaptive-depth fit-check can read it from the row, not CAS).
 func TestPersist_PopulatesTokens(t *testing.T) {

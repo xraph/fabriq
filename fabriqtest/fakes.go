@@ -910,6 +910,29 @@ func (f *FakeVector) Delete(ctx context.Context, entity, id string) error {
 	return nil
 }
 
+// Get implements query.VectorQuerier. Returns a copy of the stored embedding
+// for (entity, id), or *fabriqerr.NotFoundError on miss.
+func (f *FakeVector) Get(ctx context.Context, entity, id string) ([]float32, error) {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if byEntity, ok := f.data[tid]; ok {
+		if byID, ok := byEntity[entity]; ok {
+			if e, ok := byID[id]; ok {
+				out := make([]float32, len(e.emb))
+				copy(out, e.emb)
+				return out, nil
+			}
+		}
+	}
+	return nil, &fabriqerr.NotFoundError{Entity: entity, ID: id}
+}
+
+var _ query.VectorQuerier = (*FakeVector)(nil)
+
 func cosine(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return -1

@@ -23,6 +23,7 @@ service Fabriq {
   rpc VectorSimilar(VectorSimilarRequest) returns (RowReply); // rows = JSON []VectorMatch
   rpc VectorUpsert(VectorUpsertRequest) returns (Ack);
   rpc VectorDelete(VectorDeleteRequest) returns (Ack);
+  rpc VectorGet(VectorGetRequest) returns (VectorGetReply); // embedding = []float32
   rpc Search(SearchRequest) returns (RowReply);  // rows = JSON []map
   rpc GraphQuery(GraphQueryRequest) returns (RowReply); // rows = JSON []string | []map
 
@@ -114,6 +115,16 @@ message VectorUpsertRequest {
 message VectorDeleteRequest {
   string entity = 1;
   string id = 2;
+}
+message VectorGetRequest {
+  string entity = 1;
+  string id = 2;
+}
+// VectorGetReply carries the raw float components of a stored embedding.
+// On miss the server sets error (code "not_found") and leaves embedding empty.
+message VectorGetReply {
+  repeated float embedding = 1;
+  Error error = 2;
 }
 message SearchRequest { bytes query = 1; } // JSON query.SearchQuery
 message GraphQueryRequest {

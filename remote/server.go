@@ -72,6 +72,8 @@ func (h *Handler) Dispatch(ctx context.Context, method string, in []byte) ([]byt
 		return h.VectorUpsert(ctx, in)
 	case MethodVectorDelete:
 		return h.VectorDelete(ctx, in)
+	case MethodVectorGet:
+		return h.VectorGet(ctx, in)
 	case MethodSearch:
 		return h.Search(ctx, in)
 	case MethodGraphQuery:
@@ -333,6 +335,18 @@ func (h *Handler) VectorDelete(ctx context.Context, in []byte) ([]byte, error) {
 		return nil, fmt.Errorf("remote: decode vectorDelete request: %w", err)
 	}
 	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Vector().Delete(ctx, req.Entity, req.Id))})
+}
+
+func (h *Handler) VectorGet(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.VectorGetRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode vectorGet request: %w", err)
+	}
+	emb, err := h.fab.Vector().Get(ctx, req.Entity, req.Id)
+	if err != nil {
+		return proto.Marshal(&fabriqpb.VectorGetReply{Error: errorToProto(err)})
+	}
+	return proto.Marshal(&fabriqpb.VectorGetReply{Embedding: emb})
 }
 
 func (h *Handler) Search(ctx context.Context, in []byte) ([]byte, error) {

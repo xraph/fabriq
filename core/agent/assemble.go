@@ -20,12 +20,14 @@ type scoredRef struct {
 
 // ContextItem is one hydrated row in a recall result.
 type ContextItem struct {
-	Entity string          `json:"entity"`
-	ID     string          `json:"id"`
-	Row    json.RawMessage `json:"row"`
-	Score  float64         `json:"score"`
-	Source []string        `json:"source"`
-	Tokens int             `json:"tokens"`
+	Entity    string          `json:"entity"`
+	ID        string          `json:"id"`
+	Row       json.RawMessage `json:"row"`
+	Score     float64         `json:"score"`
+	Source    []string        `json:"source"`
+	Tokens    int             `json:"tokens"`
+	Bucket    uint64          `json:"bucket,omitempty"` // entity's L0-digest SemHash, for cluster-coverage dedup
+	BucketSet bool            `json:"-"`                // true only when Bucket was populated by a successful L0-digest lookup
 }
 
 // ContextPack is the token-budgeted recall result.
