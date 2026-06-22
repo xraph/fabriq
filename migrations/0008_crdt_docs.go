@@ -6,7 +6,7 @@ import (
 	"github.com/xraph/grove/migrate"
 )
 
-// Document-plane bookkeeping + the TWINOS demo document entity:
+// Document-plane bookkeeping:
 //
 //   - fabriq_crdt_docs: one row per live document — entity binding (doc
 //     ids are "<entity>/<ulid>"), materialization watermark, quiet-window
@@ -15,15 +15,18 @@ import (
 //     tenants; it holds no user content — document content lives in
 //     fabriq_crdt_updates/snapshots, which keep RLS and are only reached
 //     through tenant-stamped transactions).
-//   - pages: the KindDocument demo entity (collaborative page-builder
-//     documents); rows are written ONLY by materialization. RLS applies.
+//
+// The materialization TARGET tables are application-defined entities, NOT core
+// schema — fabriq must never create a generically-named table (e.g. "pages")
+// in a host's database, where it would collide with the app's own tables. The
+// bundled demo entity's DDL therefore lives with its model in package domain
+// (domain.PagesDDL), applied only by examples and the document-plane tests.
 var migration0008CRDTDocs = &migrate.Migration{
 	Name:    "crdt_docs",
 	Version: "202606120008",
-	Comment: "document registry/bookkeeping + pages demo entity",
+	Comment: "document registry/bookkeeping",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
-		stmts := make([]string, 0, 12)
-		stmts = append(stmts,
+		return execAll(ctx, exec, []string{
 			`CREATE TABLE IF NOT EXISTS fabriq_crdt_docs (
 				doc_id      TEXT PRIMARY KEY,
 				tenant_id   TEXT NOT NULL,
@@ -35,30 +38,10 @@ var migration0008CRDTDocs = &migrate.Migration{
 				updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 			)`,
 			`CREATE INDEX IF NOT EXISTS fabriq_crdt_docs_tenant_idx ON fabriq_crdt_docs (tenant_id, updated_at)`,
-			`CREATE TABLE IF NOT EXISTS pages (
-				id        TEXT PRIMARY KEY,
-				tenant_id TEXT NOT NULL,
-				version   BIGINT NOT NULL,
-				title     TEXT NOT NULL DEFAULT '',
-				body      TEXT NOT NULL DEFAULT ''
-			)`,
-			`CREATE INDEX IF NOT EXISTS pages_tenant_idx ON pages (tenant_id)`,
-		)
-		for _, table := range []string{"pages"} {
-			stmts = append(stmts,
-				`ALTER TABLE `+table+` ENABLE ROW LEVEL SECURITY`,
-				`ALTER TABLE `+table+` FORCE ROW LEVEL SECURITY`,
-				`DROP POLICY IF EXISTS tenant_isolation ON `+table,
-				`CREATE POLICY tenant_isolation ON `+table+`
-					USING (tenant_id = current_setting('app.tenant_id', true))
-					WITH CHECK (tenant_id = current_setting('app.tenant_id', true))`,
-			)
-		}
-		return execAll(ctx, exec, stmts)
+		})
 	},
 	Down: func(ctx context.Context, exec migrate.Executor) error {
 		return execAll(ctx, exec, []string{
-			`DROP TABLE IF EXISTS pages`,
 			`DROP TABLE IF EXISTS fabriq_crdt_docs`,
 		})
 	},

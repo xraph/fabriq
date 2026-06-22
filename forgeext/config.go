@@ -41,6 +41,11 @@ type Config struct {
 	DistillMaxWait time.Duration
 	// Clusterer overrides the default in-core multi-probe SimHash clusterer.
 	Clusterer agent.Clusterer
+	// GroveDatabase names the *grove.DB to borrow from the host DI container
+	// when no Postgres DSN/shards are configured. Empty resolves the default
+	// (unnamed) grove.DB. Mirrors xraph/authsome's GroveDatabase knob. Read
+	// from extensions.fabriq.groveDatabase when unset programmatically.
+	GroveDatabase string
 }
 
 // Option is a functional option for Config.
@@ -48,6 +53,11 @@ type Option func(*Config)
 
 // WithConfig sets the underlying fabriq data-fabric configuration.
 func WithConfig(c fabriq.Config) Option { return func(o *Config) { o.Fabriq = c } }
+
+// WithGroveDatabase names the *grove.DB to borrow from the host DI container
+// when no Postgres DSN/shards are configured (empty = the default unnamed
+// grove.DB). Mirrors xraph/authsome's grove-database selection.
+func WithGroveDatabase(name string) Option { return func(o *Config) { o.GroveDatabase = name } }
 
 // WithWorker enables or disables the background reconcile worker.
 func WithWorker(on bool) Option { return func(o *Config) { o.RunWorker = on } }

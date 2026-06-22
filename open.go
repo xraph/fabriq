@@ -63,10 +63,21 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 	ids := make([]string, 0, len(shardCfgs))
 	shardList := make([]shard.Shard, 0, len(shardCfgs))
 	for _, sc := range shardCfgs {
-		a, oerr := postgres.Open(ctx, sc.DSN, reg,
-			postgres.WithPoolSize(sc.PoolSize),
-			postgres.WithGuardedTables(cfg.guardedTables()...),
-		)
+		var a *postgres.Adapter
+		var oerr error
+		if cfg.primaryGrove != nil && len(cfg.Shards) == 0 {
+			// Single-shard deployment backed by a grove.DB resolved from a host
+			// DI container: borrow it instead of dialing a DSN. fabriq never
+			// closes a borrowed handle (the host owns its lifecycle).
+			a, oerr = postgres.OpenWithGrove(cfg.primaryGrove, reg,
+				postgres.WithGuardedTables(cfg.guardedTables()...),
+			)
+		} else {
+			a, oerr = postgres.Open(ctx, sc.DSN, reg,
+				postgres.WithPoolSize(sc.PoolSize),
+				postgres.WithGuardedTables(cfg.guardedTables()...),
+			)
+		}
 		if oerr != nil {
 			closeDialed()
 			return nil, nil, oerr

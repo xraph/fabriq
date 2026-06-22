@@ -48,6 +48,10 @@ type Adapter struct {
 	reg      *registry.Registry
 	backstop *tenantBackstop
 	state    *StateRepo
+	// owned reports whether this adapter dialed the grove handle itself. When
+	// false the handle was borrowed (e.g. resolved from a host DI container),
+	// so Close MUST NOT tear it down — the host owns its lifecycle.
+	owned bool
 }
 
 var _ query.RelationalQuerier = (*Adapter)(nil)
@@ -92,18 +96,59 @@ func Open(ctx context.Context, dsn string, reg *registry.Registry, opts ...Optio
 		return nil, err
 	}
 
-	// grove.Open propagates its hook engine to the driver (grove >=
-	// a01144a); registering on gdb.Hooks() is all that's needed.
+	return newAdapter(gdb, pg, reg, cfg, true)
+}
+
+// OpenWithGrove builds an Adapter on top of a grove.DB that the caller already
+// dialed — the seam the forge extension uses to back fabriq's source of truth
+// with a *grove.DB resolved from the host's DI container (mirroring how
+// xraph/authsome borrows the shared grove) instead of dialing its own DSN.
+//
+// The grove MUST be backed by the pg driver (grove + pgdriver): fabriq's
+// command/relational/timeseries/vector plane is Postgres-specific. The handle
+// is BORROWED — Close is a no-op for it, leaving the host to own the
+// connection lifecycle. The tenant backstop is still registered on the shared
+// hook engine, so pool-path access to fabriq's tenant tables is denied exactly
+// as on a self-dialed adapter (host queries to other tables pass through).
+func OpenWithGrove(gdb *grove.DB, reg *registry.Registry, opts ...Option) (*Adapter, error) {
+	if gdb == nil {
+		return nil, fmt.Errorf("fabriq: postgres adapter needs a non-nil grove.DB")
+	}
+	if reg == nil {
+		return nil, fmt.Errorf("fabriq: postgres adapter needs the registry")
+	}
+	pg, ok := gdb.Driver().(*pgdriver.PgDB)
+	if !ok {
+		return nil, fmt.Errorf("fabriq: borrowed grove must be backed by the pg driver, got %q", gdb.Driver().Name())
+	}
+	cfg := openConfig{poolSize: 16}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return newAdapter(gdb, pg, reg, cfg, false)
+}
+
+// newAdapter wires the tenant backstop onto the (self-dialed or borrowed)
+// grove handle and assembles the Adapter. grove.Open propagates its hook
+// engine to the driver (grove >= a01144a); registering on gdb.Hooks() is all
+// that is needed for the backstop to fire on driver-built queries.
+func newAdapter(gdb *grove.DB, pg *pgdriver.PgDB, reg *registry.Registry, cfg openConfig, owned bool) (*Adapter, error) {
 	backstop := newTenantBackstop(reg, cfg.guardedTables)
 	gdb.Hooks().AddHook(backstop)
 
-	a := &Adapter{gdb: gdb, pg: pg, reg: reg, backstop: backstop}
+	a := &Adapter{gdb: gdb, pg: pg, reg: reg, backstop: backstop, owned: owned}
 	a.state = &StateRepo{pg: pg}
 	return a, nil
 }
 
-// Close releases the connection pool.
-func (a *Adapter) Close() error { return a.gdb.Close() }
+// Close releases the connection pool. For a borrowed grove (OpenWithGrove) it
+// is a no-op: the host owns the handle's lifecycle.
+func (a *Adapter) Close() error {
+	if !a.owned {
+		return nil
+	}
+	return a.gdb.Close()
+}
 
 // Grove exposes the grove handle (hook-guarded pool path) for advanced
 // embedding. Tenant tables are NOT reachable through it — the backstop
