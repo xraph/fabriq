@@ -1,0 +1,46 @@
+---
+title: Weave (vector store)
+description: Use fabriq as the vector backend for weave's RAG pipeline via the fabriqvec adapter — weave's document chunks persist into the fabric.
+---
+
+[Weave](https://github.com/xraph/weave) is a composable RAG pipeline (load → chunk → embed → store → retrieve → assemble) with a pluggable `vectorstore.VectorStore` port. The **`fabriqvec`** adapter (`github.com/xraph/weave/vectorstore/fabriq`, lives in the weave repo) implements that port over fabriq's [Vector](/docs/vector) plane, so weave's chunk embeddings live in the fabric instead of a parallel store.
+
+This is why fabriq's `VectorQuerier` gained metadata [filtering](/docs/vector#metadata-filtering) and `DeleteByMeta` — to back weave's `Search` filters and `DeleteByMetadata` faithfully.
+
+## Wiring
+
+`fabriqvec.New` takes a fabriq `query.VectorQuerier` (from `f.Vector()`) and namespaces all weave vectors under one fabriq entity (default `weave_vector`).
+
+```go
+import (
+	"github.com/xraph/weave/engine"
+	fabriqvec "github.com/xraph/weave/vectorstore/fabriq"
+)
+
+eng, err := engine.New(
+	engine.WithStore(metaStore),
+	engine.WithVectorStore(fabriqvec.New(f.Vector(), fabriqvec.WithEntity("weave_vector"))),
+	// ... or fabriqvec.EngineOption(container) to auto-discover the fabriq facade from DI.
+)
+```
+
+The host must ensure the `fabriq_embeddings` table exists (fabriq [migrations](/docs/migrations)) and operate within a fabriq tenant scope. The namespacing entity need not be registered in fabriq's [registry](/docs/registry) — `fabriq_embeddings` is keyed by an arbitrary `(tenant, entity, id)` triple, so the vector path works without it.
+
+## How it maps
+
+| weave `VectorStore` | fabriq `VectorQuerier` |
+|---|---|
+| `Upsert(entries)` | `Upsert(entity, id, vector, meta)` — weave `Content` is folded into `meta["content"]` (fabriq has no content column). |
+| `Search(vec, opts)` | `Similar(VectorQuery{Filter: opts.Filter})` — `opts.TenantKey` maps to fabriq's tenant scope; `MinScore` post-filters; `Content`/`Metadata` are reconstructed from `meta`. |
+| `Delete(ids)` | `Delete(entity, id)` per id. |
+| `DeleteByMetadata(filter)` | `DeleteByMeta(entity, filter)`. |
+
+<Callout type="info">
+Two deliberate, documented differences from weave's `pgvector` store: the fabriq-backed `Search` returns a **nil** `Vector` on each hit (fabriq does not return embeddings on search — consumers use content + score + metadata), and `TenantKey` maps to fabriq's **native** per-tenant isolation rather than a `metadata.tenant_id` convention — stronger isolation.
+</Callout>
+
+<Cards>
+  <Card title="Vector" href="/docs/vector">The fabriq embedding port the adapter is built on — including metadata filtering and DeleteByMeta.</Card>
+  <Card title="Tenancy" href="/docs/tenancy">The structural tenant isolation TenantKey maps onto.</Card>
+  <Card title="Cortex brain" href="/docs/cortex">The other ecosystem integration — fabriq as a brain for cortex agents.</Card>
+</Cards>

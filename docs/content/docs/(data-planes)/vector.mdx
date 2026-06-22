@@ -1,6 +1,6 @@
 ---
 title: Vector
-description: The embedding port over pgvector — upsert caller-supplied embeddings and cosine nearest-neighbour search through an HNSW index.
+description: The embedding port over pgvector — upsert caller-supplied embeddings, cosine nearest-neighbour search with optional metadata filtering, and metadata-scoped delete.
 ---
 
 The vector plane stores and searches embeddings for similarity queries — semantic search, recommendation, deduplication. It is implemented in `adapters/postgres` on pgvector, backed by an HNSW index over the `fabriq_embeddings` table. Fabriq **stores and searches** vectors; it does not produce them — the caller supplies embeddings as `[]float32` from whatever model they run.
@@ -9,6 +9,9 @@ The vector plane stores and searches embeddings for similarity queries — seman
 type VectorQuerier interface {
 	Upsert(ctx context.Context, entity, id string, embedding []float32, meta map[string]any) error
 	Similar(ctx context.Context, q VectorQuery, into any) error
+	Delete(ctx context.Context, entity, id string) error
+	DeleteByMeta(ctx context.Context, entity string, filter map[string]string) error
+	Get(ctx context.Context, entity, id string) ([]float32, error)
 }
 ```
 
@@ -38,6 +41,9 @@ type VectorQuery struct {
 	Entity    string
 	Embedding []float32
 	K         int
+	// Filter restricts matches to embeddings whose meta contains all of these
+	// key/value pairs (exact-match, AND-of-equals). Empty/nil = no filter.
+	Filter map[string]string
 }
 
 type VectorMatch struct {
@@ -67,6 +73,51 @@ for _, m := range matches {
 
 `Score` is cosine similarity in `[0, 1]`-ish terms — **higher is closer** (the adapter returns `1 - cosine_distance`). `K` defaults to 10 when unset. Results are scoped to the `(tenant, entity)` pair.
 
+## Metadata filtering
+
+`VectorQuery.Filter` narrows a search to embeddings whose stored `meta` contains every key/value pair in the filter — an AND-of-equals predicate compiled to a JSONB containment check (`meta @> '{…}'`). An empty or nil filter means "no filter". The match values are compared as strings against the stored metadata.
+
+```go
+var matches []query.VectorMatch
+err := f.Vector().Similar(ctx, query.VectorQuery{
+	Entity:    "asset",
+	Embedding: queryEmbedding,
+	K:         10,
+	Filter:    map[string]string{"kind": "pump", "site_id": siteID},
+}, &matches)
+// only embeddings whose meta has kind=pump AND site_id=<siteID> are returned.
+```
+
+A GIN index on `fabriq_embeddings.meta` (migration `0025`) keeps containment filters efficient. Filtering happens inside the same tenant-scoped query, so it can only narrow the result set — never widen the tenant or scope boundary.
+
+## Delete & DeleteByMeta
+
+`Delete` removes one embedding by `(entity, id)` — deleting a missing id is a no-op. `DeleteByMeta` removes every embedding for `(tenant, entity)` whose `meta` matches the filter.
+
+```go
+// Remove a single embedding.
+err := f.Vector().Delete(ctx, "asset", assetID)
+
+// Remove every embedding for the entity that matches the metadata filter.
+err = f.Vector().DeleteByMeta(ctx, "asset", map[string]string{"site_id": siteID})
+```
+
+<Callout type="warn">
+An **empty** filter passed to `DeleteByMeta` deletes **all** embeddings for `(tenant, entity)`. This is intentional (mirrors a "delete everything in this namespace" call) but scope it deliberately. The delete is always bounded by the tenant — it can never cross the tenant boundary.
+</Callout>
+
+## Get
+
+`Get` returns the stored embedding for `(entity, id)`, or a `*fabriqerr.NotFoundError` on miss — useful for re-ranking, dedup checks, or moving a vector between stores.
+
+```go
+emb, err := f.Vector().Get(ctx, "asset", assetID)
+```
+
+## Beyond Postgres
+
+The port is uniform across every backend: the in-memory `fabriqtest.FakeVector`, the sharded router, and the remote/gRPC transport all implement the same interface — including metadata `Filter` and `DeleteByMeta` (the remote transport carries the filter as JSON). A shared [conformance](/docs/decisions) suite (`RunVector`) gates the fake and the real Postgres adapter on identical behavior, so a backend cannot silently drift.
+
 <Callout type="info">
 `m.ID` is the aggregate id you passed to `Upsert`. To get the full row, hydrate from Postgres with `Relational().GetMany("asset", ids, &assets)` — one batched query for the whole match set.
 </Callout>
@@ -74,4 +125,6 @@ for _, m := range matches {
 <Cards>
   <Card title="Relational" href="/docs/relational">GetMany — batch-hydrate full rows from the ids a similarity search returns.</Card>
   <Card title="Tenancy" href="/docs/tenancy">The structural tenant scoping every Postgres-backed port shares.</Card>
+  <Card title="Weave vector store" href="/docs/weave">Use fabriq as the vector backend for weave's RAG pipeline.</Card>
+  <Card title="Cortex brain" href="/docs/cortex">Plug fabriq in as a recall + memory brain for cortex agents.</Card>
 </Cards>
