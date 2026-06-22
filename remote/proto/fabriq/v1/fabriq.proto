@@ -23,6 +23,7 @@ service Fabriq {
   rpc VectorSimilar(VectorSimilarRequest) returns (RowReply); // rows = JSON []VectorMatch
   rpc VectorUpsert(VectorUpsertRequest) returns (Ack);
   rpc VectorDelete(VectorDeleteRequest) returns (Ack);
+  rpc VectorDeleteByMeta(VectorDeleteByMetaRequest) returns (Ack);
   rpc VectorGet(VectorGetRequest) returns (VectorGetReply); // embedding = []float32
   rpc Search(SearchRequest) returns (RowReply);  // rows = JSON []map
   rpc GraphQuery(GraphQueryRequest) returns (RowReply); // rows = JSON []string | []map
@@ -105,6 +106,11 @@ message VectorSimilarRequest {
   string entity = 1;
   repeated float embedding = 2;
   int32 k = 3;
+  bytes filter = 4; // JSON map[string]string
+}
+message VectorDeleteByMetaRequest {
+  string entity = 1;
+  bytes filter = 2; // JSON map[string]string
 }
 message VectorUpsertRequest {
   string entity = 1;

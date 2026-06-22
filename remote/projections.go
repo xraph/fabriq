@@ -29,9 +29,6 @@ type remoteVector struct{ t Transport }
 var _ query.VectorQuerier = remoteVector{}
 
 func (r remoteVector) Similar(ctx context.Context, q query.VectorQuery, into any) error {
-	if len(q.Filter) > 0 {
-		return fmt.Errorf("fabriq: remote vector Similar filter not yet wired")
-	}
 	k := q.K
 	if k < 0 {
 		k = 0
@@ -39,7 +36,15 @@ func (r remoteVector) Similar(ctx context.Context, q query.VectorQuery, into any
 	if k > math.MaxInt32 {
 		k = math.MaxInt32
 	}
-	in, err := proto.Marshal(&fabriqpb.VectorSimilarRequest{Entity: q.Entity, Embedding: q.Embedding, K: int32(k)})
+	req := &fabriqpb.VectorSimilarRequest{Entity: q.Entity, Embedding: q.Embedding, K: int32(k)}
+	if len(q.Filter) > 0 {
+		b, err := json.Marshal(q.Filter)
+		if err != nil {
+			return fmt.Errorf("fabriq: marshal vector filter: %w", err)
+		}
+		req.Filter = b
+	}
+	in, err := proto.Marshal(req)
 	if err != nil {
 		return err
 	}
@@ -82,10 +87,25 @@ func (r remoteVector) Delete(ctx context.Context, entity, id string) error {
 	return ackError(out)
 }
 
-// DeleteByMeta is wired over the transport in the proto task; until then it
-// reports unsupported so the interface is satisfied without silent data loss.
+// DeleteByMeta marshals the filter and calls VectorDeleteByMeta over the transport.
 func (r remoteVector) DeleteByMeta(ctx context.Context, entity string, filter map[string]string) error {
-	return fmt.Errorf("fabriq: remote vector DeleteByMeta not yet wired")
+	var filterJSON []byte
+	if len(filter) > 0 {
+		b, err := json.Marshal(filter)
+		if err != nil {
+			return fmt.Errorf("fabriq: marshal deleteByMeta filter: %w", err)
+		}
+		filterJSON = b
+	}
+	in, err := proto.Marshal(&fabriqpb.VectorDeleteByMetaRequest{Entity: entity, Filter: filterJSON})
+	if err != nil {
+		return err
+	}
+	out, err := r.t.Unary(ctx, MethodVectorDeleteByMeta, in)
+	if err != nil {
+		return err
+	}
+	return ackError(out)
 }
 
 func (r remoteVector) Get(ctx context.Context, entity, id string) ([]float32, error) {
