@@ -16,6 +16,16 @@ import (
 )
 
 // Clusterer is a deterministic k-means vector clusterer.
+//
+// Recall cluster-coverage note: recall's digestCovers pruning uses
+// ParseClusterID to test whether a cluster digest's prefix covers an entity's
+// SimHash Bucket. This Clusterer derives cluster ids from centroid hashes (see
+// clusterID), which share the ClusterID wire format but occupy a different
+// keyspace than the SimHash buckets used by the in-core SimHashClusterer. As a
+// result, cluster digests produced by this Clusterer will under-prune in recall
+// (a few extra entity rows may survive the dedup pass) but will NEVER
+// false-prune — no relevant entity is dropped. This is a safe no-op; it does
+// not affect correctness, only recall window compactness.
 type Clusterer struct {
 	k       int
 	idBits  int
