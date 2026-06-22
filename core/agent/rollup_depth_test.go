@@ -78,12 +78,49 @@ func TestAdaptiveDepth_DormantUnderCap(t *testing.T) {
 	}
 }
 
-func isIntermediateID(id string) bool { return containsHash(id) }
-func containsHash(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '#' {
-			return true
+// TestAdaptiveDepth_GCsOrphanedIntermediate: build an oversized scope so
+// intermediate "#" nodes form, then delete enough members that the geometry
+// changes; the next Rollup must GC the now-orphaned intermediate(s).
+func TestAdaptiveDepth_GCsOrphanedIntermediate(t *testing.T) {
+	r := distillRegistry(t)
+	cas := fabriqtest.NewFakeCAS()
+	d := newDepthDistiller(t, r, cas, 2) // MaxFanIn=2 → splits
+	ctx := testCtx(t)
+	ids := []string{"a", "b", "c", "d", "e", "f"}
+	for i, body := range []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta"} {
+		if _, err := d.DistillL0(ctx, "note", ids[i], map[string]any{"id": ids[i], "title": ids[i], "body": body, "site_id": "s1"}); err != nil {
+			t.Fatal(err)
 		}
 	}
-	return false
+	if _, err := d.Rollup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := d.listNodes(ctx, LevelScope)
+	nInter := 0
+	for _, n := range before {
+		if isIntermediateID(n.ID) {
+			nInter++
+		}
+	}
+	if nInter == 0 {
+		t.Fatal("setup: expected intermediate nodes after split")
+	}
+	// Delete most members to force a geometry change.
+	for _, id := range []string{"a", "b", "c", "d"} {
+		if _, err := d.DeleteL0(ctx, "note", id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.Rollup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := d.listNodes(ctx, LevelScope)
+	for _, n := range after {
+		if isIntermediateID(n.ID) {
+			// any surviving intermediate must be one the final pass actually built
+			// (i.e. still reachable). With only 2 members left and MaxFanIn=2, the
+			// scope fits without splitting → zero intermediates should remain.
+			t.Fatalf("orphaned intermediate %s was not GC'd", n.ID)
+		}
+	}
 }
