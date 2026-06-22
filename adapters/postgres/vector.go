@@ -173,7 +173,10 @@ func (a *Adapter) Similar(ctx context.Context, q query.VectorQuery, into any) er
 	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
-		filterJSON := metaFilterJSON(q.Filter)
+		filterJSON, ferr := metaFilterJSON(q.Filter)
+		if ferr != nil {
+			return ferr
+		}
 		var rows []vectorRow
 		const sql = `SELECT id, 1 - (embedding <=> $1::vector) AS score, meta::text AS meta
 			FROM fabriq_embeddings
@@ -219,10 +222,14 @@ func (a *Adapter) DeleteByMeta(ctx context.Context, entity string, filter map[st
 	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
+		filterJSON, ferr := metaFilterJSON(filter)
+		if ferr != nil {
+			return ferr
+		}
 		const sql = `DELETE FROM fabriq_embeddings
 			WHERE tenant_id=$1 AND entity=$2
 			  AND ($3::jsonb = '{}'::jsonb OR meta @> $3::jsonb)`
-		if _, err := tx.NewRaw(sql, tid, entity, string(metaFilterJSON(filter))).Exec(ctx); err != nil {
+		if _, err := tx.NewRaw(sql, tid, entity, string(filterJSON)).Exec(ctx); err != nil {
 			return fmt.Errorf("fabriq: delete-by-meta %s: %w", entity, err)
 		}
 		return nil
@@ -230,16 +237,17 @@ func (a *Adapter) DeleteByMeta(ctx context.Context, entity string, filter map[st
 }
 
 // metaFilterJSON renders a metadata filter as a JSON object for `meta @>`
-// containment. An empty/nil filter yields "{}" (matches everything).
-func metaFilterJSON(filter map[string]string) []byte {
+// containment. An empty/nil filter yields "{}" (matches everything). A marshal
+// failure is propagated so callers fail closed rather than silently widening.
+func metaFilterJSON(filter map[string]string) ([]byte, error) {
 	if len(filter) == 0 {
-		return []byte("{}")
+		return []byte("{}"), nil
 	}
 	b, err := json.Marshal(filter)
-	if err != nil || len(b) == 0 {
-		return []byte("{}")
+	if err != nil {
+		return nil, err
 	}
-	return b
+	return b, nil
 }
 
 // parsePGTime parses Postgres text timestamps in the formats time::text

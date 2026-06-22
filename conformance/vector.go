@@ -94,4 +94,20 @@ func RunVector(t *testing.T, b Backend) {
 	if len(foreign) != 0 {
 		t.Fatalf("conformance: %s: foreign tenant saw %d row(s), want 0", b.Name(), len(foreign))
 	}
+
+	// Empty filter deletes ALL of (tenant, entity) — the documented footgun —
+	// but must NOT cross the tenant boundary.
+	must(vec.Upsert(ctx, "docZ", "z1", emb(dim, 1, 0), map[string]any{"k": "1"}))
+	must(vec.Upsert(ctx, "docZ", "z2", emb(dim, 0, 1), map[string]any{"k": "2"}))
+	must(vec.Upsert(env.ForeignCtx, "docZ", "zf", emb(dim, 1, 0), map[string]any{"k": "3"}))
+	must(vec.DeleteByMeta(ctx, "docZ", map[string]string{})) // empty = delete all of (tenant, docZ)
+	if _, err := vec.Get(ctx, "docZ", "z1"); err == nil {
+		t.Fatalf("%s: empty-filter DeleteByMeta should remove z1", b.Name())
+	}
+	if _, err := vec.Get(ctx, "docZ", "z2"); err == nil {
+		t.Fatalf("%s: empty-filter DeleteByMeta should remove z2", b.Name())
+	}
+	if _, err := vec.Get(env.ForeignCtx, "docZ", "zf"); err != nil {
+		t.Fatalf("%s: empty-filter DeleteByMeta must NOT cross tenants (zf survives): %v", b.Name(), err)
+	}
 }
