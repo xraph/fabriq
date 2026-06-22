@@ -186,6 +186,7 @@ func (e *Extension) Run(ctx context.Context) error {
 			VectorDims:    e.cfg.Embedder.Dims(), // dims come straight from the embedder
 			RecipeVersion: e.cfg.DistillRecipeVersion,
 			FailOpenGuard: e.cfg.DistillFailOpenGuard,
+			Clusterer:     e.cfg.Clusterer,
 		}
 		dist, derr := agent.NewDistiller(fab, e.reg, e.cfg.Embedder, e.cfg.Summarizer, e.cfg.Guard, stores.CAS, dcfg)
 		if derr != nil {
