@@ -35,6 +35,7 @@ type DistillObserver interface {
 	GuardBlocked()   // a guard vetoed an ingest or emit (fail-closed drop)
 	Split()          // an aggregating node overflowed and was split into intermediate nodes
 	Deduped()        // an L0 reused an existing summary via exact source-hash match
+	GCed()           // an orphaned adaptive-depth intermediate node was garbage-collected
 }
 
 // DistillConfig tunes the Distiller. Zero values get defaults via withDefaults.
