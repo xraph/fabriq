@@ -42,59 +42,25 @@ func (d *Distiller) Rollup(ctx context.Context) (RollupReport, error) {
 		idx[n.ID] = n
 	}
 
-	// 1. Cluster assignment. Primary bucket = top-p SimHash prefix. A bucket
-	//    becomes a cluster only if its PRIMARY membership clears the noise floor.
-	//    With ProbeRadius>0 a node ALSO joins any already-above-floor cluster
-	//    whose prefix is within Hamming ProbeRadius of its primary prefix —
-	//    probes never create a cluster, only widen an existing one.
-	buckets := map[string][]string{} // primary: clusterID -> member L0 ids
+	// 1. Cluster assignment via the configured Clusterer (default: multi-probe
+	//    SimHash). Vector population (for vector-based clusterers) is wired in the
+	//    gmmclusterer task; the default needs no vectors.
+	inputs := make([]ClusterInput, 0, len(l0s))
 	for _, n := range l0s {
-		prefix := ClusterPrefix(parseSemOrZero(n.SemHash), d.cfg.ClusterBits)
-		cid := ClusterID(prefix, d.cfg.ClusterBits)
-		buckets[cid] = append(buckets[cid], n.ID)
+		inputs = append(inputs, ClusterInput{ID: n.ID, SemHash: parseSemOrZero(n.SemHash)})
 	}
-	cluster := map[string]bool{} // above-floor cluster ids (gated on PRIMARY count)
-	for cid, members := range buckets {
-		if NoiseFloorMet(len(members), d.cfg.NoiseFloor) {
-			cluster[cid] = true
-		}
+	clusters, clErr := d.clusterer.Cluster(ctx, inputs, d.cfg.NoiseFloor)
+	if clErr != nil {
+		return rep, fmt.Errorf("agent: rollup cluster: %w", clErr)
 	}
-	// Effective membership: primary ∪ probe (probe only into existing clusters).
-	effective := map[string]map[string]bool{}
-	addEff := func(cid, mid string) {
-		if effective[cid] == nil {
-			effective[cid] = map[string]bool{}
-		}
-		effective[cid][mid] = true
-	}
-	for cid := range cluster {
-		for _, mid := range buckets[cid] {
-			addEff(cid, mid)
-		}
-	}
-	if d.cfg.ProbeRadius > 0 {
-		for _, n := range l0s {
-			prefix := ClusterPrefix(parseSemOrZero(n.SemHash), d.cfg.ClusterBits)
-			for _, pp := range probePrefixes(prefix, d.cfg.ClusterBits, d.cfg.ProbeRadius) {
-				cid := ClusterID(pp, d.cfg.ClusterBits)
-				if cluster[cid] {
-					addEff(cid, n.ID)
-				}
-			}
-		}
-	}
-	// Link effective members; build deterministic member lists for rollup.
-	clusterMembers := map[string][]string{}
-	for cid := range cluster {
-		mids := make([]string, 0, len(effective[cid]))
-		for mid := range effective[cid] {
-			mids = append(mids, mid)
-		}
-		sort.Strings(mids)
-		clusterMembers[cid] = mids
-		for _, mid := range mids {
-			if err = d.ensureParent(ctx, mid, cid); err != nil {
-				return rep, fmt.Errorf("agent: rollup link cluster %s: %w", cid, err)
+	cluster := map[string]bool{}            // above-floor cluster ids
+	clusterMembers := map[string][]string{} // cid -> members (for rollupGroup)
+	for _, cl := range clusters {
+		cluster[cl.ID] = true
+		clusterMembers[cl.ID] = cl.Members
+		for _, mid := range cl.Members {
+			if err = d.ensureParent(ctx, mid, cl.ID); err != nil {
+				return rep, fmt.Errorf("agent: rollup link cluster %s: %w", cl.ID, err)
 			}
 		}
 	}

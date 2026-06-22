@@ -52,6 +52,7 @@ type DistillConfig struct {
 	MaxFanIn              int              // max children before a node splits (adaptive depth backstop)
 	ClusterSubBits        int              // prefix-bit increment per split level (Δ)
 	Tokenizer             func(string) int // summary token counter; nil = whitespace-word default
+	Clusterer             Clusterer        // nil = default SimHashClusterer from ClusterBits/ProbeRadius
 }
 
 func (c *DistillConfig) withDefaults() {
@@ -103,15 +104,16 @@ func (c *DistillConfig) withDefaults() {
 // keeps re-distillation cheap, and a two-stage Guard (ingest + emit) fences PII
 // out of both the model and the content-addressed store.
 type Distiller struct {
-	fab    query.Fabric
-	reg    *registry.Registry
-	emb    Embedder
-	sum    Summarizer
-	guard  Guard
-	cas    blob.CAS
-	cfg    DistillConfig
-	planes [64][]float32
-	obs    DistillObserver // optional; nil = no instrumentation
+	fab       query.Fabric
+	reg       *registry.Registry
+	emb       Embedder
+	sum       Summarizer
+	guard     Guard
+	cas       blob.CAS
+	cfg       DistillConfig
+	planes    [64][]float32
+	obs       DistillObserver // optional; nil = no instrumentation
+	clusterer Clusterer
 }
 
 // SetObserver attaches an optional DistillObserver for metrics/audit. Pass nil
@@ -132,9 +134,14 @@ func NewDistiller(fab query.Fabric, reg *registry.Registry, emb Embedder, sum Su
 	if emb.Dims() != cfg.VectorDims {
 		return nil, fmt.Errorf("agent: distiller embedder dims %d != configured %d", emb.Dims(), cfg.VectorDims)
 	}
+	clusterer := cfg.Clusterer
+	if clusterer == nil {
+		clusterer = NewSimHashClusterer(cfg.ClusterBits, cfg.ProbeRadius)
+	}
 	return &Distiller{
 		fab: fab, reg: reg, emb: emb, sum: sum, guard: guard, cas: cas, cfg: cfg,
-		planes: NewSemPlanes(cfg.VectorDims, cfg.SemSeed),
+		planes:    NewSemPlanes(cfg.VectorDims, cfg.SemSeed),
+		clusterer: clusterer,
 	}, nil
 }
 
