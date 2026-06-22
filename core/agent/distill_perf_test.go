@@ -103,7 +103,7 @@ func TestDistill_BackfillBatchesEmbeds(t *testing.T) {
 
 // snapshotNodes returns every digest_node row keyed by id (level 0,1,2), so two
 // rollup strategies can be compared for byte-identical output.
-func snapshotNodes(t *testing.T, d *Distiller, ctx context.Context) map[string]digestRow {
+func snapshotNodes(ctx context.Context, t *testing.T, d *Distiller) map[string]digestRow {
 	t.Helper()
 	out := map[string]digestRow{}
 	for _, lvl := range []int{LevelEntity, LevelScope, LevelTenant} {
@@ -148,7 +148,7 @@ func TestRollup_InMemoryIndexMatchesGetNode(t *testing.T) {
 		if _, err := d.Rollup(ctx); err != nil {
 			t.Fatal(err)
 		}
-		return snapshotNodes(t, d, ctx)
+		return snapshotNodes(ctx, t, d)
 	}
 
 	a := build()

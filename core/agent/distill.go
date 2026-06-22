@@ -217,6 +217,8 @@ func distillTextFor(spec *registry.DistillSpec, vals map[string]any) string {
 // passes false: it batch-embeds every pending summary and calls
 // persistSummaryVec directly, so fetching the donor vector would be wasted.
 // Both paths still use args.reuseSummaryHash to skip the cas.Store call.
+//
+//nolint:gocritic // multi-typed results; named returns would collide with body locals (args/donorText/err)
 func (d *Distiller) prepareL0(ctx context.Context, entity, id string, vals map[string]any, fetchDonorVector bool) (persistArgs, string, bool, error) {
 	spec := d.distillSpec(entity)
 	if spec == nil {
