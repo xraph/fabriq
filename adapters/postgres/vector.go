@@ -168,13 +168,15 @@ func (a *Adapter) Similar(ctx context.Context, q query.VectorQuery, into any) er
 	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
+		filterJSON := metaFilterJSON(q.Filter)
 		var rows []vectorRow
 		const sql = `SELECT id, 1 - (embedding <=> $1::vector) AS score, meta::text AS meta
 			FROM fabriq_embeddings
 			WHERE tenant_id = $2 AND entity = $3
+			  AND ($5::jsonb = '{}'::jsonb OR meta @> $5::jsonb)
 			ORDER BY embedding <=> $1::vector ASC
 			LIMIT $4`
-		if err := tx.NewRaw(sql, vectorLiteral(q.Embedding), tid, q.Entity, k).Scan(ctx, &rows); err != nil {
+		if err := tx.NewRaw(sql, vectorLiteral(q.Embedding), tid, q.Entity, k, string(filterJSON)).Scan(ctx, &rows); err != nil {
 			return fmt.Errorf("fabriq: similar %s: %w", q.Entity, err)
 		}
 		for _, r := range rows {
@@ -203,6 +205,19 @@ func (a *Adapter) Delete(ctx context.Context, entity, id string) error {
 		}
 		return nil
 	})
+}
+
+// metaFilterJSON renders a metadata filter as a JSON object for `meta @>`
+// containment. An empty/nil filter yields "{}" (matches everything).
+func metaFilterJSON(filter map[string]string) []byte {
+	if len(filter) == 0 {
+		return []byte("{}")
+	}
+	b, err := json.Marshal(filter)
+	if err != nil || len(b) == 0 {
+		return []byte("{}")
+	}
+	return b
 }
 
 // parsePGTime parses Postgres text timestamps in the formats time::text

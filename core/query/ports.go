@@ -198,6 +198,9 @@ type VectorQuery struct {
 	Entity    string
 	Embedding []float32
 	K         int
+	// Filter restricts matches to embeddings whose meta contains all of these
+	// key/value pairs (exact-match, AND-of-equals). Empty/nil = no filter.
+	Filter map[string]string
 }
 
 // VectorMatch is one nearest-neighbour hit, best first.
