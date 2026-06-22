@@ -63,6 +63,10 @@ func newDocScopeHarness(t *testing.T) (*postgres.Adapter, *postgres.Adapter) {
 		t.Fatalf("migrate: %v", err)
 	}
 
+	// The demo "pages" materialization target moved out of the shipped
+	// migrations (host-collision hazard); create it as owner before the app role.
+	fabriqtest.ApplyDDL(t, superDSN, domain.PagesDDL())
+
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {

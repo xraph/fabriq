@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/xraph/forge"
+	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
 	"github.com/xraph/fabriq"
@@ -63,11 +64,19 @@ func (e *Extension) Register(app forge.App) error {
 	}
 
 	// Overlay extensions.fabriq.* when no explicit datastore config was given.
-	if cm := app.Config(); cm != nil && e.cfg.Fabriq.Postgres.DSN == "" && len(e.cfg.Fabriq.Shards) == 0 {
-		loaded := LoadConfig(cm, "extensions.fabriq.")
-		// keep custom appliers from options; only fill the data-fabric config.
-		loaded.CustomAppliers = e.cfg.Fabriq.CustomAppliers
-		e.cfg.Fabriq = loaded
+	if cm := app.Config(); cm != nil {
+		if e.cfg.Fabriq.Postgres.DSN == "" && len(e.cfg.Fabriq.Shards) == 0 {
+			loaded := LoadConfig(cm, "extensions.fabriq.")
+			// keep custom appliers from options; only fill the data-fabric config.
+			loaded.CustomAppliers = e.cfg.Fabriq.CustomAppliers
+			e.cfg.Fabriq = loaded
+		}
+		// The grove-database selector is a forge-extension knob (not part of the
+		// fabriq data-fabric config), so overlay it separately when an option
+		// did not already set it.
+		if e.cfg.GroveDatabase == "" && cm.IsSet("extensions.fabriq.groveDatabase") {
+			_ = cm.Bind("extensions.fabriq.groveDatabase", &e.cfg.GroveDatabase)
+		}
 	}
 
 	// Lazy DI service: resolves the facade opened in Start.
@@ -86,13 +95,25 @@ func (e *Extension) Register(app forge.App) error {
 
 // Start implements forge.Extension. Opens the fabriq facade.
 func (e *Extension) Start(ctx context.Context) error {
-	if e.cfg.Fabriq.Postgres.DSN == "" && len(e.cfg.Fabriq.Shards) == 0 {
-		return fmt.Errorf("fabriq: a Postgres source of truth is required to serve (set postgres.dsn / FABRIQ_POSTGRES_DSN, or shards)")
+	cfg := e.cfg.Fabriq
+	if cfg.Postgres.DSN == "" && len(cfg.Shards) == 0 {
+		// No explicit source of truth: borrow a *grove.DB from the host's DI
+		// container, the same way xraph/authsome auto-discovers the shared
+		// grove. This lets fabriq serve inside an app that already owns a
+		// Postgres/grove handle without duplicating the DSN.
+		if gdb := e.resolveGrove(); gdb != nil {
+			cfg = cfg.WithInjectedGrove(gdb)
+			if log := e.Logger(); log != nil {
+				log.Info("fabriq: resolved grove.DB from the host container; using it as the source of truth")
+			}
+		} else {
+			return fmt.Errorf("fabriq: a Postgres source of truth is required to serve (set postgres.dsn / FABRIQ_POSTGRES_DSN, or shards, or register a *grove.DB in the host container)")
+		}
 	}
-	if e.cfg.RunWorker && e.cfg.Fabriq.Redis.Addr == "" {
+	if e.cfg.RunWorker && cfg.Redis.Addr == "" {
 		return fmt.Errorf("fabriq: a Redis address is required to serve (set redis.addr / FABRIQ_REDIS_ADDR)")
 	}
-	fab, stores, err := fabriq.Open(ctx, e.reg, e.cfg.Fabriq)
+	fab, stores, err := fabriq.Open(ctx, e.reg, cfg)
 	if err != nil {
 		return err
 	}
@@ -140,4 +161,40 @@ func (e *Extension) Stores() *fabriq.Stores {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.stores
+}
+
+// ResolveGrove best-effort resolves a *grove.DB from the host app's DI
+// container (honouring GroveDatabase), returning nil when none is available.
+// It is the exported seam wrapping extensions (e.g. TwinOS's fabriqkg) use to
+// borrow the same handle fabriq serves and migrates against.
+func (e *Extension) ResolveGrove() *grove.DB { return e.resolveGrove() }
+
+// resolveGrove best-effort resolves a *grove.DB from the host app's DI
+// container, returning nil when no app/container is wired or none is
+// registered. It mirrors how xraph/authsome discovers the shared grove.
+func (e *Extension) resolveGrove() *grove.DB {
+	app := e.App()
+	if app == nil {
+		return nil
+	}
+	return e.resolveGroveFrom(app.Container())
+}
+
+// resolveGroveFrom resolves a *grove.DB from the given container. When
+// GroveDatabase is set it looks up that named handle; otherwise it resolves the
+// default (unnamed) one. Resolution failures yield nil (best-effort).
+func (e *Extension) resolveGroveFrom(c forge.Container) *grove.DB {
+	if c == nil {
+		return nil
+	}
+	if name := e.cfg.GroveDatabase; name != "" {
+		if db, err := vessel.InjectNamed[*grove.DB](c, name); err == nil {
+			return db
+		}
+		return nil
+	}
+	if db, err := vessel.Inject[*grove.DB](c); err == nil {
+		return db
+	}
+	return nil
 }

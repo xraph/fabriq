@@ -97,6 +97,28 @@ func CreateAppRole(t testing.TB, superDSN string) string {
 	return u.String()
 }
 
+// ApplyDDL executes the given statements against dsn as the connecting role
+// (typically the superuser/owner DSN). It is the seam tests use to create
+// application-defined materialization targets (e.g. domain.PagesDDL()) that are
+// no longer part of fabriq's shipped migration chain. Apply it BEFORE
+// CreateAppRole so the app role inherits grants on the new tables.
+func ApplyDDL(t testing.TB, dsn string, stmts []string) {
+	t.Helper()
+	ctx := context.Background()
+
+	db := pgdriver.New()
+	if err := db.Open(ctx, dsn); err != nil {
+		t.Fatalf("fabriqtest: open conn for DDL: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	for _, s := range stmts {
+		if _, err := db.Exec(ctx, s); err != nil {
+			t.Fatalf("fabriqtest: apply DDL: %v\n%s", err, s)
+		}
+	}
+}
+
 // StartFalkorDB launches a FalkorDB container and returns its address
 // (host:port). The container terminates with the test.
 func StartFalkorDB(t testing.TB) string {

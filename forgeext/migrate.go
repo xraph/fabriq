@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/xraph/forge"
+	"github.com/xraph/grove"
 
 	"github.com/xraph/fabriq/migrations"
 )
@@ -21,12 +22,24 @@ func (e *Extension) primaryDSN() string {
 	return ""
 }
 
+// migrationTarget resolves where migrations run: the explicit primary DSN when
+// set, otherwise a *grove.DB borrowed from the host DI container — the same
+// source of truth the serve path (Start) uses. Grove is resolved only when no
+// DSN is configured, so a DSN deployment never triggers a container lookup.
+func (e *Extension) migrationTarget() (string, *grove.DB) {
+	if dsn := e.primaryDSN(); dsn != "" {
+		return dsn, nil
+	}
+	return "", e.resolveGrove()
+}
+
 // Migrate runs fabriq's pending migrations forward (forge MigratableExtension).
 //
 // It opens a fresh grove Orchestrator against the primary DSN, runs all pending
 // migrations, and translates the grove MigrateResult into a forge.MigrationResult.
 func (e *Extension) Migrate(ctx context.Context) (*forge.MigrationResult, error) {
-	orch, closeFn, err := migrations.OpenOrchestrator(ctx, e.primaryDSN())
+	dsn, gdb := e.migrationTarget()
+	orch, closeFn, err := migrations.OpenOrchestratorWith(ctx, dsn, gdb)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +67,8 @@ func (e *Extension) Migrate(ctx context.Context) (*forge.MigrationResult, error)
 // grove's Rollback rolls back exactly one migration (the most recently applied
 // in the group). RolledBack will be 0 or 1.
 func (e *Extension) Rollback(ctx context.Context) (*forge.MigrationResult, error) {
-	orch, closeFn, err := migrations.OpenOrchestrator(ctx, e.primaryDSN())
+	dsn, gdb := e.migrationTarget()
+	orch, closeFn, err := migrations.OpenOrchestratorWith(ctx, dsn, gdb)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +99,8 @@ func (e *Extension) Rollback(ctx context.Context) (*forge.MigrationResult, error
 // type hierarchy: one *forge.MigrationGroupInfo per grove GroupStatus,
 // with *forge.MigrationInfo entries in Applied and Pending.
 func (e *Extension) MigrationStatus(ctx context.Context) ([]*forge.MigrationGroupInfo, error) {
-	orch, closeFn, err := migrations.OpenOrchestrator(ctx, e.primaryDSN())
+	dsn, gdb := e.migrationTarget()
+	orch, closeFn, err := migrations.OpenOrchestratorWith(ctx, dsn, gdb)
 	if err != nil {
 		return nil, err
 	}

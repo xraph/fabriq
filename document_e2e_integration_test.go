@@ -61,6 +61,11 @@ func docE2E(t *testing.T) (*fabriq.Fabriq, *fabriq.Stores, *registry.Registry) {
 	}
 	_ = closeFn()
 
+	// The demo "pages" materialization target is no longer part of the shipped
+	// migration chain (it would collide with a host's own tables); create it as
+	// owner before provisioning the app role.
+	fabriqtest.ApplyDDL(t, superDSN, domain.PagesDDL())
+
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
 		Postgres:      fabriq.PostgresConfig{DSN: appDSN},

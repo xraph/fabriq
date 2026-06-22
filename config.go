@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/xraph/grove"
+
 	"github.com/xraph/fabriq/core/projection"
 )
 
@@ -27,7 +29,31 @@ type Config struct {
 	// projection.CustomApplier). The same set feeds both the live engines and
 	// the rebuilders, so live and rebuilt projections stay identical.
 	CustomAppliers []projection.CustomApplier `yaml:"-" json:"-"`
+
+	// primaryGrove, when set, backs the single primary shard with a borrowed
+	// *grove.DB (resolved from a host DI container by the forge extension)
+	// instead of dialing Postgres.DSN — the same way xraph/authsome borrows the
+	// shared grove. Postgres.DSN/Shards then become optional. Set it via
+	// WithInjectedGrove; it is never serialized and never closed by fabriq (the
+	// host owns the connection lifecycle). It applies only to single-shard
+	// deployments (Shards must be empty).
+	primaryGrove *grove.DB
 }
+
+// WithInjectedGrove returns a copy of c whose primary shard is backed by the
+// given borrowed grove.DB rather than a dialed DSN. The forge extension calls
+// this after resolving a *grove.DB from the host's DI container. The handle is
+// borrowed: fabriq never closes it. Injection is single-shard only — when
+// Shards is set the explicit shard DSNs win and the grove is ignored.
+func (c Config) WithInjectedGrove(db *grove.DB) Config {
+	c.primaryGrove = db
+	return c
+}
+
+// InjectedGrove reports the borrowed grove.DB set via WithInjectedGrove (nil
+// when none). It lets a host (e.g. the forge extension) tell whether grove
+// resolution succeeded without re-reading the container.
+func (c Config) InjectedGrove() *grove.DB { return c.primaryGrove }
 
 // PostgresConfig locates the source of truth. Required unless Shards is set
 // (it is the one-shard shorthand).
@@ -133,8 +159,8 @@ func (c Config) Validate() error {
 			}
 			seen[s.ID] = struct{}{}
 		}
-	} else if c.Postgres.DSN == "" {
-		return fmt.Errorf("fabriq: config: postgres.dsn (or shards) is required (postgres is the source of truth)")
+	} else if c.Postgres.DSN == "" && c.primaryGrove == nil {
+		return fmt.Errorf("fabriq: config: postgres.dsn (or shards, or an injected grove.DB) is required (postgres is the source of truth)")
 	}
 	if c.Projections.Graph && c.FalkorDB.Addr == "" {
 		return fmt.Errorf("fabriq: config: projections.graph enabled but falkordb.addr is empty")
