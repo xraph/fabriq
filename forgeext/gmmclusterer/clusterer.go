@@ -116,7 +116,7 @@ func (c *Clusterer) Cluster(_ context.Context, inputs []agent.ClusterInput, nois
 		sort.Strings(members[j])
 		out = append(out, agent.Cluster{ID: c.clusterID(centroids[j]), Members: members[j]})
 	}
-	sort.Slice(out, func(i, k int) bool { return out[i].ID < out[k].ID })
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 

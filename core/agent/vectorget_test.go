@@ -27,9 +27,9 @@ func TestFakeVector_Get(t *testing.T) {
 	}
 }
 
-// TestFakeVector_Get_IsolatesTenants verifies that Get is tenant-scoped:
+// TestFakeVector_Get_RequiresTenant verifies that Get is tenant-scoped:
 // a vector upserted under tenant A is not visible from tenant B.
-func TestFakeVector_Get_IsolatesTenants(t *testing.T) {
+func TestFakeVector_Get_RequiresTenant(t *testing.T) {
 	w := fabriqtest.NewWorld(distillRegistry(t))
 	ctx := testCtx(t) // uses tenant from testCtx
 
