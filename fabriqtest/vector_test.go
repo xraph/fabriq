@@ -66,3 +66,24 @@ func TestFakeVector_Delete(t *testing.T) {
 		t.Fatalf("delete missing id should be no-op, got %v", err)
 	}
 }
+
+func TestFakeVector_DeleteByMeta(t *testing.T) {
+	r := registry.New()
+	w := fabriqtest.NewWorld(r)
+	ctx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Vector.Upsert(ctx, "doc", "a", []float32{1, 0, 0}, map[string]any{"kind": "note"})
+	_ = w.Vector.Upsert(ctx, "doc", "b", []float32{1, 0, 0}, map[string]any{"kind": "task"})
+
+	if err := w.Vector.DeleteByMeta(ctx, "doc", map[string]string{"kind": "note"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Vector.Get(ctx, "doc", "a"); err == nil {
+		t.Fatalf("id a should be deleted")
+	}
+	if _, err := w.Vector.Get(ctx, "doc", "b"); err != nil {
+		t.Fatalf("id b should survive: %v", err)
+	}
+}

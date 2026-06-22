@@ -121,6 +121,9 @@ func (f *fakeRetrieval) Upsert(_ context.Context, _ string, id string, vec []flo
 	return nil
 }
 func (f *fakeRetrieval) Delete(context.Context, string, string) error { return nil }
+func (f *fakeRetrieval) DeleteByMeta(context.Context, string, map[string]string) error {
+	return nil
+}
 func (f *fakeRetrieval) Get(_ context.Context, _ string, id string) ([]float32, error) {
 	if f.vecStore == nil {
 		return nil, nil

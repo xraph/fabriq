@@ -934,6 +934,26 @@ func (f *FakeVector) Get(ctx context.Context, entity, id string) ([]float32, err
 	return nil, &fabriqerr.NotFoundError{Entity: entity, ID: id}
 }
 
+// DeleteByMeta implements query.VectorQuerier.
+func (f *FakeVector) DeleteByMeta(ctx context.Context, entity string, filter map[string]string) error {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if byEntity, ok := f.data[tid]; ok {
+		if byID, ok := byEntity[entity]; ok {
+			for id, e := range byID {
+				if metaContains(e.meta, filter) {
+					delete(byID, id)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 var _ query.VectorQuerier = (*FakeVector)(nil)
 
 // metaContains reports whether meta contains every key/value in filter

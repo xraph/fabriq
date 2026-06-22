@@ -60,6 +60,11 @@ func (v *VectorAdapter) Delete(ctx context.Context, entity, id string) error {
 	return v.a.Delete(ctx, entity, id)
 }
 
+// DeleteByMeta implements query.VectorQuerier.
+func (v *VectorAdapter) DeleteByMeta(ctx context.Context, entity string, filter map[string]string) error {
+	return v.a.DeleteByMeta(ctx, entity, filter)
+}
+
 // Get implements query.VectorQuerier. Returns the stored embedding for
 // (entity, id) as []float32, or *fabriqerr.NotFoundError on miss.
 func (v *VectorAdapter) Get(ctx context.Context, entity, id string) ([]float32, error) {
@@ -202,6 +207,23 @@ func (a *Adapter) Delete(ctx context.Context, entity, id string) error {
 		const sql = `DELETE FROM fabriq_embeddings WHERE tenant_id=$1 AND entity=$2 AND id=$3`
 		if _, err := tx.NewRaw(sql, tid, entity, id).Exec(ctx); err != nil {
 			return fmt.Errorf("fabriq: delete embedding %s/%s: %w", entity, id, err)
+		}
+		return nil
+	})
+}
+
+// DeleteByMeta removes embeddings for (tenant, entity) matching the meta filter.
+func (a *Adapter) DeleteByMeta(ctx context.Context, entity string, filter map[string]string) error {
+	if _, err := tenant.Require(ctx); err != nil {
+		return err
+	}
+	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		tid, _ := tenant.FromContext(ctx)
+		const sql = `DELETE FROM fabriq_embeddings
+			WHERE tenant_id=$1 AND entity=$2
+			  AND ($3::jsonb = '{}'::jsonb OR meta @> $3::jsonb)`
+		if _, err := tx.NewRaw(sql, tid, entity, string(metaFilterJSON(filter))).Exec(ctx); err != nil {
+			return fmt.Errorf("fabriq: delete-by-meta %s: %w", entity, err)
 		}
 		return nil
 	})
