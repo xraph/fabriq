@@ -879,6 +879,9 @@ func (f *FakeVector) Similar(ctx context.Context, q query.VectorQuery, into any)
 		if !scopeVisible(ctx, e.scope) {
 			continue
 		}
+		if !metaContains(e.meta, q.Filter) {
+			continue
+		}
 		matches = append(matches, query.VectorMatch{ID: id, Score: cosine(q.Embedding, e.emb), Meta: e.meta})
 	}
 	sort.Slice(matches, func(i, j int) bool {
@@ -932,6 +935,18 @@ func (f *FakeVector) Get(ctx context.Context, entity, id string) ([]float32, err
 }
 
 var _ query.VectorQuerier = (*FakeVector)(nil)
+
+// metaContains reports whether meta contains every key/value in filter
+// (stringified exact-match). An empty filter matches everything.
+func metaContains(meta map[string]any, filter map[string]string) bool {
+	for k, v := range filter {
+		mv, ok := meta[k]
+		if !ok || fmt.Sprint(mv) != v {
+			return false
+		}
+	}
+	return true
+}
 
 func cosine(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
