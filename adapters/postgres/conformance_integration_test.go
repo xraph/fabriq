@@ -22,10 +22,11 @@ import (
 // conformance.Backend. One container is shared across cases; each Setup mints
 // a fresh tenant pair and RLS isolates them.
 type pgConformanceBackend struct {
-	reg  *registry.Registry
-	a    *postgres.Adapter
-	exec *command.Executor
-	n    atomic.Int64
+	reg       *registry.Registry
+	a         *postgres.Adapter
+	exec      *command.Executor
+	n         atomic.Int64
+	hasVector bool // true when fabriq_embeddings was created (pgvector available)
 }
 
 func newPGConformanceBackend(t *testing.T) conformance.Backend {
@@ -41,14 +42,31 @@ func newPGConformanceBackend(t *testing.T) conformance.Backend {
 		t.Fatal(err)
 	}
 
-	orch, closeFn, err := migrations.OpenOrchestrator(ctx, superDSN)
+	// Run migrations as superuser; probe whether pgvector was installed.
+	superA, err := postgres.Open(ctx, superDSN, reg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := orch.Migrate(ctx); err != nil {
+	orch, err := migrations.NewOrchestrator(superA.Driver())
+	if err != nil {
+		_ = superA.Close()
 		t.Fatal(err)
 	}
-	_ = closeFn()
+	if _, err := orch.Migrate(ctx); err != nil {
+		_ = superA.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	var tableExists bool
+	row := superA.Driver().QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'fabriq_embeddings'
+		)`)
+	if err := row.Scan(&tableExists); err != nil {
+		_ = superA.Close()
+		t.Fatalf("probe fabriq_embeddings: %v", err)
+	}
+	_ = superA.Close()
 
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg, postgres.WithGuardedTables(domain.ReadingsSeries))
@@ -61,7 +79,7 @@ func newPGConformanceBackend(t *testing.T) conformance.Backend {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &pgConformanceBackend{reg: reg, a: a, exec: x}
+	return &pgConformanceBackend{reg: reg, a: a, exec: x, hasVector: tableExists}
 }
 
 func (b *pgConformanceBackend) Name() string { return "postgres" }
@@ -77,13 +95,20 @@ func (b *pgConformanceBackend) Capabilities() conformance.CapabilitySet {
 func (b *pgConformanceBackend) Setup(t *testing.T) *conformance.Env {
 	t.Helper()
 	n := b.n.Add(1)
-	return &conformance.Env{
+	env := &conformance.Env{
 		Ctx:        b.tctx(t, fmt.Sprintf("conf_%d_a", n)),
 		ForeignCtx: b.tctx(t, fmt.Sprintf("conf_%d_b", n)),
 		Registry:   b.reg,
 		Exec:       b.exec,
 		Relational: b.a,
 	}
+	// Wire vector only when pgvector is present in this container; otherwise
+	// RunVector skips cleanly (Env.Vector == nil).
+	if b.hasVector {
+		env.Vector = postgres.NewVectorAdapter(b.a)
+		env.EmbeddingDim = 768 // schema-declared vector(768) column
+	}
+	return env
 }
 
 func (b *pgConformanceBackend) tctx(t *testing.T, id string) context.Context {
@@ -96,8 +121,8 @@ func (b *pgConformanceBackend) tctx(t *testing.T, id string) context.Context {
 }
 
 // TestPostgresConformance runs the shared conformance suite against a real,
-// migrated Postgres adapter (relational port). Other ports are nil here and
-// their suites skip; follow-on plans add them.
+// migrated Postgres adapter. Ports that are not wired (nil Env field) skip
+// cleanly; the vector suite skips when pgvector is absent in the container.
 func TestPostgresConformance(t *testing.T) {
 	conformance.RunAll(t, newPGConformanceBackend(t))
 }
