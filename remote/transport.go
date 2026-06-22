@@ -59,8 +59,9 @@ const (
 	MethodPresignBlob   = "fabriq.v1.Fabriq/PresignBlob"
 	MethodVectorSimilar = "fabriq.v1.Fabriq/VectorSimilar"
 	MethodVectorUpsert  = "fabriq.v1.Fabriq/VectorUpsert"
-	MethodVectorDelete  = "fabriq.v1.Fabriq/VectorDelete"
-	MethodVectorGet     = "fabriq.v1.Fabriq/VectorGet"
+	MethodVectorDelete       = "fabriq.v1.Fabriq/VectorDelete"
+	MethodVectorDeleteByMeta = "fabriq.v1.Fabriq/VectorDeleteByMeta"
+	MethodVectorGet          = "fabriq.v1.Fabriq/VectorGet"
 	MethodSearch        = "fabriq.v1.Fabriq/Search"
 	MethodGraphQuery    = "fabriq.v1.Fabriq/GraphQuery"
 )
