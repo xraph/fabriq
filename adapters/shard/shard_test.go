@@ -78,8 +78,31 @@ func (s spatialStub) Delete(_ context.Context, entity, _ string) error {
 	return nil
 }
 
+// vectorStub implements query.VectorQuerier, recording into its parent's log.
+// A separate type is required because stub.Get already has the RelationalQuerier
+// signature (entity, id, into) — Go does not allow two methods with the same
+// name but different signatures on one receiver.
+type vectorStub struct{ parent *stub }
+
+func (v vectorStub) Upsert(_ context.Context, entity, _ string, _ []float32, _ map[string]any) error {
+	v.parent.calls = append(v.parent.calls, "Upsert:"+entity)
+	return nil
+}
+func (v vectorStub) Similar(_ context.Context, q query.VectorQuery, _ any) error {
+	v.parent.calls = append(v.parent.calls, "Similar:"+q.Entity)
+	return nil
+}
+func (v vectorStub) Delete(_ context.Context, entity, _ string) error {
+	v.parent.calls = append(v.parent.calls, "Delete:"+entity)
+	return nil
+}
+func (v vectorStub) Get(_ context.Context, entity, _ string) ([]float32, error) {
+	v.parent.calls = append(v.parent.calls, "VectorGet:"+entity)
+	return nil, nil
+}
+
 func shardFor(s *stub) shard.Shard {
-	return shard.Shard{ID: s.id, Store: s, Relational: s, Vector: s, Timeseries: s, Spatial: spatialStub{parent: s}}
+	return shard.Shard{ID: s.id, Store: s, Relational: s, Vector: vectorStub{parent: s}, Timeseries: s, Spatial: spatialStub{parent: s}}
 }
 
 // mapDir routes tenant ids to shard ids; an unmapped tenant errors.

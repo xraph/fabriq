@@ -10,9 +10,25 @@ import (
 
 	"github.com/xraph/grove/drivers/pgdriver"
 
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/tenant"
 )
+
+// VectorAdapter wraps Adapter to implement query.VectorQuerier.
+// A separate type is required because *Adapter already carries Get for
+// query.RelationalQuerier (entity, id string, into any) — Go does not allow
+// two methods with the same name on one type, so the vector variant lives here.
+// The existing Upsert/Similar/Delete methods remain on *Adapter for backwards
+// compat; VectorAdapter delegates to them.
+type VectorAdapter struct {
+	a *Adapter
+}
+
+var _ query.VectorQuerier = (*VectorAdapter)(nil)
+
+// NewVectorAdapter wraps an existing Postgres adapter for vector operations.
+func NewVectorAdapter(a *Adapter) *VectorAdapter { return &VectorAdapter{a: a} }
 
 // vectorLiteral renders a pgvector input literal ("[1,2,3]"). Parameters
 // are passed as text and cast — pgx needs no pgvector type registration.
@@ -30,6 +46,79 @@ func vectorLiteral(emb []float32) string {
 }
 
 // Upsert implements query.VectorQuerier.
+func (v *VectorAdapter) Upsert(ctx context.Context, entity, id string, embedding []float32, meta map[string]any) error {
+	return v.a.Upsert(ctx, entity, id, embedding, meta)
+}
+
+// Similar implements query.VectorQuerier.
+func (v *VectorAdapter) Similar(ctx context.Context, q query.VectorQuery, into any) error {
+	return v.a.Similar(ctx, q, into)
+}
+
+// Delete implements query.VectorQuerier.
+func (v *VectorAdapter) Delete(ctx context.Context, entity, id string) error {
+	return v.a.Delete(ctx, entity, id)
+}
+
+// Get implements query.VectorQuerier. Returns the stored embedding for
+// (entity, id) as []float32, or *fabriqerr.NotFoundError on miss.
+func (v *VectorAdapter) Get(ctx context.Context, entity, id string) ([]float32, error) {
+	if _, err := tenant.Require(ctx); err != nil {
+		return nil, err
+	}
+	var result []float32
+	err := v.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		tid, _ := tenant.FromContext(ctx)
+		type embRow struct {
+			Embedding string `grove:"embedding"`
+		}
+		var rows []embRow
+		const sql = `SELECT embedding::text AS embedding
+			FROM fabriq_embeddings
+			WHERE tenant_id = $1 AND entity = $2 AND id = $3
+			LIMIT 1`
+		if err := tx.NewRaw(sql, tid, entity, id).Scan(ctx, &rows); err != nil {
+			return fmt.Errorf("fabriq: get embedding %s/%s: %w", entity, id, err)
+		}
+		if len(rows) == 0 {
+			return &fabriqerr.NotFoundError{Entity: entity, ID: id}
+		}
+		emb, err := parseVectorLiteral(rows[0].Embedding)
+		if err != nil {
+			return fmt.Errorf("fabriq: parse embedding %s/%s: %w", entity, id, err)
+		}
+		result = emb
+		return nil
+	})
+	return result, err
+}
+
+// parseVectorLiteral parses a pgvector text literal "[1.0,2.0,3.0]" into
+// a []float32. This is the inverse of vectorLiteral.
+func parseVectorLiteral(s string) ([]float32, error) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '[' || s[len(s)-1] != ']' {
+		return nil, fmt.Errorf("fabriq: malformed vector literal %q", s)
+	}
+	inner := s[1 : len(s)-1]
+	if inner == "" {
+		return []float32{}, nil
+	}
+	parts := strings.Split(inner, ",")
+	out := make([]float32, len(parts))
+	for i, p := range parts {
+		vf, err := strconv.ParseFloat(strings.TrimSpace(p), 32)
+		if err != nil {
+			return nil, fmt.Errorf("fabriq: parse vector component %q: %w", p, err)
+		}
+		out[i] = float32(vf)
+	}
+	return out, nil
+}
+
+// --- methods kept on *Adapter for backward compat (shard.Vector used a directly) ---
+
+// Upsert implements query.VectorQuerier (kept on *Adapter for backward compat).
 func (a *Adapter) Upsert(ctx context.Context, entity, id string, embedding []float32, meta map[string]any) error {
 	if _, err := tenant.Require(ctx); err != nil {
 		return err

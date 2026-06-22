@@ -95,6 +95,7 @@ var serviceDesc = grpc.ServiceDesc{
 		{MethodName: "VectorSimilar", Handler: unaryHandler(remote.MethodVectorSimilar)},
 		{MethodName: "VectorUpsert", Handler: unaryHandler(remote.MethodVectorUpsert)},
 		{MethodName: "VectorDelete", Handler: unaryHandler(remote.MethodVectorDelete)},
+		{MethodName: "VectorGet", Handler: unaryHandler(remote.MethodVectorGet)},
 		{MethodName: "Search", Handler: unaryHandler(remote.MethodSearch)},
 		{MethodName: "GraphQuery", Handler: unaryHandler(remote.MethodGraphQuery)},
 	},

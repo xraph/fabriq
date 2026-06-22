@@ -79,6 +79,25 @@ func (r remoteVector) Delete(ctx context.Context, entity, id string) error {
 	return ackError(out)
 }
 
+func (r remoteVector) Get(ctx context.Context, entity, id string) ([]float32, error) {
+	in, err := proto.Marshal(&fabriqpb.VectorGetRequest{Entity: entity, Id: id})
+	if err != nil {
+		return nil, err
+	}
+	out, err := r.t.Unary(ctx, MethodVectorGet, in)
+	if err != nil {
+		return nil, err
+	}
+	var reply fabriqpb.VectorGetReply
+	if err := proto.Unmarshal(out, &reply); err != nil {
+		return nil, fmt.Errorf("remote: decode vectorGet reply: %w", err)
+	}
+	if reply.Error != nil {
+		return nil, errorFromProto(reply.Error)
+	}
+	return reply.Embedding, nil
+}
+
 // --- search (lexical channel) ---
 
 type remoteSearch struct{ t Transport }
