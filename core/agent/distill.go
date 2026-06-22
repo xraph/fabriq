@@ -256,6 +256,9 @@ func (d *Distiller) prepareL0(ctx context.Context, entity, id string, vals map[s
 			parents:          d.l0Parents(spec, vals),
 		}
 		args.summaryText = donorText
+		if vec, verr := d.fab.Vector().Get(ctx, DigestEntity, donor.ID); verr == nil {
+			args.reuseVector = vec // skip the embed; nil on miss → re-embed
+		}
 		return args, donorText, true, nil
 	}
 
@@ -335,21 +338,28 @@ type persistArgs struct {
 	summaryText      string
 	contentHash      string
 	reuseSummaryHash string
+	reuseVector      []float32 // non-nil → skip the Embed call; still upserted as this node's vector
 	parents          []string
 	children         []string // ChildIDs for internal (rollup) nodes; nil for L0 leaves
 }
 
 // persistSummary embeds the summary then persists the node (CAS + row + vector +
 // parent back-links). Used by the single-write path (one summary, no batching).
+// When args.reuseVector is non-nil the Embed call is skipped and the donor's
+// vector is used directly (exact-source-dedup fast path).
 func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) error {
-	vecs, err := d.emb.Embed(ctx, []string{args.summaryText})
-	if err != nil {
-		return fmt.Errorf("agent: embed summary %s: %w", args.id, err)
+	vec := args.reuseVector
+	if vec == nil {
+		vecs, err := d.emb.Embed(ctx, []string{args.summaryText})
+		if err != nil {
+			return fmt.Errorf("agent: embed summary %s: %w", args.id, err)
+		}
+		if len(vecs) != 1 {
+			return fmt.Errorf("agent: embed summary %s: got %d vectors for 1 input", args.id, len(vecs))
+		}
+		vec = vecs[0]
 	}
-	if len(vecs) != 1 {
-		return fmt.Errorf("agent: embed summary %s: got %d vectors for 1 input", args.id, len(vecs))
-	}
-	return d.persistSummaryVec(ctx, args, vecs[0])
+	return d.persistSummaryVec(ctx, args, vec)
 }
 
 // persistSummaryVec persists a node whose summary has ALREADY been embedded
