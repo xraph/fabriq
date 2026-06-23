@@ -1,6 +1,6 @@
 ---
 title: Tenancy
-description: The three enforcement layers — stamped transactions plus RLS, structural stamping, and the grove hook backstop — that make every access tenant-scoped.
+description: How fabriq isolates tenants and keeps their data sovereign — stamped transactions plus RLS, structural stamping, and the grove hook backstop — and how a tenant comes into existence.
 ---
 
 Every access in fabriq is tenant-scoped. The tenant identity rides on `context.Context`, is stamped structurally into every engine, and is backstopped by a database-level hook that turns any leak into a loud, counted error. This page covers the three enforcement layers, how the tenant gets onto the context, and the one place row-level security cannot reach.
@@ -17,8 +17,29 @@ ctx, err := tenant.WithTenant(ctx, "acme")
 Every fabric entry point calls `tenant.Require(ctx)` first and fails with `ErrNoTenant` on an unstamped context. The command executor, channel resolution, and the relational adapter all begin with this assertion.
 
 <Callout type="warn">
-An unstamped context is rejected before it reaches any store. `f.Exec`, `f.Subscribe`, `f.Relational().Get`, and `WaitForProjection` all return `fabriq.ErrNoTenant` if no tenant was stamped. There is no implicit "default tenant" — missing tenant context is a hard failure, by design.
+An unstamped context is rejected before it reaches any store. `f.Exec`, `f.Subscribe`, `f.Relational().Get`, and `WaitForProjection` all return `fabriq.ErrNoTenant` if no tenant was stamped. There is no implicit "default tenant" — missing tenant context is a hard failure, by design. A process that serves a single customer pins its one tenant at the boundary; see [Single-tenant-per-instance deployments](#single-tenant-per-instance-deployments).
 </Callout>
+
+## How a tenant is created
+
+There is **no provisioning step** — no `CreateTenant` call, no tenants table, no registration or onboarding flow inside fabriq. A tenant *is* its identifier: a string that satisfies `^[a-zA-Z0-9_-]{1,64}$`. It comes into existence implicitly the first time a stamped context writes data:
+
+```go
+ctx, _ := tenant.WithTenant(ctx, "acme") // validates the id; no I/O, no row written
+f.Exec(ctx, cmd)                          // "acme" now owns aggregate, event, and outbox rows
+```
+
+From that first write, the tenant's rows are isolated by every layer below — RLS, per-engine stamping, the backstop — without any registry to keep in sync. This is deliberate: minting a tenant is free and coordination-free, which is what makes [sharding](/docs/sharding) (route by tenant id, no catalog) and single-tenant-per-instance deployments work without a control plane.
+
+The corollary is that fabriq cannot tell you a tenant id is *unknown* — only that it is malformed (`WithTenant` errors) or unstamped (`Require` returns `ErrNoTenant`). **Authorization is your auth layer's job**: deciding whether a caller may act as a given tenant happens before `WithTenant`, in the middleware that mints the context from a validated claim. fabriq trusts the stamped id and isolates on it; it does not authenticate it.
+
+Because there is no registry, the list of live tenants is **derived, not stored**. `Stores.AllTenants` unions every shard's outbox-known tenants — the same discovery the reconciler and `rebuild --all-tenants` use:
+
+```go
+tenants, err := stores.AllTenants(ctx) // sorted, deduped across shards
+```
+
+A tenant with no data is therefore simply not discoverable, and a tenant is "deleted" by deleting its rows (its id stops appearing) — there is no separate lifecycle record to reap.
 
 ## Layer 1 — structural stamping plus RLS
 
@@ -128,10 +149,65 @@ To enable secondary scoping on your own entity table:
 The Document/CRDT plane does not yet support secondary scope — it is tracked as a future extension. Scope is otherwise supported uniformly across relational, timeseries, search, vector, spatial, and graph planes.
 </Callout>
 
+## Single-tenant-per-instance deployments
+
+A common embedding shape is **one process per customer**: each deployed instance serves exactly one tenant. fabriq still has no implicit default tenant — every entry point requires a stamped context — but a single-tenant instance can satisfy that by pinning its one tenant at the boundary. The pin is an **application seam**, not a fabriq feature: you stamp the same id on every inbound context, and `tenant.Require` is satisfied uniformly.
+
+Because tenant ids are static per instance, use `tenant.MustWithTenant` (the panic-on-invalid variant intended for wiring code) so a malformed id fails loudly at boot rather than on the first query. Cover **both** entry surfaces — request handlers and background work — since both call into the fabric and both hit `tenant.Require`:
+
+```go
+// Instance carries the one tenant this process serves, read from config/secret.
+type Instance struct {
+	Tenant string // must match ^[a-zA-Z0-9_-]{1,64}$
+}
+
+// Request path: stamp every inbound request with the instance tenant.
+func (i Instance) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := tenant.MustWithTenant(r.Context(), i.Tenant)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// Worker / cron / startup path: no request to ride on, so stamp the base ctx.
+func (i Instance) Context(ctx context.Context) context.Context {
+	return tenant.MustWithTenant(ctx, i.Tenant)
+}
+```
+
+That seam is identical regardless of how the database is laid out. The deployment choice is only which Postgres the instance opens and how hard you harden it:
+
+| | Shared database, many instances | One database per instance |
+| --- | --- | --- |
+| `Config.Postgres.DSN` | Same cluster for all instances; they differ only in the pinned tenant | Unique DSN per instance |
+| Role | **Load-bearing non-superuser** — RLS is the only thing separating customers | Non-superuser still advised, but a role slip exposes only that customer's own data |
+| `Config.Postgres.PoolSize` | Small (e.g. 4–8) | Can be larger; the instance owns the database |
+| Connection fan-in | Front with PgBouncer (transaction pooling) | Optional |
+| Blast radius of a stamp bug | Cross-customer exposure | Confined to one customer |
+
+<Callout type="warn">
+In the **shared-database** model RLS is the entire isolation boundary, and it silently does nothing when the connection role is a superuser (or owns the tables without `FORCE`). fabriq declares its policies `FORCE`, so the remaining requirement is operational: the runtime must connect as a **non-superuser** role. Assert it at boot —
+
+```go
+var isSuper bool
+_ = pool.QueryRow(ctx,
+	`SELECT rolsuper FROM pg_roles WHERE rolname = current_user`).Scan(&isSuper)
+if isSuper {
+	log.Fatal("fabriq: refusing to start — RLS is bypassed for superusers")
+}
+```
+
+— and refuse to start otherwise. In the database-per-instance model this is hygiene; in the shared model it is the difference between isolation and a breach.
+</Callout>
+
+PgBouncer's transaction pooling is compatible with fabriq's `SET LOCAL app.tenant_id`: the setting is transaction-scoped and resets at commit, so it never leaks across pooled clients. Because the seam is identical in both topologies, you can start on database-per-instance (simplest, strongest isolation) and migrate selected customers onto a shared cluster later by changing only the DSN and pool size — no application code changes.
+
 ## Where to go next
 
 <Cards>
   <Card title="Commands and Events" href="/docs/commands-and-events">The stamped transaction that the write path runs inside.</Card>
+  <Card title="Sharding" href="/docs/sharding">Pinning a tenant's source of truth to its own Postgres for physical isolation and residency.</Card>
   <Card title="Timeseries plane" href="/docs/timeseries">The bulk telemetry path and its raw-SQL tenant guard.</Card>
+  <Card title="Deployment" href="/docs/deployment">The single image, the migration hook, and the worker scaling model.</Card>
   <Card title="Runbooks" href="/docs/runbooks">Responding to a non-zero tenant-hook-trips counter.</Card>
 </Cards>

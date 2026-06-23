@@ -17,6 +17,15 @@ operator commands — both share one wiring path.
 There is no separate worker binary. See [CLI](/docs/cli) for the
 full command surface.
 
+<Callout type="info">
+This page covers running the standalone `fabriq` image. When fabriq is
+**embedded as a library** (`fabriq.Open` inside a host application), the same
+binary concerns do not apply, but the tenancy contract does — a host that
+serves one customer per process pins its tenant at the boundary. See
+[Single-tenant-per-instance deployments](/docs/tenancy#single-tenant-per-instance-deployments)
+for the seam and the shared-database vs database-per-instance trade-offs.
+</Callout>
+
 ## Releases & published artifacts
 
 Every `vX.Y.Z` git tag publishes three things via GitHub Actions
