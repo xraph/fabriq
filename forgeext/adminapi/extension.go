@@ -1,0 +1,122 @@
+// Package adminapi exposes a read-only admin HTTP surface over the fabriq
+// query facade. It is designed for consumption by the fabriq-admin SPA and
+// any operator tooling that needs a stable, auth-agnostic read API over the
+// data fabric.
+//
+// The extension is auth-agnostic: the host MUST attach authentication and
+// tenant-injection middleware via WithRouteOptions. Fabriq adminapi adds no
+// auth of its own so that the host controls the security boundary entirely.
+//
+// Phase 1 endpoints:
+//
+//	GET {BasePath}/meta            → service metadata + capabilities
+//	GET {BasePath}/entities        → paginated entity list (requires ?type=)
+//	GET {BasePath}/entities/{id}   → single entity by type and id (requires ?type=)
+package adminapi
+
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	"github.com/xraph/forge"
+
+	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/forgeext"
+)
+
+// Version is the adminapi extension version.
+const Version = forgeext.Version
+
+// config holds the adminapi extension options.
+type config struct {
+	BasePath     string
+	RouteOptions []forge.RouteOption
+}
+
+// Option configures the adminapi extension.
+type Option func(*config)
+
+// WithBasePath sets the admin API base path (default "/admin").
+func WithBasePath(p string) Option { return func(c *config) { c.BasePath = p } }
+
+// WithRouteOptions forwards forge route options (auth middleware, OpenAPI
+// decorators) to all admin routes — the extension stays auth-agnostic.
+func WithRouteOptions(opts ...forge.RouteOption) Option {
+	return func(c *config) { c.RouteOptions = append(c.RouteOptions, opts...) }
+}
+
+// Extension exposes the fabriq data fabric as a read-only admin HTTP surface.
+// It depends on the "fabriq" extension and resolves its query facade at Start.
+type Extension struct {
+	forge.BaseExtension
+	parent *forgeext.Extension
+	cfg    config
+
+	mu     sync.Mutex
+	fabric query.Fabric // resolved in Start
+}
+
+// NewAdminAPI builds the adminapi extension wired to a started fabriq Extension.
+// The endpoint is auth-agnostic: the host MUST attach authentication and
+// tenant-injection middleware via WithRouteOptions.
+func NewAdminAPI(fab *forgeext.Extension, opts ...Option) *Extension {
+	cfg := config{BasePath: "/admin"}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.BasePath == "" {
+		cfg.BasePath = "/admin"
+	}
+	return &Extension{parent: fab, cfg: cfg}
+}
+
+// Name implements forge.Extension.
+func (e *Extension) Name() string { return "fabriq-admin-api" }
+
+// Version implements forge.Extension.
+func (e *Extension) Version() string { return Version }
+
+// Description implements forge.Extension.
+func (e *Extension) Description() string {
+	return "fabriq read-only admin HTTP API (meta, entities)"
+}
+
+// Dependencies implements forge.Extension.
+func (e *Extension) Dependencies() []string { return []string{"fabriq"} }
+
+// Register registers the admin controller routes; the fabric resolves lazily in Start.
+func (e *Extension) Register(app forge.App) error {
+	if err := e.BaseExtension.Register(app); err != nil {
+		return err
+	}
+	return app.RegisterController(newAdminController(e))
+}
+
+// Start resolves the fabriq facade from the started fabriq extension.
+func (e *Extension) Start(_ context.Context) error {
+	f := e.parent.Fabriq()
+	if f == nil {
+		return fmt.Errorf("fabriq-admin-api: requires the fabriq facade (started)")
+	}
+	e.mu.Lock()
+	e.fabric = f
+	e.mu.Unlock()
+	e.MarkStarted()
+	return nil
+}
+
+// Stop stops the extension.
+func (e *Extension) Stop(_ context.Context) error { e.MarkStopped(); return nil }
+
+// resolveFabric returns the query.Fabric, or an error if Start has not been called.
+func (e *Extension) resolveFabric() (query.Fabric, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.fabric == nil {
+		return nil, fmt.Errorf("fabriq-admin-api: not started")
+	}
+	return e.fabric, nil
+}
+
+var _ forge.Extension = (*Extension)(nil)
