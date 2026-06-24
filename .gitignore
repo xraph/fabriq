@@ -13,3 +13,4 @@ config.local.yaml
 
 # scratch task reports
 .task-*-report.md
+.admin-demo-report.md
