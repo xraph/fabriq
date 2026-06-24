@@ -79,7 +79,7 @@ func (e *Extension) Version() string { return Version }
 
 // Description implements forge.Extension.
 func (e *Extension) Description() string {
-	return "fabriq read-only admin HTTP API (meta, entities)"
+	return "fabriq admin HTTP API (meta, entities read; plugins CRUD)"
 }
 
 // Dependencies implements forge.Extension.

@@ -18,7 +18,7 @@ const defaultLimit = 50
 const maxLimit = 200
 
 // capabilities lists the static feature set this admin API supports.
-var capabilities = []string{"entities.read"}
+var capabilities = []string{"entities.read", "plugins.crud"}
 
 // metaResponse is the payload for GET {BasePath}/meta.
 type metaResponse struct {
@@ -74,7 +74,11 @@ func (c *adminController) Routes(r forge.Router) error {
 		forge.WithSummary("Get a single entity by type and id (requires ?type=)"),
 		forge.WithTags("Fabriq", "Admin"),
 	}, routeOpts...)
-	return r.GET(base+"/entities/:id", c.handleGet, detailOpts...)
+	if err := r.GET(base+"/entities/:id", c.handleGet, detailOpts...); err != nil {
+		return err
+	}
+
+	return c.registerPluginRoutes(r)
 }
 
 // handleMeta serves GET {BasePath}/meta.
