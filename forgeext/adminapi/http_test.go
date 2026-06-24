@@ -301,6 +301,74 @@ func TestAdminEntities_Get_UnknownType(t *testing.T) {
 	}
 }
 
+// getNoTenant issues a GET to srv at path WITHOUT the X-Tenant-ID header.
+func getNoTenant(t *testing.T, srv *httptest.Server, path string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	return resp
+}
+
+// TestAdminMeta_TenantEchoed verifies that GET /admin/meta returns the resolved
+// tenant id in the "tenant" field when the tenant middleware stamps a tenant.
+func TestAdminMeta_TenantEchoed(t *testing.T) {
+	world := buildTestWorld(t)
+	e := fakeBackedAdminExt(t, world)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := get(t, srv, "/admin/meta")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	var got metaResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Tenant != testTenantID {
+		t.Errorf("tenant = %q, want %q", got.Tenant, testTenantID)
+	}
+}
+
+// TestAdminMeta_NoTenant verifies that without a tenant the "tenant" field is
+// absent (zero-value / omitempty) from the /admin/meta response.
+// The tenant middleware is NOT wired here; routes have no auth requirement.
+func TestAdminMeta_NoTenant(t *testing.T) {
+	world := buildTestWorld(t)
+	// Build extension without the tenant middleware so the no-header request succeeds.
+	e := NewAdminAPI(nil)
+	e.fabric = fabriqtest.NewFabric(world)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := getNoTenant(t, srv, "/admin/meta")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	// Decode into a raw map so we can confirm the key is absent entirely.
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if v, ok := raw["tenant"]; ok {
+		t.Errorf("tenant key must be absent when no tenant in context, got %v", v)
+	}
+}
+
 // TestAdminEntities_List_CustomBasePath verifies WithBasePath works.
 func TestAdminEntities_List_CustomBasePath(t *testing.T) {
 	world := buildTestWorld(t)

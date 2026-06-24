@@ -9,6 +9,7 @@ import (
 
 	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/tenant"
 )
 
 // defaultLimit is the default page size for entity listing.
@@ -25,6 +26,9 @@ type metaResponse struct {
 	Name         string   `json:"name"`
 	Version      string   `json:"version"`
 	Capabilities []string `json:"capabilities"`
+	// Tenant is the resolved tenant id from the request context. It is omitted
+	// when no tenant has been stamped (e.g. unauthenticated or health-check callers).
+	Tenant string `json:"tenant,omitempty"`
 }
 
 // entityItem is a single entity record in the list and detail responses.
@@ -83,11 +87,18 @@ func (c *adminController) Routes(r forge.Router) error {
 
 // handleMeta serves GET {BasePath}/meta.
 func (c *adminController) handleMeta(ctx forge.Context) error {
-	return ctx.JSON(http.StatusOK, metaResponse{
+	resp := metaResponse{
 		Name:         "fabriq-admin-api",
 		Version:      Version,
 		Capabilities: capabilities,
-	})
+	}
+	// Populate the resolved tenant when one is present. ErrNoTenant is the
+	// expected sentinel for unauthenticated or tenant-agnostic callers; all
+	// other errors are also non-fatal here — we simply omit the field.
+	if tid, err := tenant.FromContext(ctx.Request().Context()); err == nil {
+		resp.Tenant = tid
+	}
+	return ctx.JSON(http.StatusOK, resp)
 }
 
 // handleList serves GET {BasePath}/entities.
