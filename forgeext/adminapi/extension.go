@@ -12,6 +12,8 @@
 //	GET {BasePath}/meta            → service metadata + capabilities
 //	GET {BasePath}/entities        → paginated entity list (requires ?type=)
 //	GET {BasePath}/entities/{id}   → single entity by type and id (requires ?type=)
+//	GET {BasePath}/capabilities    → fabric subsystem capabilities (instance-level,
+//	                                 or per-type with ?type=)
 package adminapi
 
 import (
