@@ -11,7 +11,7 @@ import (
 // policy with the soft secondary-scope predicate for a table that has a nullable
 // scope_id column. Tenant stays the hard boundary; scope is soft: an unscoped
 // read (app.scope_id=”) sees all rows in the tenant; a scoped read sees its
-// scope plus shared (NULL-scope) rows. Consumers (kgkit/twinos) reuse this for
+// scope plus shared (NULL-scope) rows. Consumers (e.g. kgkit) reuse this for
 // their own entity tables that adopt scope_id.
 func ScopeAwareTenantPolicy(table string) []string {
 	return []string{

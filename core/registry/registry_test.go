@@ -10,7 +10,7 @@ import (
 	"github.com/xraph/fabriq/core/registry"
 )
 
-// Test models mirror the TWINOS shapes without importing domain/ (core stays
+// Test models mirror the example domain shapes without importing domain/ (core stays
 // domain-agnostic; these live only in this test).
 type testSite struct {
 	grove.BaseModel `grove:"table:sites"`

@@ -1,5 +1,5 @@
 // Package crypto provides field-level encryption for fabriq (e.g. blob_source
-// credentials). It is core-pure: stdlib only, zero TwinOS knowledge.
+// credentials). It is core-pure: stdlib only, zero domain knowledge.
 package crypto
 
 import "errors"

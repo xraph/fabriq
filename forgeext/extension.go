@@ -165,7 +165,7 @@ func (e *Extension) Stores() *fabriq.Stores {
 
 // ResolveGrove best-effort resolves a *grove.DB from the host app's DI
 // container (honouring GroveDatabase), returning nil when none is available.
-// It is the exported seam wrapping extensions (e.g. TwinOS's fabriqkg) use to
+// It is the exported seam wrapping extensions (e.g. a consuming app's fabriqkg) use to
 // borrow the same handle fabriq serves and migrates against.
 func (e *Extension) ResolveGrove() *grove.DB { return e.resolveGrove() }
 

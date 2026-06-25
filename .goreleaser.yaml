@@ -101,7 +101,7 @@ dockers_v2:
     sbom: false
     labels:
       org.opencontainers.image.title: fabriq
-      org.opencontainers.image.description: "TWINOS data fabric: worker + operations CLI"
+      org.opencontainers.image.description: "fabriq data fabric: worker + operations CLI"
       org.opencontainers.image.url: https://github.com/xraph/fabriq
       org.opencontainers.image.source: https://github.com/xraph/fabriq
       org.opencontainers.image.version: "{{ .Version }}"

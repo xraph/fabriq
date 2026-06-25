@@ -23,7 +23,7 @@ import (
 	"github.com/xraph/fabriq/remote"
 )
 
-// testAsset is a minimal static grove model (mirrors the TWINOS shape without
+// testAsset is a minimal static grove model (mirrors the example domain shape without
 // importing domain/). The server decodes the opaque wire payload back into a
 // fresh instance of this type via the registry.
 type testAsset struct {

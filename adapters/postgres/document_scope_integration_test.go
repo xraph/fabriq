@@ -35,7 +35,7 @@ import (
 
 // newDocScopeHarness boots one Postgres container, runs every fabriq migration
 // (which adds scope_id + the scope-aware RLS policy to the CRDT content tables
-// via 0013), registers the TWINOS domain (for the "page" KindDocument entity),
+// via 0013), registers the example domain (for the "page" KindDocument entity),
 // and returns (superuser/owner adapter, app-role adapter). RLS only constrains
 // the NOBYPASSRLS app role, so scoped reads must go through it.
 func newDocScopeHarness(t *testing.T) (*postgres.Adapter, *postgres.Adapter) {

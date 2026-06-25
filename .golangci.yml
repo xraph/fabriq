@@ -65,14 +65,14 @@ linters:
               desc: trove may only be imported under fabriq/adapters
             - pkg: github.com/hashicorp/golang-lru/v2
               desc: golang-lru is an adapter-level cache primitive; use it under fabriq/adapters
-        # core/ is the extractable kernel: no TWINOS knowledge, no app
+        # core/ is the extractable kernel: no domain knowledge, no app
         # framework, no driver packages of any kind.
         core-purity:
           files:
             - "**/core/**"
           deny:
             - pkg: github.com/xraph/fabriq/domain
-              desc: core must contain zero TWINOS-specific knowledge
+              desc: core must contain zero domain-specific knowledge
             - pkg: github.com/xraph/fabriq/adapters
               desc: core defines ports; adapters implement them, never the reverse
             - pkg: github.com/xraph/forge
