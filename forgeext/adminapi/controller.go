@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/xraph/forge"
 
@@ -19,7 +20,7 @@ const defaultLimit = 50
 const maxLimit = 200
 
 // capabilities lists the static feature set this admin API supports.
-var capabilities = []string{"entities.read", "plugins.crud"}
+var capabilities = []string{"entities.read", "entities.write", "schema.read", "plugins.crud"}
 
 // metaResponse is the payload for GET {BasePath}/meta.
 type metaResponse struct {
@@ -73,12 +74,23 @@ func (c *adminController) Routes(r forge.Router) error {
 		return err
 	}
 
+	// Register the schema/types introspection routes before the dynamic
+	// /entities/:id detail route so the static /entities/types segment is not
+	// captured as an :id by routers that match in registration order.
+	if err := c.registerSchemaRoutes(r); err != nil {
+		return err
+	}
+
 	detailOpts := append([]forge.RouteOption{
 		forge.WithName("fabriq.admin.entities.get"),
 		forge.WithSummary("Get a single entity by type and id (requires ?type=)"),
 		forge.WithTags("Fabriq", "Admin"),
 	}, routeOpts...)
 	if err := r.GET(base+"/entities/:id", c.handleGet, detailOpts...); err != nil {
+		return err
+	}
+
+	if err := c.registerEntityWriteRoutes(r); err != nil {
 		return err
 	}
 
@@ -224,14 +236,16 @@ func mapQueryError(err error) error {
 }
 
 // isUnknownEntityErr reports whether err is the "unknown entity" sentinel
-// produced by FakeRelational and the real adapter when the entity type name
-// is not registered.
+// produced by FakeRelational, the real adapter, and the command executor when
+// the entity type name is not registered. The command plane wraps the sentinel
+// with a "command N (verb entity): ..." prefix, so a substring match is used
+// rather than a prefix check to cover both the read (unwrapped) and write
+// (wrapped) paths.
 func isUnknownEntityErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return len(msg) >= 24 && msg[:24] == "fabriq: unknown entity \""
+	return strings.Contains(err.Error(), "fabriq: unknown entity \"")
 }
 
 var _ forge.Controller = (*adminController)(nil)

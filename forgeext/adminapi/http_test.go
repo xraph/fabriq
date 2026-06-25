@@ -107,6 +107,7 @@ func fakeBackedAdminExt(t *testing.T, world *fabriqtest.World, opts ...Option) *
 	}, opts...)
 	e := NewAdminAPI(nil, opts...) // nil parent — bypass forgeext.Extension
 	e.fabric = fabriqtest.NewFabric(world)
+	e.reg = world.Registry // powers the types/schema introspection endpoints
 	return e
 }
 

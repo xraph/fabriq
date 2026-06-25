@@ -22,6 +22,7 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/forgeext"
 )
 
@@ -54,7 +55,8 @@ type Extension struct {
 	cfg    config
 
 	mu     sync.Mutex
-	fabric query.Fabric // resolved in Start
+	fabric query.Fabric       // resolved in Start
+	reg    *registry.Registry // schema registry, resolved in Start (powers types/schema introspection)
 }
 
 // NewAdminAPI builds the adminapi extension wired to a started fabriq Extension.
@@ -101,6 +103,9 @@ func (e *Extension) Start(_ context.Context) error {
 	}
 	e.mu.Lock()
 	e.fabric = f
+	// f is a *fabriq.Fabriq, which exposes the schema registry used by the
+	// types/schema introspection endpoints.
+	e.reg = f.Registry()
 	e.mu.Unlock()
 	e.MarkStarted()
 	return nil
@@ -117,6 +122,18 @@ func (e *Extension) resolveFabric() (query.Fabric, error) {
 		return nil, fmt.Errorf("fabriq-admin-api: not started")
 	}
 	return e.fabric, nil
+}
+
+// resolveRegistry returns the schema registry, or an error if Start has not
+// been called (and no registry was injected for tests). The registry powers
+// the dynamic-entity types and schema introspection endpoints.
+func (e *Extension) resolveRegistry() (*registry.Registry, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.reg == nil {
+		return nil, fmt.Errorf("fabriq-admin-api: registry not available (not started)")
+	}
+	return e.reg, nil
 }
 
 var _ forge.Extension = (*Extension)(nil)
