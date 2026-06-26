@@ -121,6 +121,13 @@ func run() error {
 	if err := reg.Register(adminapi.PluginRemoteSpec()); err != nil {
 		return err
 	}
+	// Register the demo KindDocument entity "page" so (a) the registry-derived
+	// crdt capability flips to true and (b) the postgres document store accepts
+	// "page/<id>" document ids. Its physical table is created via EnsureDynamic
+	// below; the CRDT update/snapshot tables come from fabriq's migrations.
+	if err := reg.Register(pageSpec()); err != nil {
+		return err
+	}
 	// Register the file-plane entities (blob_object + fs_node) so the command
 	// executor knows their shape; their physical tables come from fabriq's
 	// migrations (fs_nodes / blob_objects / blob_cas), already present in the
@@ -176,7 +183,7 @@ func run() error {
 	// 3. EnsureDynamic creates the physical Postgres table for each dynamic
 	//    entity (managed additive DDL). fabriq.Open exposes the primary shard's
 	//    *postgres.Adapter via Stores.Postgres, which carries EnsureDynamic.
-	for _, name := range []string{productEntity, adminapi.PluginRemoteEntityType} {
+	for _, name := range []string{productEntity, adminapi.PluginRemoteEntityType, pageEntity} {
 		ent, ok := reg.Get(name)
 		if !ok {
 			_ = f.Close()
@@ -194,6 +201,7 @@ func run() error {
 	indexedTotal := 0
 	graphNodesTotal, graphEdgesTotal := 0, 0
 	fsFoldersTotal, fsFilesTotal := 0, 0
+	docsSeeded := 0
 	for _, tid := range []string{"acme-corp", "globex"} {
 		if err := seedProducts(ctx, f, tid, seedCount); err != nil {
 			_ = f.Close()
@@ -236,6 +244,22 @@ func run() error {
 		}
 		fsFoldersTotal += ff
 		fsFilesTotal += fl
+
+		// Seed one demo CRDT document ("page/welcome") into the document plane
+		// via the DIRECT document-store write path (Document().ApplyUpdate with
+		// LWW change records), then verify it merges via Snapshot. Idempotent: it
+		// skips when the doc's merged state already carries the seeded title. This
+		// is what makes the adminapi crdt endpoints serve real data and the
+		// capability probe report crdt:true (the "page" KindDocument entity is
+		// registered above).
+		ok, derr := seedDemoDoc(ctx, f, tid)
+		if derr != nil {
+			_ = f.Close()
+			return derr
+		}
+		if ok {
+			docsSeeded++
+		}
 	}
 
 	// The prep fabric has done its job (migrations, DDL, seeding). The serving
@@ -279,7 +303,7 @@ func run() error {
 		return err
 	}
 
-	logStartup(addr, esURL, falkorAddr, blobDSN, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal, fsFoldersTotal, fsFilesTotal)
+	logStartup(addr, esURL, falkorAddr, blobDSN, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal, fsFoldersTotal, fsFilesTotal, docsSeeded)
 	return app.Run()
 }
 
@@ -363,7 +387,7 @@ func (e errMissingEntity) Error() string {
 // logStartup prints the base URL, what got wired (ES url, FalkorDB addr,
 // embedder dims, indexed products, seeded graph nodes/edges), and a couple of
 // sample curl commands.
-func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles int) {
+func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles, docs int) {
 	base := "http://localhost" + addr
 	log.Printf("admin-demo listening on %s (admin base: %s/admin)", addr, base)
 	log.Printf("  seeded tenants: acme-corp, globex (%d products each)", seedCount)
@@ -372,10 +396,13 @@ func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNod
 	log.Printf("  indexed %d products into search + vector across tenants", indexed)
 	log.Printf("  graph: falkordb=%s wired; seeded %d nodes + %d edges across tenants (per-tenant graph tenant_<id>)", falkorAddr, graphNodes, graphEdges)
 	log.Printf("  files: blob=%s bucket=%q CAS=on; seeded %d folders + %d files across tenants", blobDSN, blobBucket, fsFolders, fsFiles)
-	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true graph:true files:true", base)
+	log.Printf("  crdt: document plane (postgres + grove-crdt) wired; seeded %d demo doc(s) (%s/%s) across tenants", docs, pageEntity, demoPageID)
+	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true graph:true files:true crdt:true", base)
 	log.Printf("  try: curl -s '%s/admin/search?type=product&q=Product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
 	log.Printf("  try: curl -s -X POST %s/admin/search/vector -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"type\":\"product\",\"query\":\"widget\",\"k\":5}'", base)
 	log.Printf("  try: curl -s '%s/admin/graph/neighbors?type=product&id=<id>&limit=10' -H 'X-Tenant-ID: acme-corp'", base)
 	log.Printf("  try: curl -s '%s/admin/files' -H 'X-Tenant-ID: acme-corp'  # root folders/files", base)
+	log.Printf("  try: curl -s '%s/admin/crdt/%s/%s' -H 'X-Tenant-ID: acme-corp'  # merged CRDT snapshot", base, pageEntity, demoPageID)
+	log.Printf("  try: curl -s '%s/admin/crdt/%s/%s/updates' -H 'X-Tenant-ID: acme-corp'  # update-log metadata", base, pageEntity, demoPageID)
 	log.Printf("  try: curl -s '%s/admin/entities?type=product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
 }
