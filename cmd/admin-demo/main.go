@@ -49,9 +49,15 @@ import (
 const (
 	defaultDSN  = "postgres://fabriq:fabriq@localhost:5433/fabriq?sslmode=disable"
 	defaultAddr = ":8080"
+	defaultES   = "http://localhost:9200"
 
 	// productEntity is the demo dynamic entity type the SPA browses.
 	productEntity = "product"
+
+	// productSearchIndex is the logical search index base name for products.
+	// The elastic adapter derives the per-tenant alias (fabriq_<tenant>_products)
+	// and the versioned index behind it from this base.
+	productSearchIndex = "products"
 )
 
 func main() {
@@ -71,6 +77,16 @@ func run() error {
 	if addr == "" {
 		addr = defaultAddr
 	}
+	esURL := os.Getenv("ELASTICSEARCH_URL")
+	if esURL == "" {
+		esURL = defaultES
+	}
+
+	// The demo embedder is deterministic and NON-semantic (see embedder.go). It
+	// is used both to embed the seeded rows into pgvector and, via
+	// adminapi.WithEmbedder, to embed free-text vector queries at request time so
+	// the same illustrative space is searched on both sides.
+	embedder := newLocalEmbedder()
 
 	// 1. Build the registry: the demo dynamic "product" entity + the adminapi
 	//    plugin-remote schema. Both are DynamicSchema aggregates, written and
@@ -90,7 +106,15 @@ func run() error {
 	//    assembles the facade AND runs fabriq's migrations (the command store,
 	//    relational ports and projection bookkeeping tables). The Config shape
 	//    mirrors cmd/api-example and cmd/fabriq: Postgres{DSN}.
-	cfg := fabriq.Config{Postgres: fabriq.PostgresConfig{DSN: dsn}}
+	// Elasticsearch.Addrs alone configures the search READ port (fabriq.Open
+	// wires elastic.Open whenever Addrs is non-empty); it does NOT require Redis
+	// or Projections.Search, which only gate the async projection WORKER. The
+	// demo writes the search index directly in the seed step, so the worker is
+	// not enabled. Security is disabled on the dev cluster, so no Username/Password.
+	cfg := fabriq.Config{
+		Postgres:      fabriq.PostgresConfig{DSN: dsn},
+		Elasticsearch: fabriq.ElasticsearchConfig{Addrs: []string{esURL}},
+	}
 	f, stores, err := fabriq.Open(ctx, reg, cfg)
 	if err != nil {
 		return err
@@ -114,11 +138,23 @@ func run() error {
 	// 4. Idempotent seeding: ensure each demo tenant has a populated product
 	//    catalogue (~60 rows) so the SPA's list endpoint pages. Uses the real
 	//    fabric's command executor under a tenant-stamped context.
+	indexedTotal := 0
 	for _, tid := range []string{"acme-corp", "globex"} {
 		if err := seedProducts(ctx, f, tid, seedCount); err != nil {
 			_ = f.Close()
 			return err
 		}
+		// Populate the Search (Elasticsearch) and Vector (pgvector) planes for the
+		// tenant's products via the DIRECT write paths (Search.ApplyMutations and
+		// Vector.Upsert) — no projection worker. Idempotent: ES bulk gates on the
+		// row version (external_gte) and vector upsert is ON CONFLICT DO UPDATE, so
+		// re-running on every startup re-indexes harmlessly.
+		n, ierr := indexProducts(ctx, f, embedder, tid)
+		if ierr != nil {
+			_ = f.Close()
+			return ierr
+		}
+		indexedTotal += n
 	}
 
 	// The prep fabric has done its job (migrations, DDL, seeding). The serving
@@ -152,12 +188,17 @@ func run() error {
 	// stamps the tenant onto every admin route's request context.
 	adminExt := adminapi.NewAdminAPI(fabricExt,
 		adminapi.WithRouteOptions(forge.WithMiddleware(tenantMiddleware)),
+		// The demo embedder backs TEXT-mode vector queries (POST /search/vector
+		// with {query}). Similar-to-entity ({id}) reuses a stored embedding and
+		// needs no embedder. Both query the same illustrative space the seed step
+		// indexed rows into.
+		adminapi.WithEmbedder(embedder),
 	)
 	if err := app.RegisterExtension(adminExt); err != nil {
 		return err
 	}
 
-	logStartup(addr)
+	logStartup(addr, esURL, embedder.Dims(), indexedTotal)
 	return app.Run()
 }
 
@@ -219,6 +260,15 @@ func productSpec() registry.EntitySpec {
 				{Name: "status", Type: registry.ColText},
 			},
 		},
+		// Search marks the product entity as search-indexed: Index is the logical
+		// base name (tenant routing derived) and Fields are the columns included in
+		// the indexed document and validated as multi_match / filter targets. This
+		// is what makes fab.Search() accept "product" and the per-type capability
+		// probe report search:true for the type.
+		Search: registry.SearchSpec{
+			Index:  productSearchIndex,
+			Fields: []string{"name", "sku", "status"},
+		},
 	}
 }
 
@@ -229,13 +279,17 @@ func (e errMissingEntity) Error() string {
 	return "admin-demo: entity " + string(e) + " not found in registry after registration"
 }
 
-// logStartup prints the base URL and a couple of sample curl commands.
-func logStartup(addr string) {
+// logStartup prints the base URL, what got wired (ES url, embedder dims, indexed
+// products), and a couple of sample curl commands.
+func logStartup(addr, esURL string, dims, indexed int) {
 	base := "http://localhost" + addr
 	log.Printf("admin-demo listening on %s (admin base: %s/admin)", addr, base)
 	log.Printf("  seeded tenants: acme-corp, globex (%d products each)", seedCount)
-	log.Printf("  try: curl -s %s/admin/meta -H 'X-Tenant-ID: acme-corp'", base)
+	log.Printf("  search: elasticsearch=%s (index base %q)", esURL, productSearchIndex)
+	log.Printf("  vector: pgvector via local deterministic embedder (dims=%d)", dims)
+	log.Printf("  indexed %d products into search + vector across tenants", indexed)
+	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true", base)
+	log.Printf("  try: curl -s '%s/admin/search?type=product&q=Product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
+	log.Printf("  try: curl -s -X POST %s/admin/search/vector -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"type\":\"product\",\"query\":\"widget\",\"k\":5}'", base)
 	log.Printf("  try: curl -s '%s/admin/entities?type=product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
-	log.Printf("  try: curl -s '%s/admin/entities?type=product&limit=50' -H 'X-Tenant-ID: acme-corp'  # paginate", base)
-	log.Printf("  try: curl -s %s/admin/plugins -H 'X-Tenant-ID: acme-corp'", base)
 }
