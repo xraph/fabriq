@@ -47,9 +47,10 @@ import (
 )
 
 const (
-	defaultDSN  = "postgres://fabriq:fabriq@localhost:5433/fabriq?sslmode=disable"
-	defaultAddr = ":8080"
-	defaultES   = "http://localhost:9200"
+	defaultDSN    = "postgres://fabriq:fabriq@localhost:5433/fabriq?sslmode=disable"
+	defaultAddr   = ":8080"
+	defaultES     = "http://localhost:9200"
+	defaultFalkor = "localhost:6390"
 
 	// productEntity is the demo dynamic entity type the SPA browses.
 	productEntity = "product"
@@ -81,6 +82,10 @@ func run() error {
 	if esURL == "" {
 		esURL = defaultES
 	}
+	falkorAddr := os.Getenv("FALKORDB_ADDR")
+	if falkorAddr == "" {
+		falkorAddr = defaultFalkor
+	}
 
 	// The demo embedder is deterministic and NON-semantic (see embedder.go). It
 	// is used both to embed the seeded rows into pgvector and, via
@@ -111,9 +116,17 @@ func run() error {
 	// or Projections.Search, which only gate the async projection WORKER. The
 	// demo writes the search index directly in the seed step, so the worker is
 	// not enabled. Security is disabled on the dev cluster, so no Username/Password.
+	// FalkorDB.Addr alone configures the graph READ/WRITE QUERIER (fabriq.Open
+	// wires falkordb.Open whenever Addr is non-empty); it does NOT require Redis
+	// or Projections.Graph, which only gate the async projection WORKER. The demo
+	// writes graph nodes/edges directly in the seed step (Graph().ApplyMutations),
+	// so the worker is not enabled. With only Addr set, the live-target resolver
+	// finds no projection_state row and falls back to registry.GraphName(tenant)
+	// (tenant_<id>), so reads and direct writes target the same per-tenant graph.
 	cfg := fabriq.Config{
 		Postgres:      fabriq.PostgresConfig{DSN: dsn},
 		Elasticsearch: fabriq.ElasticsearchConfig{Addrs: []string{esURL}},
+		FalkorDB:      fabriq.FalkorDBConfig{Addr: falkorAddr},
 	}
 	f, stores, err := fabriq.Open(ctx, reg, cfg)
 	if err != nil {
@@ -139,6 +152,7 @@ func run() error {
 	//    catalogue (~60 rows) so the SPA's list endpoint pages. Uses the real
 	//    fabric's command executor under a tenant-stamped context.
 	indexedTotal := 0
+	graphNodesTotal, graphEdgesTotal := 0, 0
 	for _, tid := range []string{"acme-corp", "globex"} {
 		if err := seedProducts(ctx, f, tid, seedCount); err != nil {
 			_ = f.Close()
@@ -155,6 +169,21 @@ func run() error {
 			return ierr
 		}
 		indexedTotal += n
+
+		// Populate the knowledge graph (FalkorDB) for the tenant's products via the
+		// DIRECT write path (Graph().ApplyMutations with target "" → the tenant's
+		// live graph tenant_<id>). It upserts a Category node per category and each
+		// product as a Product node, then links products to categories
+		// (IN_CATEGORY) and a few same-category products to one another (RELATED_TO).
+		// Idempotent: the falkordb dialect renders every upsert as a version-gated
+		// MERGE, so re-running on every startup is safe.
+		gn, ge, gerr := seedGraph(ctx, f, tid)
+		if gerr != nil {
+			_ = f.Close()
+			return gerr
+		}
+		graphNodesTotal += gn
+		graphEdgesTotal += ge
 	}
 
 	// The prep fabric has done its job (migrations, DDL, seeding). The serving
@@ -198,7 +227,7 @@ func run() error {
 		return err
 	}
 
-	logStartup(addr, esURL, embedder.Dims(), indexedTotal)
+	logStartup(addr, esURL, falkorAddr, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal)
 	return app.Run()
 }
 
@@ -279,17 +308,20 @@ func (e errMissingEntity) Error() string {
 	return "admin-demo: entity " + string(e) + " not found in registry after registration"
 }
 
-// logStartup prints the base URL, what got wired (ES url, embedder dims, indexed
-// products), and a couple of sample curl commands.
-func logStartup(addr, esURL string, dims, indexed int) {
+// logStartup prints the base URL, what got wired (ES url, FalkorDB addr,
+// embedder dims, indexed products, seeded graph nodes/edges), and a couple of
+// sample curl commands.
+func logStartup(addr, esURL, falkorAddr string, dims, indexed, graphNodes, graphEdges int) {
 	base := "http://localhost" + addr
 	log.Printf("admin-demo listening on %s (admin base: %s/admin)", addr, base)
 	log.Printf("  seeded tenants: acme-corp, globex (%d products each)", seedCount)
 	log.Printf("  search: elasticsearch=%s (index base %q)", esURL, productSearchIndex)
 	log.Printf("  vector: pgvector via local deterministic embedder (dims=%d)", dims)
 	log.Printf("  indexed %d products into search + vector across tenants", indexed)
-	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true", base)
+	log.Printf("  graph: falkordb=%s wired; seeded %d nodes + %d edges across tenants (per-tenant graph tenant_<id>)", falkorAddr, graphNodes, graphEdges)
+	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true graph:true", base)
 	log.Printf("  try: curl -s '%s/admin/search?type=product&q=Product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
 	log.Printf("  try: curl -s -X POST %s/admin/search/vector -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"type\":\"product\",\"query\":\"widget\",\"k\":5}'", base)
+	log.Printf("  try: curl -s '%s/admin/graph/neighbors?type=product&id=<id>&limit=10' -H 'X-Tenant-ID: acme-corp'", base)
 	log.Printf("  try: curl -s '%s/admin/entities?type=product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
 }
