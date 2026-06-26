@@ -23,6 +23,7 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
@@ -74,6 +75,7 @@ type Extension struct {
 
 	mu     sync.Mutex
 	fabric query.Fabric       // resolved in Start
+	fab    *fabriq.Fabriq     // concrete facade, resolved in Start (powers the file-plane endpoints)
 	reg    *registry.Registry // schema registry, resolved in Start (powers types/schema introspection)
 }
 
@@ -122,7 +124,10 @@ func (e *Extension) Start(_ context.Context) error {
 	e.mu.Lock()
 	e.fabric = f
 	// f is a *fabriq.Fabriq, which exposes the schema registry used by the
-	// types/schema introspection endpoints.
+	// types/schema introspection endpoints AND the file-plane methods
+	// (ListChildren/CreateFolder/CreateFile/GetNode/TrashNode/GetBlob) the
+	// query.Fabric interface does not surface.
+	e.fab = f
 	e.reg = f.Registry()
 	e.mu.Unlock()
 	e.MarkStarted()
@@ -140,6 +145,19 @@ func (e *Extension) resolveFabric() (query.Fabric, error) {
 		return nil, fmt.Errorf("fabriq-admin-api: not started")
 	}
 	return e.fabric, nil
+}
+
+// resolveFabriq returns the concrete *fabriq.Fabriq facade, or an error if
+// Start has not been called. The file-plane endpoints need the concrete type
+// because the fs_node tree and blob byte-plane methods are not part of the
+// narrower query.Fabric interface.
+func (e *Extension) resolveFabriq() (*fabriq.Fabriq, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.fab == nil {
+		return nil, fmt.Errorf("fabriq-admin-api: not started")
+	}
+	return e.fab, nil
 }
 
 // resolveRegistry returns the schema registry, or an error if Start has not

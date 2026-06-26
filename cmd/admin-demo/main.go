@@ -36,6 +36,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/xraph/forge"
 
@@ -59,6 +60,10 @@ const (
 	// The elastic adapter derives the per-tenant alias (fabriq_<tenant>_products)
 	// and the versioned index behind it from this base.
 	productSearchIndex = "products"
+
+	// blobBucket is the default object-store bucket all file-plane bytes live
+	// under (created idempotently by the trove adapter on Open).
+	blobBucket = "fabriq-admin-demo"
 )
 
 func main() {
@@ -87,6 +92,19 @@ func run() error {
 		falkorAddr = defaultFalkor
 	}
 
+	// Blob/file-plane storage DSN. The fabriq blob adapter (adapters/trove)
+	// drives a trove driver selected by the DSN scheme; trove ships file://,
+	// local:// and mem:// drivers. There is NO S3/MinIO trove driver in the
+	// pinned trove release, so the demo uses a persistent FILE-backed plane
+	// (the dashboard browse/upload/download/delete flow is identical regardless
+	// of the byte backend). Override with ADMIN_DEMO_BLOB_DSN to point at any
+	// trove-supported DSN. Default: a file:// root under the OS temp dir so the
+	// tree survives restarts within a boot.
+	blobDSN := os.Getenv("ADMIN_DEMO_BLOB_DSN")
+	if blobDSN == "" {
+		blobDSN = "file://" + filepath.Join(os.TempDir(), "fabriq-admin-demo-blobs")
+	}
+
 	// The demo embedder is deterministic and NON-semantic (see embedder.go). It
 	// is used both to embed the seeded rows into pgvector and, via
 	// adminapi.WithEmbedder, to embed free-text vector queries at request time so
@@ -102,6 +120,15 @@ func run() error {
 	}
 	if err := reg.Register(adminapi.PluginRemoteSpec()); err != nil {
 		return err
+	}
+	// Register the file-plane entities (blob_object + fs_node) so the command
+	// executor knows their shape; their physical tables come from fabriq's
+	// migrations (fs_nodes / blob_objects / blob_cas), already present in the
+	// demo Postgres.
+	for _, spec := range fileSeedSpecs() {
+		if err := reg.Register(spec); err != nil {
+			return err
+		}
 	}
 	if err := reg.Validate(); err != nil {
 		return err
@@ -123,10 +150,23 @@ func run() error {
 	// so the worker is not enabled. With only Addr set, the live-target resolver
 	// finds no projection_state row and falls back to registry.GraphName(tenant)
 	// (tenant_<id>), so reads and direct writes target the same per-tenant graph.
+	// Storage configures the blob/file byte plane. StorageDriver is a trove DSN
+	// (file:// here — see blobDSN above) and DefaultBucket is the bucket all keys
+	// live under (created idempotently by the adapter on Open). EnableCas wires
+	// the content-addressable store the file-plane write path (CreateFile →
+	// PutBlob) and read path (GetBlob) require; it is backed by the blob_cas
+	// ledger in the primary Postgres shard. With both set, f.Blob() is wired so
+	// the adminapi capability probe reports files:true and the file endpoints
+	// serve real bytes.
 	cfg := fabriq.Config{
 		Postgres:      fabriq.PostgresConfig{DSN: dsn},
 		Elasticsearch: fabriq.ElasticsearchConfig{Addrs: []string{esURL}},
 		FalkorDB:      fabriq.FalkorDBConfig{Addr: falkorAddr},
+		Storage: fabriq.StorageConfig{
+			StorageDriver: blobDSN,
+			DefaultBucket: blobBucket,
+			EnableCas:     true,
+		},
 	}
 	f, stores, err := fabriq.Open(ctx, reg, cfg)
 	if err != nil {
@@ -153,6 +193,7 @@ func run() error {
 	//    fabric's command executor under a tenant-stamped context.
 	indexedTotal := 0
 	graphNodesTotal, graphEdgesTotal := 0, 0
+	fsFoldersTotal, fsFilesTotal := 0, 0
 	for _, tid := range []string{"acme-corp", "globex"} {
 		if err := seedProducts(ctx, f, tid, seedCount); err != nil {
 			_ = f.Close()
@@ -184,6 +225,17 @@ func run() error {
 		}
 		graphNodesTotal += gn
 		graphEdgesTotal += ge
+
+		// Seed a small file tree (folders + small text files) into the blob/CAS
+		// plane via the file-plane facade (CreateFolder/CreateFile). Idempotent:
+		// it skips when the tenant's root already carries the seed folders.
+		ff, fl, ferr := seedFileTree(ctx, f, tid)
+		if ferr != nil {
+			_ = f.Close()
+			return ferr
+		}
+		fsFoldersTotal += ff
+		fsFilesTotal += fl
 	}
 
 	// The prep fabric has done its job (migrations, DDL, seeding). The serving
@@ -227,7 +279,7 @@ func run() error {
 		return err
 	}
 
-	logStartup(addr, esURL, falkorAddr, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal)
+	logStartup(addr, esURL, falkorAddr, blobDSN, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal, fsFoldersTotal, fsFilesTotal)
 	return app.Run()
 }
 
@@ -311,7 +363,7 @@ func (e errMissingEntity) Error() string {
 // logStartup prints the base URL, what got wired (ES url, FalkorDB addr,
 // embedder dims, indexed products, seeded graph nodes/edges), and a couple of
 // sample curl commands.
-func logStartup(addr, esURL, falkorAddr string, dims, indexed, graphNodes, graphEdges int) {
+func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles int) {
 	base := "http://localhost" + addr
 	log.Printf("admin-demo listening on %s (admin base: %s/admin)", addr, base)
 	log.Printf("  seeded tenants: acme-corp, globex (%d products each)", seedCount)
@@ -319,9 +371,11 @@ func logStartup(addr, esURL, falkorAddr string, dims, indexed, graphNodes, graph
 	log.Printf("  vector: pgvector via local deterministic embedder (dims=%d)", dims)
 	log.Printf("  indexed %d products into search + vector across tenants", indexed)
 	log.Printf("  graph: falkordb=%s wired; seeded %d nodes + %d edges across tenants (per-tenant graph tenant_<id>)", falkorAddr, graphNodes, graphEdges)
-	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true graph:true", base)
+	log.Printf("  files: blob=%s bucket=%q CAS=on; seeded %d folders + %d files across tenants", blobDSN, blobBucket, fsFolders, fsFiles)
+	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true graph:true files:true", base)
 	log.Printf("  try: curl -s '%s/admin/search?type=product&q=Product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
 	log.Printf("  try: curl -s -X POST %s/admin/search/vector -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"type\":\"product\",\"query\":\"widget\",\"k\":5}'", base)
 	log.Printf("  try: curl -s '%s/admin/graph/neighbors?type=product&id=<id>&limit=10' -H 'X-Tenant-ID: acme-corp'", base)
+	log.Printf("  try: curl -s '%s/admin/files' -H 'X-Tenant-ID: acme-corp'  # root folders/files", base)
 	log.Printf("  try: curl -s '%s/admin/entities?type=product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
 }
