@@ -23,6 +23,7 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/forgeext"
@@ -35,6 +36,12 @@ const Version = forgeext.Version
 type config struct {
 	BasePath     string
 	RouteOptions []forge.RouteOption
+	// Embedder turns query text into a vector for the text-mode vector search
+	// endpoint (POST {BasePath}/search/vector with a {query} body). It is
+	// optional: when nil, the text mode returns 501 and only the
+	// similar-to-entity mode ({id} body) is available. The similar-to-entity
+	// mode needs no embedder because it reuses a stored embedding.
+	Embedder agent.Embedder
 }
 
 // Option configures the adminapi extension.
@@ -47,6 +54,15 @@ func WithBasePath(p string) Option { return func(c *config) { c.BasePath = p } }
 // decorators) to all admin routes — the extension stays auth-agnostic.
 func WithRouteOptions(opts ...forge.RouteOption) Option {
 	return func(c *config) { c.RouteOptions = append(c.RouteOptions, opts...) }
+}
+
+// WithEmbedder supplies the embedding model used by the text-mode vector
+// search endpoint (POST {BasePath}/search/vector with a {query} body). Fabriq
+// stays model-agnostic: the host provides the implementation (Anthropic,
+// OpenAI, a local model). When unset, text-mode vector search returns 501 and
+// callers must use the similar-to-entity mode ({id} body) instead.
+func WithEmbedder(e agent.Embedder) Option {
+	return func(c *config) { c.Embedder = e }
 }
 
 // Extension exposes the fabriq data fabric as a read-only admin HTTP surface.
