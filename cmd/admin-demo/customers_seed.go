@@ -71,6 +71,15 @@ func customerSpec() registry.EntitySpec {
 			Sortable:   []string{"name", "email", "tier"},
 			MaxWindow:  500,
 		},
+		// Distill opts customers into context distillation alongside products:
+		// name+email+tier+country forms the L0 source text, and "tier" is the scope
+		// that groups customers into L1 scope-backbone digest nodes (one per tier).
+		// The tenant root (L2) then rolls up BOTH the product-status scopes and the
+		// customer-tier scopes, so the digest tree spans two source entity types.
+		Distill: &registry.DistillSpec{
+			SourceFields: []string{"name", "email", "tier", "country"},
+			Scopes:       []string{"tier"},
+		},
 	}
 }
 

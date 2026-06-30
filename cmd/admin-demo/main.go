@@ -41,6 +41,7 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq"
+	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/forgeext"
@@ -166,6 +167,14 @@ func run() error {
 			return err
 		}
 	}
+	// Register the typed digest_node entity so (a) the context-distillation tree
+	// can be built and read (the Distiller writes nodes; the agent Toolkit's
+	// Map/Digest read them) and (b) the adminapi distill capability flips to true.
+	// Its physical table (digest_nodes) comes from fabriq's migrations (0022-0024),
+	// run by fabriq.Open — no EnsureDynamic needed (it is a typed grove model).
+	if err := reg.Register(digestNodeSpec()); err != nil {
+		return err
+	}
 	if err := reg.Validate(); err != nil {
 		return err
 	}
@@ -238,6 +247,7 @@ func run() error {
 	fsFoldersTotal, fsFilesTotal := 0, 0
 	docsSeeded := 0
 	placesTotal := 0
+	distillNodesTotal := 0
 	for _, tid := range []string{"acme-corp", "globex"} {
 		if err := seedProducts(ctx, f, tid, seedCount); err != nil {
 			_ = f.Close()
@@ -367,6 +377,21 @@ func run() error {
 			return exderr
 		}
 		docsSeeded += extra
+
+		// Build the context-distillation Merkle tree from the seeded product +
+		// customer rows: L0 leaves per row, L1 scope nodes (per product status /
+		// customer tier), and the L2 tenant root. Uses the demo embedder + a
+		// DETERMINISTIC stub summarizer (admin-demo has NO LLM — see
+		// distill_seed.go) + the CAS. Idempotent: skipped when the tenant root
+		// already exists. This is what makes /admin/distill/map serve a real tree.
+		built, drep, dderr := seedDistillTree(ctx, f, reg, embedder, stores.CAS, tid)
+		if dderr != nil {
+			_ = f.Close()
+			return dderr
+		}
+		if built {
+			distillNodesTotal += drep.Built
+		}
 	}
 
 	// The prep fabric has done its job (migrations, DDL, seeding). The serving
@@ -417,7 +442,7 @@ func run() error {
 		return err
 	}
 
-	logStartup(addr, esURL, falkorAddr, blobDSN, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal, fsFoldersTotal, fsFilesTotal, docsSeeded, placesTotal)
+	logStartup(addr, esURL, falkorAddr, blobDSN, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal, fsFoldersTotal, fsFilesTotal, docsSeeded, placesTotal, distillNodesTotal)
 	return app.Run()
 }
 
@@ -504,6 +529,17 @@ func productSpec() registry.EntitySpec {
 			Sortable:   []string{"name", "sku", "price"},
 			MaxWindow:  500,
 		},
+		// Distill opts the product entity into context distillation: each row's
+		// name+sku+status forms the L0 source text, and "status" is the scope name
+		// that groups products into L1 scope-backbone digest nodes (one per status
+		// value). This is what makes the seed step build a real digest tree the
+		// adminapi /admin/distill/map endpoint serves. The summarizer is supplied by
+		// the demo (a deterministic stub — admin-demo has no LLM); see
+		// distill_seed.go.
+		Distill: &registry.DistillSpec{
+			SourceFields: []string{"name", "sku", "status"},
+			Scopes:       []string{"status"},
+		},
 	}
 }
 
@@ -517,7 +553,7 @@ func (e errMissingEntity) Error() string {
 // logStartup prints the base URL, what got wired (ES url, FalkorDB addr,
 // embedder dims, indexed products, seeded graph nodes/edges), and a couple of
 // sample curl commands.
-func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles, docs, places int) {
+func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles, docs, places, distillNodes int) {
 	base := "http://localhost" + addr
 	log.Printf("admin-demo listening on %s (admin base: %s/admin)", addr, base)
 	log.Printf("  seeded tenants: acme-corp, globex (%d products each)", seedCount)
@@ -528,7 +564,8 @@ func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNod
 	log.Printf("  files: blob=%s bucket=%q CAS=on; seeded %d folders + %d files across tenants", blobDSN, blobBucket, fsFolders, fsFiles)
 	log.Printf("  crdt: document plane (postgres + grove-crdt) wired; seeded %d demo doc(s) (%s/%s) across tenants", docs, pageEntity, demoPageID)
 	log.Printf("  spatial: postgis (fabriq_geometries) wired; seeded %d place point(s) across tenants (acme-corp: SF+NYC, globex: London/Berlin/Tokyo)", places)
-	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true graph:true files:true crdt:true", base)
+	log.Printf("  distill: context-distillation tree (digest_node) built from product+customer rows via demo embedder + stub summarizer + CAS; %d L0 leaves across tenants", distillNodes)
+	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true graph:true files:true crdt:true distill:true", base)
 	log.Printf("  try: curl -s '%s/admin/search?type=product&q=Product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
 	log.Printf("  try: curl -s -X POST %s/admin/search/vector -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"type\":\"product\",\"query\":\"widget\",\"k\":5}'", base)
 	log.Printf("  try: curl -s '%s/admin/graph/neighbors?type=product&id=<id>&limit=10' -H 'X-Tenant-ID: acme-corp'", base)
@@ -537,4 +574,6 @@ func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNod
 	log.Printf("  try: curl -s '%s/admin/crdt/%s/%s/updates' -H 'X-Tenant-ID: acme-corp'  # update-log metadata", base, pageEntity, demoPageID)
 	log.Printf("  try: curl -s '%s/admin/entities?type=product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
 	log.Printf("  try: curl -s -X POST %s/admin/spatial/within -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"entity\":\"place\",\"lng\":-122.42,\"lat\":37.77,\"radiusM\":50000,\"limit\":10}'  # places near SF", base)
+	log.Printf("  try: curl -s '%s/admin/distill/map' -H 'X-Tenant-ID: acme-corp'  # context-distillation tree outline", base)
+	log.Printf("  try: curl -s '%s/admin/distill/node/%s' -H 'X-Tenant-ID: acme-corp'  # tenant root + L1 children", base, agent.TenantRootID())
 }

@@ -25,6 +25,7 @@ import (
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/agent"
+	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/forgeext"
@@ -77,6 +78,7 @@ type Extension struct {
 	fabric query.Fabric       // resolved in Start
 	fab    *fabriq.Fabriq     // concrete facade, resolved in Start (powers the file-plane endpoints)
 	reg    *registry.Registry // schema registry, resolved in Start (powers types/schema introspection)
+	cas    blob.CAS           // content-addressed store, resolved in Start; nil when EnableCas is off (powers digest summaries)
 }
 
 // NewAdminAPI builds the adminapi extension wired to a started fabriq Extension.
@@ -129,6 +131,13 @@ func (e *Extension) Start(_ context.Context) error {
 	// query.Fabric interface does not surface.
 	e.fab = f
 	e.reg = f.Registry()
+	// Resolve the content-addressed store from the parent's opened adapters. It
+	// backs the digest-summary text in the distillation read endpoints; nil when
+	// the host did not enable the CAS (Storage.EnableCas false), in which case
+	// the distill endpoints degrade to empty summaries (hashes only).
+	if stores := e.parent.Stores(); stores != nil && stores.CAS != nil {
+		e.cas = stores.CAS
+	}
 	e.mu.Unlock()
 	e.MarkStarted()
 	return nil
@@ -170,6 +179,16 @@ func (e *Extension) resolveRegistry() (*registry.Registry, error) {
 		return nil, fmt.Errorf("fabriq-admin-api: registry not available (not started)")
 	}
 	return e.reg, nil
+}
+
+// resolveCAS returns the content-addressed store, or nil when the host did not
+// enable the CAS. It is never an error: the distillation read endpoints treat a
+// nil CAS as graceful degradation (digest summaries come back empty, hashes are
+// still served), matching agent.Toolkit's nil-CAS behaviour.
+func (e *Extension) resolveCAS() blob.CAS {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cas
 }
 
 var _ forge.Extension = (*Extension)(nil)

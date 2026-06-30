@@ -7,6 +7,7 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/query"
@@ -39,6 +40,12 @@ import (
 //	            KindDocument or a CRDTSpec is declared) — a deterministic,
 //	            side-effect-free signal. This becomes a true port probe once the
 //	            document plane ships a non-deferred adapter.
+//	distill     REGISTRY-DERIVED (not probed). The context-distillation tree
+//	            lives in the digest_node entity; the plane is "present" exactly
+//	            when that entity is registered. Like crdt, this is a
+//	            deterministic, side-effect-free registry signal (a Toolkit read
+//	            against an unregistered digest_node is a no-op), so no port probe
+//	            is needed.
 type instanceCapabilities struct {
 	Relational bool `json:"relational"`
 	Graph      bool `json:"graph"`
@@ -47,6 +54,7 @@ type instanceCapabilities struct {
 	Search     bool `json:"search"`
 	CRDT       bool `json:"crdt"`
 	Files      bool `json:"files"`
+	Distill    bool `json:"distill"`
 }
 
 // instanceCapabilitiesResponse is the payload for GET {BasePath}/capabilities
@@ -152,6 +160,7 @@ func (c *adminController) handleInstanceCapabilities(ctx forge.Context) error {
 		Search:     searchConfigured(probeCtx, fab.Search()),
 		Files:      blobConfigured(probeCtx, fab.Blob()),
 		CRDT:       registryHasDocumentPlane(reg),
+		Distill:    registryHasDistillPlane(reg),
 	}
 
 	return ctx.JSON(http.StatusOK, instanceCapabilitiesResponse{Capabilities: caps})
@@ -231,4 +240,14 @@ func registryHasDocumentPlane(reg *registry.Registry) bool {
 		}
 	}
 	return false
+}
+
+// registryHasDistillPlane reports whether the context-distillation plane is
+// configured. The distillation Merkle tree is stored in the digest_node entity,
+// so the plane is present exactly when that entity is registered. Used for the
+// instance-level distill flag (no port probe — the digest tree is read through
+// the relational plane, which is always present).
+func registryHasDistillPlane(reg *registry.Registry) bool {
+	_, ok := reg.Get(agent.DigestEntity)
+	return ok
 }

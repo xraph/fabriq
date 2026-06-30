@@ -20,7 +20,7 @@ const defaultLimit = 50
 const maxLimit = 200
 
 // capabilities lists the static feature set this admin API supports.
-var capabilities = []string{"entities.read", "entities.write", "schema.read", "plugins.crud", "capabilities.read", "search.read", "vector.read", "spatial.read", "graph.read", "files.read", "files.write", "crdt.read", "live.read"}
+var capabilities = []string{"entities.read", "entities.write", "schema.read", "plugins.crud", "capabilities.read", "search.read", "vector.read", "spatial.read", "graph.read", "files.read", "files.write", "crdt.read", "live.read", "distill.read"}
 
 // metaResponse is the payload for GET {BasePath}/meta.
 type metaResponse struct {
@@ -119,6 +119,10 @@ func (c *adminController) Routes(r forge.Router) error {
 	}
 
 	if err := c.registerLiveRoutes(r); err != nil {
+		return err
+	}
+
+	if err := c.registerDistillRoutes(r); err != nil {
 		return err
 	}
 
