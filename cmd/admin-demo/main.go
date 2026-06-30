@@ -127,6 +127,12 @@ func run() error {
 	if err := reg.Register(orderSpec()); err != nil {
 		return err
 	}
+	// The demo dynamic "place" entity carries geometry: each row is relational
+	// (name/category/city) AND a point in the spatial plane (fabriq_geometries),
+	// seeded via Spatial().Upsert below so the SPA can run radius queries.
+	if err := reg.Register(placeSpec()); err != nil {
+		return err
+	}
 	if err := reg.Register(adminapi.PluginRemoteSpec()); err != nil {
 		return err
 	}
@@ -197,7 +203,7 @@ func run() error {
 	// 3. EnsureDynamic creates the physical Postgres table for each dynamic
 	//    entity (managed additive DDL). fabriq.Open exposes the primary shard's
 	//    *postgres.Adapter via Stores.Postgres, which carries EnsureDynamic.
-	for _, name := range []string{productEntity, customerEntity, orderEntity, adminapi.PluginRemoteEntityType, pageEntity, noteEntity} {
+	for _, name := range []string{productEntity, customerEntity, orderEntity, placeEntity, adminapi.PluginRemoteEntityType, pageEntity, noteEntity} {
 		ent, ok := reg.Get(name)
 		if !ok {
 			_ = f.Close()
@@ -216,6 +222,7 @@ func run() error {
 	graphNodesTotal, graphEdgesTotal := 0, 0
 	fsFoldersTotal, fsFilesTotal := 0, 0
 	docsSeeded := 0
+	placesTotal := 0
 	for _, tid := range []string{"acme-corp", "globex"} {
 		if err := seedProducts(ctx, f, tid, seedCount); err != nil {
 			_ = f.Close()
@@ -233,6 +240,17 @@ func run() error {
 			_ = f.Close()
 			return err
 		}
+		// Seed the place entity + its geometry into the spatial plane
+		// (fabriq_geometries via Spatial().Upsert, SRID 4326). Count-guarded, so
+		// re-running on every startup is safe. Each tenant uses DIFFERENT cities
+		// (acme-corp: SF + NYC; globex: London/Berlin/Tokyo) so tenant isolation
+		// is visible in a radius query.
+		pn, perr := seedPlaces(ctx, f, tid)
+		if perr != nil {
+			_ = f.Close()
+			return perr
+		}
+		placesTotal += pn
 		// Populate the Search (Elasticsearch) and Vector (pgvector) planes for the
 		// tenant's products via the DIRECT write paths (Search.ApplyMutations and
 		// Vector.Upsert) — no projection worker. Idempotent: ES bulk gates on the
@@ -377,7 +395,7 @@ func run() error {
 		return err
 	}
 
-	logStartup(addr, esURL, falkorAddr, blobDSN, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal, fsFoldersTotal, fsFilesTotal, docsSeeded)
+	logStartup(addr, esURL, falkorAddr, blobDSN, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal, fsFoldersTotal, fsFilesTotal, docsSeeded, placesTotal)
 	return app.Run()
 }
 
@@ -461,7 +479,7 @@ func (e errMissingEntity) Error() string {
 // logStartup prints the base URL, what got wired (ES url, FalkorDB addr,
 // embedder dims, indexed products, seeded graph nodes/edges), and a couple of
 // sample curl commands.
-func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles, docs int) {
+func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles, docs, places int) {
 	base := "http://localhost" + addr
 	log.Printf("admin-demo listening on %s (admin base: %s/admin)", addr, base)
 	log.Printf("  seeded tenants: acme-corp, globex (%d products each)", seedCount)
@@ -471,6 +489,7 @@ func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNod
 	log.Printf("  graph: falkordb=%s wired; seeded %d nodes + %d edges across tenants (per-tenant graph tenant_<id>)", falkorAddr, graphNodes, graphEdges)
 	log.Printf("  files: blob=%s bucket=%q CAS=on; seeded %d folders + %d files across tenants", blobDSN, blobBucket, fsFolders, fsFiles)
 	log.Printf("  crdt: document plane (postgres + grove-crdt) wired; seeded %d demo doc(s) (%s/%s) across tenants", docs, pageEntity, demoPageID)
+	log.Printf("  spatial: postgis (fabriq_geometries) wired; seeded %d place point(s) across tenants (acme-corp: SF+NYC, globex: London/Berlin/Tokyo)", places)
 	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true graph:true files:true crdt:true", base)
 	log.Printf("  try: curl -s '%s/admin/search?type=product&q=Product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
 	log.Printf("  try: curl -s -X POST %s/admin/search/vector -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"type\":\"product\",\"query\":\"widget\",\"k\":5}'", base)
@@ -479,4 +498,5 @@ func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNod
 	log.Printf("  try: curl -s '%s/admin/crdt/%s/%s' -H 'X-Tenant-ID: acme-corp'  # merged CRDT snapshot", base, pageEntity, demoPageID)
 	log.Printf("  try: curl -s '%s/admin/crdt/%s/%s/updates' -H 'X-Tenant-ID: acme-corp'  # update-log metadata", base, pageEntity, demoPageID)
 	log.Printf("  try: curl -s '%s/admin/entities?type=product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
+	log.Printf("  try: curl -s -X POST %s/admin/spatial/within -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"entity\":\"place\",\"lng\":-122.42,\"lat\":37.77,\"radiusM\":50000,\"limit\":10}'  # places near SF", base)
 }
