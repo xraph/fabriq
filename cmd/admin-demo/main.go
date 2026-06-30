@@ -118,6 +118,15 @@ func run() error {
 	if err := reg.Register(productSpec()); err != nil {
 		return err
 	}
+	// The richer demo dynamic entities: customer + order. Both are DynamicSchema
+	// aggregates like product, search-indexed, and seeded/indexed/graph-wired by
+	// the same direct write paths in the tenant loop below.
+	if err := reg.Register(customerSpec()); err != nil {
+		return err
+	}
+	if err := reg.Register(orderSpec()); err != nil {
+		return err
+	}
 	if err := reg.Register(adminapi.PluginRemoteSpec()); err != nil {
 		return err
 	}
@@ -126,6 +135,11 @@ func run() error {
 	// "page/<id>" document ids. Its physical table is created via EnsureDynamic
 	// below; the CRDT update/snapshot tables come from fabriq's migrations.
 	if err := reg.Register(pageSpec()); err != nil {
+		return err
+	}
+	// Register a second KindDocument entity "note" so the Documents viewer has
+	// more than one doc type (page + note) to browse.
+	if err := reg.Register(noteSpec()); err != nil {
 		return err
 	}
 	// Register the file-plane entities (blob_object + fs_node) so the command
@@ -183,7 +197,7 @@ func run() error {
 	// 3. EnsureDynamic creates the physical Postgres table for each dynamic
 	//    entity (managed additive DDL). fabriq.Open exposes the primary shard's
 	//    *postgres.Adapter via Stores.Postgres, which carries EnsureDynamic.
-	for _, name := range []string{productEntity, adminapi.PluginRemoteEntityType, pageEntity} {
+	for _, name := range []string{productEntity, customerEntity, orderEntity, adminapi.PluginRemoteEntityType, pageEntity, noteEntity} {
 		ent, ok := reg.Get(name)
 		if !ok {
 			_ = f.Close()
@@ -207,6 +221,18 @@ func run() error {
 			_ = f.Close()
 			return err
 		}
+		// Customers depend only on the tenant; orders reference real seeded
+		// customer + product ids, so they must seed AFTER both products and
+		// customers exist. Both mirror seedProducts (count-guarded, command
+		// executor under tenant context).
+		if err := seedCustomers(ctx, f, tid, customerCount); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if err := seedOrders(ctx, f, tid, orderCount); err != nil {
+			_ = f.Close()
+			return err
+		}
 		// Populate the Search (Elasticsearch) and Vector (pgvector) planes for the
 		// tenant's products via the DIRECT write paths (Search.ApplyMutations and
 		// Vector.Upsert) — no projection worker. Idempotent: ES bulk gates on the
@@ -218,6 +244,20 @@ func run() error {
 			return ierr
 		}
 		indexedTotal += n
+		// Index customers + orders into Search + Vector the same way, so
+		// /search?type=customer and semantic queries work for the new types too.
+		cn, cierr := indexCustomers(ctx, f, embedder, tid)
+		if cierr != nil {
+			_ = f.Close()
+			return cierr
+		}
+		indexedTotal += cn
+		on, oierr := indexOrders(ctx, f, embedder, tid)
+		if oierr != nil {
+			_ = f.Close()
+			return oierr
+		}
+		indexedTotal += on
 
 		// Populate the knowledge graph (FalkorDB) for the tenant's products via the
 		// DIRECT write path (Graph().ApplyMutations with target "" → the tenant's
@@ -234,6 +274,20 @@ func run() error {
 		graphNodesTotal += gn
 		graphEdgesTotal += ge
 
+		// Add the e-commerce cross-type layer on top of the product/category
+		// graph: Customer + Order + Country nodes and PLACED / CONTAINS / LIVES_IN
+		// edges. CONTAINS points at the same Product nodes seedGraph created, so
+		// the two layers are connected and traverse/neighbors from a customer
+		// reach products (and their categories). Same direct, version-gated MERGE
+		// write path, so re-running on every startup is safe.
+		egn, ege, egerr := seedEcommerceGraph(ctx, f, tid)
+		if egerr != nil {
+			_ = f.Close()
+			return egerr
+		}
+		graphNodesTotal += egn
+		graphEdgesTotal += ege
+
 		// Seed a small file tree (folders + small text files) into the blob/CAS
 		// plane via the file-plane facade (CreateFolder/CreateFile). Idempotent:
 		// it skips when the tenant's root already carries the seed folders.
@@ -244,6 +298,16 @@ func run() error {
 		}
 		fsFoldersTotal += ff
 		fsFilesTotal += fl
+
+		// Add a few more real-content files (docs/changelog.md, docs/api-notes.txt,
+		// images/diagram.txt) under the folders seedFileTree created. Per-file
+		// existence check, so it composes with the original seed and is idempotent.
+		ef, eferr := seedExtraFiles(ctx, f, tid)
+		if eferr != nil {
+			_ = f.Close()
+			return eferr
+		}
+		fsFilesTotal += ef
 
 		// Seed one demo CRDT document ("page/welcome") into the document plane
 		// via the DIRECT document-store write path (Document().ApplyUpdate with
@@ -260,6 +324,16 @@ func run() error {
 		if ok {
 			docsSeeded++
 		}
+
+		// Seed two more CRDT docs (page/about + note/roadmap) so the Documents
+		// viewer has multiple docs across two doc types. Same direct ApplyUpdate
+		// write path, Snapshot-probed for idempotency.
+		extra, exderr := seedExtraCRDTDocs(ctx, f, tid)
+		if exderr != nil {
+			_ = f.Close()
+			return exderr
+		}
+		docsSeeded += extra
 	}
 
 	// The prep fabric has done its job (migrations, DDL, seeding). The serving
