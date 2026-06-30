@@ -62,6 +62,15 @@ func customerSpec() registry.EntitySpec {
 			Index:  customerSearchIndex,
 			Fields: []string{"name", "email", "tier", "country"},
 		},
+		// ByTenant is required for the live-query feed (changes:{tenant}:tenant:{tenant}).
+		Subscribe: []registry.Scope{registry.ByTenant, registry.ByID},
+		// Live opts the customer entity into the live query engine (adminapi
+		// POST /admin/live). Requires Redis (the change feed).
+		Live: &registry.LiveSpec{
+			Filterable: []string{"name", "email", "tier", "country"},
+			Sortable:   []string{"name", "email", "tier"},
+			MaxWindow:  500,
+		},
 	}
 }
 
@@ -90,6 +99,15 @@ func orderSpec() registry.EntitySpec {
 		Search: registry.SearchSpec{
 			Index:  orderSearchIndex,
 			Fields: []string{"status", "customer_id", "product_id"},
+		},
+		// ByTenant is required for the live-query feed (changes:{tenant}:tenant:{tenant}).
+		Subscribe: []registry.Scope{registry.ByTenant, registry.ByID},
+		// Live opts the order entity into the live query engine (adminapi
+		// POST /admin/live). Requires Redis (the change feed).
+		Live: &registry.LiveSpec{
+			Filterable: []string{"status", "customer_id", "product_id", "total"},
+			Sortable:   []string{"status", "total"},
+			MaxWindow:  500,
 		},
 	}
 }

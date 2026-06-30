@@ -52,6 +52,7 @@ const (
 	defaultAddr   = ":8080"
 	defaultES     = "http://localhost:9200"
 	defaultFalkor = "localhost:6390"
+	defaultRedis  = "localhost:6379"
 
 	// productEntity is the demo dynamic entity type the SPA browses.
 	productEntity = "product"
@@ -90,6 +91,14 @@ func run() error {
 	falkorAddr := os.Getenv("FALKORDB_ADDR")
 	if falkorAddr == "" {
 		falkorAddr = defaultFalkor
+	}
+	// Redis backs the change-feed plane: it is what makes the live-query engine
+	// (liveEngine in fabriq.Open) non-nil AND drives the outbox→redis relay (the
+	// worker) that PUBLISHES deltas on every committed write. Without it, the
+	// adminapi POST /admin/live endpoint degrades to 501. Override with REDIS_ADDR.
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = defaultRedis
 	}
 
 	// Blob/file-plane storage DSN. The fabriq blob adapter (adapters/trove)
@@ -189,6 +198,12 @@ func run() error {
 		Postgres:      fabriq.PostgresConfig{DSN: dsn},
 		Elasticsearch: fabriq.ElasticsearchConfig{Addrs: []string{esURL}},
 		FalkorDB:      fabriq.FalkorDBConfig{Addr: falkorAddr},
+		// Redis wires the change-feed plane: the live-query engine (fabriq.Open
+		// builds liveEngine only when Redis + the relational oracle are present)
+		// and the by-tenant delta channel the adminapi POST /admin/live endpoint
+		// tails. The outbox→redis relay that PUBLISHES those deltas runs in the
+		// forgeext worker (enabled via WithWorker below).
+		Redis: fabriq.RedisConfig{Addr: redisAddr},
 		Storage: fabriq.StorageConfig{
 			StorageDriver: blobDSN,
 			DefaultBucket: blobBucket,
@@ -362,8 +377,9 @@ func run() error {
 	}
 
 	// 5. Build the forge app and register the extensions. forgeext.Start opens
-	//    its OWN fabriq facade (same DSN) and adminapi resolves that facade as
-	//    its parent. No worker is enabled, so no Redis is required.
+	//    its OWN fabriq facade (same DSN + Redis) and adminapi resolves that
+	//    facade as its parent. The worker is ENABLED (WithWorker below) so the
+	//    outbox→redis relay publishes deltas that drive the live-query SSE plane.
 	app := forge.NewApp(forge.AppConfig{
 		Name:        "fabriq-admin-demo",
 		Version:     "0.1.0",
@@ -375,7 +391,13 @@ func run() error {
 	// routing, so the preflight never needs a registered OPTIONS route.
 	app.Router().UseGlobal(corsMiddleware)
 
-	fabricExt := forgeext.New(reg, forgeext.WithConfig(cfg))
+	// WithWorker enables the leader-elected background worker. Its outbox relay
+	// (postgres.NewRelay) is the PRODUCER side of the live-query change feed: it
+	// tails each shard's command outbox and republishes committed envelopes onto
+	// the by-tenant Redis channel the live engine consumes. Without it, writes
+	// commit but no delta ever reaches an open /admin/live SSE stream. The worker
+	// requires both Redis and Postgres (both up on the demo stack).
+	fabricExt := forgeext.New(reg, forgeext.WithConfig(cfg), forgeext.WithWorker(true))
 	if err := app.RegisterExtension(fabricExt); err != nil {
 		return err
 	}
@@ -465,6 +487,22 @@ func productSpec() registry.EntitySpec {
 		Search: registry.SearchSpec{
 			Index:  productSearchIndex,
 			Fields: []string{"name", "sku", "status"},
+		},
+		// Subscribe declares the change channels the outbox relay fans committed
+		// events out to. ByTenant is REQUIRED for the live-query plane: the live
+		// engine's feed tails changes:{tenant}:tenant:{tenant}, so without ByTenant
+		// here no product write ever reaches an open /admin/live stream. ByID also
+		// powers single-aggregate subscriptions.
+		Subscribe: []registry.Scope{registry.ByTenant, registry.ByID},
+		// Live opts the product entity into the maintained-result-set live query
+		// engine (adminapi POST /admin/live). Filterable/Sortable allowlist the
+		// columns the SPA may filter/sort a live window on; MaxWindow caps the
+		// page size. Requires Redis to be configured (the change feed) — see the
+		// fabriq.Config.Redis wiring in run().
+		Live: &registry.LiveSpec{
+			Filterable: []string{"name", "sku", "status", "price"},
+			Sortable:   []string{"name", "sku", "price"},
+			MaxWindow:  500,
 		},
 	}
 }
