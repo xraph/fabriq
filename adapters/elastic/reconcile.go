@@ -3,7 +3,6 @@ package elastic
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/xraph/fabriq/core/registry"
@@ -33,14 +32,14 @@ func (a *Adapter) AggregateVersions(ctx context.Context, tenantID string, ent *r
 		a.es.Search.WithBody(strings.NewReader(body)),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("fabriq: scan %s: %w", alias, err)
+		return nil, translateES("scan "+alias, err)
 	}
 	defer drainAndClose(res.Body)
 	if res.StatusCode == 404 {
 		return map[string]int64{}, nil // tenant never indexed this entity
 	}
 	if res.IsError() {
-		return nil, fmt.Errorf("fabriq: scan %s: %s", alias, res.String())
+		return nil, translateESResponse("scan "+alias, res.StatusCode, res.String())
 	}
 
 	var parsed struct {
