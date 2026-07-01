@@ -27,9 +27,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/driver"
 	"github.com/xraph/grove/drivers/pgdriver"
@@ -485,6 +488,24 @@ func scanMapsCapped(rows driver.Rows, max int) (out []map[string]any, cols []str
 	return out, cols, truncated, nil
 }
 
+// RawQueryTimeout bounds a single QueryDynamicReadOnly call via statement_timeout.
+// Exported so tests can shrink it; production uses the 15s default.
+var RawQueryTimeout = 15 * time.Second
+
+// classifyQueryErr maps a cancelled / timed-out query to fabriqerr.ErrQueryTimeout
+// — the statement_timeout surfaces as pg SQLSTATE 57014, a context deadline as
+// context.DeadlineExceeded — and leaves every other error (bad SQL, etc.) as-is.
+func classifyQueryErr(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %v", fabriqerr.ErrQueryTimeout, err)
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "57014" {
+		return fmt.Errorf("%w: %v", fabriqerr.ErrQueryTimeout, err)
+	}
+	return err
+}
+
 // QueryDynamicReadOnly runs arbitrary read-only SQL for the request tenant and
 // returns dynamic rows plus their column order. It runs inside a READ ONLY,
 // tenant-stamped transaction, so Postgres itself rejects any write/DDL and RLS
@@ -513,17 +534,17 @@ func (a *Adapter) QueryDynamicReadOnly(ctx context.Context, sql string, args ...
 	if _, err := tx.Exec(ctx, `SELECT set_config('app.scope_id', $1, true)`, tenant.ScopeOrEmpty(ctx)); err != nil {
 		return nil, nil, false, fmt.Errorf("fabriq: stamp scope: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = '15s'`); err != nil {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = '%dms'`, RawQueryTimeout.Milliseconds())); err != nil {
 		return nil, nil, false, fmt.Errorf("fabriq: set timeout: %w", err)
 	}
 
 	rows, qerr := tx.Query(ctx, sql, args...)
 	if qerr != nil {
-		return nil, nil, false, qerr
+		return nil, nil, false, classifyQueryErr(qerr)
 	}
 	out, cols, truncated, serr := scanMapsCapped(rows, maxRawQueryRows)
 	if serr != nil {
-		return nil, nil, false, serr
+		return nil, nil, false, classifyQueryErr(serr)
 	}
 	return out, cols, truncated, nil
 }

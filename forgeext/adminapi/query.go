@@ -1,7 +1,6 @@
 package adminapi
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +10,8 @@ import (
 	"time"
 
 	"github.com/xraph/forge"
+
+	"github.com/xraph/fabriq/core/fabriqerr"
 )
 
 // errQueryNoStores is returned by the /query endpoint (not projections.go's
@@ -140,7 +141,7 @@ func (c *adminController) handleRawQuery(ctx forge.Context) error {
 	start := time.Now()
 	rows, cols, truncated, err := stores.Postgres.QueryDynamicReadOnly(ctx.Request().Context(), req.SQL, req.Args...)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fabriqerr.ErrQueryTimeout) {
 			return ctx.JSON(http.StatusGatewayTimeout, map[string]string{"error": "query exceeded the time limit"})
 		}
 		// read-only violation, tenant-guard trip, SQL/column errors → 400.

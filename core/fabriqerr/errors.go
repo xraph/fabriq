@@ -22,6 +22,10 @@ var (
 
 	// ErrStoreNotConfigured: capability port without a configured backend.
 	ErrStoreNotConfigured = errors.New("fabriq: store not configured")
+
+	// ErrQueryTimeout is returned when a query exceeds its time budget — the
+	// statement_timeout fires (pg SQLSTATE 57014) or the context deadline is hit.
+	ErrQueryTimeout = errors.New("fabriq: query exceeded the time limit")
 )
 
 // VersionConflictError reports an optimistic-concurrency failure.

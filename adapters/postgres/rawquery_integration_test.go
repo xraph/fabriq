@@ -3,10 +3,14 @@
 package postgres_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/fabriqerr"
 )
 
 // TestQueryDynamicReadOnly covers the raw read-only SQL surface: a dynamic
@@ -49,5 +53,21 @@ func TestQueryDynamicReadOnly(t *testing.T) {
 		t.Fatalf("expected read-only rejection, got nil")
 	} else if !strings.Contains(strings.ToLower(werr.Error()), "read-only") {
 		t.Fatalf("want read-only error, got %v", werr)
+	}
+}
+
+func TestQueryDynamicReadOnly_Timeout(t *testing.T) {
+	h := newDynWriteHarness(t)
+	ctx := tctx(t, "acme")
+	old := postgres.RawQueryTimeout
+	postgres.RawQueryTimeout = 150 * time.Millisecond
+	defer func() { postgres.RawQueryTimeout = old }()
+
+	_, _, _, err := h.A.QueryDynamicReadOnly(ctx, `SELECT pg_sleep(2)`)
+	if err == nil {
+		t.Fatalf("expected a timeout error, got nil")
+	}
+	if !errors.Is(err, fabriqerr.ErrQueryTimeout) {
+		t.Fatalf("want ErrQueryTimeout, got %v", err)
 	}
 }
