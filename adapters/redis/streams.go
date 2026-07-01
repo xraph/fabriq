@@ -3,7 +3,6 @@ package redis
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -59,7 +58,7 @@ func (a *Adapter) Publish(ctx context.Context, env event.Envelope, channels []st
 		})
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
-		return "", fmt.Errorf("fabriq: publish event %s: %w", env.ID, err)
+		return "", translateRedis("publish event "+env.ID, err)
 	}
 	return eventsAdd.Val(), nil
 }
@@ -79,7 +78,7 @@ func (a *Adapter) PublishToChannel(ctx context.Context, channel string, env even
 		Values: map[string]any{envField: raw},
 	}).Result()
 	if err != nil {
-		return "", fmt.Errorf("fabriq: publish to %s: %w", channel, err)
+		return "", translateRedis("publish to "+channel, err)
 	}
 	return id, nil
 }
@@ -107,7 +106,7 @@ func (a *Adapter) Tail(ctx context.Context, channel, fromID string, deliver func
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("fabriq: tail %s: %w", channel, err)
+			return translateRedis("tail "+channel, err)
 		}
 		for _, stream := range res {
 			for _, entry := range stream.Messages {
@@ -133,7 +132,7 @@ func (a *Adapter) ReadRange(ctx context.Context, channel, afterID string, limit 
 	}
 	entries, err := a.client.XRangeN(ctx, channel, start, "+", int64(limit)).Result()
 	if err != nil {
-		return nil, fmt.Errorf("fabriq: read range %s: %w", channel, err)
+		return nil, translateRedis("read range "+channel, err)
 	}
 	out := make([]query.Delta, 0, len(entries))
 	for _, entry := range entries {
@@ -152,7 +151,7 @@ func (a *Adapter) GroupLag(ctx context.Context, group string) (int64, error) {
 		if strings.Contains(err.Error(), "no such key") {
 			return 0, nil
 		}
-		return 0, fmt.Errorf("fabriq: group lag: %w", err)
+		return 0, translateRedis("group lag", err)
 	}
 	for _, g := range groups {
 		if g.Name == group {
@@ -168,7 +167,7 @@ func (a *Adapter) GroupLag(ctx context.Context, group string) (int64, error) {
 func (a *Adapter) EnsureGroup(ctx context.Context, group string) error {
 	err := a.client.XGroupCreateMkStream(ctx, registry.StreamKey(), group, "0").Err()
 	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
-		return fmt.Errorf("fabriq: ensure group %s: %w", group, err)
+		return translateRedis("ensure group "+group, err)
 	}
 	return nil
 }
@@ -201,7 +200,7 @@ func (a *Adapter) Consume(ctx context.Context, group, consumer string, handle fu
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("fabriq: consume %s: %w", group, err)
+			return translateRedis("consume "+group, err)
 		}
 		for _, stream := range res {
 			for _, entry := range stream.Messages {
@@ -228,7 +227,7 @@ func (a *Adapter) claimStale(ctx context.Context, group, consumer string, handle
 			if errors.Is(err, redis.Nil) || strings.Contains(err.Error(), "NOGROUP") {
 				return nil
 			}
-			return fmt.Errorf("fabriq: autoclaim %s: %w", group, err)
+			return translateRedis("autoclaim "+group, err)
 		}
 		for _, entry := range entries {
 			a.handleEntry(ctx, group, entry, handle)
@@ -294,7 +293,7 @@ func (a *Adapter) TailEvents(ctx context.Context, handle func(event.Envelope) er
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("fabriq: tail events: %w", err)
+			return translateRedis("tail events", err)
 		}
 		for _, stream := range res {
 			for _, msg := range stream.Messages {

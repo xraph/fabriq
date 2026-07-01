@@ -78,11 +78,11 @@ func (a *Adapter) ApplyMutations(ctx context.Context, target string, muts []proj
 	res, err := a.es.Bulk(bytes.NewReader(body.Bytes()),
 		a.es.Bulk.WithContext(ctx), a.es.Bulk.WithRefresh("true"))
 	if err != nil {
-		return fmt.Errorf("fabriq: bulk: %w", err)
+		return translateES("bulk", err)
 	}
 	defer drainAndClose(res.Body)
 	if res.IsError() {
-		return fmt.Errorf("fabriq: bulk: %s", res.String())
+		return translateESResponse("bulk", res.StatusCode, res.String())
 	}
 
 	var parsed struct {
@@ -90,7 +90,7 @@ func (a *Adapter) ApplyMutations(ctx context.Context, target string, muts []proj
 		Items  []map[string]map[string]any `json:"items"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&parsed); err != nil {
-		return fmt.Errorf("fabriq: bulk decode: %w", err)
+		return translateES("bulk decode", err)
 	}
 	if !parsed.Errors {
 		return nil
@@ -99,7 +99,8 @@ func (a *Adapter) ApplyMutations(ctx context.Context, target string, muts []proj
 		for _, op := range item {
 			status, _ := op["status"].(float64)
 			if status >= 400 && !isVersionConflict(op) && status != 404 {
-				return fmt.Errorf("fabriq: bulk item failed: %v", op)
+				itemBody, _ := json.Marshal(op)
+				return translateESResponse("bulk item", int(status), string(itemBody))
 			}
 		}
 	}

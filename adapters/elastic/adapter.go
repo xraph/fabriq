@@ -74,7 +74,7 @@ func Open(_ context.Context, cfg Config, reg *registry.Registry, opts ...Option)
 	}
 	defer res.Body.Close()
 	if res.IsError() {
-		return nil, fmt.Errorf("fabriq: elasticsearch ping: %s", res.String())
+		return nil, translateESResponse("elasticsearch ping", res.StatusCode, res.String())
 	}
 	a := &Adapter{
 		es:           client,

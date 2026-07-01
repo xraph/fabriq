@@ -173,7 +173,7 @@ func (c *adminController) handleCacheInvalidate(ctx forge.Context) error {
 	}
 
 	if invErr := cache.InvalidateEntity(ctx.Request().Context(), req.Entity); invErr != nil {
-		return forge.InternalError(invErr)
+		return renderError(ctx, invErr)
 	}
 	return ctx.JSON(http.StatusOK, map[string]bool{"invalidated": true})
 }

@@ -218,7 +218,7 @@ func (c *adminController) handleRecall(ctx forge.Context) error {
 		Hops:     body.Hops,
 	})
 	if recallErr != nil {
-		return forge.InternalError(recallErr)
+		return renderError(ctx, recallErr)
 	}
 
 	items := make([]recallItem, 0, len(pack.Items))

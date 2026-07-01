@@ -130,7 +130,7 @@ func (c *adminController) handleLive(ctx forge.Context) error {
 
 	sse, werr := subscribe.NewSSEWriter(ctx.Response())
 	if werr != nil {
-		return forge.InternalError(werr)
+		return renderError(ctx, werr)
 	}
 
 	// First event: the initial snapshot rows, capped at the window limit.

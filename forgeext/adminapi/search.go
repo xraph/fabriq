@@ -222,10 +222,10 @@ func (c *adminController) handleVectorSearch(ctx forge.Context) error {
 		}
 		vectors, embErr := emb.Embed(reqCtx, []string{req.Query})
 		if embErr != nil {
-			return forge.InternalError(embErr)
+			return renderError(ctx, embErr)
 		}
 		if len(vectors) == 0 {
-			return forge.InternalError(errEmbedderEmpty)
+			return renderError(ctx, errEmbedderEmpty)
 		}
 		embedding = vectors[0]
 	}
