@@ -69,11 +69,11 @@ func (c *adminController) registerCacheRoutes(r forge.Router) error {
 type cacheStatsResponse struct {
 	// Available is false when a cache is configured but exposes no counters
 	// (e.g. an L1-wrapped cache that doesn't implement StatsReader).
-	Available     bool    `json:"available"`
-	Hits          int64   `json:"hits"`
-	Misses        int64   `json:"misses"`
-	Sets          int64   `json:"sets"`
-	Invalidations int64   `json:"invalidations"`
+	Available     bool  `json:"available"`
+	Hits          int64 `json:"hits"`
+	Misses        int64 `json:"misses"`
+	Sets          int64 `json:"sets"`
+	Invalidations int64 `json:"invalidations"`
 	// HitRate is Hits/(Hits+Misses), 0 when there have been no lookups.
 	HitRate float64 `json:"hitRate"`
 }

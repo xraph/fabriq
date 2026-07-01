@@ -116,6 +116,29 @@ All of the following are implemented and covered by integration tests:
   default, plus Prometheus metrics exposed by the worker (`fabriq serve`,
   `/metrics`).
 
+## Admin console
+
+[**Fabriq Admin**](https://github.com/xraph/fabriq-admin) is a pluggable,
+embeddable web console for a live fabric. It surfaces every subsystem above —
+entity CRUD, full-text/semantic/similar search, the FalkorDB knowledge graph,
+PostGIS spatial queries, time-series telemetry, CRDT documents, the file plane,
+distillation, cache, projections, and a raw API console — all tenant-scoped
+through a tenant switcher. The console is a runtime-federated set of plugins
+that talks to the `adminapi` forge extension over `/admin/*` REST + SSE and
+lights up exactly the capabilities the connected engine advertises.
+
+[![Fabriq Admin console](.github/assets/admin-console.png)](https://github.com/xraph/fabriq-admin)
+
+Run it against fabriq with the bundled demo backend, which mounts `adminapi`
+and seeds sample data:
+
+```bash
+go run ./cmd/admin-demo   # serves the admin API on http://localhost:8080/admin
+```
+
+Then point the [fabriq-admin](https://github.com/xraph/fabriq-admin) host at it
+(`pnpm dev` → http://localhost:5173) and pick a tenant.
+
 ## Development
 
 ```bash
