@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -70,6 +71,36 @@ func hasKeywordPrefix(s, keyword string) bool {
 	return !isBoundaryChar
 }
 
+// fromJoinIdentRe matches an identifier in table position — right after a FROM
+// or JOIN keyword — so rewriting is scoped to actual table references and never
+// touches column refs, aliases, or string literals.
+var fromJoinIdentRe = regexp.MustCompile(`(?i)(\bfrom\b|\bjoin\b)(\s+)("?)([a-zA-Z_][a-zA-Z0-9_]*)("?)`)
+
+// resolveEntityTables rewrites bare entity-table references in FROM/JOIN
+// positions to their physical ds_-prefixed table names, so callers can write
+// `FROM customers` instead of `FROM ds_customers`. `physical` is the set of
+// known physical dynamic-entity table names (lowercased, e.g. {"ds_customers":true}).
+// An identifier that already names a physical table, or one that doesn't resolve
+// to a known table when ds_-prefixed (information_schema, a CTE name, etc.), is
+// left untouched — so this never rewrites a non-entity reference.
+func resolveEntityTables(sql string, physical map[string]bool) string {
+	if len(physical) == 0 {
+		return sql
+	}
+	return fromJoinIdentRe.ReplaceAllStringFunc(sql, func(m string) string {
+		g := fromJoinIdentRe.FindStringSubmatch(m)
+		kw, ws, q1, ident, q2 := g[1], g[2], g[3], g[4], g[5]
+		low := strings.ToLower(ident)
+		if physical[low] {
+			return m // already a physical table name
+		}
+		if physical["ds_"+low] {
+			return kw + ws + q1 + "ds_" + ident + q2
+		}
+		return m // unknown identifier — leave it alone
+	})
+}
+
 // registerQueryRoutes wires POST {BasePath}/query.
 func (c *adminController) registerQueryRoutes(r forge.Router) error {
 	opts := append([]forge.RouteOption{
@@ -94,6 +125,16 @@ func (c *adminController) handleRawQuery(ctx forge.Context) error {
 	stores := c.ext.resolveStores()
 	if stores == nil || stores.Postgres == nil {
 		return ctx.JSON(http.StatusNotImplemented, map[string]string{"error": errQueryNoStores.Error()})
+	}
+
+	if reg, rerr := c.ext.resolveRegistry(); rerr == nil {
+		physical := make(map[string]bool)
+		for _, ent := range reg.All() {
+			if ent.Binding.IsDynamic() {
+				physical[strings.ToLower(ent.Binding.Table)] = true
+			}
+		}
+		req.SQL = resolveEntityTables(req.SQL, physical)
 	}
 
 	start := time.Now()
