@@ -11,6 +11,8 @@ func TestPrecheckReadOnlySQL(t *testing.T) {
 		"  select * from product ",
 		"WITH x AS (SELECT 1) SELECT * FROM x",
 		"select a from t where status = 'deleted'", // literal, not a write
+		"select(1)",
+		"with x as (select 1) select * from x",
 	}
 	for _, s := range ok {
 		if err := precheckReadOnlySQL(s); err != nil {
@@ -23,6 +25,8 @@ func TestPrecheckReadOnlySQL(t *testing.T) {
 		"drop table product",
 		"SELECT 1; DELETE FROM product", // statement stacking
 		"",
+		"selectfoo",
+		"withdraw",
 	}
 	for _, s := range bad {
 		if err := precheckReadOnlySQL(s); err == nil {

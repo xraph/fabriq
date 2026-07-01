@@ -1,7 +1,9 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,6 +11,11 @@ import (
 
 	"github.com/xraph/forge"
 )
+
+// errQueryNoStores is returned by the /query endpoint (not projections.go's
+// errNoStores) so the 501 message reflects what actually failed here: no
+// relational store opened for raw querying.
+var errQueryNoStores = fmt.Errorf("raw query not available (no relational store opened)")
 
 // queryRequest is the body for POST {BasePath}/query.
 type queryRequest struct {
@@ -38,10 +45,29 @@ func precheckReadOnlySQL(sql string) error {
 		return fmt.Errorf("multiple statements are not allowed")
 	}
 	lower := strings.ToLower(s)
-	if !strings.HasPrefix(lower, "select") && !strings.HasPrefix(lower, "with") {
+	if !hasKeywordPrefix(lower, "select") && !hasKeywordPrefix(lower, "with") {
 		return fmt.Errorf("only read-only SELECT/WITH queries are allowed")
 	}
 	return nil
+}
+
+// hasKeywordPrefix reports whether s starts with keyword followed by a word
+// boundary (whitespace, '(', or end-of-string) — so "selectfoo" and
+// "withdraw" don't falsely match "select"/"with". Crude on purpose; the
+// read-only transaction in the adapter is the real enforcement.
+func hasKeywordPrefix(s, keyword string) bool {
+	if !strings.HasPrefix(s, keyword) {
+		return false
+	}
+	if len(s) == len(keyword) {
+		return true
+	}
+	next := s[len(keyword)]
+	if next == '(' {
+		return true
+	}
+	isBoundaryChar := (next >= 'a' && next <= 'z') || (next >= '0' && next <= '9') || next == '_'
+	return !isBoundaryChar
 }
 
 // registerQueryRoutes wires POST {BasePath}/query.
@@ -55,7 +81,8 @@ func (c *adminController) registerQueryRoutes(r forge.Router) error {
 }
 
 // handleRawQuery serves POST {BasePath}/query. 400 on a non-read-only statement,
-// tenant-guard trip, or SQL error; 501 when no relational store is opened.
+// tenant-guard trip, or SQL error; 501 when no relational store is opened;
+// 504 when the query is cancelled/times out (e.g. the statement_timeout).
 func (c *adminController) handleRawQuery(ctx forge.Context) error {
 	var req queryRequest
 	if err := json.NewDecoder(ctx.Request().Body).Decode(&req); err != nil {
@@ -66,12 +93,15 @@ func (c *adminController) handleRawQuery(ctx forge.Context) error {
 	}
 	stores := c.ext.resolveStores()
 	if stores == nil || stores.Postgres == nil {
-		return ctx.JSON(http.StatusNotImplemented, map[string]string{"error": errNoStores.Error()})
+		return ctx.JSON(http.StatusNotImplemented, map[string]string{"error": errQueryNoStores.Error()})
 	}
 
 	start := time.Now()
 	rows, cols, truncated, err := stores.Postgres.QueryDynamicReadOnly(ctx.Request().Context(), req.SQL, req.Args...)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return ctx.JSON(http.StatusGatewayTimeout, map[string]string{"error": "query exceeded the time limit"})
+		}
 		// read-only violation, tenant-guard trip, SQL/column errors → 400.
 		return forge.BadRequest(err.Error())
 	}
