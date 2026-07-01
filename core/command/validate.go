@@ -73,6 +73,12 @@ func (x *Executor) prepare(ctx context.Context, cmd Command) (*preparedCommand, 
 	if err := validateRequired(ent, vals); err != nil {
 		return nil, err
 	}
+	skipTypes := cmd.SkipTypeCheck || (ent.Spec.Schema != nil && ent.Spec.Schema.NoTypeCheck)
+	if !skipTypes {
+		if err := validateTypes(ent, vals); err != nil {
+			return nil, err
+		}
+	}
 	if ent.Spec.Validate != nil {
 		if err := ent.Spec.Validate(vals); err != nil {
 			return nil, fmt.Errorf("fabriq: entity %q validation: %w", ent.Spec.Name, err)
@@ -80,6 +86,27 @@ func (x *Executor) prepare(ctx context.Context, cmd Command) (*preparedCommand, 
 	}
 	p.vals = vals
 	return p, nil
+}
+
+// validateTypes coerces and type-checks a dynamic entity's payload against its
+// declared column types, mutating vals in place with the canonical Go values.
+// It is a no-op for Go-model entities, whose struct fields are already typed.
+func validateTypes(ent *registry.Entity, vals map[string]any) error {
+	if !ent.Binding.IsDynamic() {
+		return nil
+	}
+	for col, v := range vals {
+		dc, ok := ent.Binding.DynColumn(col)
+		if !ok {
+			continue // structural or unknown columns carry no declared type
+		}
+		coerced, err := registry.CoerceToColumn(dc.Type, v)
+		if err != nil {
+			return fmt.Errorf("fabriq: entity %q: column %q %w", ent.Spec.Name, col, err)
+		}
+		vals[col] = coerced
+	}
+	return nil
 }
 
 // validateRequired enforces the spec-driven v1 rule: NOT NULL columns
