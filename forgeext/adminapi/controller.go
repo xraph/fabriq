@@ -174,6 +174,9 @@ func (c *adminController) Routes(r forge.Router) error {
 	if err := c.registerDriftRoutes(r); err != nil {
 		return err
 	}
+	if err := c.registerDDLRoutes(r); err != nil {
+		return err
+	}
 
 	return c.registerPluginRoutes(r)
 }

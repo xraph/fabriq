@@ -44,3 +44,11 @@ func (a *Adapter) TableColumns(ctx context.Context, table string) ([]ColumnInfo,
 	}
 	return out, nil
 }
+
+// ExecRawDDL runs a single raw DDL statement as the adapter's role (the schema
+// owner on single-role deployments). This is the ad-hoc DDL escape hatch: it is
+// deliberately unfenced beyond the caller's own gating and single-statement
+// validation. Callers MUST gate and validate before calling.
+func (a *Adapter) ExecRawDDL(ctx context.Context, stmt string) error {
+	return a.execDDL(ctx, stmt)
+}
