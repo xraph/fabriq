@@ -16,6 +16,7 @@ type driftEntity struct {
 	InSync  bool     `json:"inSync"`
 	Missing []string `json:"missing"` // expected in the registry, absent physically
 	Extra   []string `json:"extra"`   // present physically, not in the registry
+	Error   string   `json:"error,omitempty"` // set when this entity's table could not be introspected
 }
 
 type driftResponse struct {
@@ -72,19 +73,19 @@ func (c *adminController) handleSchemaDrift(ctx forge.Context) error {
 	out := driftResponse{Entities: make([]driftEntity, 0)}
 	for _, ent := range reg.All() {
 		table := ent.Binding.Table
+		de := driftEntity{Entity: ent.Spec.Name, Table: table, Dynamic: ent.Binding.IsDynamic(), Missing: []string{}, Extra: []string{}}
 		physical, terr := stores.Postgres.TableColumns(reqCtx, table)
 		if terr != nil {
-			return renderError(ctx, terr)
+			// Diagnostics surface: one bad table must not blank the whole report.
+			de.Error = terr.Error()
+			de.InSync = false
+			out.Entities = append(out.Entities, de)
+			continue
 		}
 		missing, extra := computeDrift(ent.Binding.Columns, physical)
-		out.Entities = append(out.Entities, driftEntity{
-			Entity:  ent.Spec.Name,
-			Table:   table,
-			Dynamic: ent.Binding.IsDynamic(),
-			InSync:  len(missing) == 0 && len(extra) == 0,
-			Missing: missing,
-			Extra:   extra,
-		})
+		de.Missing, de.Extra = missing, extra
+		de.InSync = len(missing) == 0 && len(extra) == 0
+		out.Entities = append(out.Entities, de)
 	}
 	return ctx.JSON(http.StatusOK, out)
 }
