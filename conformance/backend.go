@@ -99,7 +99,8 @@ type Env struct {
 }
 
 // Degradation describes what a backend lacking a case's required capability
-// must return INSTEAD of the happy-path result. Set one of the two fields.
+// must return INSTEAD of the happy-path result. Set one or more of ExpectErrIs,
+// ExpectErrContains, or ExpectCode.
 type Degradation struct {
 	// ExpectErrIs requires errors.Is(err, ExpectErrIs).
 	ExpectErrIs error
