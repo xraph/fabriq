@@ -169,7 +169,7 @@ func (a *Adapter) DropTarget(ctx context.Context, target string) error {
 	if err == nil || strings.Contains(err.Error(), "empty key") {
 		return nil
 	}
-	return fmt.Errorf("fabriq: drop graph %s: %w", target, err)
+	return translateGraph("GRAPH.DELETE "+target, err)
 }
 
 // run executes one GRAPH.* command and decodes header + rows.
@@ -180,7 +180,7 @@ func (a *Adapter) run(ctx context.Context, cmd, graph, cypher string, params map
 	}
 	res, err := a.client.Do(ctx, cmd, graph, prefix+cypher).Result()
 	if err != nil {
-		return nil, nil, fmt.Errorf("fabriq: %s %s: %w", cmd, graph, err)
+		return nil, nil, translateGraph(cmd+" "+graph, err)
 	}
 	top, ok := res.([]any)
 	if !ok || len(top) < 3 {
