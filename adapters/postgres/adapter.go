@@ -175,7 +175,9 @@ func (a *Adapter) TenantTxRaw(ctx context.Context, fn func(tx *pgdriver.PgTx) er
 }
 
 // inTenantTx runs fn inside a transaction stamped with the context tenant.
-func (a *Adapter) inTenantTx(ctx context.Context, fn func(tx *pgdriver.PgTx) error) error {
+func (a *Adapter) inTenantTx(ctx context.Context, fn func(tx *pgdriver.PgTx) error) (err error) {
+	defer func() { err = translatePg("", "", "", err) }()
+
 	tid, err := tenant.Require(ctx)
 	if err != nil {
 		return err
@@ -205,7 +207,9 @@ func (a *Adapter) inTenantTx(ctx context.Context, fn func(tx *pgdriver.PgTx) err
 // direct access to a driver.Tx so it can call Query() to obtain driver.Rows
 // for map-native scanning. This is the dynamic-entity read path; the grove
 // query builder (NewSelect) is not used because it only scans struct types.
-func (a *Adapter) inDynamicTenantTx(ctx context.Context, fn func(tid string, tx driver.Tx) error) error {
+func (a *Adapter) inDynamicTenantTx(ctx context.Context, fn func(tid string, tx driver.Tx) error) (err error) {
+	defer func() { err = translatePg("", "", "", err) }()
+
 	tid, err := tenant.Require(ctx)
 	if err != nil {
 		return err
@@ -235,7 +239,8 @@ func (a *Adapter) inDynamicTenantTx(ctx context.Context, fn func(tid string, tx 
 func (a *Adapter) entity(name string) (*registry.Entity, error) {
 	ent, ok := a.reg.Get(name)
 	if !ok {
-		return nil, fmt.Errorf("fabriq: unknown entity %q", name)
+		return nil, fabriqerr.New(fabriqerr.CodeInvalidInput,
+			"Unknown entity type.", fabriqerr.WithEntity(name, ""))
 	}
 	return ent, nil
 }
