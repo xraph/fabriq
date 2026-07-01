@@ -82,42 +82,39 @@ var fromJoinIdentRe = regexp.MustCompile(`(?i)(\bfrom\b|\bjoin\b)(\s+)("?)([a-zA
 // word like "from products" inside a literal or comment is never rewritten.
 var sqlSkipRe = regexp.MustCompile(`'(?:[^']|'')*'|--[^\n]*|/\*[\s\S]*?\*/`)
 
-// resolveEntityTables rewrites bare entity-table references in FROM/JOIN
-// positions to their physical ds_-prefixed table names, so callers can write
-// `FROM customers` instead of `FROM ds_customers`. `physical` is the set of
-// known physical dynamic-entity table names (lowercased). Identifiers already
-// naming a physical table, or that don't resolve to a known table when
-// ds_-prefixed (information_schema, a CTE name, a column/alias), are left
+// resolveEntityTables rewrites bare entity references in FROM/JOIN positions to
+// their physical table names, so callers can write `FROM product` or
+// `FROM products` instead of `FROM ds_products`. `aliases` maps every accepted
+// spelling (lowercased) — the entity name, the de-prefixed table name, and the
+// physical table name itself — to the physical table. Identifiers that aren't a
+// known alias (information_schema, a CTE name, a column/alias) are left
 // untouched — and rewriting is skipped entirely inside string literals and
 // comments, so it never alters a literal value or comment text.
-func resolveEntityTables(sql string, physical map[string]bool) string {
-	if len(physical) == 0 {
+func resolveEntityTables(sql string, aliases map[string]string) string {
+	if len(aliases) == 0 {
 		return sql
 	}
 	var b strings.Builder
 	last := 0
 	for _, loc := range sqlSkipRe.FindAllStringIndex(sql, -1) {
-		b.WriteString(rewriteFromJoinTables(sql[last:loc[0]], physical)) // code before the skip region
-		b.WriteString(sql[loc[0]:loc[1]])                                // literal/comment, verbatim
+		b.WriteString(rewriteFromJoinTables(sql[last:loc[0]], aliases)) // code before the skip region
+		b.WriteString(sql[loc[0]:loc[1]])                               // literal/comment, verbatim
 		last = loc[1]
 	}
-	b.WriteString(rewriteFromJoinTables(sql[last:], physical))
+	b.WriteString(rewriteFromJoinTables(sql[last:], aliases))
 	return b.String()
 }
 
 // rewriteFromJoinTables applies the FROM/JOIN table rewrite to one code segment.
-func rewriteFromJoinTables(s string, physical map[string]bool) string {
+func rewriteFromJoinTables(s string, aliases map[string]string) string {
 	return fromJoinIdentRe.ReplaceAllStringFunc(s, func(m string) string {
 		g := fromJoinIdentRe.FindStringSubmatch(m)
 		kw, ws, q1, ident, q2 := g[1], g[2], g[3], g[4], g[5]
-		low := strings.ToLower(ident)
-		if physical[low] {
-			return m // already a physical table name
+		physical, ok := aliases[strings.ToLower(ident)]
+		if !ok || physical == ident {
+			return m // unknown identifier, or already the physical table name
 		}
-		if physical["ds_"+low] {
-			return kw + ws + q1 + "ds_" + ident + q2
-		}
-		return m // unknown identifier — leave it alone
+		return kw + ws + q1 + physical + q2
 	})
 }
 
@@ -148,13 +145,19 @@ func (c *adminController) handleRawQuery(ctx forge.Context) error {
 	}
 
 	if reg, rerr := c.ext.resolveRegistry(); rerr == nil {
-		physical := make(map[string]bool)
+		// Accept the entity name (product), the de-prefixed table (products), and
+		// the physical table (ds_products) as spellings for the same table.
+		aliases := make(map[string]string)
 		for _, ent := range reg.All() {
-			if ent.Binding.IsDynamic() {
-				physical[strings.ToLower(ent.Binding.Table)] = true
+			if !ent.Binding.IsDynamic() {
+				continue
 			}
+			table := ent.Binding.Table
+			aliases[strings.ToLower(table)] = table
+			aliases[strings.ToLower(strings.TrimPrefix(table, "ds_"))] = table
+			aliases[strings.ToLower(ent.Spec.Name)] = table
 		}
-		req.SQL = resolveEntityTables(req.SQL, physical)
+		req.SQL = resolveEntityTables(req.SQL, aliases)
 	}
 
 	start := time.Now()
