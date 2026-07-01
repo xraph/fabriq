@@ -97,14 +97,14 @@ func (a *Adapter) Search(ctx context.Context, q query.SearchQuery, into any) err
 		a.es.Search.WithBody(strings.NewReader(string(body))),
 	)
 	if err != nil {
-		return fmt.Errorf("fabriq: search %s: %w", alias, err)
+		return translateES("search "+alias, err)
 	}
 	defer drainAndClose(res.Body)
 	if res.StatusCode == 404 {
 		return nil // tenant has no index yet: nothing matches
 	}
 	if res.IsError() {
-		return fmt.Errorf("fabriq: search %s: %s", alias, res.String())
+		return translateESResponse("search "+alias, res.StatusCode, res.String())
 	}
 
 	var parsed struct {
@@ -115,7 +115,7 @@ func (a *Adapter) Search(ctx context.Context, q query.SearchQuery, into any) err
 		} `json:"hits"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&parsed); err != nil {
-		return fmt.Errorf("fabriq: search decode: %w", err)
+		return translateES("search decode", err)
 	}
 	for _, h := range parsed.Hits.Hits {
 		*dest = append(*dest, h.Source)

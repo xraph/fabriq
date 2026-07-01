@@ -42,11 +42,11 @@ func (a *Adapter) ensureIndex(ctx context.Context, index string) error {
 	}
 	res, err := a.es.Indices.Create(index, a.es.Indices.Create.WithContext(ctx))
 	if err != nil {
-		return fmt.Errorf("fabriq: create index %s: %w", index, err)
+		return translateES("create index "+index, err)
 	}
 	defer drainAndClose(res.Body)
 	if res.IsError() && res.StatusCode != 400 { // 400 = already exists
-		return fmt.Errorf("fabriq: create index %s: %s", index, res.String())
+		return translateESResponse("create index "+index, res.StatusCode, res.String())
 	}
 	a.mu.Lock()
 	a.ensured[index] = struct{}{}
@@ -64,11 +64,11 @@ func (a *Adapter) ensureAlias(ctx context.Context, alias, index string) error {
 	}
 	res, err := a.es.Indices.PutAlias([]string{index}, alias, a.es.Indices.PutAlias.WithContext(ctx))
 	if err != nil {
-		return fmt.Errorf("fabriq: put alias %s -> %s: %w", alias, index, err)
+		return translateES(fmt.Sprintf("put alias %s -> %s", alias, index), err)
 	}
 	defer drainAndClose(res.Body)
 	if res.IsError() {
-		return fmt.Errorf("fabriq: put alias %s -> %s: %s", alias, index, res.String())
+		return translateESResponse(fmt.Sprintf("put alias %s -> %s", alias, index), res.StatusCode, res.String())
 	}
 	a.mu.Lock()
 	a.aliased[alias] = struct{}{}
@@ -111,11 +111,11 @@ func (a *Adapter) FlipAliases(ctx context.Context, tenantID string, _, newVersio
 	body := fmt.Sprintf(`{"actions":[%s]}`, strings.Join(actions, ","))
 	res, err := a.es.Indices.UpdateAliases(strings.NewReader(body), a.es.Indices.UpdateAliases.WithContext(ctx))
 	if err != nil {
-		return fmt.Errorf("fabriq: swap aliases for %s: %w", tenantID, err)
+		return translateES("swap aliases for "+tenantID, err)
 	}
 	defer drainAndClose(res.Body)
 	if res.IsError() {
-		return fmt.Errorf("fabriq: swap aliases for %s: %s", tenantID, res.String())
+		return translateESResponse("swap aliases for "+tenantID, res.StatusCode, res.String())
 	}
 	// Aliases moved: drop the memoization so live writes re-resolve.
 	a.mu.Lock()
@@ -132,18 +132,18 @@ func (a *Adapter) aliasHolders(ctx context.Context, alias string) ([]string, err
 		a.es.Indices.GetAlias.WithName(alias),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("fabriq: get alias %s: %w", alias, err)
+		return nil, translateES("get alias "+alias, err)
 	}
 	defer drainAndClose(res.Body)
 	if res.StatusCode == 404 {
 		return nil, nil
 	}
 	if res.IsError() {
-		return nil, fmt.Errorf("fabriq: get alias %s: %s", alias, res.String())
+		return nil, translateESResponse("get alias "+alias, res.StatusCode, res.String())
 	}
 	var parsed map[string]any // index name -> {aliases: {...}}
 	if err := json.NewDecoder(res.Body).Decode(&parsed); err != nil {
-		return nil, err
+		return nil, translateES("get alias "+alias+" decode", err)
 	}
 	holders := make([]string, 0, len(parsed))
 	for idx := range parsed {
@@ -175,7 +175,7 @@ func (a *Adapter) DropTarget(ctx context.Context, target string) error {
 		res, err := a.es.Indices.Delete([]string{index},
 			a.es.Indices.Delete.WithContext(ctx), a.es.Indices.Delete.WithIgnoreUnavailable(true))
 		if err != nil {
-			return fmt.Errorf("fabriq: delete index %s: %w", index, err)
+			return translateES("delete index "+index, err)
 		}
 		drainAndClose(res.Body)
 		a.mu.Lock()
