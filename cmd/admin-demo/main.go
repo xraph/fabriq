@@ -37,11 +37,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/agent"
+	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/forgeext"
@@ -248,6 +250,7 @@ func run() error {
 	docsSeeded := 0
 	placesTotal := 0
 	distillNodesTotal := 0
+	telemetryPointsTotal := 0
 	for _, tid := range []string{"acme-corp", "globex"} {
 		if err := seedProducts(ctx, f, tid, seedCount); err != nil {
 			_ = f.Close()
@@ -392,6 +395,20 @@ func run() error {
 		if built {
 			distillNodesTotal += drep.Built
 		}
+
+		// Seed a day of deterministic telemetry (cpu/mem/requests/latency signals)
+		// into the timeseries plane via the DIRECT bulk-write path
+		// (Timeseries().BulkWrite → tag_readings). Phase-shifted per tenant so the
+		// same key reads differently across tenants. Presence-guarded, so
+		// re-running on every startup does not duplicate points. This is what makes
+		// the adminapi timeseries endpoints serve real data and the capability
+		// probe report timeseries:true.
+		tp, tperr := seedTelemetry(ctx, f, tid)
+		if tperr != nil {
+			_ = f.Close()
+			return tperr
+		}
+		telemetryPointsTotal += tp
 	}
 
 	// The prep fabric has done its job (migrations, DDL, seeding). The serving
@@ -437,12 +454,20 @@ func run() error {
 		// needs no embedder. Both query the same illustrative space the seed step
 		// indexed rows into.
 		adminapi.WithEmbedder(embedder),
+		// Guarded-write allowlist for POST /agent/remember (deny-by-default). The
+		// demo permits product creates/updates so the Remember surface has
+		// something allowed to exercise; every other entity/op stays denied (403).
+		adminapi.WithWritePolicy(agent.WritePolicy{
+			Allow: map[string][]command.Op{
+				productEntity: {command.OpCreate, command.OpUpdate},
+			},
+		}),
 	)
 	if err := app.RegisterExtension(adminExt); err != nil {
 		return err
 	}
 
-	logStartup(addr, esURL, falkorAddr, blobDSN, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal, fsFoldersTotal, fsFilesTotal, docsSeeded, placesTotal, distillNodesTotal)
+	logStartup(addr, esURL, falkorAddr, blobDSN, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal, fsFoldersTotal, fsFilesTotal, docsSeeded, placesTotal, distillNodesTotal, telemetryPointsTotal)
 	return app.Run()
 }
 
@@ -513,6 +538,12 @@ func productSpec() registry.EntitySpec {
 			Index:  productSearchIndex,
 			Fields: []string{"name", "sku", "status"},
 		},
+		// Cache opts the product entity into the read-through row cache (P3). Reads
+		// of product rows are served from the engine cache (backed by the demo's
+		// Redis) and invalidated per-entity on write. This is what makes the
+		// adminapi /admin/cache endpoint list a real keyspace ("product:q") and the
+		// invalidate control flush something. TTL bounds each cached row.
+		Cache: &registry.CacheSpec{TTL: 5 * time.Minute},
 		// Subscribe declares the change channels the outbox relay fans committed
 		// events out to. ByTenant is REQUIRED for the live-query plane: the live
 		// engine's feed tails changes:{tenant}:tenant:{tenant}, so without ByTenant
@@ -553,7 +584,7 @@ func (e errMissingEntity) Error() string {
 // logStartup prints the base URL, what got wired (ES url, FalkorDB addr,
 // embedder dims, indexed products, seeded graph nodes/edges), and a couple of
 // sample curl commands.
-func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles, docs, places, distillNodes int) {
+func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles, docs, places, distillNodes, telemetryPoints int) {
 	base := "http://localhost" + addr
 	log.Printf("admin-demo listening on %s (admin base: %s/admin)", addr, base)
 	log.Printf("  seeded tenants: acme-corp, globex (%d products each)", seedCount)
@@ -565,6 +596,7 @@ func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNod
 	log.Printf("  crdt: document plane (postgres + grove-crdt) wired; seeded %d demo doc(s) (%s/%s) across tenants", docs, pageEntity, demoPageID)
 	log.Printf("  spatial: postgis (fabriq_geometries) wired; seeded %d place point(s) across tenants (acme-corp: SF+NYC, globex: London/Berlin/Tokyo)", places)
 	log.Printf("  distill: context-distillation tree (digest_node) built from product+customer rows via demo embedder + stub summarizer + CAS; %d L0 leaves across tenants", distillNodes)
+	log.Printf("  timeseries: tag_readings (plain-PG telemetry table) wired; bulk-wrote %d readings across tenants (signals: cpu.load, mem.used.pct, requests.rate, latency.p95.ms)", telemetryPoints)
 	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true graph:true files:true crdt:true distill:true", base)
 	log.Printf("  try: curl -s '%s/admin/search?type=product&q=Product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
 	log.Printf("  try: curl -s -X POST %s/admin/search/vector -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"type\":\"product\",\"query\":\"widget\",\"k\":5}'", base)
@@ -576,4 +608,6 @@ func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNod
 	log.Printf("  try: curl -s -X POST %s/admin/spatial/within -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"entity\":\"place\",\"lng\":-122.42,\"lat\":37.77,\"radiusM\":50000,\"limit\":10}'  # places near SF", base)
 	log.Printf("  try: curl -s '%s/admin/distill/map' -H 'X-Tenant-ID: acme-corp'  # context-distillation tree outline", base)
 	log.Printf("  try: curl -s '%s/admin/distill/node/%s' -H 'X-Tenant-ID: acme-corp'  # tenant root + L1 children", base, agent.TenantRootID())
+	log.Printf("  try: curl -s '%s/admin/timeseries/keys' -H 'X-Tenant-ID: acme-corp'  # telemetry series keys", base)
+	log.Printf("  try: curl -s -X POST %s/admin/timeseries/range -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"key\":\"cpu.load\",\"bucketSeconds\":900,\"agg\":\"avg\"}'  # last 24h, 15m avg buckets", base)
 }

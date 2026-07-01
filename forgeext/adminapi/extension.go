@@ -26,6 +26,8 @@ import (
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/blob"
+	corecache "github.com/xraph/fabriq/core/cache"
+	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/forgeext"
@@ -44,6 +46,11 @@ type config struct {
 	// similar-to-entity mode ({id} body) is available. The similar-to-entity
 	// mode needs no embedder because it reuses a stored embedding.
 	Embedder agent.Embedder
+	// WritePolicy is the agent-toolkit write allowlist for the guarded-write
+	// endpoint (POST {BasePath}/agent/remember). It is deny-by-default: an empty
+	// policy permits no writes, so Remember stays safe unless the host opts
+	// specific entity/op pairs in via WithWritePolicy.
+	WritePolicy agent.WritePolicy
 }
 
 // Option configures the adminapi extension.
@@ -67,6 +74,15 @@ func WithEmbedder(e agent.Embedder) Option {
 	return func(c *config) { c.Embedder = e }
 }
 
+// WithWritePolicy sets the agent-toolkit write allowlist backing the guarded
+// write endpoint (POST {BasePath}/agent/remember). Deny-by-default: without this
+// option Remember permits no writes. Example: allow product creates/updates via
+// agent.WritePolicy{Allow: map[string][]command.Op{"product": {command.OpCreate,
+// command.OpUpdate}}}.
+func WithWritePolicy(p agent.WritePolicy) Option {
+	return func(c *config) { c.WritePolicy = p }
+}
+
 // Extension exposes the fabriq data fabric as a read-only admin HTTP surface.
 // It depends on the "fabriq" extension and resolves its query facade at Start.
 type Extension struct {
@@ -74,11 +90,14 @@ type Extension struct {
 	parent *forgeext.Extension
 	cfg    config
 
-	mu     sync.Mutex
-	fabric query.Fabric       // resolved in Start
-	fab    *fabriq.Fabriq     // concrete facade, resolved in Start (powers the file-plane endpoints)
-	reg    *registry.Registry // schema registry, resolved in Start (powers types/schema introspection)
-	cas    blob.CAS           // content-addressed store, resolved in Start; nil when EnableCas is off (powers digest summaries)
+	mu        sync.Mutex
+	fabric    query.Fabric         // resolved in Start
+	fab       *fabriq.Fabriq       // concrete facade, resolved in Start (powers the file-plane endpoints)
+	reg       *registry.Registry   // schema registry, resolved in Start (powers types/schema introspection)
+	cas       blob.CAS             // content-addressed store, resolved in Start; nil when EnableCas is off (powers digest summaries)
+	stateRepo projection.StateRepo // projection bookkeeping, resolved in Start; nil when no Postgres store (powers the projections status endpoint)
+	cache     corecache.Cache      // engine cache, resolved in Start; nil when Redis is not configured (powers the cache admin endpoints)
+	stores    *fabriq.Stores       // opened adapters, resolved in Start; nil in fake-backed tests (powers projection reconcile/rebuild)
 }
 
 // NewAdminAPI builds the adminapi extension wired to a started fabriq Extension.
@@ -135,8 +154,21 @@ func (e *Extension) Start(_ context.Context) error {
 	// backs the digest-summary text in the distillation read endpoints; nil when
 	// the host did not enable the CAS (Storage.EnableCas false), in which case
 	// the distill endpoints degrade to empty summaries (hashes only).
-	if stores := e.parent.Stores(); stores != nil && stores.CAS != nil {
-		e.cas = stores.CAS
+	if stores := e.parent.Stores(); stores != nil {
+		if stores.CAS != nil {
+			e.cas = stores.CAS
+		}
+		// The primary shard's projection bookkeeping backs the read-only
+		// projections status endpoint. nil when Postgres is absent.
+		if stores.Postgres != nil {
+			e.stateRepo = stores.Postgres.ProjectionState()
+		}
+		// The engine cache backs the cache admin endpoints. nil when Redis (and
+		// therefore the cache) is not configured.
+		e.cache = stores.Cache
+		// The opened adapters back the projection reconcile/rebuild controls
+		// (Graph/Search Reconciler/Rebuilder constructors live on Stores).
+		e.stores = stores
 	}
 	e.mu.Unlock()
 	e.MarkStarted()
@@ -189,6 +221,31 @@ func (e *Extension) resolveCAS() blob.CAS {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.cas
+}
+
+// resolveStateRepo returns the projection bookkeeping repo, or nil when the host
+// has no Postgres store (e.g. a fake-backed test). The projections endpoint
+// treats nil as 501 (not available).
+func (e *Extension) resolveStateRepo() projection.StateRepo {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.stateRepo
+}
+
+// resolveCache returns the engine cache, or nil when Redis (and therefore the
+// cache) is not configured. The cache admin endpoints treat nil as 501.
+func (e *Extension) resolveCache() corecache.Cache {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cache
+}
+
+// resolveStores returns the opened adapters, or nil when unavailable (fake test
+// harness). The projection reconcile/rebuild endpoints treat nil as 501.
+func (e *Extension) resolveStores() *fabriq.Stores {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.stores
 }
 
 var _ forge.Extension = (*Extension)(nil)

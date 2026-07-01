@@ -55,6 +55,10 @@ type instanceCapabilities struct {
 	CRDT       bool `json:"crdt"`
 	Files      bool `json:"files"`
 	Distill    bool `json:"distill"`
+	// Timeseries is REAL — probed via TSQuerier.Range: an unconfigured stub
+	// answers ErrStoreNotConfigured, a real adapter rejects the empty-series
+	// probe with a validation error first. See timeseriesConfigured.
+	Timeseries bool `json:"timeseries"`
 }
 
 // instanceCapabilitiesResponse is the payload for GET {BasePath}/capabilities
@@ -161,6 +165,7 @@ func (c *adminController) handleInstanceCapabilities(ctx forge.Context) error {
 		Files:      blobConfigured(probeCtx, fab.Blob()),
 		CRDT:       registryHasDocumentPlane(reg),
 		Distill:    registryHasDistillPlane(reg),
+		Timeseries: timeseriesConfigured(probeCtx, fab.Timeseries()),
 	}
 
 	return ctx.JSON(http.StatusOK, instanceCapabilitiesResponse{Capabilities: caps})

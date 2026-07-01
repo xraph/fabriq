@@ -20,7 +20,7 @@ const defaultLimit = 50
 const maxLimit = 200
 
 // capabilities lists the static feature set this admin API supports.
-var capabilities = []string{"entities.read", "entities.write", "schema.read", "plugins.crud", "capabilities.read", "search.read", "vector.read", "spatial.read", "graph.read", "files.read", "files.write", "crdt.read", "live.read", "distill.read", "recall.read"}
+var capabilities = []string{"entities.read", "entities.write", "schema.read", "plugins.crud", "capabilities.read", "search.read", "vector.read", "spatial.read", "graph.read", "files.read", "files.write", "crdt.read", "live.read", "distill.read", "recall.read", "timeseries.read", "events.read", "vector.write", "command.exec", "agent.remember", "projections.read", "projections.admin", "cache.read", "cache.write"}
 
 // metaResponse is the payload for GET {BasePath}/meta.
 type metaResponse struct {
@@ -127,6 +127,34 @@ func (c *adminController) Routes(r forge.Router) error {
 	}
 
 	if err := c.registerRecallRoutes(r); err != nil {
+		return err
+	}
+
+	if err := c.registerTimeseriesRoutes(r); err != nil {
+		return err
+	}
+
+	if err := c.registerEventRoutes(r); err != nil {
+		return err
+	}
+
+	if err := c.registerVectorAdminRoutes(r); err != nil {
+		return err
+	}
+
+	if err := c.registerCommandRoutes(r); err != nil {
+		return err
+	}
+
+	if err := c.registerAgentWriteRoutes(r); err != nil {
+		return err
+	}
+
+	if err := c.registerProjectionRoutes(r); err != nil {
+		return err
+	}
+
+	if err := c.registerCacheRoutes(r); err != nil {
 		return err
 	}
 
