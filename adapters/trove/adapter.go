@@ -300,11 +300,28 @@ func mapErr(err error) error {
 	if err == nil {
 		return nil
 	}
+	// Preserve already-structured errors and fabriq sentinels.
+	var fe *fabriqerr.Error
+	if errors.As(err, &fe) {
+		return err
+	}
+	if errors.Is(err, fabriqerr.ErrNotFound) {
+		return err
+	}
 	msg := strings.ToLower(err.Error())
 	if errors.Is(err, trove.ErrNotFound) ||
 		errors.Is(err, trove.ErrObjectNotFound) ||
 		(strings.Contains(msg, "object") && strings.Contains(msg, "not found")) {
-		return fabriqerr.ErrNotFound
+		return fabriqerr.New(fabriqerr.CodeNotFound, fabriqerr.SafeMessage(fabriqerr.CodeNotFound),
+			fabriqerr.WithMeta(fabriqerr.Meta{Driver: "trove"}))
 	}
-	return fmt.Errorf("fabriq: trove blob: %w", err)
+	code, retry := fabriqerr.CodeInternal, false
+	if strings.Contains(msg, "connection") || strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "i/o") || strings.Contains(msg, "unreachable") {
+		code, retry = fabriqerr.CodeUnavailable, true
+	}
+	return fabriqerr.Wrap(code, err, fabriqerr.SafeMessage(code),
+		fabriqerr.WithRetryable(retry),
+		fabriqerr.WithMeta(fabriqerr.Meta{Driver: "trove",
+			Detail: map[string]string{"driverMessage": err.Error()}}))
 }
