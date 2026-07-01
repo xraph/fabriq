@@ -2,7 +2,6 @@ package adminapi
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -10,7 +9,6 @@ import (
 
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/event"
-	"github.com/xraph/fabriq/core/fabriqerr"
 )
 
 // maxBatchCommands bounds a single all-or-nothing batch so one request cannot
@@ -144,7 +142,7 @@ func (c *adminController) handleExecCommand(ctx forge.Context) error {
 
 	res, execErr := fab.Exec(ctx.Request().Context(), cmd)
 	if execErr != nil {
-		return c.mapCommandError(ctx, execErr)
+		return renderError(ctx, execErr)
 	}
 	return ctx.JSON(http.StatusOK, commandResponse{Result: toResultItem(res)})
 }
@@ -180,7 +178,7 @@ func (c *adminController) handleExecBatch(ctx forge.Context) error {
 
 	results, execErr := fab.ExecBatch(ctx.Request().Context(), cmds)
 	if execErr != nil {
-		return c.mapCommandError(ctx, execErr)
+		return renderError(ctx, execErr)
 	}
 
 	items := make([]commandResultItem, 0, len(results))
@@ -188,14 +186,4 @@ func (c *adminController) handleExecBatch(ctx forge.Context) error {
 		items = append(items, toResultItem(r))
 	}
 	return ctx.JSON(http.StatusOK, commandBatchResponse{Results: items})
-}
-
-// mapCommandError maps command-plane errors to HTTP: a version conflict is 409;
-// everything else defers to mapWriteError (404 missing aggregate, 400 unknown
-// entity, 500 otherwise).
-func (c *adminController) mapCommandError(ctx forge.Context, err error) error {
-	if errors.Is(err, fabriqerr.ErrVersionConflict) {
-		return ctx.JSON(http.StatusConflict, map[string]string{"error": err.Error()})
-	}
-	return mapWriteError(err)
 }

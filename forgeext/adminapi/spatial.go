@@ -156,7 +156,7 @@ func (c *adminController) handleSpatialWithin(ctx forge.Context) error {
 		K:       limit,
 	}
 	if withinErr := spatial.Within(reqCtx, sq, &matches); withinErr != nil {
-		return mapQueryError(withinErr)
+		return renderError(ctx, withinErr)
 	}
 
 	items := c.hydrateSpatialMatches(reqCtx, fab, req.Entity, matches)

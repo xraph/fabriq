@@ -153,7 +153,7 @@ func (c *adminController) handleListEvents(ctx forge.Context) error {
 	reqCtx := ctx.Request().Context()
 	var rows []eventScanRow
 	if qErr := fab.Relational().Query(reqCtx, &rows, sql, args...); qErr != nil {
-		return mapQueryError(qErr)
+		return renderError(ctx, qErr)
 	}
 
 	nextCursor := ""
@@ -190,7 +190,7 @@ func (c *adminController) handleListEvents(ctx forge.Context) error {
 func (c *adminController) handleEventBacklog(ctx forge.Context) error {
 	n, err := c.unpublishedOutboxCount(ctx.Request().Context())
 	if err != nil {
-		return mapQueryError(err)
+		return renderError(ctx, err)
 	}
 	return ctx.JSON(http.StatusOK, eventBacklogResponse{Unpublished: n})
 }

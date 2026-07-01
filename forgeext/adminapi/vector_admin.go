@@ -93,7 +93,7 @@ func (c *adminController) handleVectorGet(ctx forge.Context) error {
 
 	emb, getErr := vec.Get(reqCtx, entity, id)
 	if getErr != nil {
-		return mapQueryError(getErr)
+		return renderError(ctx, getErr)
 	}
 
 	var sumSq float64
@@ -133,7 +133,7 @@ func (c *adminController) handleVectorDelete(ctx forge.Context) error {
 	}
 
 	if delErr := vec.Delete(reqCtx, entity, id); delErr != nil {
-		return mapQueryError(delErr)
+		return renderError(ctx, delErr)
 	}
 	return ctx.JSON(http.StatusOK, vectorDeleteResponse{Deleted: true})
 }
@@ -171,7 +171,7 @@ func (c *adminController) handleVectorDeleteByMeta(ctx forge.Context) error {
 		filter = map[string]string{} // explicit wipe-all
 	}
 	if delErr := vec.DeleteByMeta(reqCtx, req.Entity, filter); delErr != nil {
-		return mapQueryError(delErr)
+		return renderError(ctx, delErr)
 	}
 	return ctx.JSON(http.StatusOK, vectorDeleteResponse{Deleted: true})
 }

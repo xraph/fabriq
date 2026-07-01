@@ -108,12 +108,12 @@ func (c *adminController) handleListPlugins(ctx forge.Context) error {
 	q := query.ListQuery{Limit: maxLimit}
 	var rows []map[string]any
 	if listErr := fab.Relational().List(reqCtx, PluginRemoteEntityType, q, &rows); listErr != nil {
-		if isUnknownEntityErr(listErr) {
+		if unknownEntityCode(listErr) {
 			// Entity type not registered on this host — return empty list rather
 			// than 400, because the admin UI polls this before any plugin is added.
 			return ctx.JSON(http.StatusOK, pluginListResponse{Items: []pluginRemote{}})
 		}
-		return mapQueryError(listErr)
+		return renderError(ctx, listErr)
 	}
 
 	items := make([]pluginRemote, 0, len(rows))
@@ -199,10 +199,10 @@ func (c *adminController) handleDeletePlugin(ctx forge.Context) error {
 	}
 	var rows []map[string]any
 	if listErr := fab.Relational().List(reqCtx, PluginRemoteEntityType, q, &rows); listErr != nil {
-		if isUnknownEntityErr(listErr) {
+		if unknownEntityCode(listErr) {
 			return forge.NotFound("plugin not found")
 		}
-		return mapQueryError(listErr)
+		return renderError(ctx, listErr)
 	}
 	if len(rows) == 0 {
 		return forge.NotFound("plugin not found")

@@ -177,7 +177,7 @@ func (c *adminController) handleGraphNeighbors(ctx forge.Context) error {
 	var srcRows []map[string]any
 	srcCypher := "MATCH (n {id: $id}) RETURN n.id AS id, labels(n) AS labels, n.name AS name, n.sku AS sku, n.status AS status LIMIT 1"
 	if qErr := g.Query(reqCtx, srcCypher, map[string]any{"id": id}, &srcRows); qErr != nil {
-		return mapQueryError(qErr)
+		return renderError(ctx, qErr)
 	}
 	for _, row := range srcRows {
 		sub.mergeNodeRow(row["id"], firstLabel(row["labels"]), entityType, scalarProps(row, "name", "sku", "status"))
@@ -191,7 +191,7 @@ RETURN m.id AS nbr_id, labels(m) AS nbr_labels, m.name AS nbr_name, m.sku AS nbr
 LIMIT $limit`
 	params := map[string]any{"id": id, "limit": limit}
 	if qErr := g.Query(reqCtx, cypher, params, &rows); qErr != nil {
-		return mapQueryError(qErr)
+		return renderError(ctx, qErr)
 	}
 
 	for _, row := range rows {
@@ -270,7 +270,7 @@ LIMIT $limit`
 
 	var rows []map[string]any
 	if qErr := g.Query(reqCtx, cypher, params, &rows); qErr != nil {
-		return mapQueryError(qErr)
+		return renderError(ctx, qErr)
 	}
 
 	for _, row := range rows {
@@ -335,7 +335,7 @@ func (c *adminController) handleGraphQuery(ctx forge.Context) error {
 	// that order so the playground renders a uniform table.
 	var rows []map[string]any
 	if qErr := g.Query(reqCtx, cypher, req.Params, &rows); qErr != nil {
-		return mapQueryError(qErr)
+		return renderError(ctx, qErr)
 	}
 
 	columns := columnOrder(rows)

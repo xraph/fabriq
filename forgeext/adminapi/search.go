@@ -150,7 +150,7 @@ func (c *adminController) handleSearch(ctx forge.Context) error {
 	var rows []map[string]any
 	sq := query.SearchQuery{Entity: entityType, Query: q, Limit: limit}
 	if searchErr := searcher.Search(reqCtx, sq, &rows); searchErr != nil {
-		return mapQueryError(searchErr)
+		return renderError(ctx, searchErr)
 	}
 
 	items := make([]searchItem, 0, len(rows))
@@ -210,7 +210,7 @@ func (c *adminController) handleVectorSearch(ctx forge.Context) error {
 	case req.ID != "":
 		stored, getErr := vec.Get(reqCtx, req.Type, req.ID)
 		if getErr != nil {
-			return mapQueryError(getErr)
+			return renderError(ctx, getErr)
 		}
 		embedding = stored
 	default: // TEXT mode (req.Query != "")
@@ -233,7 +233,7 @@ func (c *adminController) handleVectorSearch(ctx forge.Context) error {
 	var matches []query.VectorMatch
 	vq := query.VectorQuery{Entity: req.Type, Embedding: embedding, K: k}
 	if simErr := vec.Similar(reqCtx, vq, &matches); simErr != nil {
-		return mapQueryError(simErr)
+		return renderError(ctx, simErr)
 	}
 
 	items := c.hydrateMatches(reqCtx, fab, req.Type, matches)

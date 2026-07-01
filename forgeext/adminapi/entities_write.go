@@ -2,14 +2,12 @@ package adminapi
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/event"
-	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/query"
 )
 
@@ -102,7 +100,7 @@ func (c *adminController) handleCreateEntity(ctx forge.Context) error {
 		Payload: sanitizePayload(req.Data),
 	})
 	if execErr != nil {
-		return mapWriteError(execErr)
+		return renderError(ctx, execErr)
 	}
 
 	return ctx.JSON(http.StatusCreated, entityItem{
@@ -148,7 +146,7 @@ func (c *adminController) handleUpdateEntity(ctx forge.Context) error {
 		AggID:   id,
 		Payload: sanitizePayload(req.Data),
 	}); execErr != nil {
-		return mapWriteError(execErr)
+		return renderError(ctx, execErr)
 	}
 
 	return ctx.JSON(http.StatusOK, entityItem{
@@ -193,10 +191,7 @@ func (c *adminController) handleDeleteEntity(ctx forge.Context) error {
 	}
 	var rows []map[string]any
 	if listErr := fab.Relational().List(reqCtx, entityType, q, &rows); listErr != nil {
-		if isUnknownEntityErr(listErr) {
-			return forge.BadRequest(listErr.Error())
-		}
-		return mapQueryError(listErr)
+		return renderError(ctx, listErr)
 	}
 	if len(rows) == 0 {
 		return forge.NotFound("entity not found")
@@ -207,7 +202,7 @@ func (c *adminController) handleDeleteEntity(ctx forge.Context) error {
 		Op:     command.OpDelete,
 		AggID:  id,
 	}); execErr != nil {
-		return mapWriteError(execErr)
+		return renderError(ctx, execErr)
 	}
 
 	ctx.Response().WriteHeader(http.StatusNoContent)
@@ -227,20 +222,4 @@ func sanitizePayload(data map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
-}
-
-// mapWriteError translates command-plane write errors to forge HTTP errors:
-// a missing aggregate (OpUpdate/OpDelete) is 404, an unknown entity type is
-// 400, and everything else is 500.
-func mapWriteError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, fabriqerr.ErrNotFound) {
-		return forge.NotFound("entity not found")
-	}
-	if isUnknownEntityErr(err) {
-		return forge.BadRequest(err.Error())
-	}
-	return forge.InternalError(err)
 }

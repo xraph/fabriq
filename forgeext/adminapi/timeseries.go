@@ -134,7 +134,7 @@ func (c *adminController) handleTimeseriesKeys(ctx forge.Context) error {
 		WHERE tenant_id = current_setting('app.tenant_id', true)
 		ORDER BY key ASC`, series)
 	if qErr := fab.Relational().Query(reqCtx, &rows, sql); qErr != nil {
-		return mapQueryError(qErr)
+		return renderError(ctx, qErr)
 	}
 
 	keys := make([]string, 0, len(rows))
@@ -212,7 +212,7 @@ func (c *adminController) handleTimeseriesRange(ctx forge.Context) error {
 	var raw []query.Point
 	rq := query.RangeQuery{Series: series, Key: key, From: from, To: to}
 	if rErr := ts.Range(reqCtx, rq, &raw); rErr != nil {
-		return mapQueryError(rErr)
+		return renderError(ctx, rErr)
 	}
 
 	resp := tsRangeResponse{Series: series, Key: key, From: from, To: to}

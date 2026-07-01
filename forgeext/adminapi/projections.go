@@ -276,7 +276,7 @@ func (c *adminController) handleProjections(ctx forge.Context) error {
 
 	backlog, err := c.unpublishedOutboxCount(reqCtx)
 	if err != nil {
-		return mapQueryError(err)
+		return renderError(ctx, err)
 	}
 
 	return ctx.JSON(http.StatusOK, projectionsResponse{Projections: items, Backlog: backlog})

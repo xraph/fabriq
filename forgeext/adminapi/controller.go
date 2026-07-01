@@ -1,14 +1,11 @@
 package adminapi
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/xraph/forge"
 
-	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/tenant"
 )
@@ -227,7 +224,7 @@ func (c *adminController) handleList(ctx forge.Context) error {
 	q := query.ListQuery{Limit: limit + 1, Offset: offset} // fetch one extra to detect next page
 	var rows []map[string]any
 	if listErr := fab.Relational().List(reqCtx, entityType, q, &rows); listErr != nil {
-		return mapQueryError(listErr)
+		return renderError(ctx, listErr)
 	}
 
 	nextCursor := ""
@@ -281,7 +278,7 @@ func (c *adminController) handleGet(ctx forge.Context) error {
 	}
 	var rows []map[string]any
 	if listErr := fab.Relational().List(reqCtx, entityType, q, &rows); listErr != nil {
-		return mapQueryError(listErr)
+		return renderError(ctx, listErr)
 	}
 	if len(rows) == 0 {
 		return forge.NotFound("entity not found")
@@ -289,31 +286,6 @@ func (c *adminController) handleGet(ctx forge.Context) error {
 
 	row := rows[0]
 	return ctx.JSON(http.StatusOK, entityItem{ID: id, Type: entityType, Data: row})
-}
-
-// mapQueryError translates fabriq domain errors to forge HTTP errors.
-func mapQueryError(err error) error {
-	if errors.Is(err, fabriqerr.ErrNotFound) {
-		return forge.NotFound("entity not found")
-	}
-	// Surface unknown entity errors as 400 — the type param was invalid.
-	if isUnknownEntityErr(err) {
-		return forge.BadRequest(err.Error())
-	}
-	return forge.InternalError(err)
-}
-
-// isUnknownEntityErr reports whether err is the "unknown entity" sentinel
-// produced by FakeRelational, the real adapter, and the command executor when
-// the entity type name is not registered. The command plane wraps the sentinel
-// with a "command N (verb entity): ..." prefix, so a substring match is used
-// rather than a prefix check to cover both the read (unwrapped) and write
-// (wrapped) paths.
-func isUnknownEntityErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "fabriq: unknown entity \"")
 }
 
 var _ forge.Controller = (*adminController)(nil)
