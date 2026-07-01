@@ -98,6 +98,31 @@ type Extension struct {
 	stateRepo projection.StateRepo // projection bookkeeping, resolved in Start; nil when no Postgres store (powers the projections status endpoint)
 	cache     corecache.Cache      // engine cache, resolved in Start; nil when Redis is not configured (powers the cache admin endpoints)
 	stores    *fabriq.Stores       // opened adapters, resolved in Start; nil in fake-backed tests (powers projection reconcile/rebuild)
+	dynWriter dynamicSchemaWriter  // schema-write facade override for tests; nil means use fab (resolved in Start)
+}
+
+// dynamicSchemaWriter is the subset of *fabriq.Fabriq the schema-write handlers
+// need. Declared as an interface so tests can inject a fake (no Postgres).
+type dynamicSchemaWriter interface {
+	DefineDynamic(ctx context.Context, spec registry.EntitySpec) error
+	AlterDynamic(ctx context.Context, spec registry.EntitySpec) error
+	RenameDynamicField(ctx context.Context, typeName, oldCol, newCol string) error
+	DropDynamicField(ctx context.Context, typeName, col string) error
+	DropDynamic(ctx context.Context, typeName string) error
+}
+
+// resolveDynamicWriter returns the schema-write facade — the injected fake in
+// tests, otherwise the concrete *fabriq.Fabriq resolved at Start.
+func (e *Extension) resolveDynamicWriter() (dynamicSchemaWriter, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.dynWriter != nil {
+		return e.dynWriter, nil
+	}
+	if e.fab == nil {
+		return nil, fmt.Errorf("fabriq-admin-api: not started")
+	}
+	return e.fab, nil
 }
 
 // NewAdminAPI builds the adminapi extension wired to a started fabriq Extension.

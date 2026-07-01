@@ -52,6 +52,30 @@ func (b *tenantBackstop) isTenantTable(table string) bool {
 	return ok
 }
 
+// AddTable adds a table to the guarded set at runtime (e.g. after a dynamic
+// entity is defined). Safe for concurrent use with request-path reads.
+func (b *tenantBackstop) AddTable(table string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.tables[table] = struct{}{}
+}
+
+// RemoveTable removes a table from the guarded set at runtime (e.g. after a
+// dynamic entity is dropped).
+func (b *tenantBackstop) RemoveTable(table string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.tables, table)
+	delete(b.unprotected, table)
+}
+
+// AddGuardedTable registers a runtime-added tenant table with the pool-path
+// backstop. Call after EnsureDynamic for a runtime-defined dynamic entity.
+func (a *Adapter) AddGuardedTable(table string) { a.backstop.AddTable(table) }
+
+// RemoveGuardedTable unregisters a dropped dynamic table from the backstop.
+func (a *Adapter) RemoveGuardedTable(table string) { a.backstop.RemoveTable(table) }
+
 // BeforeQuery implements hook.PreQueryHook.
 func (b *tenantBackstop) BeforeQuery(_ context.Context, qc *hook.QueryContext) (*hook.HookResult, error) {
 	return b.deny(qc)

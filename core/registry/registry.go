@@ -30,84 +30,96 @@ func New() *Registry {
 	}
 }
 
-// Register compiles and validates a spec. Cross-entity references (edge
-// targets) are checked in Validate once all entities are registered.
-func (r *Registry) Register(spec EntitySpec) error {
+// validateAndBind runs all spec validation and computes the Binding. It takes
+// no lock and does not mutate the registry — the shared prep for Register and
+// Replace.
+func (r *Registry) validateAndBind(spec EntitySpec) (*Binding, error) {
 	if spec.Name == "" {
-		return fmt.Errorf("fabriq: entity spec has empty name")
+		return nil, fmt.Errorf("fabriq: entity spec has empty name")
 	}
 	if spec.Kind == KindDocument && spec.CRDT == nil {
-		return fmt.Errorf("fabriq: entity %q: KindDocument requires a CRDT spec", spec.Name)
+		return nil, fmt.Errorf("fabriq: entity %q: KindDocument requires a CRDT spec", spec.Name)
 	}
 
 	binding, err := bind(spec)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if spec.GraphNode == "" && len(spec.Edges) > 0 {
-		return fmt.Errorf("fabriq: entity %q: edges declared but GraphNode is empty", spec.Name)
+		return nil, fmt.Errorf("fabriq: entity %q: edges declared but GraphNode is empty", spec.Name)
 	}
 	for _, e := range spec.Edges {
 		if e.Field == "" || e.Rel == "" || e.Target == "" {
-			return fmt.Errorf("fabriq: entity %q: edge %+v: field, rel and target are all required", spec.Name, e)
+			return nil, fmt.Errorf("fabriq: entity %q: edge %+v: field, rel and target are all required", spec.Name, e)
 		}
 		if !binding.HasColumn(e.Field) {
-			return fmt.Errorf("fabriq: entity %q: edge field %q is not a column of %s", spec.Name, e.Field, binding.Table)
+			return nil, fmt.Errorf("fabriq: entity %q: edge field %q is not a column of %s", spec.Name, e.Field, binding.Table)
 		}
 	}
 	for _, f := range spec.Search.Fields {
 		if !binding.HasColumn(f) {
-			return fmt.Errorf("fabriq: entity %q: search field %q is not a column of %s", spec.Name, f, binding.Table)
+			return nil, fmt.Errorf("fabriq: entity %q: search field %q is not a column of %s", spec.Name, f, binding.Table)
 		}
 	}
 	if spec.Search.Index == "" && len(spec.Search.Fields) > 0 {
-		return fmt.Errorf("fabriq: entity %q: search fields declared but index name is empty", spec.Name)
+		return nil, fmt.Errorf("fabriq: entity %q: search fields declared but index name is empty", spec.Name)
 	}
 	if spec.GraphEdge != nil {
 		if spec.GraphNode != "" || len(spec.Edges) > 0 {
-			return fmt.Errorf("fabriq: entity %q: GraphEdge is exclusive with GraphNode/Edges", spec.Name)
+			return nil, fmt.Errorf("fabriq: entity %q: GraphEdge is exclusive with GraphNode/Edges", spec.Name)
 		}
 		ge := spec.GraphEdge
 		if ge.SourceLabel == "" || ge.TargetLabel == "" {
-			return fmt.Errorf("fabriq: entity %q: GraphEdge needs SourceLabel and TargetLabel", spec.Name)
+			return nil, fmt.Errorf("fabriq: entity %q: GraphEdge needs SourceLabel and TargetLabel", spec.Name)
 		}
 		for _, f := range []string{ge.TypeField, ge.SourceField, ge.TargetField} {
 			if f == "" || !binding.HasColumn(f) {
-				return fmt.Errorf("fabriq: entity %q: GraphEdge field %q is not a column of %s", spec.Name, f, binding.Table)
+				return nil, fmt.Errorf("fabriq: entity %q: GraphEdge field %q is not a column of %s", spec.Name, f, binding.Table)
 			}
 		}
 		structural := map[string]bool{ge.TypeField: true, ge.SourceField: true, ge.TargetField: true}
 		for _, f := range ge.PropFields {
 			if structural[f] {
-				return fmt.Errorf("fabriq: entity %q: GraphEdge PropField %q shadows a structural field", spec.Name, f)
+				return nil, fmt.Errorf("fabriq: entity %q: GraphEdge PropField %q shadows a structural field", spec.Name, f)
 			}
 		}
 		for _, f := range ge.PropFields {
 			if !binding.HasColumn(f) {
-				return fmt.Errorf("fabriq: entity %q: GraphEdge prop %q is not a column of %s", spec.Name, f, binding.Table)
+				return nil, fmt.Errorf("fabriq: entity %q: GraphEdge prop %q is not a column of %s", spec.Name, f, binding.Table)
 			}
 		}
 	}
 	for _, s := range spec.Subscribe {
 		if s.Name == "" {
-			return fmt.Errorf("fabriq: entity %q: subscription scope with empty name", spec.Name)
+			return nil, fmt.Errorf("fabriq: entity %q: subscription scope with empty name", spec.Name)
 		}
 		if s.Field != "" && !binding.HasColumn(s.Field) {
-			return fmt.Errorf("fabriq: entity %q: scope %q field %q is not a column of %s", spec.Name, s.Name, s.Field, binding.Table)
+			return nil, fmt.Errorf("fabriq: entity %q: scope %q field %q is not a column of %s", spec.Name, s.Name, s.Field, binding.Table)
 		}
 	}
 	if spec.Live != nil {
 		for _, c := range spec.Live.Sortable {
 			if !binding.HasColumn(c) {
-				return fmt.Errorf("fabriq: entity %q: live sortable column %q is not a column of %s", spec.Name, c, binding.Table)
+				return nil, fmt.Errorf("fabriq: entity %q: live sortable column %q is not a column of %s", spec.Name, c, binding.Table)
 			}
 		}
 		for _, c := range spec.Live.Filterable {
 			if !binding.HasColumn(c) {
-				return fmt.Errorf("fabriq: entity %q: live filterable column %q is not a column of %s", spec.Name, c, binding.Table)
+				return nil, fmt.Errorf("fabriq: entity %q: live filterable column %q is not a column of %s", spec.Name, c, binding.Table)
 			}
 		}
+	}
+
+	return binding, nil
+}
+
+// Register compiles and validates a spec. Cross-entity references (edge
+// targets) are checked in Validate once all entities are registered.
+func (r *Registry) Register(spec EntitySpec) error {
+	binding, err := r.validateAndBind(spec)
+	if err != nil {
+		return err
 	}
 
 	r.mu.Lock()
@@ -127,6 +139,52 @@ func (r *Registry) Register(spec EntitySpec) error {
 	}
 	ent := &Entity{Spec: spec, Binding: binding}
 	r.entities[spec.Name] = ent
+	return nil
+}
+
+// Replace re-registers an existing DYNAMIC entity with an updated spec,
+// recomputing its Binding. It is the runtime-mutation counterpart to Register
+// (which rejects duplicates). Replacing an unknown entity, or a modelled
+// (static) entity, is an error — statics are compile-time and keep the
+// "register before Open" contract.
+func (r *Registry) Replace(spec EntitySpec) error {
+	binding, err := r.validateAndBind(spec)
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.entities[spec.Name]
+	if !ok {
+		return fmt.Errorf("fabriq: cannot replace unknown entity %q", spec.Name)
+	}
+	if cur.Spec.Schema == nil {
+		return fmt.Errorf("fabriq: entity %q is not dynamic; cannot replace at runtime", spec.Name)
+	}
+	if binding.ModelType() != nil {
+		return fmt.Errorf("fabriq: replacement spec for %q is modelled; dynamic-only", spec.Name)
+	}
+	r.entities[spec.Name] = &Entity{Spec: spec, Binding: binding}
+	return nil
+}
+
+// Unregister removes a DYNAMIC entity from the registry. Removing an unknown
+// or modelled entity is an error.
+func (r *Registry) Unregister(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.entities[name]
+	if !ok {
+		return fmt.Errorf("fabriq: cannot unregister unknown entity %q", name)
+	}
+	if cur.Spec.Schema == nil {
+		return fmt.Errorf("fabriq: entity %q is not dynamic; cannot unregister at runtime", name)
+	}
+	delete(r.entities, name)
+	if mt := cur.Binding.ModelType(); mt != nil {
+		delete(r.byModel, mt)
+	}
 	return nil
 }
 
