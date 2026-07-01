@@ -30,3 +30,47 @@ func TestMigrationStatus_ReadOnly(t *testing.T) {
 		t.Fatalf("expected a non-empty error message in the 501 body")
 	}
 }
+
+// With the gate OFF, the execution endpoints must 403 before touching the parent.
+func TestMigrateUp_403WhenGateOff(t *testing.T) {
+	world := buildTestWorld(t)
+	e := fakeBackedAdminExt(t, world) // gate OFF
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/migrations/up", testTenantID, map[string]any{})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (gate off)", resp.StatusCode)
+	}
+}
+
+// With the gate ON but the fake-backed nil parent, the execution endpoint must
+// 501 (nil-guarded) — never panic, and never start a goroutine that dereferences
+// the nil parent.
+func TestMigrateUp_501WhenGateOnButNoParent(t *testing.T) {
+	world := buildTestWorld(t)
+	e := fakeBackedAdminExt(t, world, WithSchemaAdmin()) // gate ON, parent nil
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/migrations/up", testTenantID, map[string]any{})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501 (nil parent, gate on)", resp.StatusCode)
+	}
+}
+
+// Polling an unknown job id returns 404.
+func TestMigrationJob_NotFound(t *testing.T) {
+	world := buildTestWorld(t)
+	e := fakeBackedAdminExt(t, world)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := get(t, srv, "/admin/migrations/jobs/nope")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}

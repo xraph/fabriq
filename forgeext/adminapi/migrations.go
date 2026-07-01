@@ -1,9 +1,15 @@
 package adminapi
 
 import (
+	"context"
+	"fmt"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/xraph/forge"
+
+	"github.com/xraph/fabriq/core/event"
 )
 
 // migrationItem mirrors one migration's status in camelCase.
@@ -38,7 +44,120 @@ func (c *adminController) registerMigrationRoutes(r forge.Router) error {
 		forge.WithSummary("List applied + pending migrations"),
 		forge.WithTags("Fabriq", "Admin"),
 	}, c.ext.cfg.RouteOptions...)
-	return r.GET(base+"/migrations", c.handleMigrationStatus, opts...)
+	if err := r.GET(base+"/migrations", c.handleMigrationStatus, opts...); err != nil {
+		return err
+	}
+	// Execution (gated by WithSchemaAdmin, checked in the handlers) + job status.
+	if err := r.POST(base+"/migrations/up", c.handleMigrateUp, opts...); err != nil {
+		return err
+	}
+	if err := r.POST(base+"/migrations/down", c.handleMigrateDown, opts...); err != nil {
+		return err
+	}
+	return r.GET(base+"/migrations/jobs/:id", c.handleMigrationJob, opts...)
+}
+
+// migrationJob is one async migration run (up or down).
+type migrationJob struct {
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"`  // "up" | "down"
+	State     string    `json:"state"` // "running" | "done" | "failed"
+	Names     []string  `json:"names,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	StartedAt time.Time `json:"startedAt"`
+	EndedAt   time.Time `json:"endedAt,omitempty"`
+}
+
+// migrationJobs is a single-flight in-memory job registry. Migrations serialize
+// under grove's advisory lock, so one running job at a time is the model.
+type migrationJobs struct {
+	mu      sync.Mutex
+	jobs    map[string]*migrationJob
+	running bool
+}
+
+func newMigrationJobs() *migrationJobs { return &migrationJobs{jobs: map[string]*migrationJob{}} }
+
+// startMigrationJob records a running job and runs it in a detached goroutine
+// (so it outlives the request). Returns an error if a run is already in flight.
+func (c *adminController) startMigrationJob(kind string, run func(context.Context) (*forge.MigrationResult, error)) (*migrationJob, error) {
+	c.jobs.mu.Lock()
+	if c.jobs.running {
+		c.jobs.mu.Unlock()
+		return nil, fmt.Errorf("another migration run is in progress")
+	}
+	job := &migrationJob{ID: event.NewID(), Kind: kind, State: "running", StartedAt: time.Now()}
+	c.jobs.jobs[job.ID] = job
+	c.jobs.running = true
+	c.jobs.mu.Unlock()
+
+	go func() {
+		res, err := run(context.Background())
+		c.jobs.mu.Lock()
+		defer c.jobs.mu.Unlock()
+		job.EndedAt = time.Now()
+		if err != nil {
+			job.State, job.Error = "failed", err.Error()
+		} else {
+			job.State = "done"
+			if res != nil {
+				job.Names = res.Names
+			}
+		}
+		c.jobs.running = false
+	}()
+	return job, nil
+}
+
+// handleMigrateUp serves POST {BasePath}/migrations/up — gated. Runs all pending
+// migrations in a background job; returns 202 with a pollable jobId.
+func (c *adminController) handleMigrateUp(ctx forge.Context) error {
+	return c.startMigrationRun(ctx, "up", c.migrateFn())
+}
+
+// handleMigrateDown serves POST {BasePath}/migrations/down — gated. Rolls back
+// the last applied batch in a background job.
+func (c *adminController) handleMigrateDown(ctx forge.Context) error {
+	return c.startMigrationRun(ctx, "down", c.rollbackFn())
+}
+
+// startMigrationRun is the shared gate + nil-guard + start path for up/down.
+func (c *adminController) startMigrationRun(ctx forge.Context, kind string, run func(context.Context) (*forge.MigrationResult, error)) error {
+	if err := c.requireSchemaAdmin(ctx); err != nil {
+		return err
+	}
+	if c.ext.parent == nil {
+		return ctx.JSON(http.StatusNotImplemented, map[string]string{
+			"error": "migration execution unavailable: no parent fabriq extension configured",
+		})
+	}
+	job, err := c.startMigrationJob(kind, run)
+	if err != nil {
+		return ctx.JSON(http.StatusConflict, map[string]string{"error": err.Error()})
+	}
+	return ctx.JSON(http.StatusAccepted, map[string]string{"jobId": job.ID})
+}
+
+// migrateFn / rollbackFn adapt the parent's Migrate/Rollback to the job runner
+// signature (they are nil-safe only after the parent nil-guard above).
+func (c *adminController) migrateFn() func(context.Context) (*forge.MigrationResult, error) {
+	return func(ctx context.Context) (*forge.MigrationResult, error) { return c.ext.parent.Migrate(ctx) }
+}
+
+func (c *adminController) rollbackFn() func(context.Context) (*forge.MigrationResult, error) {
+	return func(ctx context.Context) (*forge.MigrationResult, error) { return c.ext.parent.Rollback(ctx) }
+}
+
+// handleMigrationJob serves GET {BasePath}/migrations/jobs/:id — poll one job.
+func (c *adminController) handleMigrationJob(ctx forge.Context) error {
+	id := ctx.Param("id")
+	c.jobs.mu.Lock()
+	job, ok := c.jobs.jobs[id]
+	c.jobs.mu.Unlock()
+	if !ok {
+		return ctx.JSON(http.StatusNotFound, map[string]string{"error": "no such job"})
+	}
+	return ctx.JSON(http.StatusOK, job)
 }
 
 // handleMigrationStatus serves GET {BasePath}/migrations. Returns 501 when
