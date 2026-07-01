@@ -1,6 +1,7 @@
 package registry_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/xraph/fabriq/core/registry"
@@ -43,8 +44,8 @@ func TestCoerceRow_CoercesInPlace(t *testing.T) {
 func TestCoerceRow_RejectsMismatchNamingColumn(t *testing.T) {
 	ent := coerceRowDynEntity(t)
 	err := registry.CoerceRow(ent, map[string]any{"qty": "not-a-number"})
-	if err == nil || !contains(err.Error(), "qty") {
-		t.Fatalf("want error naming qty, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "qty") || !strings.Contains(err.Error(), "cr_widget") {
+		t.Fatalf("want error naming entity and column, got %v", err)
 	}
 }
 
@@ -76,13 +77,4 @@ func TestCoerceRow_NoopForGoModel(t *testing.T) {
 	if vals["title"] != 123 {
 		t.Fatalf("value must be untouched, got %#v", vals["title"])
 	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
