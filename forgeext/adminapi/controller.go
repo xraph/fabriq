@@ -163,6 +163,10 @@ func (c *adminController) Routes(r forge.Router) error {
 		return err
 	}
 
+	if err := c.registerMigrationRoutes(r); err != nil {
+		return err
+	}
+
 	return c.registerPluginRoutes(r)
 }
 
