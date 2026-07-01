@@ -43,7 +43,11 @@ func sqlType(t registry.ColumnType) string {
 // transaction (which is RLS-constrained to the app role).
 func (a *Adapter) execDDL(ctx context.Context, stmt string) error {
 	if _, err := a.pg.Exec(ctx, stmt); err != nil {
-		return err
+		// Classify at the source so every DDL caller gets a structured error
+		// whose caller-facing message is driver-free. The raw statement is
+		// deliberately NOT attached — it would leak internal SQL to clients;
+		// the driver cause remains reachable via Unwrap for server logs.
+		return translatePg("ddl", "", "", err)
 	}
 	return nil
 }
@@ -161,7 +165,7 @@ func (a *Adapter) EnsureDynamic(ctx context.Context, ent *registry.Entity) error
 
 	for _, stmt := range stmts {
 		if err := a.execDDL(ctx, stmt); err != nil {
-			return fmt.Errorf("fabriq: ensure dynamic table %s: %w\nstatement: %s", s.Table, err, stmt)
+			return fmt.Errorf("fabriq: ensure dynamic table %s: %w", s.Table, err)
 		}
 	}
 	return nil

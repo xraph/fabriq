@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/xraph/forge"
@@ -182,6 +185,35 @@ func TestHandleDefineDynamic(t *testing.T) {
 	col := spec.Schema.Columns[0]
 	if col.Name != "label" || col.Type != registry.ColText || !col.NotNull {
 		t.Errorf("column = %+v, want {label ColText NotNull=true}", col)
+	}
+}
+
+// TestHandleDefineDynamic_DDLErrorDoesNotLeak proves the dynamic-DDL write path
+// never ships raw driver text or SQL to the client. The fake writer returns a
+// pgdriver-shaped error carrying a SQLSTATE and a literal DDL statement (exactly
+// what execDDL used to surface); mapSchemaError must render it structurally
+// without any of that raw text reaching the response body.
+func TestHandleDefineDynamic_DDLErrorDoesNotLeak(t *testing.T) {
+	raw := "pgdriver: exec: ERROR: column \"label\" of relation \"ds_gadget\" already exists (SQLSTATE 42701)\nstatement: ALTER TABLE ds_gadget ADD COLUMN label TEXT NOT NULL"
+	w := &fakeWriter{failWith: errors.New(raw)}
+	srv := buildServer(t, writerBackedExt(t, w))
+	defer srv.Close()
+
+	resp := doJSON(t, http.MethodPost, srv.URL+"/admin/schema", map[string]any{
+		"type":    "gadget",
+		"columns": []map[string]any{{"name": "label", "kind": "string", "required": true}},
+	})
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+	for _, leak := range []string{"pgdriver", "SQLSTATE", "42701", "ALTER TABLE", "statement:", "ds_gadget"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("response body leaked %q: %s", leak, got)
+		}
+	}
+	if resp.StatusCode < 400 {
+		t.Fatalf("expected an error status, got %d", resp.StatusCode)
 	}
 }
 

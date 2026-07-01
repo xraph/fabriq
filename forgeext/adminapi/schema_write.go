@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq"
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/registry"
 )
 
@@ -187,7 +188,7 @@ func (c *adminController) handleDefineDynamic(ctx forge.Context) error {
 		Schema: &registry.DynamicSchema{Table: tableFor(req.Type), Columns: cols, Indexes: idx},
 	}
 	if err := w.DefineDynamic(ctx.Request().Context(), spec); err != nil {
-		return mapSchemaError(err)
+		return mapSchemaError(ctx, err)
 	}
 	return ctx.JSON(http.StatusCreated, schemaResponse{Type: req.Type, Fields: specFields(spec)})
 }
@@ -240,7 +241,7 @@ func (c *adminController) handleAddFields(ctx forge.Context) error {
 		},
 	}
 	if err := w.AlterDynamic(ctx.Request().Context(), spec); err != nil {
-		return mapSchemaError(err)
+		return mapSchemaError(ctx, err)
 	}
 	return ctx.JSON(http.StatusOK, schemaResponse{Type: typeName, Fields: specFields(spec)})
 }
@@ -288,7 +289,7 @@ func (c *adminController) handleRenameField(ctx forge.Context) error {
 		return forge.BadRequest("invalid identifier in rename")
 	}
 	if err := w.RenameDynamicField(ctx.Request().Context(), typeName, req.From, req.To); err != nil {
-		return mapSchemaError(err)
+		return mapSchemaError(ctx, err)
 	}
 	return ctx.JSON(http.StatusOK, map[string]string{"type": typeName, "from": req.From, "to": req.To})
 }
@@ -311,7 +312,7 @@ func (c *adminController) handleDropField(ctx forge.Context) error {
 		return forge.BadRequest("confirmation required: pass ?confirm=" + col)
 	}
 	if err := w.DropDynamicField(ctx.Request().Context(), typeName, col); err != nil {
-		return mapSchemaError(err)
+		return mapSchemaError(ctx, err)
 	}
 	return ctx.JSON(http.StatusOK, map[string]string{"type": typeName, "dropped": col})
 }
@@ -334,7 +335,7 @@ func (c *adminController) handleDropType(ctx forge.Context) error {
 		return forge.BadRequest("confirmation required: pass ?confirm=" + typeName)
 	}
 	if err := w.DropDynamic(ctx.Request().Context(), typeName); err != nil {
-		return mapSchemaError(err)
+		return mapSchemaError(ctx, err)
 	}
 	return ctx.JSON(http.StatusOK, map[string]string{"dropped": typeName})
 }
@@ -358,9 +359,16 @@ func specFields(spec registry.EntitySpec) []schemaField {
 // ("cannot alter unknown entity %q", "cannot drop unknown entity %q", "unknown
 // dynamic entity %q"), so those are matched by substring. ErrDynamicUnavailable
 // IS a sentinel and is matched with errors.Is.
-func mapSchemaError(err error) error {
+func mapSchemaError(ctx forge.Context, err error) error {
 	if err == nil {
 		return nil
+	}
+	// Structured errors (e.g. classified DDL faults from the postgres adapter)
+	// render directly: proper Code→HTTP status and NO driver text or SQL in the
+	// response body.
+	var fe *fabriqerr.Error
+	if errors.As(err, &fe) {
+		return renderError(ctx, err)
 	}
 	if errors.Is(err, fabriq.ErrDynamicUnavailable) {
 		return forge.NewHTTPError(http.StatusNotImplemented, err.Error())
@@ -380,5 +388,7 @@ func mapSchemaError(err error) error {
 		strings.Contains(msg, "must be KindAggregate") || strings.Contains(msg, "invalid") {
 		return forge.BadRequest(msg)
 	}
-	return forge.InternalError(err)
+	// Anything else is rendered generically (safe message, no leak) rather than
+	// dumping err.Error() into the response.
+	return renderError(ctx, err)
 }
