@@ -173,7 +173,7 @@ func (c *adminController) handleProjectionReconcile(ctx forge.Context) error {
 
 	drifts, rErr := rec.Reconcile(reqCtx, tid, req.Repair)
 	if rErr != nil {
-		return forge.InternalError(rErr)
+		return renderError(ctx, rErr)
 	}
 
 	items := make([]driftItem, 0, len(drifts))
@@ -216,11 +216,11 @@ func (c *adminController) handleProjectionRebuild(ctx forge.Context) error {
 
 	oldTarget, newTarget, rErr := reb.Rebuild(reqCtx, tid)
 	if rErr != nil {
-		return forge.InternalError(rErr)
+		return renderError(ctx, rErr)
 	}
 	// Promote the freshly built target and abandon the old one.
 	if fErr := reb.Finalize(reqCtx, tid, oldTarget); fErr != nil {
-		return forge.InternalError(fErr)
+		return renderError(ctx, fErr)
 	}
 	return ctx.JSON(http.StatusOK, rebuildResponse{
 		Projection: req.Projection,

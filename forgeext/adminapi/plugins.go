@@ -164,7 +164,7 @@ func (c *adminController) handleCreatePlugin(ctx forge.Context) error {
 		},
 	})
 	if execErr != nil {
-		return forge.InternalError(execErr)
+		return renderError(ctx, execErr)
 	}
 
 	return ctx.JSON(http.StatusCreated, pluginRemote{
@@ -217,7 +217,7 @@ func (c *adminController) handleDeletePlugin(ctx forge.Context) error {
 		if errors.Is(execErr, fabriqerr.ErrNotFound) {
 			return forge.NotFound("plugin not found")
 		}
-		return forge.InternalError(execErr)
+		return renderError(ctx, execErr)
 	}
 
 	ctx.Response().WriteHeader(http.StatusNoContent)

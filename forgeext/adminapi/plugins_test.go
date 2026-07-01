@@ -3,9 +3,11 @@ package adminapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/xraph/fabriq/core/registry"
@@ -362,6 +364,59 @@ func TestAdminPlugins_Create_MissingModule(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+// TestAdminPlugins_Create_ExecFailure_RendersStructuredError verifies that a
+// write failure on fab.Exec (simulated here as an outbox-append failure deep
+// in the fake store's transaction, standing in for a driver-level failure in
+// the real postgres adapter) now goes through renderError instead of the old
+// forge.InternalError. The response must be the structured errorBody shape
+// (status 500, error.code = "internal") and must NOT leak the raw injected
+// error text (which deliberately looks like a driver error) anywhere in the
+// top-level body — proving the leak vector this fix wave closes.
+func TestAdminPlugins_Create_ExecFailure_RendersStructuredError(t *testing.T) {
+	world := buildPluginWorld(t)
+	e := fakeBackedAdminExt(t, world)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	const driverLeakText = "pq: duplicate key value violates unique constraint SQLSTATE 23505 pgdriver"
+	world.Store.FailOnOutbox(func() error {
+		return errors.New(driverLeakText)
+	})
+	defer world.Store.FailOnOutbox(nil)
+
+	resp := postPlugin(t, srv, map[string]any{
+		"name":   "leaky-plugin",
+		"url":    "http://cdn.example.com/leaky.js",
+		"scope":  "admin",
+		"module": "./Leaky",
+	})
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", resp.StatusCode, body)
+	}
+
+	if strings.Contains(string(body), "pgdriver") || strings.Contains(string(body), "SQLSTATE") {
+		t.Fatalf("response body leaked raw driver text: %s", body)
+	}
+
+	var got errorBody
+	if decErr := json.Unmarshal(body, &got); decErr != nil {
+		t.Fatalf("decode errorBody: %v; body = %s", decErr, body)
+	}
+	if got.Error.Code != "internal" {
+		t.Errorf("error.code = %q, want %q", got.Error.Code, "internal")
+	}
+	if got.Error.Message == "" || strings.Contains(got.Error.Message, driverLeakText) {
+		t.Errorf("error.message = %q, must be the generic safe message, not the driver text", got.Error.Message)
 	}
 }
 
