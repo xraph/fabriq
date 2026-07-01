@@ -66,6 +66,13 @@ func (c *adminController) handleAdhocDDL(ctx forge.Context) error {
 	slog.Info("fabriq.adminapi.schema.adhoc_ddl", "tenant", tid, "sql", req.SQL)
 
 	if err := stores.Postgres.ExecRawDDL(reqCtx, req.SQL); err != nil {
+		// INTENTIONAL: surface the raw Postgres error to the caller. This is a
+		// gated (WithSchemaAdmin), schema-owner-only escape hatch — the operator
+		// hand-wrote the DDL and needs the exact DB error to fix it, exactly as
+		// the raw-query console (/query) does for SQL. renderError would collapse
+		// a non-fabriqerr driver error to a generic message, defeating the point.
+		// The general "no raw driver strings to clients" invariant targets
+		// untrusted/tenant callers; this caller is already privileged.
 		return forge.BadRequest(err.Error())
 	}
 	return ctx.JSON(http.StatusOK, map[string]any{"ok": true, "executed": req.SQL})
