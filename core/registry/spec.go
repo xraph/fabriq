@@ -50,6 +50,12 @@ type DynamicSchema struct {
 	Table   string
 	Columns []DynamicColumn
 	Indexes []DynamicIndex
+
+	// NoTypeCheck opts the entire entity out of application-level payload type
+	// validation on the command plane. Column values are then passed through
+	// unchanged and only the database column types enforce shape. Zero value
+	// (false) = validate.
+	NoTypeCheck bool
 }
 
 // Kind classifies how an entity is written.

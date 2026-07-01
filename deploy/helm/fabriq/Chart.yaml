@@ -1,7 +1,7 @@
 apiVersion: v2
 name: fabriq
 description: >-
-  The TWINOS data fabric background plane — outbox relay, projection
+  The fabriq data fabric background plane — outbox relay, projection
   consumers (graph/search), reconciler, and CRDT document materializer —
   plus an advisory-locked schema-migration hook. Datastores are external
   by default.
@@ -11,7 +11,6 @@ version: 0.1.0
 appVersion: "0.1.0"
 keywords:
   - fabriq
-  - twinos
   - data-fabric
   - cqrs
   - outbox
@@ -19,4 +18,4 @@ home: https://github.com/xraph/fabriq
 sources:
   - https://github.com/xraph/fabriq
 maintainers:
-  - name: TWINOS
+  - name: xraph

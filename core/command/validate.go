@@ -73,6 +73,12 @@ func (x *Executor) prepare(ctx context.Context, cmd Command) (*preparedCommand, 
 	if err := validateRequired(ent, vals); err != nil {
 		return nil, err
 	}
+	skipTypes := cmd.SkipTypeCheck || (ent.Spec.Schema != nil && ent.Spec.Schema.NoTypeCheck)
+	if !skipTypes {
+		if err := registry.CoerceRow(ent, vals); err != nil {
+			return nil, err
+		}
+	}
 	if ent.Spec.Validate != nil {
 		if err := ent.Spec.Validate(vals); err != nil {
 			return nil, fmt.Errorf("fabriq: entity %q validation: %w", ent.Spec.Name, err)

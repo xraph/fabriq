@@ -6,14 +6,14 @@ import (
 	"github.com/xraph/grove/migrate"
 )
 
-// Domain tables for the TWINOS pack. Columns mirror domain/*.go grove tags
+// Domain tables for the example domain pack. Columns mirror domain/*.go grove tags
 // exactly — the registry-conformance test fails the build on drift in
 // either direction. No cross-table foreign keys: referential shape is
 // projected into the graph, and rebuilds replay from these tables.
 var migration0003SiteAssetTag = &migrate.Migration{
 	Name:    "site_asset_tag",
 	Version: "202606120003",
-	Comment: "TWINOS domain tables + telemetry readings table",
+	Comment: "Example domain tables + telemetry readings table",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
 		return execAll(ctx, exec, []string{
 			`CREATE TABLE IF NOT EXISTS sites (

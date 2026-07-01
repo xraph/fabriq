@@ -65,11 +65,13 @@ func (a *Adapter) Get(ctx context.Context, ks corecache.Keyspace, key string) (v
 	}
 	val, err = a.store.GetRaw(ctx, fullKey(ks, part, gen, key))
 	if errors.Is(err, kv.ErrNotFound) {
+		a.stats.misses.Add(1)
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("fabriq/cache: get: %w", err)
 	}
+	a.stats.hits.Add(1)
 	return val, true, nil
 }
 
@@ -86,6 +88,7 @@ func (a *Adapter) Set(ctx context.Context, ks corecache.Keyspace, key string, va
 	if err := a.store.SetRaw(ctx, fullKey(ks, part, gen, key), val, opts...); err != nil {
 		return fmt.Errorf("fabriq/cache: set: %w", err)
 	}
+	a.stats.sets.Add(1)
 	return nil
 }
 
@@ -93,6 +96,7 @@ func (a *Adapter) Set(ctx context.Context, ks corecache.Keyspace, key string, va
 // (single-flight per key) on a miss, stores the result and returns it.
 func (a *Adapter) GetOrLoad(ctx context.Context, ks corecache.Keyspace, key string,
 	load func(context.Context) ([]byte, error)) ([]byte, error) {
+	// hit/miss is counted inside Get (below), which every lookup routes through.
 	if v, ok, err := a.Get(ctx, ks, key); err != nil || ok {
 		return v, err
 	}
@@ -135,6 +139,7 @@ func (a *Adapter) Invalidate(ctx context.Context, ks corecache.Keyspace, keys ..
 	if err := a.store.Delete(ctx, full...); err != nil {
 		return fmt.Errorf("fabriq/cache: invalidate: %w", err)
 	}
+	a.stats.invalidations.Add(1)
 	return nil
 }
 
@@ -148,6 +153,7 @@ func (a *Adapter) InvalidateKeyspace(ctx context.Context, ks corecache.Keyspace)
 	if err := a.client.Incr(ctx, genKey(ks, part)).Err(); err != nil {
 		return fmt.Errorf("fabriq/cache: invalidate keyspace: %w", err)
 	}
+	a.stats.invalidations.Add(1)
 	return nil
 }
 
@@ -161,6 +167,7 @@ func (a *Adapter) InvalidateEntity(ctx context.Context, entity string) error {
 			return fmt.Errorf("fabriq/cache: invalidate entity %q (%s): %w", entity, part, err)
 		}
 	}
+	a.stats.invalidations.Add(1)
 	return nil
 }
 

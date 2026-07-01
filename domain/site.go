@@ -1,5 +1,5 @@
-// Package domain is the TWINOS domain pack: the only fabriq package with
-// TWINOS-specific knowledge. It seeds three entities that exercise every
+// Package domain is the example domain pack: the only fabriq package with
+// domain-specific knowledge. It seeds three entities that exercise every
 // fabric capability — site (plain aggregate), asset (graph edges), tag
 // (telemetry metadata whose readings bypass per-row events).
 package domain

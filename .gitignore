@@ -10,3 +10,12 @@ config.local.yaml
 # Build artifacts
 /vendor/
 /dist/
+
+# scratch task reports
+.task-*-report.md
+.admin-demo-report.md
+.p*-report.md
+.seed-report.md
+
+# admin-demo compiled binary
+/admin-demo

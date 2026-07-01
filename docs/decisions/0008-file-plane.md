@@ -4,8 +4,8 @@
 
 ## Context
 
-fabriq needs to support files (documents, images, attachments) to power the
-twinos `files`/`explorer` extensions and to let files be first-class knowledge-
+fabriq needs to support files (documents, images, attachments) to power a
+consuming app's `files`/`explorer` extensions and to let files be first-class knowledge-
 graph citizens. Files are two things with different storage shapes: a small,
 queryable *catalog* (name, tree position, checksum, permissions) and large,
 opaque *bytes*. fabriq is excellent at the former and deliberately stores none
@@ -95,7 +95,7 @@ access guard that rejects cross-tenant keys.
 
 - fabriq gains files without storing a byte, without a second metadata source of
   truth, and without inheriting Trove's grove/forge dependency surface.
-- The twinos `files`/`explorer` extensions keep their policy (ACL enforcement,
+- The consuming app's `files`/`explorer` extensions keep their policy (ACL enforcement,
   share/token logic, image transforms, HTTP) and swap persistence from Grove ORM
   to fabriq — files become versioned, scoped, live, graph-projected, searchable,
   and reconciled.

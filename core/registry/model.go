@@ -63,6 +63,16 @@ func (b *Binding) HasColumn(col string) bool {
 	return ok
 }
 
+// DynColumn returns the declared dynamic column for col. ok is false when this
+// binding is not dynamic or col is not one of its declared domain columns.
+func (b *Binding) DynColumn(col string) (DynamicColumn, bool) {
+	if !b.dynamic {
+		return DynamicColumn{}, false
+	}
+	dc, ok := b.dynCols[col]
+	return dc, ok
+}
+
 // Required returns the non-structural columns that must be provided on
 // create/update: NOT NULL, no default, not auto-generated.
 func (b *Binding) Required() []string {

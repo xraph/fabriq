@@ -109,3 +109,22 @@ type Cache interface {
 	// Close releases resources.
 	Close() error
 }
+
+// Stats is a point-in-time snapshot of cache activity counters. It is optional
+// observability: only adapters that implement StatsReader expose it.
+type Stats struct {
+	// Hits/Misses count read-through lookups (GetOrLoad) that were served from
+	// cache vs. had to load. HitRate = Hits / (Hits + Misses).
+	Hits   int64 `json:"hits"`
+	Misses int64 `json:"misses"`
+	// Sets counts values stored; Invalidations counts eviction/generation-bump ops.
+	Sets          int64 `json:"sets"`
+	Invalidations int64 `json:"invalidations"`
+}
+
+// StatsReader is an optional interface a Cache may implement to expose activity
+// counters for hit-rate observability. Callers type-assert for it; a Cache that
+// does not implement it simply has no stats surface.
+type StatsReader interface {
+	Stats() Stats
+}

@@ -66,6 +66,10 @@ type Command struct {
 	// ExpectedVersion enables optimistic concurrency: when set, the stored
 	// version must match or the command fails with a VersionConflictError.
 	ExpectedVersion *int64
+
+	// SkipTypeCheck bypasses application-level payload type validation for this
+	// one write (dynamic entities only). Zero value (false) = validate.
+	SkipTypeCheck bool
 }
 
 // Result reports the outcome of one command.

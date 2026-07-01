@@ -1,4 +1,4 @@
-// Command api-example is a minimal TWINOS-style API service on Forge,
+// Command api-example is a minimal example API service on Forge,
 // demonstrating fabriq's data plane: commands, queries, and SSE
 // fetch-then-subscribe. It represents a Go service behind the Rust
 // gateway — it does NOT proxy or terminate anything itself, and its SSE

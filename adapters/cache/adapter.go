@@ -7,6 +7,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/xraph/grove/kv"
@@ -28,6 +29,25 @@ type Adapter struct {
 	store  *kv.Store
 	client redis.UniversalClient // for atomic generation counters (INCR/GET)
 	flight *flightGroup
+	stats  cacheStats
+}
+
+// cacheStats holds lock-free activity counters for hit-rate observability.
+type cacheStats struct {
+	hits          atomic.Int64
+	misses        atomic.Int64
+	sets          atomic.Int64
+	invalidations atomic.Int64
+}
+
+// Stats implements corecache.StatsReader — a point-in-time counter snapshot.
+func (a *Adapter) Stats() corecache.Stats {
+	return corecache.Stats{
+		Hits:          a.stats.hits.Load(),
+		Misses:        a.stats.misses.Load(),
+		Sets:          a.stats.sets.Load(),
+		Invalidations: a.stats.invalidations.Load(),
+	}
 }
 
 // Open dials Redis through grove kv and pings it.

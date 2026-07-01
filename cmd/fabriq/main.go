@@ -45,7 +45,7 @@ func main() {
 	cli.RunApp(setup,
 		cli.WithCLIName("fabriq"),
 		cli.WithCLIVersion(version),
-		cli.WithCLIDescription("TWINOS data fabric: worker + operations"),
+		cli.WithCLIDescription("fabriq data fabric: worker + operations"),
 		cli.WithGlobalFlags(
 			cli.NewStringFlag("dsn", "", "Postgres DSN (overrides FABRIQ_POSTGRES_DSN)", ""),
 		),

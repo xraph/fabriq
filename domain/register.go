@@ -6,7 +6,7 @@ import (
 	"github.com/xraph/fabriq/core/registry"
 )
 
-// RegisterAll registers the TWINOS domain pack. Call it once at startup;
+// RegisterAll registers the example domain pack. Call it once at startup;
 // follow with reg.Validate() (fabriq.New does both).
 func RegisterAll(reg *registry.Registry) error {
 	specs := make([]registry.EntitySpec, 0, 12)
