@@ -229,7 +229,8 @@ type FakeRelational struct {
 func (r *FakeRelational) entity(name string) (*registry.Entity, error) {
 	ent, ok := r.reg.Get(name)
 	if !ok {
-		return nil, fmt.Errorf("fabriq: unknown entity %q", name)
+		return nil, fabriqerr.New(fabriqerr.CodeInvalidInput,
+			"Unknown entity type.", fabriqerr.WithEntity(name, ""))
 	}
 	return ent, nil
 }
