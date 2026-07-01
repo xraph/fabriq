@@ -51,6 +51,10 @@ type config struct {
 	// policy permits no writes, so Remember stays safe unless the host opts
 	// specific entity/op pairs in via WithWritePolicy.
 	WritePolicy agent.WritePolicy
+	// SchemaAdmin enables the privileged schema-ops endpoints (static migration
+	// execution and ad-hoc DDL). Default false: those endpoints 403 until the
+	// host opts in via WithSchemaAdmin. Read-only status/drift stay available.
+	SchemaAdmin bool
 }
 
 // Option configures the adminapi extension.
@@ -82,6 +86,11 @@ func WithEmbedder(e agent.Embedder) Option {
 func WithWritePolicy(p agent.WritePolicy) Option {
 	return func(c *config) { c.WritePolicy = p }
 }
+
+// WithSchemaAdmin enables the privileged schema-ops endpoints — running/rolling
+// back static migrations and executing ad-hoc DDL. These are instance-global,
+// schema-owner operations; leave OFF unless the host guards the admin API.
+func WithSchemaAdmin() Option { return func(c *config) { c.SchemaAdmin = true } }
 
 // Extension exposes the fabriq data fabric as a read-only admin HTTP surface.
 // It depends on the "fabriq" extension and resolves its query facade at Start.

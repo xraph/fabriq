@@ -166,12 +166,27 @@ func (c *adminController) Routes(r forge.Router) error {
 	return c.registerPluginRoutes(r)
 }
 
+// requireSchemaAdmin returns a 403 error when the privileged schema-ops gate is
+// off; handlers call it before any migration-execution or DDL mutation.
+func (c *adminController) requireSchemaAdmin(ctx forge.Context) error {
+	if !c.ext.cfg.SchemaAdmin {
+		return ctx.JSON(http.StatusForbidden, map[string]string{
+			"error": "schema admin not enabled (host must opt in via WithSchemaAdmin)",
+		})
+	}
+	return nil
+}
+
 // handleMeta serves GET {BasePath}/meta.
 func (c *adminController) handleMeta(ctx forge.Context) error {
+	caps := capabilities
+	if c.ext.cfg.SchemaAdmin {
+		caps = append(append([]string(nil), capabilities...), "schema.admin")
+	}
 	resp := metaResponse{
 		Name:         "fabriq-admin-api",
 		Version:      Version,
-		Capabilities: capabilities,
+		Capabilities: caps,
 	}
 	// Populate the resolved tenant when one is present. ErrNoTenant is the
 	// expected sentinel for unauthenticated or tenant-agnostic callers; all
