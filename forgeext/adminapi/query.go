@@ -77,18 +77,37 @@ func hasKeywordPrefix(s, keyword string) bool {
 // touches column refs, aliases, or string literals.
 var fromJoinIdentRe = regexp.MustCompile(`(?i)(\bfrom\b|\bjoin\b)(\s+)("?)([a-zA-Z_][a-zA-Z0-9_]*)("?)`)
 
+// sqlSkipRe matches regions the rewriter must treat as opaque: single-quoted
+// string literals (with '' escapes), line comments, and block comments — so a
+// word like "from products" inside a literal or comment is never rewritten.
+var sqlSkipRe = regexp.MustCompile(`'(?:[^']|'')*'|--[^\n]*|/\*[\s\S]*?\*/`)
+
 // resolveEntityTables rewrites bare entity-table references in FROM/JOIN
 // positions to their physical ds_-prefixed table names, so callers can write
 // `FROM customers` instead of `FROM ds_customers`. `physical` is the set of
-// known physical dynamic-entity table names (lowercased, e.g. {"ds_customers":true}).
-// An identifier that already names a physical table, or one that doesn't resolve
-// to a known table when ds_-prefixed (information_schema, a CTE name, etc.), is
-// left untouched — so this never rewrites a non-entity reference.
+// known physical dynamic-entity table names (lowercased). Identifiers already
+// naming a physical table, or that don't resolve to a known table when
+// ds_-prefixed (information_schema, a CTE name, a column/alias), are left
+// untouched — and rewriting is skipped entirely inside string literals and
+// comments, so it never alters a literal value or comment text.
 func resolveEntityTables(sql string, physical map[string]bool) string {
 	if len(physical) == 0 {
 		return sql
 	}
-	return fromJoinIdentRe.ReplaceAllStringFunc(sql, func(m string) string {
+	var b strings.Builder
+	last := 0
+	for _, loc := range sqlSkipRe.FindAllStringIndex(sql, -1) {
+		b.WriteString(rewriteFromJoinTables(sql[last:loc[0]], physical)) // code before the skip region
+		b.WriteString(sql[loc[0]:loc[1]])                                // literal/comment, verbatim
+		last = loc[1]
+	}
+	b.WriteString(rewriteFromJoinTables(sql[last:], physical))
+	return b.String()
+}
+
+// rewriteFromJoinTables applies the FROM/JOIN table rewrite to one code segment.
+func rewriteFromJoinTables(s string, physical map[string]bool) string {
+	return fromJoinIdentRe.ReplaceAllStringFunc(s, func(m string) string {
 		g := fromJoinIdentRe.FindStringSubmatch(m)
 		kw, ws, q1, ident, q2 := g[1], g[2], g[3], g[4], g[5]
 		low := strings.ToLower(ident)

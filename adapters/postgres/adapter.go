@@ -510,8 +510,8 @@ func classifyQueryErr(err error) error {
 // returns dynamic rows plus their column order. It runs inside a READ ONLY,
 // tenant-stamped transaction, so Postgres itself rejects any write/DDL and RLS
 // contains the reads; the backstop still guards against touching a non-RLS
-// table without a tenant_id predicate. A 15s statement_timeout and a row cap
-// bound cost.
+// table without a tenant_id predicate. A statement_timeout (default 15s,
+// tunable via RawQueryTimeout) and a row cap bound cost.
 func (a *Adapter) QueryDynamicReadOnly(ctx context.Context, sql string, args ...any) ([]map[string]any, []string, bool, error) {
 	if gerr := a.backstop.guardRawSQL(sql); gerr != nil {
 		return nil, nil, false, gerr

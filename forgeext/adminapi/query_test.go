@@ -63,6 +63,10 @@ func TestResolveEntityTables(t *testing.T) {
 		{"unknown schema untouched", "SELECT table_name FROM information_schema.tables", "SELECT table_name FROM information_schema.tables"},
 		{"unknown entity untouched", "SELECT * FROM widgets", "SELECT * FROM widgets"},
 		{"lowercase from/join keywords", "select * from customers c join products p on p.id = c.pid", "select * from ds_customers c join ds_products p on p.id = c.pid"},
+		{"string literal is not rewritten", "SELECT * FROM orders WHERE note = 'from products'", "SELECT * FROM ds_orders WHERE note = 'from products'"},
+		{"'' escape inside literal preserved", "SELECT * FROM customers WHERE x = 'it''s from products'", "SELECT * FROM ds_customers WHERE x = 'it''s from products'"},
+		{"line comment not rewritten", "SELECT * FROM orders -- join products here\nLIMIT 1", "SELECT * FROM ds_orders -- join products here\nLIMIT 1"},
+		{"block comment not rewritten", "SELECT * FROM orders /* from products */ LIMIT 1", "SELECT * FROM ds_orders /* from products */ LIMIT 1"},
 	}
 	for _, tc := range cases {
 		if got := resolveEntityTables(tc.in, physical); got != tc.want {
