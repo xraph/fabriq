@@ -288,6 +288,10 @@ func TestExec_UnknownEntity(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("want unknown-entity error, got %v", err)
 	}
+	var fe *fabriqerr.Error
+	if !errors.As(err, &fe) || fe.Code != fabriqerr.CodeInvalidInput {
+		t.Fatalf("unknown-entity must be structured invalid_input, got %T %v", err, err)
+	}
 }
 
 func TestExec_DocumentKindRejected(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"github.com/xraph/fabriq/core/fabriqerr"
 )
 
-var sqlstateRe = regexp.MustCompile(`SQLSTATE (\w{5})`)
+var sqlstateRe = regexp.MustCompile(`SQLSTATE (\w{5})\b`)
 
 // translatePg converts a grove/pgdriver error into a structured *fabriqerr.Error.
 // It is the single classification seam for the postgres adapter: applied at the

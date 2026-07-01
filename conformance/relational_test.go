@@ -28,8 +28,9 @@ func TestRelationalCasesWellFormed(t *testing.T) {
 		if tc.Degrade != nil {
 			hasIs := tc.Degrade.ExpectErrIs != nil
 			hasContains := tc.Degrade.ExpectErrContains != ""
-			if hasIs == hasContains {
-				t.Errorf("case %q: Degrade must set exactly one of ExpectErrIs/ExpectErrContains", tc.Name)
+			hasCode := tc.Degrade.ExpectCode != ""
+			if !hasIs && !hasContains && !hasCode {
+				t.Errorf("case %q: Degrade must set at least one of ExpectErrIs/ExpectErrContains/ExpectCode", tc.Name)
 			}
 		}
 	}

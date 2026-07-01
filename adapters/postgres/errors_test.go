@@ -57,6 +57,22 @@ func TestTranslatePg_RegexFallback(t *testing.T) {
 	}
 }
 
+func TestTranslatePg_RegexFallback_RejectsMalformedToken(t *testing.T) {
+	// A 6-alphanumeric token is not a valid SQLSTATE (always exactly 5 chars).
+	// No typed pgconn error and no "no rows" — must NOT be classified via the
+	// regex fallback, so translatePg leaves the error unchanged.
+	err := errors.New(`pgdriver: query: ERROR: something odd (SQLSTATE 235051)`)
+	out := translatePg("insert", "asset", "01H", err)
+
+	var fe *fabriqerr.Error
+	if errors.As(out, &fe) {
+		t.Fatalf("malformed 6-char token must not be classified, got *fabriqerr.Error: %+v", fe)
+	}
+	if out != err {
+		t.Fatalf("malformed token must pass through unchanged, got %v", out)
+	}
+}
+
 func TestTranslatePg_NoRows(t *testing.T) {
 	out := translatePg("get", "site", "01J", errors.New("sql: no rows in result set"))
 	if !errors.Is(out, fabriqerr.ErrNotFound) {

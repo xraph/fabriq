@@ -176,6 +176,9 @@ func (a *Adapter) TenantTxRaw(ctx context.Context, fn func(tx *pgdriver.PgTx) er
 
 // inTenantTx runs fn inside a transaction stamped with the context tenant.
 func (a *Adapter) inTenantTx(ctx context.Context, fn func(tx *pgdriver.PgTx) error) (err error) {
+	// Load-bearing: classifies every driver error returned by fn into the fabriq
+	// taxonomy at this single seam. Do not remove — the named return + defer is the
+	// only place postgres driver errors get structured (see translatePg).
 	defer func() { err = translatePg("", "", "", err) }()
 
 	tid, err := tenant.Require(ctx)
@@ -208,6 +211,9 @@ func (a *Adapter) inTenantTx(ctx context.Context, fn func(tx *pgdriver.PgTx) err
 // for map-native scanning. This is the dynamic-entity read path; the grove
 // query builder (NewSelect) is not used because it only scans struct types.
 func (a *Adapter) inDynamicTenantTx(ctx context.Context, fn func(tid string, tx driver.Tx) error) (err error) {
+	// Load-bearing: classifies every driver error returned by fn into the fabriq
+	// taxonomy at this single seam. Do not remove — the named return + defer is the
+	// only place postgres driver errors get structured (see translatePg).
 	defer func() { err = translatePg("", "", "", err) }()
 
 	tid, err := tenant.Require(ctx)
