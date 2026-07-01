@@ -145,8 +145,8 @@ type migrationJob struct {
 	State     string    `json:"state"` // "running" | "done" | "failed"
 	Names     []string  `json:"names,omitempty"`
 	Error     string    `json:"error,omitempty"`
-	StartedAt time.Time `json:"startedAt"`
-	EndedAt   time.Time `json:"endedAt,omitempty"`
+	StartedAt time.Time  `json:"startedAt"`
+	EndedAt   *time.Time `json:"endedAt,omitempty"` // pointer so it is truly omitted while running
 }
 
 // migrationJobs is a single-flight in-memory job registry. Migrations serialize
@@ -176,7 +176,8 @@ func (c *adminController) startMigrationJob(kind string, run func(context.Contex
 		res, err := run(context.Background())
 		c.jobs.mu.Lock()
 		defer c.jobs.mu.Unlock()
-		job.EndedAt = time.Now()
+		now := time.Now()
+		job.EndedAt = &now
 		if err != nil {
 			job.State, job.Error = "failed", err.Error()
 		} else {
