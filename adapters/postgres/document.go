@@ -400,6 +400,18 @@ func (d *DocStore) materializeOne(ctx context.Context, tenantID, scope, docID st
 	}
 	vals := stateValues(state)
 
+	if ent.Spec.Schema == nil || !ent.Spec.Schema.NoTypeCheck {
+		if terr := registry.CoerceRow(ent, vals); terr != nil {
+			_, ferr := d.a.pg.Exec(ctx,
+				`UPDATE fabriq_crdt_docs SET flagged = TRUE, flag_reason = $2 WHERE doc_id = $1`,
+				docID, terr.Error())
+			if ferr != nil {
+				return false, ferr
+			}
+			return false, nil // type mismatch: flagged for resolution; no event, no row
+		}
+	}
+
 	if validate != nil {
 		if verr := validate(ent.Spec.Name, vals); verr != nil {
 			_, ferr := d.a.pg.Exec(ctx,
