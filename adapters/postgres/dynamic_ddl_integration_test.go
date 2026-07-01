@@ -221,3 +221,60 @@ func TestDynamicDDL_NonDynamicEntityReturnsError(t *testing.T) {
 		t.Fatal("EnsureDynamic on a static entity must return an error")
 	}
 }
+
+// TestDestructiveDynamicDDL verifies the destructive DDL trio added on top of
+// EnsureDynamic: RenameDynamicColumn, DropDynamicColumn (with the structural
+// guard refusing to drop a structural column), and DropDynamic (drop table).
+func TestDestructiveDynamicDDL(t *testing.T) {
+	ctx := context.Background()
+
+	superDSN := fabriqtest.StartPostgres(t)
+
+	reg := registry.New()
+	reg.MustRegister(registry.EntitySpec{
+		Name: "ddltest",
+		Schema: &registry.DynamicSchema{
+			Table: "ds_ddltest",
+			Columns: []registry.DynamicColumn{
+				{Name: "colour", Type: registry.ColText},
+				{Name: "size", Type: registry.ColInt},
+			},
+		},
+	})
+
+	owner, err := postgres.Open(ctx, superDSN, reg)
+	if err != nil {
+		t.Fatalf("postgres.Open (owner): %v", err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+
+	orch, err := migrations.NewOrchestrator(owner.Driver())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	ent, ok := reg.Get("ddltest")
+	if !ok {
+		t.Fatal("entity 'ddltest' not found in registry")
+	}
+
+	if err := owner.EnsureDynamic(ctx, ent); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if err := owner.RenameDynamicColumn(ctx, "ds_ddltest", "colour", "color"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if err := owner.DropDynamicColumn(ctx, "ds_ddltest", "size"); err != nil {
+		t.Fatalf("drop column: %v", err)
+	}
+	// structural guard
+	if err := owner.DropDynamicColumn(ctx, "ds_ddltest", registry.ColumnID); err == nil {
+		t.Fatal("expected structural-column drop to be refused")
+	}
+	if err := owner.DropDynamic(ctx, "ds_ddltest"); err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+}

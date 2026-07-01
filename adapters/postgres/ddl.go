@@ -167,6 +167,61 @@ func (a *Adapter) EnsureDynamic(ctx context.Context, ent *registry.Entity) error
 	return nil
 }
 
+// assertMutableColumn rejects structural columns (id, tenant_id, version) and
+// invalid identifiers — the shared guard for destructive column DDL.
+func assertMutableColumn(col string) error {
+	switch col {
+	case registry.ColumnID, registry.ColumnTenant, registry.ColumnVersion:
+		return fmt.Errorf("fabriq: column %q is structural and cannot be dropped or renamed", col)
+	}
+	if !ddlValid(col) {
+		return fmt.Errorf("fabriq: invalid column name %q", col)
+	}
+	return nil
+}
+
+// DropDynamicColumn drops a domain column from a dynamic table. Structural
+// columns are refused. Runs as schema owner. Idempotent (IF EXISTS).
+func (a *Adapter) DropDynamicColumn(ctx context.Context, table, column string) error {
+	if !ddlValid(table) {
+		return fmt.Errorf("fabriq: invalid dynamic table name %q", table)
+	}
+	if err := assertMutableColumn(column); err != nil {
+		return err
+	}
+	stmt := fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s",
+		quoteIdent(table), quoteIdent(column))
+	return a.execDDL(ctx, stmt)
+}
+
+// RenameDynamicColumn renames a domain column on a dynamic table. The source
+// column must be non-structural and valid; the target must be a valid,
+// non-structural identifier.
+func (a *Adapter) RenameDynamicColumn(ctx context.Context, table, oldName, newName string) error {
+	if !ddlValid(table) {
+		return fmt.Errorf("fabriq: invalid dynamic table name %q", table)
+	}
+	if err := assertMutableColumn(oldName); err != nil {
+		return err
+	}
+	if err := assertMutableColumn(newName); err != nil {
+		return err
+	}
+	stmt := fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s",
+		quoteIdent(table), quoteIdent(oldName), quoteIdent(newName))
+	return a.execDDL(ctx, stmt)
+}
+
+// DropDynamic drops a dynamic entity's table (its indexes and RLS policies drop
+// with it). Idempotent (IF EXISTS). Destructive — callers gate confirmation.
+func (a *Adapter) DropDynamic(ctx context.Context, table string) error {
+	if !ddlValid(table) {
+		return fmt.Errorf("fabriq: invalid dynamic table name %q", table)
+	}
+	stmt := fmt.Sprintf("DROP TABLE IF EXISTS %s", quoteIdent(table))
+	return a.execDDL(ctx, stmt)
+}
+
 // domainColumnDef returns the SQL column-definition fragment for a domain
 // column: "<name> <type> [NOT NULL] [DEFAULT <expr>]".
 //
