@@ -462,6 +462,9 @@ func run() error {
 				productEntity: {command.OpCreate, command.OpUpdate},
 			},
 		}),
+		// Enable the privileged schema-ops surface (run/rollback migrations,
+		// ad-hoc DDL) so the demo exercises the Migrations console end to end.
+		adminapi.WithSchemaAdmin(),
 	)
 	if err := app.RegisterExtension(adminExt); err != nil {
 		return err
