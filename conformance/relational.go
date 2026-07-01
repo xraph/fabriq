@@ -175,4 +175,10 @@ func assertDegraded(t *testing.T, b Backend, env *Env, tc RelationalCase, miss [
 	if tc.Degrade.ExpectErrContains != "" && !strings.Contains(err.Error(), tc.Degrade.ExpectErrContains) {
 		t.Fatalf("conformance: %s degradation: got %q, want contains %q", b.Name(), err.Error(), tc.Degrade.ExpectErrContains)
 	}
+	if tc.Degrade.ExpectCode != "" {
+		var fe *fabriqerr.Error
+		if !errors.As(err, &fe) || fe.Code != tc.Degrade.ExpectCode {
+			t.Fatalf("conformance: %s degradation: got %v, want Code %q", b.Name(), err, tc.Degrade.ExpectCode)
+		}
+	}
 }

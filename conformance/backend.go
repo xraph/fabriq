@@ -6,6 +6,7 @@ import (
 
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
@@ -104,4 +105,7 @@ type Degradation struct {
 	ExpectErrIs error
 	// ExpectErrContains requires the error message to contain this substring.
 	ExpectErrContains string
+	// ExpectCode, when non-empty, requires errors.As(err, &fabriqerr.Error) with
+	// that Code — asserting drivers classify a fault identically.
+	ExpectCode fabriqerr.Code
 }
