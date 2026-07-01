@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 )
@@ -29,7 +30,8 @@ func (x *Executor) prepare(ctx context.Context, cmd Command) (*preparedCommand, 
 	}
 	ent, ok := x.reg.Get(cmd.Entity)
 	if !ok {
-		return nil, fmt.Errorf("fabriq: unknown entity %q", cmd.Entity)
+		return nil, fabriqerr.New(fabriqerr.CodeInvalidInput,
+			"Unknown entity type.", fabriqerr.WithEntity(cmd.Entity, ""))
 	}
 	if ent.Spec.Kind != registry.KindAggregate {
 		return nil, fmt.Errorf("fabriq: entity %q is a %s; the command plane only writes aggregates (document writes go through the document plane)",
