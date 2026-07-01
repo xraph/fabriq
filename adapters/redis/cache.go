@@ -44,7 +44,7 @@ func (c *Cache) Get(ctx context.Context, entity, id string) (val []byte, ok bool
 		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("fabriq: cache get: %w", err)
+		return nil, false, translateRedis("cache get", err)
 	}
 	return raw, true, nil
 }
@@ -56,7 +56,7 @@ func (c *Cache) Set(ctx context.Context, entity, id string, val []byte, ttl time
 		return err
 	}
 	if err := c.client.Set(ctx, key, val, ttl).Err(); err != nil {
-		return fmt.Errorf("fabriq: cache set: %w", err)
+		return translateRedis("cache set", err)
 	}
 	return nil
 }
@@ -68,7 +68,7 @@ func (c *Cache) Delete(ctx context.Context, entity, id string) error {
 		return err
 	}
 	if err := c.client.Del(ctx, key).Err(); err != nil {
-		return fmt.Errorf("fabriq: cache delete: %w", err)
+		return translateRedis("cache delete", err)
 	}
 	return nil
 }
