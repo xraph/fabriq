@@ -65,7 +65,12 @@ func alterDynamic(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, s
 	}
 	ent, _ := reg.Get(spec.Name)
 	if err := ddl.EnsureDynamic(ctx, ent); err != nil {
-		_ = reg.Replace(prev.Spec) // rollback to previous spec
+		// Rollback restores the descriptor only. EnsureDynamic applies additive
+		// DDL statement-by-statement (non-transactional, Task 3), so a partial
+		// failure may leave already-added columns physically present; this is
+		// bounded (additive-only, no data loss) and matches EnsureDynamic's
+		// documented additive-evolution contract.
+		_ = reg.Replace(prev.Spec)
 		return err
 	}
 	return nil
@@ -76,8 +81,8 @@ func dropDynamic(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, na
 	if !ok {
 		return fmt.Errorf("fabriq: cannot drop unknown entity %q", name)
 	}
-	if ent.Spec.Schema == nil {
-		return fmt.Errorf("fabriq: entity %q is not dynamic", name)
+	if err := assertDynamicAggregate(ent.Spec); err != nil {
+		return err
 	}
 	table := ent.Spec.Schema.Table
 	if err := ddl.DropDynamic(ctx, table); err != nil {
@@ -89,8 +94,11 @@ func dropDynamic(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, na
 
 func renameDynamicField(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, name, oldCol, newCol string) error {
 	ent, ok := reg.Get(name)
-	if !ok || ent.Spec.Schema == nil {
+	if !ok {
 		return fmt.Errorf("fabriq: unknown dynamic entity %q", name)
+	}
+	if err := assertDynamicAggregate(ent.Spec); err != nil {
+		return err
 	}
 	if err := ddl.RenameDynamicColumn(ctx, ent.Spec.Schema.Table, oldCol, newCol); err != nil {
 		return err
@@ -101,8 +109,11 @@ func renameDynamicField(ctx context.Context, reg *registry.Registry, ddl Dynamic
 
 func dropDynamicField(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, name, col string) error {
 	ent, ok := reg.Get(name)
-	if !ok || ent.Spec.Schema == nil {
+	if !ok {
 		return fmt.Errorf("fabriq: unknown dynamic entity %q", name)
+	}
+	if err := assertDynamicAggregate(ent.Spec); err != nil {
+		return err
 	}
 	if err := ddl.DropDynamicColumn(ctx, ent.Spec.Schema.Table, col); err != nil {
 		return err
