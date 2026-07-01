@@ -350,8 +350,8 @@ func specFields(spec registry.EntitySpec) []schemaField {
 }
 
 // mapSchemaError maps facade errors to HTTP: unavailable (no Postgres) → 501,
-// not-found (unknown/non-dynamic type) → 404, structural/validation guard
-// errors → 400, else 500.
+// duplicate define (type already exists) → 409, not-found (unknown/non-dynamic
+// type) → 404, structural/validation guard errors → 400, else 500.
 //
 // The SP1 dynamic-lifecycle facade (fabriq_dynamic.go) returns plain
 // fmt.Errorf-wrapped strings rather than sentinels for its not-found cases
@@ -366,6 +366,9 @@ func mapSchemaError(err error) error {
 		return forge.NewHTTPError(http.StatusNotImplemented, err.Error())
 	}
 	msg := err.Error()
+	if strings.Contains(msg, "registered twice") {
+		return forge.NewHTTPError(http.StatusConflict, msg)
+	}
 	if strings.Contains(msg, "unknown entity") ||
 		strings.Contains(msg, "unknown dynamic entity") ||
 		strings.Contains(msg, "cannot drop unknown") ||

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -471,4 +472,20 @@ type errUnknownEntityForTest string
 
 func (e errUnknownEntityForTest) Error() string {
 	return "fabriq: cannot alter unknown entity \"" + string(e) + "\""
+}
+
+func TestHandleDefineDuplicate(t *testing.T) {
+	w := &fakeWriter{failWith: fmt.Errorf("fabriq: entity %q registered twice", "gadget")}
+	srv := buildServer(t, writerBackedExt(t, w))
+	defer srv.Close()
+
+	resp := doJSON(t, http.MethodPost, srv.URL+"/admin/schema", map[string]any{
+		"type":    "gadget",
+		"columns": []map[string]any{{"name": "label", "kind": "string", "required": true}},
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
 }
