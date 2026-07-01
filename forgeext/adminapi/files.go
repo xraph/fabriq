@@ -369,7 +369,7 @@ func (c *adminController) handleFileContent(ctx forge.Context) error {
 		if errors.Is(blobErr, fabriqerr.ErrNotFound) {
 			return forge.NotFound("blob not found")
 		}
-		return forge.InternalError(blobErr)
+		return renderError(ctx, blobErr)
 	}
 	defer func() { _ = rc.Close() }()
 
@@ -450,7 +450,7 @@ func mapFileError(ctx forge.Context, c *adminController, err error) error {
 	case errors.Is(err, fabriq.ErrNodeLocked):
 		return forge.BadRequest(err.Error())
 	default:
-		return forge.InternalError(err)
+		return renderError(ctx, err)
 	}
 }
 

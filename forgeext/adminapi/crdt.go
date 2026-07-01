@@ -211,7 +211,7 @@ func (c *adminController) handleCrdtUpdates(ctx forge.Context) error {
 
 	var payload syncWirePayload
 	if decErr := json.Unmarshal(raw, &payload); decErr != nil {
-		return forge.InternalError(decErr)
+		return renderError(ctx, decErr)
 	}
 
 	items := make([]crdtUpdateItem, 0, len(payload.Updates))
@@ -283,7 +283,7 @@ func mapCrdtError(ctx forge.Context, c *adminController, err error) error {
 	if isNotADocumentErr(err) {
 		return forge.NotFound("document not found")
 	}
-	return forge.InternalError(err)
+	return renderError(ctx, err)
 }
 
 // isNotADocumentErr reports whether err is the document store's "not a

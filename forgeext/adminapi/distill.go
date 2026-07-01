@@ -153,7 +153,7 @@ func (c *adminController) handleDistillMap(ctx forge.Context) error {
 
 	lines, mapErr := tk.Map(ctx.Request().Context(), agent.MapRequest{})
 	if mapErr != nil {
-		return forge.InternalError(mapErr)
+		return renderError(ctx, mapErr)
 	}
 
 	nodes := make([]distillNode, 0, len(lines))
@@ -244,5 +244,5 @@ func mapDistillError(ctx forge.Context, c *adminController, err error) error {
 	if strings.Contains(msg, "not found") {
 		return forge.NotFound("digest node not found")
 	}
-	return forge.InternalError(err)
+	return renderError(ctx, err)
 }
