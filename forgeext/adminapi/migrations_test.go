@@ -74,3 +74,17 @@ func TestMigrationJob_NotFound(t *testing.T) {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
 }
+
+// Streaming an unknown job id returns 404 before opening the SSE stream.
+func TestMigrationJobStream_NotFound(t *testing.T) {
+	world := buildTestWorld(t)
+	e := fakeBackedAdminExt(t, world)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := get(t, srv, "/admin/migrations/jobs/nope/stream")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}

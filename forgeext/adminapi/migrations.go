@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/subscribe"
 )
 
 // migrationItem mirrors one migration's status in camelCase.
@@ -54,7 +55,10 @@ func (c *adminController) registerMigrationRoutes(r forge.Router) error {
 	if err := r.POST(base+"/migrations/down", c.handleMigrateDown, opts...); err != nil {
 		return err
 	}
-	return r.GET(base+"/migrations/jobs/:id", c.handleMigrationJob, opts...)
+	if err := r.GET(base+"/migrations/jobs/:id", c.handleMigrationJob, opts...); err != nil {
+		return err
+	}
+	return r.GET(base+"/migrations/jobs/:id/stream", c.handleMigrationJobStream, opts...)
 }
 
 // migrationJob is one async migration run (up or down).
@@ -158,6 +162,45 @@ func (c *adminController) handleMigrationJob(ctx forge.Context) error {
 		return ctx.JSON(http.StatusNotFound, map[string]string{"error": "no such job"})
 	}
 	return ctx.JSON(http.StatusOK, job)
+}
+
+// handleMigrationJobStream serves GET {BasePath}/migrations/jobs/:id/stream — an
+// SSE stream of the job's state (a "state" event every ~500ms) until the job
+// reaches a terminal state (done|failed) or the client disconnects.
+func (c *adminController) handleMigrationJobStream(ctx forge.Context) error {
+	id := ctx.Param("id")
+	c.jobs.mu.Lock()
+	job, ok := c.jobs.jobs[id]
+	c.jobs.mu.Unlock()
+	if !ok {
+		return ctx.JSON(http.StatusNotFound, map[string]string{"error": "no such job"})
+	}
+	sse, err := subscribe.NewSSEWriter(ctx.Response())
+	if err != nil {
+		return err
+	}
+	reqCtx := ctx.Request().Context()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		c.jobs.mu.Lock()
+		snap := *job // copy under lock
+		c.jobs.mu.Unlock()
+
+		// Bound each write so a stalled client cannot wedge the goroutine.
+		_ = sse.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if werr := sse.WriteEvent(snap.ID, "state", snap); werr != nil {
+			return nil // client gone
+		}
+		if snap.State != "running" {
+			return nil // terminal — final event already sent
+		}
+		select {
+		case <-reqCtx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }
 
 // handleMigrationStatus serves GET {BasePath}/migrations. Returns 501 when
