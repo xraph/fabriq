@@ -91,14 +91,19 @@ func (x *Executor) prepare(ctx context.Context, cmd Command) (*preparedCommand, 
 // validateTypes coerces and type-checks a dynamic entity's payload against its
 // declared column types, mutating vals in place with the canonical Go values.
 // It is a no-op for Go-model entities, whose struct fields are already typed.
+// Structural columns (id, tenant_id, version) are skipped: they are stamped by
+// the executor after validation and any caller-supplied value is ignored anyway.
 func validateTypes(ent *registry.Entity, vals map[string]any) error {
 	if !ent.Binding.IsDynamic() {
 		return nil
 	}
 	for col, v := range vals {
+		if col == registry.ColumnID || col == registry.ColumnTenant || col == registry.ColumnVersion {
+			continue // stamped by executor; skip type-checking
+		}
 		dc, ok := ent.Binding.DynColumn(col)
 		if !ok {
-			continue // structural or unknown columns carry no declared type
+			continue // unknown columns carry no declared type
 		}
 		coerced, err := registry.CoerceToColumn(dc.Type, v)
 		if err != nil {

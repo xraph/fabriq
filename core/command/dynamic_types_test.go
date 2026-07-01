@@ -85,3 +85,17 @@ func TestExec_DynamicTypeCheckSkippedPerWrite(t *testing.T) {
 		t.Fatalf("per-write SkipTypeCheck must bypass validation, got %v", err)
 	}
 }
+
+func TestExec_DynamicTypeCheckSkipsStructuralColumns(t *testing.T) {
+	// A mistyped structural column in the payload must NOT be rejected by
+	// validateTypes: id/tenant_id/version are stamped by the executor and any
+	// caller-supplied value is overwritten anyway.
+	x := typedExecutor(t, newFakeStore(), false)
+	_, err := x.Exec(acmeCtx(t), command.Command{
+		Entity: "widgets", Op: command.OpCreate,
+		Payload: map[string]any{"sku": "A1", "qty": 1, "version": "not-an-int"},
+	})
+	if err != nil {
+		t.Fatalf("mistyped structural column must not be rejected by type validation, got %v", err)
+	}
+}

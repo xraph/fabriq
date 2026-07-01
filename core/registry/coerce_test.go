@@ -1,6 +1,7 @@
 package registry_test
 
 import (
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -33,6 +34,7 @@ func TestCoerceToColumn(t *testing.T) {
 		{"time rejects bad string", registry.ColTime, "nope", nil, true},
 		{"json passthrough", registry.ColJSON, map[string]any{"a": 1}, map[string]any{"a": 1}, false},
 		{"nil passthrough", registry.ColInt, nil, nil, false},
+		{"int rejects overflowing uint64", registry.ColInt, uint64(math.MaxInt64) + 1, nil, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -54,7 +56,20 @@ func TestCoerceToColumn(t *testing.T) {
 }
 
 func TestColumnTypeString(t *testing.T) {
-	if registry.ColInt.String() != "int" || registry.ColTime.String() != "time" {
-		t.Fatalf("unexpected ColumnType.String(): %q %q", registry.ColInt, registry.ColTime)
+	cases := []struct {
+		typ  registry.ColumnType
+		want string
+	}{
+		{registry.ColText, "text"},
+		{registry.ColInt, "int"},
+		{registry.ColFloat, "float"},
+		{registry.ColBool, "bool"},
+		{registry.ColTime, "time"},
+		{registry.ColJSON, "json"},
+	}
+	for _, c := range cases {
+		if got := c.typ.String(); got != c.want {
+			t.Errorf("ColumnType(%v).String() = %q, want %q", int(c.typ), got, c.want)
+		}
 	}
 }

@@ -64,6 +64,9 @@ func CoerceToColumn(t ColumnType, v any) (any, error) {
 		case uint32:
 			return int64(n), nil
 		case uint64:
+			if n > math.MaxInt64 {
+				return nil, fmt.Errorf("expects int, got uint64 %d overflowing int64", n)
+			}
 			return int64(n), nil
 		case float32:
 			return floatToInt(float64(n))
