@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,7 +60,82 @@ func (c *adminController) registerMigrationRoutes(r forge.Router) error {
 	if err := r.GET(base+"/migrations/jobs/:id", c.handleMigrationJob, opts...); err != nil {
 		return err
 	}
-	return r.GET(base+"/migrations/jobs/:id/stream", c.handleMigrationJobStream, opts...)
+	if err := r.GET(base+"/migrations/jobs/:id/stream", c.handleMigrationJobStream, opts...); err != nil {
+		return err
+	}
+	return r.GET(base+"/migrations/scaffold", c.handleMigrationScaffold, opts...)
+}
+
+// scaffoldNameRe / scaffoldVersionRe validate the scaffold inputs: a lowercase
+// snake_case migration name and an all-digit version (grove uses a timestamp).
+var scaffoldNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+var scaffoldVersionRe = regexp.MustCompile(`^[0-9]+$`)
+
+// scaffoldVarName turns "add_widget" into "AddWidget" for the migration var name.
+func scaffoldVarName(name string) string {
+	parts := strings.Split(name, "_")
+	for i, p := range parts {
+		if p != "" {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+// renderMigrationScaffold generates a grove Go migration-file skeleton (the same
+// shape as migrations/0001_outbox.go). It executes nothing — it returns text for
+// a developer to save into migrations/ and register in module.go. Returns an
+// error on an invalid name/version.
+func renderMigrationScaffold(name, version string) (filename, content string, err error) {
+	if !scaffoldNameRe.MatchString(name) {
+		return "", "", fmt.Errorf("invalid migration name %q (want lowercase snake_case)", name)
+	}
+	if !scaffoldVersionRe.MatchString(version) {
+		return "", "", fmt.Errorf("invalid version %q (want an all-digit timestamp, e.g. 202607010001)", version)
+	}
+	filename = name + ".go"
+	content = fmt.Sprintf(`package migrations
+
+import (
+	"context"
+
+	"github.com/xraph/grove/migrate"
+)
+
+// TODO: describe this migration. Register migration%[1]s in migrations/module.go
+// (Group().MustRegister(...)) in version order.
+var migration%[1]s = &migrate.Migration{
+	Name:    %[2]q,
+	Version: %[3]q,
+	Comment: "TODO: describe this migration",
+	Up: func(ctx context.Context, exec migrate.Executor) error {
+		return execAll(ctx, exec, []string{
+			// TODO: forward DDL, e.g. "CREATE TABLE IF NOT EXISTS ...".
+		})
+	},
+	Down: func(ctx context.Context, exec migrate.Executor) error {
+		return execAll(ctx, exec, []string{
+			// TODO: reverse DDL, e.g. "DROP TABLE IF EXISTS ...".
+		})
+	},
+}
+`, scaffoldVarName(name), name, version)
+	return filename, content, nil
+}
+
+// handleMigrationScaffold serves GET {BasePath}/migrations/scaffold?name=&version=
+// — gated. Returns generated Go text; it never touches the database.
+func (c *adminController) handleMigrationScaffold(ctx forge.Context) error {
+	if err := c.requireSchemaAdmin(ctx); err != nil {
+		return err
+	}
+	name := strings.TrimSpace(ctx.Query("name"))
+	version := strings.TrimSpace(ctx.Query("version"))
+	filename, content, err := renderMigrationScaffold(name, version)
+	if err != nil {
+		return forge.BadRequest(err.Error())
+	}
+	return ctx.JSON(http.StatusOK, map[string]string{"filename": filename, "content": content})
 }
 
 // migrationJob is one async migration run (up or down).

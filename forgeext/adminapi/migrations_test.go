@@ -3,8 +3,47 @@ package adminapi
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
+
+func TestRenderMigrationScaffold(t *testing.T) {
+	fn, content, err := renderMigrationScaffold("add_widget", "202607010001")
+	if err != nil {
+		t.Fatalf("renderMigrationScaffold: %v", err)
+	}
+	if fn != "add_widget.go" {
+		t.Errorf("filename = %q, want add_widget.go", fn)
+	}
+	for _, want := range []string{
+		"package migrations", "migrate.Migration{", `Name:    "add_widget"`,
+		`Version: "202607010001"`, "Up: func", "Down: func",
+		"execAll(ctx, exec, []string{", "migrationAddWidget",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("scaffold content missing %q", want)
+		}
+	}
+	if _, _, err := renderMigrationScaffold("Bad Name!", "202607010001"); err == nil {
+		t.Error("invalid name should error")
+	}
+	if _, _, err := renderMigrationScaffold("ok", "notdigits"); err == nil {
+		t.Error("invalid version should error")
+	}
+}
+
+func TestMigrationScaffold_403WhenGateOff(t *testing.T) {
+	world := buildTestWorld(t)
+	e := fakeBackedAdminExt(t, world) // gate OFF
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := get(t, srv, "/admin/migrations/scaffold?name=x&version=1")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (gate off)", resp.StatusCode)
+	}
+}
 
 // The fake-backed harness constructs the Extension with a nil *forgeext.Extension
 // parent (see fakeBackedAdminExt), so there is no real migration target (no DSN,
