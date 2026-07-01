@@ -42,3 +42,30 @@ type VersionConflictError = fabriqerr.VersionConflictError
 
 // NotFoundError reports a missing aggregate within the tenant's scope.
 type NotFoundError = fabriqerr.NotFoundError
+
+// Error is fabriq's canonical structured error. Application code constructs and
+// inspects it via this alias; the canonical definition lives in core/fabriqerr.
+type Error = fabriqerr.Error
+
+// Meta is the structured driver-detail carried by Error.
+type Meta = fabriqerr.Meta
+
+// Code is the stable machine-readable error category on Error.
+type Code = fabriqerr.Code
+
+// Code constants, re-exported so application code writes fabriq.CodeX.
+const (
+	CodeNotFound            = fabriqerr.CodeNotFound
+	CodeAlreadyExists       = fabriqerr.CodeAlreadyExists
+	CodeConstraintViolation = fabriqerr.CodeConstraintViolation
+	CodeSchemaMismatch      = fabriqerr.CodeSchemaMismatch
+	CodeInvalidInput        = fabriqerr.CodeInvalidInput
+	CodeVersionConflict     = fabriqerr.CodeVersionConflict
+	CodeUnauthorized        = fabriqerr.CodeUnauthorized
+	CodePermissionDenied    = fabriqerr.CodePermissionDenied
+	CodeUnavailable         = fabriqerr.CodeUnavailable
+	CodeTimeout             = fabriqerr.CodeTimeout
+	CodeSerialization       = fabriqerr.CodeSerialization
+	CodeNotConfigured       = fabriqerr.CodeNotConfigured
+	CodeInternal            = fabriqerr.CodeInternal
+)

@@ -61,3 +61,13 @@ func TestNotFoundError_CarriesEntityAndID(t *testing.T) {
 		t.Fatalf("Error() = %q, want %q", err.Error(), want)
 	}
 }
+
+func TestStructuredError_AliasedAtRoot(t *testing.T) {
+	e := &Error{Code: CodeNotFound, Message: "x"}
+	if !errors.Is(e, ErrNotFound) {
+		t.Fatal("root fabriq.Error aliased type must satisfy errors.Is(err, ErrNotFound)")
+	}
+	if CodeSchemaMismatch != "schema_mismatch" {
+		t.Fatalf("CodeSchemaMismatch alias mismatch: %q", CodeSchemaMismatch)
+	}
+}
