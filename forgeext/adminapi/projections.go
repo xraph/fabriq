@@ -263,7 +263,7 @@ func (c *adminController) handleProjections(ctx forge.Context) error {
 		// rebuild reports a clean "live" baseline rather than an error.
 		st, err := sr.Get(reqCtx, tid, name)
 		if err != nil {
-			return forge.InternalError(err)
+			return renderError(ctx, err)
 		}
 		items = append(items, projectionStatusItem{
 			Name:         name,

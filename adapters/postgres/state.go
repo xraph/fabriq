@@ -54,7 +54,7 @@ func (r *StateRepo) Get(ctx context.Context, tenantID, proj string) (projection.
 		if isNoRows(err) {
 			return projection.State{TenantID: tenantID, Projection: proj, ModelVersion: 1, Status: "live"}, nil
 		}
-		return projection.State{}, fmt.Errorf("fabriq: projection state: %w", err)
+		return projection.State{}, translatePg("get", "", "", fmt.Errorf("fabriq: projection state: %w", err))
 	}
 	return s, nil
 }
