@@ -178,6 +178,12 @@ func (c *adminController) Routes(r forge.Router) error {
 		return err
 	}
 
+	if c.ext.cfg.KeyStore != nil {
+		if err := c.registerKeyRoutes(r); err != nil {
+			return err
+		}
+	}
+
 	return c.registerPluginRoutes(r)
 }
 

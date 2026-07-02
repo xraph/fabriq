@@ -55,6 +55,13 @@ type config struct {
 	// execution and ad-hoc DDL). Default false: those endpoints 403 until the
 	// host opts in via WithSchemaAdmin. Read-only status/drift stay available.
 	SchemaAdmin bool
+	// KeyStore is the instance-global API key store. When non-nil, per-tenant
+	// API-key auth is enabled: the /admin/keys issue/list/revoke routes are
+	// registered (see registerKeyRoutes). Set it via WithAuth. Note: this option
+	// alone does NOT install the verifying middleware — the host must still
+	// attach authMiddleware(store, basePath) via WithRouteOptions to actually
+	// gate requests; WithAuth only wires the key-management surface.
+	KeyStore KeyStore
 }
 
 // Option configures the adminapi extension.
@@ -91,6 +98,15 @@ func WithWritePolicy(p agent.WritePolicy) Option {
 // back static migrations and executing ad-hoc DDL. These are instance-global,
 // schema-owner operations; leave OFF unless the host guards the admin API.
 func WithSchemaAdmin() Option { return func(c *config) { c.SchemaAdmin = true } }
+
+// WithAuth sets the instance-global API key store, enabling the /admin/keys
+// issue/list/revoke management routes (registered only when the store is
+// non-nil). It does NOT install the request-verifying middleware — that is a
+// separate, explicit step: attach authMiddleware(store, basePath) via
+// WithRouteOptions to actually gate admin requests on a valid key.
+func WithAuth(store KeyStore) Option {
+	return func(c *config) { c.KeyStore = store }
+}
 
 // Extension exposes the fabriq data fabric as a read-only admin HTTP surface.
 // It depends on the "fabriq" extension and resolves its query facade at Start.
