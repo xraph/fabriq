@@ -370,6 +370,87 @@ func TestAuthMiddleware_VersionMatch_200(t *testing.T) {
 	assertVersionHeader(t, resp)
 }
 
+// buildLoginProbeServer registers a trivial POST /admin/login route guarded by
+// the auth middleware, so the top-of-body exemption (which keys on method +
+// exact path) can be exercised without a real login handler.
+func buildLoginProbeServer(t *testing.T, store KeyStore) *httptest.Server {
+	t.Helper()
+	app := forge.NewApp(forge.AppConfig{Name: "auth-login-probe", HTTPAddress: ":0"})
+	handler := func(ctx forge.Context) error { return ctx.JSON(http.StatusOK, map[string]any{"ok": true}) }
+	if err := app.Router().POST("/admin/login", handler,
+		forge.WithMiddleware(authMiddleware(store, "/admin"))); err != nil {
+		t.Fatalf("register login probe route: %v", err)
+	}
+	return httptest.NewServer(app.Router().Handler())
+}
+
+func TestAuthMiddleware_LoginRoute_NoAuthorization_200(t *testing.T) {
+	store := newFakeKeyStore() // empty — no key could possibly resolve
+	srv := buildLoginProbeServer(t, store)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/admin/login", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	// Deliberately no Authorization header: /login is the way in.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200 (login must be reachable with no auth), body = %s", resp.StatusCode, body)
+	}
+}
+
+// buildKeyIDProbeServer registers a GET /admin/whoami route guarded by the
+// auth middleware whose handler echoes resolvedKeyID(ctx) back as JSON, so the
+// stash can be asserted from outside the package.
+func buildKeyIDProbeServer(t *testing.T, store KeyStore) *httptest.Server {
+	t.Helper()
+	app := forge.NewApp(forge.AppConfig{Name: "auth-keyid-probe", HTTPAddress: ":0"})
+	handler := func(ctx forge.Context) error {
+		id, ok := resolvedKeyID(ctx.Request().Context())
+		return ctx.JSON(http.StatusOK, map[string]any{"keyID": id, "ok": ok})
+	}
+	if err := app.Router().GET("/admin/whoami", handler,
+		forge.WithMiddleware(authMiddleware(store, "/admin"))); err != nil {
+		t.Fatalf("register whoami probe route: %v", err)
+	}
+	return httptest.NewServer(app.Router().Handler())
+}
+
+func TestAuthMiddleware_ValidKey_StashesResolvedKeyID(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_bound", KeyRecord{ID: "k-stashed-1", TenantID: testTenantID})
+	srv := buildKeyIDProbeServer(t, store)
+	defer srv.Close()
+
+	resp := authReq(t, srv.URL, "/admin/whoami", map[string]string{"Authorization": "Bearer fq_bound"})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200, body = %s", resp.StatusCode, body)
+	}
+	var got struct {
+		KeyID string `json:"keyID"`
+		OK    bool   `json:"ok"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode whoami: %v", err)
+	}
+	if !got.OK {
+		t.Fatal("resolvedKeyID: ok = false, want true")
+	}
+	if got.KeyID != "k-stashed-1" {
+		t.Errorf("resolvedKeyID = %q, want %q", got.KeyID, "k-stashed-1")
+	}
+}
+
 func TestAuthMiddleware_VersionAbsent_200(t *testing.T) {
 	store := newFakeKeyStore()
 	store.add("fq_bound", KeyRecord{ID: "k1", TenantID: testTenantID})

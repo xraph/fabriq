@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -16,6 +17,21 @@ import (
 // header. RFC 7235 treats the scheme token case-insensitively, so both
 // "Bearer " and "bearer " are accepted.
 const bearerPrefix = "bearer "
+
+// keyIDCtxKey is the package-private context key under which the resolved
+// API key's id is stashed after a successful lookup. Unexported so only this
+// package can write it; resolvedKeyID is the read-side accessor for
+// downstream handlers (e.g. the future logout handler, which revokes the
+// presented session by this id).
+type keyIDCtxKey struct{}
+
+// resolvedKeyID returns the id of the API key that authMiddleware resolved
+// for this request, if any. Absent for requests that bypassed auth (e.g. the
+// /login exemption) or predate the middleware running.
+func resolvedKeyID(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(keyIDCtxKey{}).(string)
+	return id, ok
+}
 
 // authMiddleware verifies a per-tenant API key on every admin request and
 // resolves the tenant into the request context for downstream handlers.
@@ -48,12 +64,20 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 
 	return func(next forge.Handler) forge.Handler {
 		return func(ctx forge.Context) error {
+			// 0. The login route is the way in: it must be reachable with no
+			// Authorization header at all. This is the ONLY exemption from
+			// auth — every other route, including logout, stays gated. Checked
+			// before the version header is set / anything else runs, so a
+			// POST to basePath+"/login" is a pure pass-through.
+			req := ctx.Request()
+			if req.Method == http.MethodPost && req.URL.Path == basePath+"/login" {
+				return next(ctx)
+			}
+
 			// Always advertise the server's contract version, including on the
 			// short-circuits below. Set before any WriteHeader so it lands in
 			// the response.
 			ctx.Response().Header().Set(apiVersionHeader, apiVersionValue())
-
-			req := ctx.Request()
 
 			// 1. Extract the bearer token (scheme is case-insensitive).
 			authz := req.Header.Get("Authorization")
@@ -110,12 +134,15 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 			}
 
 			// Stamp the resolved tenant so downstream handlers and the fabric
-			// see it. WithContext replaces the request's context in place.
+			// see it, and stash the resolved key id alongside it (the future
+			// logout handler reads this via resolvedKeyID to revoke the
+			// presented session). WithContext replaces the request's context
+			// in place, so both must land in the same call.
 			tctx, err := tenant.WithTenant(req.Context(), tid)
 			if err != nil {
 				return deny(ctx, http.StatusBadRequest, "invalid tenant id: "+err.Error())
 			}
-			ctx.WithContext(tctx)
+			ctx.WithContext(context.WithValue(tctx, keyIDCtxKey{}, rec.ID))
 
 			return next(ctx)
 		}
