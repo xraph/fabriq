@@ -101,15 +101,21 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		}
 	}
 
+	if err := validateArchiveConfig(cfg, reg); err != nil {
+		closeDialed()
+		return nil, nil, err
+	}
+
 	stores := &Stores{Postgres: pg, Shards: set, shardPG: shardPG, customAppliers: cfg.CustomAppliers}
 	stores.state = routingState{stores: stores}
+	docStore := pg.Documents()
 	ports := Ports{
 		Store:           shard.NewStore(set),
 		Relational:      shard.NewRelational(set),
 		Timeseries:      shard.NewTimeseries(set),
 		Vector:          shard.NewVector(set),
 		Spatial:         shard.NewSpatial(set),
-		Documents:       pg.Documents(),
+		Documents:       docStore,
 		ProjectionState: stores.state,
 	}
 	if len(shardList) == 1 {
@@ -149,7 +155,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		allOpts = append(allOpts, withTailer(rd))
 		// With a transport available, document updates fan out live. The
 		// document plane stays on the primary shard (ADR 0007 step 2).
-		ports.Documents = &syncingDocStore{DocStore: pg.Documents(), pub: rd, reg: reg}
+		ports.Documents = &syncingDocStore{DocStore: docStore, pub: rd, reg: reg}
 
 		ca, cerr := fcache.Open(ctx, fcache.Config{
 			Addr:     cfg.Redis.Addr,
@@ -236,6 +242,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		}
 		stores.Blob = ba
 		ports.Blob = ba
+		docStore.EnableArchive(ba, cfg.Documents.ArchiveHistory)
 		if cfg.Storage.EnableCas {
 			cs := trovestore.NewCASStore(ba.Driver(), trovestore.NewCASIndex(pg), cfg.Storage.DefaultBucket)
 			stores.CAS = cs
@@ -253,6 +260,26 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		ds.authz = f.settings.docAuthz
 	}
 	return f, stores, nil
+}
+
+// validateArchiveConfig fails fast when CRDT history offload is requested —
+// globally or by any document entity — but no blob storage is configured.
+// Silent degradation would keep the DB bloating exactly when offload was asked
+// for, so this is a hard error at Open.
+func validateArchiveConfig(cfg Config, reg *registry.Registry) error {
+	requested := cfg.Documents.ArchiveHistory
+	if !requested {
+		for _, ent := range reg.All() {
+			if ent.Spec.CRDT != nil && ent.Spec.CRDT.ArchiveHistory != nil && *ent.Spec.CRDT.ArchiveHistory {
+				requested = true
+				break
+			}
+		}
+	}
+	if requested && cfg.Storage.StorageDriver == "" {
+		return fmt.Errorf("fabriq: Documents.ArchiveHistory requires Storage to be configured (no storage driver set)")
+	}
+	return nil
 }
 
 // Stores exposes the opened adapters for worker-plane wiring (relay,
