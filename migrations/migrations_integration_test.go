@@ -137,6 +137,17 @@ func TestRegistryConformance(t *testing.T) {
 	}
 
 	for _, ent := range reg.All() {
+		// Document-kind entities materialize to application-owned tables whose
+		// DDL is deliberately NOT part of fabriq's shipped migration chain — a
+		// library must never create a generically-named table (e.g. "pages")
+		// in a host database. Their DDL authority is the application (see
+		// domain.PagesDDL), applied by examples and the document-plane
+		// integration tests, so they are out of scope for this registry↔grove
+		// migrations conformance check.
+		if ent.Spec.Kind == registry.KindDocument {
+			continue
+		}
+
 		dbCols := map[string]bool{}
 		rows, err := db.Query(ctx,
 			`SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1`,
