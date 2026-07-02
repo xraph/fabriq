@@ -27,6 +27,7 @@ package document
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // Materialized is a point-in-time snapshot of a document's merged state.
@@ -73,4 +74,30 @@ type HistoryReader interface {
 	// ReadHistory returns every update with seqLo <= seq <= seqHi, in seq
 	// order, drawn from sealed segments and the live update log.
 	ReadHistory(ctx context.Context, docID string, seqLo, seqHi int64) ([]HistoryUpdate, error)
+}
+
+// SegmentInfo is the metadata for one sealed history segment (a contiguous
+// [SeqLo, SeqHi] range of the update log stored as a blob). Blob keys are an
+// internal storage detail and are intentionally not exposed.
+type SegmentInfo struct {
+	SegSeq      int64     `json:"segSeq"`
+	SeqLo       int64     `json:"seqLo"`
+	SeqHi       int64     `json:"seqHi"`
+	UpdateCount int64     `json:"updateCount"`
+	ByteSize    int64     `json:"byteSize"`
+	At          time.Time `json:"at"`
+}
+
+// SegmentLister is an optional capability on document stores that offload
+// history to the blob plane: it lists a document's sealed segments (newest
+// storage-shape metadata, not the update bytes). Consumers type-assert for it.
+type SegmentLister interface {
+	ListSegments(ctx context.Context, docID string) ([]SegmentInfo, error)
+}
+
+// HistoryPurger is an optional capability: delete a document's offloaded
+// history (segment blobs + index rows). Consumers type-assert for it (e.g. the
+// admin delete path purges history when a document entity is deleted).
+type HistoryPurger interface {
+	DeleteHistory(ctx context.Context, docID string) error
 }
