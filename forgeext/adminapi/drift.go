@@ -83,7 +83,14 @@ func (c *adminController) handleSchemaDrift(ctx forge.Context) error {
 			continue
 		}
 		missing, extra := computeDrift(ent.Binding.Columns, physical)
-		de.Missing, de.Extra = missing, extra
+		// Preserve the non-nil defaults so the JSON contract is always [] (a nil
+		// []string marshals to null, which breaks clients that call .join()).
+		if missing != nil {
+			de.Missing = missing
+		}
+		if extra != nil {
+			de.Extra = extra
+		}
 		de.InSync = len(missing) == 0 && len(extra) == 0
 		out.Entities = append(out.Entities, de)
 	}
