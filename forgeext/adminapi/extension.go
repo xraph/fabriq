@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/xraph/forge"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/agent"
@@ -62,6 +63,13 @@ type config struct {
 	// attach authMiddleware(store, basePath) via WithRouteOptions to actually
 	// gate requests; WithAuth only wires the key-management surface.
 	KeyStore KeyStore
+	// AdminLoginUser and AdminLoginHash back the dashboard-login surface
+	// (POST {BasePath}/login + /logout), set together via WithAdminLogin.
+	// AdminLoginUser == "" (the default) means login is disabled and
+	// registerLoginRoutes is never called. AdminLoginHash is the bcrypt hash
+	// of the configured password — the plaintext is never retained.
+	AdminLoginUser string
+	AdminLoginHash string
 }
 
 // Option configures the adminapi extension.
@@ -106,6 +114,29 @@ func WithSchemaAdmin() Option { return func(c *config) { c.SchemaAdmin = true } 
 // WithRouteOptions to actually gate admin requests on a valid key.
 func WithAuth(store KeyStore) Option {
 	return func(c *config) { c.KeyStore = store }
+}
+
+// WithAdminLogin enables the dashboard-login surface (POST {BasePath}/login +
+// /logout): username is compared verbatim at login time and password is
+// bcrypt-hashed immediately, at option-application time — the plaintext
+// password is never retained. WithAdminLogin REQUIRES WithAuth: login mints a
+// session token via KeyStore.IssueSession, so Extension.Start fails fast with
+// an error if AdminLoginUser is set but no KeyStore was configured.
+func WithAdminLogin(username, password string) Option {
+	return func(c *config) {
+		c.AdminLoginUser = username
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			// bcrypt.GenerateFromPassword only errors on an invalid cost or a
+			// password longer than 72 bytes; DefaultCost is always valid, so
+			// this is effectively unreachable for a well-formed password. Leave
+			// AdminLoginHash empty so a malformed password can never match any
+			// bcrypt comparison (fails closed, not open).
+			c.AdminLoginHash = ""
+			return
+		}
+		c.AdminLoginHash = string(hash)
+	}
 }
 
 // Extension exposes the fabriq data fabric as a read-only admin HTTP surface.
@@ -189,6 +220,10 @@ func (e *Extension) Register(app forge.App) error {
 
 // Start resolves the fabriq facade from the started fabriq extension.
 func (e *Extension) Start(ctx context.Context) error {
+	if e.cfg.AdminLoginUser != "" && e.cfg.KeyStore == nil {
+		return fmt.Errorf("adminapi: WithAdminLogin requires WithAuth")
+	}
+
 	f := e.parent.Fabriq()
 	if f == nil {
 		return fmt.Errorf("fabriq-admin-api: requires the fabriq facade (started)")

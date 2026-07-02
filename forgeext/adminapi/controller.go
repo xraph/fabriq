@@ -199,6 +199,12 @@ func (c *adminController) Routes(r forge.Router) error {
 		}
 	}
 
+	if c.ext.cfg.AdminLoginUser != "" {
+		if err := c.registerLoginRoutes(r); err != nil {
+			return err
+		}
+	}
+
 	return c.registerPluginRoutes(r)
 }
 
