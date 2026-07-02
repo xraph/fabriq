@@ -161,6 +161,15 @@ linters:
       - path: cmd/admin-demo/
         text: "G706"
         linters: [gosec]
+      # forgeext/adminapi/schema_ddl.go audits every ad-hoc DDL attempt by an
+      # authenticated schema-owner (WithSchemaAdmin gate). The logged SQL is the
+      # admin's own hand-written statement, emitted as a structured slog field
+      # (not a format sink), so G706 log-injection does not apply. Newer gosec no
+      # longer flags it — an inline nolint would be unused (nolintlint) — so it is
+      # excluded by path here instead.
+      - path: forgeext/adminapi/schema_ddl\.go
+        text: "G706"
+        linters: [gosec]
 
 formatters:
   enable:

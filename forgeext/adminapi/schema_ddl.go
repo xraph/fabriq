@@ -63,7 +63,7 @@ func (c *adminController) handleAdhocDDL(ctx forge.Context) error {
 	reqCtx := ctx.Request().Context()
 	tid, _ := tenant.FromContext(reqCtx)
 	// AUDIT: every ad-hoc DDL attempt is logged (it is outside the migration ledger).
-	slog.Info("fabriq.adminapi.schema.adhoc_ddl", "tenant", tid, "sql", req.SQL) //nolint:gosec // structured audit log of an authenticated admin's own DDL; not a formatted sink.
+	slog.Info("fabriq.adminapi.schema.adhoc_ddl", "tenant", tid, "sql", req.SQL)
 
 	if err := stores.Postgres.ExecRawDDL(reqCtx, req.SQL); err != nil {
 		// INTENTIONAL: surface the raw Postgres error to the caller. This is a
