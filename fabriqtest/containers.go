@@ -165,7 +165,16 @@ func StartElasticsearch(t testing.TB) string {
 				"xpack.security.enabled": "false",
 				"ES_JAVA_OPTS":           "-Xms512m -Xmx512m",
 			},
-			WaitingFor: wait.ForHTTP("/").WithPort("9200/tcp").WithStartupTimeout(3 * time.Minute),
+			// Wait for real write-readiness, not just a live HTTP port: the
+			// cluster-health endpoint with wait_for_status=yellow blocks until
+			// the node has formed a cluster and its shards can accept writes.
+			// Plain "/" answers as soon as the HTTP layer is up — before the
+			// cluster is ready — which on a loaded host surfaces later as bulk
+			// writes rejected with 429/503 ("unavailable").
+			WaitingFor: wait.ForHTTP("/_cluster/health?wait_for_status=yellow&timeout=60s").
+				WithPort("9200/tcp").
+				WithStatusCodeMatcher(func(status int) bool { return status == 200 }).
+				WithStartupTimeout(3 * time.Minute),
 		},
 		Started: true,
 	})
