@@ -127,6 +127,12 @@ type CRDTSpec struct {
 	Engine        string        // engine reference, e.g. "grove-crdt"
 	SnapshotEvery int           // compact after this many updates
 	QuietWindow   time.Duration // idle window before materialization
+
+	// ArchiveHistory opts this entity's documents into offloading sealed
+	// update history to the blob plane on Compact (latest state stays in the
+	// DB). nil = inherit the global Config.Documents.ArchiveHistory default;
+	// a non-nil pointer overrides it per entity.
+	ArchiveHistory *bool
 }
 
 // GraphEdgeSpec maps a reified-edge ENTITY (rows that ARE relationships) into

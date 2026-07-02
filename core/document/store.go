@@ -57,3 +57,20 @@ type Store interface {
 	// (SnapshotEvery from the entity's CRDTSpec governs cadence).
 	Compact(ctx context.Context, docID string) error
 }
+
+// HistoryUpdate is one raw update from the offloaded log, keyed by its seq.
+// Update is the verbatim JSON-encoded []crdt.ChangeRecord.
+type HistoryUpdate struct {
+	Seq    int64           `json:"seq"`
+	Update json.RawMessage `json:"update"`
+}
+
+// HistoryReader is an optional capability on document stores that offload
+// history to the blob plane: it reconstructs a raw update range from sealed
+// file segments plus any still-in-DB rows. Stores that do not offload need
+// not implement it; consumers type-assert (like core/blob's Presigner/Ranger).
+type HistoryReader interface {
+	// ReadHistory returns every update with seqLo <= seq <= seqHi, in seq
+	// order, drawn from sealed segments and the live update log.
+	ReadHistory(ctx context.Context, docID string, seqLo, seqHi int64) ([]HistoryUpdate, error)
+}

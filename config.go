@@ -20,6 +20,7 @@ type Config struct {
 	FalkorDB      FalkorDBConfig      `yaml:"falkordb" json:"falkordb"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
 	Storage       StorageConfig       `yaml:"storage" json:"storage"`
+	Documents     DocumentsConfig     `yaml:"documents" json:"documents"`
 	Projections   ProjectionsConfig   `yaml:"projections" json:"projections"`
 	Subscriptions SubscriptionsConfig `yaml:"subscriptions" json:"subscriptions"`
 	Cache         CacheConfig         `yaml:"cache" json:"cache"`
@@ -141,6 +142,16 @@ type StorageConfig struct {
 	// will wire a CASStore backed by the blob_cas ledger (requires a Postgres
 	// adapter). The open.go wiring that reads this field lands in Phase 3b.
 	EnableCas bool `yaml:"enableCas" json:"enableCas"`
+}
+
+// DocumentsConfig configures the CRDT document plane. Empty is the default
+// (history stays in Postgres).
+type DocumentsConfig struct {
+	// ArchiveHistory is the global default for offloading sealed CRDT update
+	// history to the blob plane on Compact. Per-entity CRDTSpec.ArchiveHistory
+	// overrides it. Requires Storage to be configured (Open fails fast
+	// otherwise).
+	ArchiveHistory bool `yaml:"archiveHistory" json:"archiveHistory"`
 }
 
 // Validate checks cross-field consistency. It does not dial anything.
