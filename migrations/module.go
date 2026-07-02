@@ -60,6 +60,7 @@ func Group() *migrate.Group {
 			migration0024DigestContentHashIdx,
 			migration0025EmbeddingsMetaGIN,
 			migration0026CRDTSegments,
+			migration0027APIKey,
 		)
 	})
 	return group
