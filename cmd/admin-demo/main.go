@@ -70,6 +70,11 @@ const (
 	blobBucket = "fabriq-admin-demo"
 )
 
+// demoTenants is the fixed tenant set every seeder (products, customers,
+// orders, places, graph, files, docs, distill, telemetry) and — when
+// ADMIN_DEMO_AUTH=1 — the per-tenant admin-key seed iterate over.
+var demoTenants = []string{"acme-corp", "globex"}
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatalf("admin-demo: %v", err)
@@ -251,7 +256,7 @@ func run() error {
 	placesTotal := 0
 	distillNodesTotal := 0
 	telemetryPointsTotal := 0
-	for _, tid := range []string{"acme-corp", "globex"} {
+	for _, tid := range demoTenants {
 		if err := seedProducts(ctx, f, tid, seedCount); err != nil {
 			_ = f.Close()
 			return err
@@ -411,6 +416,24 @@ func run() error {
 		telemetryPointsTotal += tp
 	}
 
+	// Opt-in admin-key auth (ADMIN_DEMO_AUTH=1). Wired BEFORE the prep fabric
+	// closes below, but the KeyStore itself is backed by its OWN small
+	// dedicated grove/pg pool (see setupDemoAuth) — never the prep handle's —
+	// because f.Close() tears down stores.Postgres's pool, and the KeyStore
+	// must stay queryable for the lifetime of the process (the auth
+	// middleware resolves every admin request against it). Unset/!=1: no
+	// store is built, no dial happens, adminAuthOpt is nil, and the
+	// NewAdminAPI call below is byte-for-byte the pre-existing option list.
+	var adminAuthOpt adminapi.Option
+	if os.Getenv("ADMIN_DEMO_AUTH") == "1" {
+		opt, err := setupDemoAuth(ctx, dsn, addr, demoTenants)
+		if err != nil {
+			_ = f.Close()
+			return err
+		}
+		adminAuthOpt = opt
+	}
+
 	// The prep fabric has done its job (migrations, DDL, seeding). The serving
 	// fabric is opened independently by the forgeext extension at app.Start;
 	// close the prep handle so we don't hold a redundant pool.
@@ -447,7 +470,7 @@ func run() error {
 	// The adminapi extension is auth-agnostic: the host attaches tenant
 	// resolution via WithRouteOptions. tenantMiddleware reads X-Tenant-ID and
 	// stamps the tenant onto every admin route's request context.
-	adminExt := adminapi.NewAdminAPI(fabricExt,
+	adminOpts := []adminapi.Option{
 		adminapi.WithRouteOptions(forge.WithMiddleware(tenantMiddleware)),
 		// The demo embedder backs TEXT-mode vector queries (POST /search/vector
 		// with {query}). Similar-to-entity ({id}) reuses a stored embedding and
@@ -465,7 +488,16 @@ func run() error {
 		// Enable the privileged schema-ops surface (run/rollback migrations,
 		// ad-hoc DDL) so the demo exercises the Migrations console end to end.
 		adminapi.WithSchemaAdmin(),
-	)
+	}
+	// ADMIN_DEMO_AUTH=1 only: gate every /admin route on a valid per-tenant
+	// key (adminapi's controller auto-installs the verifying middleware once
+	// WithAuth's KeyStore is non-nil — see forgeext/adminapi/controller.go).
+	// Unset/!=1: adminAuthOpt is nil and adminOpts is exactly the pre-existing
+	// list, so the default path is unchanged.
+	if adminAuthOpt != nil {
+		adminOpts = append(adminOpts, adminAuthOpt)
+	}
+	adminExt := adminapi.NewAdminAPI(fabricExt, adminOpts...)
 	if err := app.RegisterExtension(adminExt); err != nil {
 		return err
 	}
@@ -508,6 +540,10 @@ func corsMiddleware(next forge.Handler) forge.Handler {
 		h.Set("Access-Control-Allow-Origin", "*")
 		h.Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Content-Type,X-Tenant-ID")
+		// Expose Content-Disposition so the SPA's file download can read the
+		// server-provided attachment filename cross-origin (browsers hide
+		// non-safelisted response headers from fetch() unless exposed).
+		h.Set("Access-Control-Expose-Headers", "Content-Disposition")
 
 		if ctx.Request().Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
