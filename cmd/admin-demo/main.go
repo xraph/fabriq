@@ -7,9 +7,10 @@
 //   - a demo dynamic entity "product" (registry.DynamicSchema aggregate) plus
 //     the adminapi plugin-remote schema (adminapi.PluginRemoteSpec);
 //   - fabriq.Open (runs migrations) + EnsureDynamic for the dynamic tables;
-//   - the fabriq forge extension (forgeext) and the adminapi extension;
-//   - a tenant middleware that resolves the tenant from the X-Tenant-ID header
-//     (the host's auth boundary — adminapi is auth-agnostic by design);
+//   - the fabriq forge extension (forgeext) and the adminapi extension, with
+//     auth ON by default (auto-provisioned KeyStore + admin/admin login;
+//     set ADMIN_DEMO_AUTH=0 to opt out to a keyless API with a tenant
+//     middleware that resolves the tenant from the X-Tenant-ID header);
 //   - an app-wide CORS middleware that allows the SPA origin and answers
 //     preflight OPTIONS with 204;
 //   - idempotent startup seeding of ~60 product rows per demo tenant so the
@@ -71,8 +72,7 @@ const (
 )
 
 // demoTenants is the fixed tenant set every seeder (products, customers,
-// orders, places, graph, files, docs, distill, telemetry) and — when
-// ADMIN_DEMO_AUTH=1 — the per-tenant admin-key seed iterate over.
+// orders, places, graph, files, docs, distill, telemetry) iterates over.
 var demoTenants = []string{"acme-corp", "globex"}
 
 func main() {
@@ -416,40 +416,6 @@ func run() error {
 		telemetryPointsTotal += tp
 	}
 
-	// Opt-in admin-key auth (ADMIN_DEMO_AUTH=1). Wired BEFORE the prep fabric
-	// closes below, but the KeyStore itself is backed by its OWN small
-	// dedicated grove/pg pool (see setupDemoAuth) — never the prep handle's —
-	// because f.Close() tears down stores.Postgres's pool, and the KeyStore
-	// must stay queryable for the lifetime of the process (the auth
-	// middleware resolves every admin request against it). Unset/!=1: no
-	// store is built, no dial happens, adminAuthOpt is nil, and the
-	// NewAdminAPI call below is byte-for-byte the pre-existing option list.
-	var adminAuthOpt adminapi.Option
-	var adminLoginOpt adminapi.Option
-	if os.Getenv("ADMIN_DEMO_AUTH") == "1" {
-		opt, err := setupDemoAuth(ctx, dsn, addr, demoTenants)
-		if err != nil {
-			_ = f.Close()
-			return err
-		}
-		adminAuthOpt = opt
-
-		// Optional dashboard-login surface (POST {BasePath}/login + /logout).
-		// Only wired when ADMIN_LOGIN_PASSWORD is set — WithAdminLogin REQUIRES
-		// WithAuth (adminAuthOpt above), which this block always sets, so it's
-		// safe to pair the two here. user defaults to "admin" when unset;
-		// leaving ADMIN_LOGIN_PASSWORD empty keeps the login surface disabled
-		// (unchanged behavior).
-		user := os.Getenv("ADMIN_LOGIN_USER")
-		if user == "" {
-			user = "admin"
-		}
-		if pass := os.Getenv("ADMIN_LOGIN_PASSWORD"); pass != "" {
-			adminLoginOpt = adminapi.WithAdminLogin(user, pass)
-			log.Printf("admin-demo: dashboard login enabled for user %q", user)
-		}
-	}
-
 	// The prep fabric has done its job (migrations, DDL, seeding). The serving
 	// fabric is opened independently by the forgeext extension at app.Start;
 	// close the prep handle so we don't hold a redundant pool.
@@ -501,24 +467,28 @@ func run() error {
 		// ad-hoc DDL) so the demo exercises the Migrations console end to end.
 		adminapi.WithSchemaAdmin(),
 	}
-	if adminAuthOpt != nil {
-		// ADMIN_DEMO_AUTH=1: gate every /admin route on a valid API key/session.
-		// The verifying middleware (auto-installed once WithAuth's KeyStore is
-		// non-nil — forgeext/adminapi/controller.go) IS the tenant authority: it
-		// resolves the tenant from the key (tenant-bound) or the X-Tenant-ID
-		// selector (multi-tenant/session) and exempts POST /login. So we do NOT
-		// also install the demo's tenantMiddleware — it would 400 /login (no
-		// tenant exists at login time) and duplicate tenant resolution.
-		adminOpts = append(adminOpts, adminAuthOpt)
-		// ADMIN_LOGIN_PASSWORD also set: enable the dashboard-login surface.
-		if adminLoginOpt != nil {
-			adminOpts = append(adminOpts, adminLoginOpt)
-		}
+	if os.Getenv("ADMIN_DEMO_AUTH") == "0" {
+		// Opt out: keyless admin API. The extension is auth-agnostic when
+		// disabled, so attach tenant resolution ourselves (X-Tenant-ID).
+		adminOpts = append(adminOpts,
+			adminapi.WithAuthDisabled(),
+			adminapi.WithRouteOptions(forge.WithMiddleware(tenantMiddleware)),
+		)
+		log.Printf("admin-demo: ADMIN_DEMO_AUTH=0 — auth DISABLED (keyless); X-Tenant-ID selects tenant")
 	} else {
-		// Auth off (default): the extension is auth-agnostic, so the demo attaches
-		// tenant resolution itself — tenantMiddleware reads X-Tenant-ID and stamps
-		// the tenant onto every admin route. Unchanged legacy behavior.
-		adminOpts = append(adminOpts, adminapi.WithRouteOptions(forge.WithMiddleware(tenantMiddleware)))
+		// Auth ON by default: the library auto-provisions the KeyStore and a
+		// default admin/admin login. The auth middleware resolves tenant (from
+		// the key, or X-Tenant-ID for the multi-tenant session), so NO manual
+		// tenantMiddleware here. Override creds via ADMIN_LOGIN_USER/PASSWORD.
+		if pass := os.Getenv("ADMIN_LOGIN_PASSWORD"); pass != "" {
+			user := os.Getenv("ADMIN_LOGIN_USER")
+			if user == "" {
+				user = "admin"
+			}
+			adminOpts = append(adminOpts, adminapi.WithAdminLogin(user, pass))
+			log.Printf("admin-demo: dashboard login enabled for user %q (override)", user)
+		}
+		log.Printf("admin-demo: auth ENABLED by default — log in with admin/admin (unless ADMIN_LOGIN_* set); set ADMIN_DEMO_AUTH=0 to disable")
 	}
 	adminExt := adminapi.NewAdminAPI(fabricExt, adminOpts...)
 	if err := app.RegisterExtension(adminExt); err != nil {
