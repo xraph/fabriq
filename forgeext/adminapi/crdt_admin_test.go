@@ -123,3 +123,72 @@ func TestCrdtSegments_404ForAggregate(t *testing.T) {
 		t.Fatalf("status=%d want 404 body=%s", resp.StatusCode, body)
 	}
 }
+
+// TestCrdtHistory_ReturnsSeededRange verifies GET
+// /admin/crdt/:entity/:id/history returns the seeded raw update range for a
+// registered document entity, in ascending seq order.
+func TestCrdtHistory_ReturnsSeededRange(t *testing.T) {
+	world := buildDocWorld(t)
+	e := fakeBackedAdminExt(t, world)
+	world.Docs.SeedHistory("note/abc", []document.HistoryUpdate{
+		{Seq: 1, Update: json.RawMessage(`[{"field":"title"}]`)},
+		{Seq: 2, Update: json.RawMessage(`[{"field":"body"}]`)},
+	})
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := get(t, srv, "/admin/crdt/note/abc/history?from=1&to=2")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d want 200 body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		DocID string `json:"docId"`
+		Items []struct {
+			Seq  int64 `json:"seq"`
+			Size int   `json:"size"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Items) != 2 || out.Items[0].Seq != 1 || out.Items[1].Seq != 2 {
+		t.Fatalf("unexpected history %+v", out)
+	}
+	if out.Items[0].Size <= 0 {
+		t.Fatalf("expected non-zero size")
+	}
+}
+
+// TestCrdtHistory_404ForAggregate verifies that history reads are refused for
+// a non-document (aggregate) entity, matching the /segments 404 behavior.
+func TestCrdtHistory_404ForAggregate(t *testing.T) {
+	world := buildDocWorld(t)
+	e := fakeBackedAdminExt(t, world)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := get(t, srv, "/admin/crdt/widget/w1/history")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d want 404 body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestCrdtHistory_BadRange verifies a non-integer "to" query param is
+// rejected with 400 rather than silently ignored.
+func TestCrdtHistory_BadRange(t *testing.T) {
+	world := buildDocWorld(t)
+	e := fakeBackedAdminExt(t, world)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := get(t, srv, "/admin/crdt/note/abc/history?to=abc")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d want 400 body=%s", resp.StatusCode, body)
+	}
+}
