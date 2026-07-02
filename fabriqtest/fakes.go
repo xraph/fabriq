@@ -1019,11 +1019,23 @@ func (f *FakeProjectionState) AppliedVersion(_ context.Context, tenantID, proj, 
 
 // --- FakeDocumentStore (document.Store) ----------------------------------------------
 
-// FakeDocumentStore is the deferred document plane: every method states
-// the plane is not implemented yet (phase 7).
-type FakeDocumentStore struct{}
+// FakeDocumentStore is the deferred document plane: ApplyUpdate/Sync/Snapshot/
+// Compact all state the live CRDT plane is not implemented yet (phase 7).
+//
+// It additionally implements the optional history-offload capabilities
+// (document.SegmentLister, document.HistoryReader, document.HistoryPurger)
+// against in-memory seeded state, so adminapi handlers that type-assert for
+// those capabilities can be unit-tested without a real offload-backed store.
+// Tests seed state via SeedSegments/SeedHistory and observe purges via
+// DeletedHistory.
+type FakeDocumentStore struct {
+	mu       sync.Mutex
+	segments map[string][]document.SegmentInfo
+	history  map[string][]document.HistoryUpdate
+	purged   map[string]bool
+}
 
-func (FakeDocumentStore) errDeferred() error {
+func (*FakeDocumentStore) errDeferred() error {
 	return fmt.Errorf("fabriq: document plane not implemented yet (phase 7 scaffold): %w", fabriqerr.ErrStoreNotConfigured)
 }
 
@@ -1044,6 +1056,85 @@ func (f *FakeDocumentStore) Snapshot(context.Context, string) (document.Material
 
 // Compact implements document.Store (deferred).
 func (f *FakeDocumentStore) Compact(context.Context, string) error { return f.errDeferred() }
+
+// SeedSegments seeds the sealed-segment metadata ListSegments returns for
+// docID, replacing any previously seeded segments for that doc.
+func (f *FakeDocumentStore) SeedSegments(docID string, segs []document.SegmentInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.segments == nil {
+		f.segments = map[string][]document.SegmentInfo{}
+	}
+	cp := make([]document.SegmentInfo, len(segs))
+	copy(cp, segs)
+	f.segments[docID] = cp
+}
+
+// SeedHistory seeds the raw update history ReadHistory filters over for
+// docID, replacing any previously seeded history for that doc.
+func (f *FakeDocumentStore) SeedHistory(docID string, ups []document.HistoryUpdate) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.history == nil {
+		f.history = map[string][]document.HistoryUpdate{}
+	}
+	cp := make([]document.HistoryUpdate, len(ups))
+	copy(cp, ups)
+	f.history[docID] = cp
+}
+
+// DeletedHistory reports whether DeleteHistory has been called for docID.
+func (f *FakeDocumentStore) DeletedHistory(docID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.purged[docID]
+}
+
+// ListSegments implements document.SegmentLister over seeded state.
+func (f *FakeDocumentStore) ListSegments(_ context.Context, docID string) ([]document.SegmentInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	segs := f.segments[docID]
+	out := make([]document.SegmentInfo, len(segs))
+	copy(out, segs)
+	return out, nil
+}
+
+// ReadHistory implements document.HistoryReader over seeded state, filtering
+// to updates with seqLo <= seq <= seqHi and returning them in seq order.
+func (f *FakeDocumentStore) ReadHistory(_ context.Context, docID string, seqLo, seqHi int64) ([]document.HistoryUpdate, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	all := append([]document.HistoryUpdate(nil), f.history[docID]...)
+	sort.Slice(all, func(i, j int) bool { return all[i].Seq < all[j].Seq })
+	out := make([]document.HistoryUpdate, 0, len(all))
+	for _, u := range all {
+		if u.Seq >= seqLo && u.Seq <= seqHi {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+// DeleteHistory implements document.HistoryPurger: it clears docID's seeded
+// segments and history and records the purge for DeletedHistory to observe.
+func (f *FakeDocumentStore) DeleteHistory(_ context.Context, docID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.segments, docID)
+	delete(f.history, docID)
+	if f.purged == nil {
+		f.purged = map[string]bool{}
+	}
+	f.purged[docID] = true
+	return nil
+}
+
+var (
+	_ document.SegmentLister = (*FakeDocumentStore)(nil)
+	_ document.HistoryReader = (*FakeDocumentStore)(nil)
+	_ document.HistoryPurger = (*FakeDocumentStore)(nil)
+)
 
 // --- FakeSpatial (query.SpatialQuerier) -------------------------------------
 
