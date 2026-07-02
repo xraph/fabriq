@@ -562,30 +562,67 @@ func (d *DocStore) mergedState(ctx context.Context, docID string) (*crdt.State, 
 	return state, maxSeq, err
 }
 
-// fold merges one change record into the state via grove's engine.
+// fold applies one change record onto the state via grove's canonical op
+// application: type-specific payloads (counter deltas, set/list/text ops,
+// document path writes, full-state carriers) all merge losslessly.
 func (d *DocStore) fold(state *crdt.State, c *crdt.ChangeRecord) error {
-	remote := &crdt.FieldState{Type: c.CRDTType, HLC: c.HLC, NodeID: c.NodeID, Value: c.Value}
-	merged, err := d.merge.MergeField(state.Fields[c.Field], remote)
+	merged, err := crdt.ApplyChange(d.merge, state.Fields[c.Field], c)
 	if err != nil {
-		return fmt.Errorf("fabriq: merge field %q: %w", c.Field, err)
+		return fmt.Errorf("fabriq: apply field %q: %w", c.Field, err)
 	}
 	state.Fields[c.Field] = merged
 	return nil
 }
 
-// stateValues projects merged field states onto column-keyed values.
+// stateValues projects merged field states onto column-keyed values:
+// counters resolve to their total, sets/lists to element arrays, text to
+// its visible string, lww/document to the stored value.
 func stateValues(state *crdt.State) map[string]any {
 	vals := make(map[string]any, len(state.Fields))
 	for field, fs := range state.Fields {
-		if fs == nil || len(fs.Value) == 0 {
+		if fs == nil {
 			continue
 		}
-		var v any
-		if err := json.Unmarshal(fs.Value, &v); err == nil {
-			vals[field] = v
+		switch fs.Type {
+		case crdt.TypeCounter:
+			if fs.CounterState != nil {
+				vals[field] = fs.CounterState.Value()
+			}
+		case crdt.TypeSet:
+			if fs.SetState != nil {
+				vals[field] = rawElements(fs.SetState.Elements())
+			}
+		case crdt.TypeList:
+			if fs.ListState != nil {
+				vals[field] = rawElements(fs.ListState.Elements())
+			}
+		case crdt.TypeText:
+			if fs.TextState != nil {
+				vals[field] = fs.TextState.Value()
+			}
+		default:
+			if len(fs.Value) == 0 {
+				continue
+			}
+			var v any
+			if err := json.Unmarshal(fs.Value, &v); err == nil {
+				vals[field] = v
+			}
 		}
 	}
 	return vals
+}
+
+// rawElements decodes a JSON-encoded element list to plain values.
+func rawElements(elements []json.RawMessage) []any {
+	out := make([]any, 0, len(elements))
+	for _, el := range elements {
+		var v any
+		if err := json.Unmarshal(el, &v); err == nil {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // ValidateFunc is the post-merge validation hook: CRDTs converge but do
