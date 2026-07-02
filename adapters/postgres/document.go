@@ -46,6 +46,8 @@ type DocStore struct {
 
 var _ document.Store = (*DocStore)(nil)
 var _ document.HistoryReader = (*DocStore)(nil)
+var _ document.SegmentLister = (*DocStore)(nil)
+var _ document.HistoryPurger = (*DocStore)(nil)
 
 // Documents returns the document-plane store.
 func (a *Adapter) Documents() *DocStore {
@@ -454,6 +456,39 @@ func (d *DocStore) DeleteHistory(ctx context.Context, docID string) error {
 		_, err := tx.NewRaw(`DELETE FROM fabriq_crdt_segments WHERE doc_id = $1`, docID).Exec(ctx)
 		return err
 	})
+}
+
+// ListSegments returns the sealed history segments for a document, ordered by
+// their seq range. Blob keys are intentionally omitted (internal detail).
+func (d *DocStore) ListSegments(ctx context.Context, docID string) ([]document.SegmentInfo, error) {
+	if _, err := d.splitDocID(docID); err != nil {
+		return nil, err
+	}
+	type segRow struct {
+		SegSeq      int64     `grove:"seg_seq"`
+		SeqLo       int64     `grove:"seq_lo"`
+		SeqHi       int64     `grove:"seq_hi"`
+		UpdateCount int64     `grove:"update_count"`
+		ByteSize    int64     `grove:"byte_size"`
+		At          time.Time `grove:"at"`
+	}
+	var rows []segRow
+	if err := d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		return tx.NewRaw(
+			`SELECT seg_seq, seq_lo, seq_hi, update_count, byte_size, at
+			 FROM fabriq_crdt_segments WHERE doc_id = $1 ORDER BY seq_lo`,
+			docID).Scan(ctx, &rows)
+	}); err != nil {
+		return nil, err
+	}
+	out := make([]document.SegmentInfo, len(rows))
+	for i, r := range rows {
+		out[i] = document.SegmentInfo{
+			SegSeq: r.SegSeq, SeqLo: r.SeqLo, SeqHi: r.SeqHi,
+			UpdateCount: r.UpdateCount, ByteSize: r.ByteSize, At: r.At,
+		}
+	}
+	return out, nil
 }
 
 // loadSegment returns a sealed segment's decoded updates, from the cache when
