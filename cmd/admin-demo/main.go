@@ -425,6 +425,7 @@ func run() error {
 	// store is built, no dial happens, adminAuthOpt is nil, and the
 	// NewAdminAPI call below is byte-for-byte the pre-existing option list.
 	var adminAuthOpt adminapi.Option
+	var adminLoginOpt adminapi.Option
 	if os.Getenv("ADMIN_DEMO_AUTH") == "1" {
 		opt, err := setupDemoAuth(ctx, dsn, addr, demoTenants)
 		if err != nil {
@@ -432,6 +433,21 @@ func run() error {
 			return err
 		}
 		adminAuthOpt = opt
+
+		// Optional dashboard-login surface (POST {BasePath}/login + /logout).
+		// Only wired when ADMIN_LOGIN_PASSWORD is set — WithAdminLogin REQUIRES
+		// WithAuth (adminAuthOpt above), which this block always sets, so it's
+		// safe to pair the two here. user defaults to "admin" when unset;
+		// leaving ADMIN_LOGIN_PASSWORD empty keeps the login surface disabled
+		// (unchanged behavior).
+		user := os.Getenv("ADMIN_LOGIN_USER")
+		if user == "" {
+			user = "admin"
+		}
+		if pass := os.Getenv("ADMIN_LOGIN_PASSWORD"); pass != "" {
+			adminLoginOpt = adminapi.WithAdminLogin(user, pass)
+			log.Printf("admin-demo: dashboard login enabled for user %q", user)
+		}
 	}
 
 	// The prep fabric has done its job (migrations, DDL, seeding). The serving
@@ -496,6 +512,12 @@ func run() error {
 	// list, so the default path is unchanged.
 	if adminAuthOpt != nil {
 		adminOpts = append(adminOpts, adminAuthOpt)
+	}
+	// ADMIN_LOGIN_PASSWORD set (and ADMIN_DEMO_AUTH=1) only: also enable the
+	// dashboard-login surface. adminLoginOpt is nil otherwise, so the default
+	// path (and auth-without-login path) is unchanged.
+	if adminLoginOpt != nil {
+		adminOpts = append(adminOpts, adminLoginOpt)
 	}
 	adminExt := adminapi.NewAdminAPI(fabricExt, adminOpts...)
 	if err := app.RegisterExtension(adminExt); err != nil {
