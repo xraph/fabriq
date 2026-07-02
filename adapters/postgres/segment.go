@@ -53,7 +53,10 @@ func decodeSegment(b []byte) ([]segEntry, error) {
 }
 
 // segmentKey is the deterministic blob key for a doc's sealed seq range.
-// The blob store partitions by the context tenant, so no tenant is embedded.
+// doc_id is globally unique (fabriq_crdt_docs.doc_id is a bare primary key,
+// never tenant-qualified), so keys embedding it are globally unique across
+// tenants — no tenant prefix is needed, and the shared in-process segment
+// cache keyed by this string cannot serve one tenant's bytes to another.
 func segmentKey(docID string, seqLo, seqHi int64) string {
 	return fmt.Sprintf("crdt/%s/seg/%d-%d", docID, seqLo, seqHi)
 }

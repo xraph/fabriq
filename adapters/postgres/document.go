@@ -410,6 +410,18 @@ func (d *DocStore) ReadHistory(ctx context.Context, docID string, seqLo, seqHi i
 	// A seq lives in exactly one tier (sealing deletes from the DB), so a plain
 	// sort yields the ordered, gap-free range.
 	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	// A seq normally lives in exactly one tier, but de-dup defensively so an
+	// overlapping/duplicate segment (e.g. from a concurrent compaction) can't
+	// surface the same update twice.
+	if len(out) > 1 {
+		dedup := out[:1]
+		for _, u := range out[1:] {
+			if u.Seq != dedup[len(dedup)-1].Seq {
+				dedup = append(dedup, u)
+			}
+		}
+		out = dedup
+	}
 	return out, nil
 }
 
