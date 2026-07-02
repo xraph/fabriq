@@ -22,7 +22,7 @@ func TestQueryDynamicReadOnly(t *testing.T) {
 	for i, sku := range []string{"A1", "B2", "A1"} {
 		if _, err := h.X.Exec(ctx, command.Command{
 			Entity: "orders", Op: command.OpUpsert,
-			AggID:   string(rune('a'+i)),
+			AggID:   string(rune('a' + i)),
 			Payload: map[string]any{"sku": sku, "qty": int64(i + 1)},
 		}); err != nil {
 			t.Fatalf("seed: %v", err)

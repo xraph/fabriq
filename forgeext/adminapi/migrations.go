@@ -178,11 +178,11 @@ func (c *adminController) handleMigrationScaffold(ctx forge.Context) error {
 
 // migrationJob is one async migration run (up or down).
 type migrationJob struct {
-	ID        string    `json:"id"`
-	Kind      string    `json:"kind"`  // "up" | "down"
-	State     string    `json:"state"` // "running" | "done" | "failed"
-	Names     []string  `json:"names,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	ID        string     `json:"id"`
+	Kind      string     `json:"kind"`  // "up" | "down"
+	State     string     `json:"state"` // "running" | "done" | "failed"
+	Names     []string   `json:"names,omitempty"`
+	Error     string     `json:"error,omitempty"`
 	StartedAt time.Time  `json:"startedAt"`
 	EndedAt   *time.Time `json:"endedAt,omitempty"` // pointer so it is truly omitted while running
 }

@@ -23,7 +23,7 @@ func TestSegmentCacheEvictsLRU(t *testing.T) {
 	c := newSegmentCache(2)
 	c.put("a", []document.HistoryUpdate{{Seq: 1}})
 	c.put("b", []document.HistoryUpdate{{Seq: 2}})
-	_, _ = c.get("a")            // touch a → b is now least-recently-used
+	_, _ = c.get("a")                              // touch a → b is now least-recently-used
 	c.put("c", []document.HistoryUpdate{{Seq: 3}}) // evicts b
 	if _, ok := c.get("b"); ok {
 		t.Fatal("b should have been evicted")

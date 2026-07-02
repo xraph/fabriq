@@ -1,0 +1,4 @@
+{
+  "title": "Admin Console",
+  "pages": ["admin-console", "authentication", "connection-string"]
+}

@@ -1,0 +1,72 @@
+---
+title: Connection String
+description: A portable DSN — fabriq://<key>@host/<tenant> — that encodes endpoint, tenant, credential, and transport in one string, plus the clients that consume it: connect() in TypeScript and a full adminapi-mirror client package in Go.
+---
+
+A **fabriq connection string** points a client at a hosted fabriq instance the way
+`postgres://…` points at a database — one portable token carrying the endpoint, tenant,
+credential, and transport. It collapses the scattered "base URL + tenant header + Bearer
+key" config into a single string, and it is verified by the [API-key
+layer](/docs/authentication).
+
+## Grammar
+
+```text
+fabriq://<key>@<host>[:<port>][/<tenant>][?tls=&version=&basePath=]
+fabriq+grpc://…          # reserved; the gRPC transport is not built yet
+```
+
+- **scheme** — `fabriq` selects HTTP/JSON over the adminapi. `fabriq+grpc` is parsed and
+  reserved.
+- **userinfo** — the [API key](/docs/authentication) (the sole credential).
+- **host[:port]** — port defaults to `443` under TLS, else `80`. `localhost` / `127.0.0.1`
+  default to no-TLS; `?tls=true|false` overrides.
+- **path** — an optional tenant. For a [tenant-bound key](/docs/authentication) it is
+  display/override (the server validates it); for a multi-tenant key it becomes the
+  `X-Tenant-ID` selector.
+- **query** — `tls`, `version` (default `1`), `basePath` (default `/admin`).
+
+## TypeScript — `connect()`
+
+`connect()` in `@fabriq/admin-sdk` turns a DSN into a ready `FabriqClient`, wiring the
+`Authorization: Bearer`, `X-Tenant-ID`, and `X-Fabriq-Api-Version` headers from the string:
+
+```ts
+import { connect } from "@fabriq/admin-sdk"
+
+const client = connect("fabriq://fq_live_…@fabriq.internal/acme-corp")
+const page = await client.listEntities({ type: "order", limit: 20 })
+```
+
+The [console](/docs/admin-console) uses the same path: set `VITE_FABRIQ_DSN` and it builds
+its client via `connect()`.
+
+## Go — the `client` package
+
+`github.com/xraph/fabriq/client` is a standalone Go client that mirrors the **entire**
+adminapi surface — entities, types/schema, search, vector, spatial, graph, files, CRDT,
+events, cache, projections, distillation, commands, recall, raw query, capabilities, and
+migrations:
+
+```go
+import "github.com/xraph/fabriq/client"
+
+c, err := client.Connect(ctx, "fabriq://fq_live_…@fabriq.internal/acme-corp")
+if err != nil {
+    return err
+}
+
+page, err := c.ListEntities(ctx, client.ListEntitiesParams{Type: "order", Limit: 20})
+hits, err := c.SearchText(ctx, client.SearchTextParams{Type: "order", Q: "refund"})
+```
+
+It sets the Bearer/tenant/version headers on every request and maps a non-2xx response to a
+typed `*client.APIError` carrying the HTTP status. This is the client
+[weave](/docs/weave) and [cortex](/docs/cortex) use to reach a remote fabriq as a
+[vector store](/docs/weave) and a [living brain](/docs/cortex).
+
+<Callout type="warn">
+A connection string embeds a secret in a URL — treat it like a `postgres://` DSN. Keep
+tokens revocable and per-tenant, and prefer supplying them from the environment or a secret
+store over inlining them.
+</Callout>

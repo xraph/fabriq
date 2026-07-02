@@ -14,8 +14,8 @@ type driftEntity struct {
 	Table   string   `json:"table"`
 	Dynamic bool     `json:"dynamic"`
 	InSync  bool     `json:"inSync"`
-	Missing []string `json:"missing"` // expected in the registry, absent physically
-	Extra   []string `json:"extra"`   // present physically, not in the registry
+	Missing []string `json:"missing"`         // expected in the registry, absent physically
+	Extra   []string `json:"extra"`           // present physically, not in the registry
 	Error   string   `json:"error,omitempty"` // set when this entity's table could not be introspected
 }
 

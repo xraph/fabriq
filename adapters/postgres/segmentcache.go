@@ -12,7 +12,7 @@ import (
 type segmentCache struct {
 	mu   sync.Mutex
 	max  int
-	ll   *list.List               // front = most recently used
+	ll   *list.List // front = most recently used
 	item map[string]*list.Element
 }
 

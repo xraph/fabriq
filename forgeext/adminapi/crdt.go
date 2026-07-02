@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xraph/forge"
+
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/forge"
 )
 
 // defaultUpdateLogLimit is the default page size for the CRDT update-log

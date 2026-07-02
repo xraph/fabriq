@@ -156,9 +156,30 @@ pack, _ := tk.Recall(tenantCtx, agent.RecallRequest{
 })
 ```
 
+## The admin console
+
+Fabriq ships a mountable, plugin-based web **[admin console](/docs/admin-console)** over a
+running instance — one interactive surface per subsystem: browse and edit entities, author
+schemas, run text / semantic / hybrid search, traverse the graph, manage files and CRDT
+documents, inspect the outbox, and run read-only SQL — all tenant-scoped.
+
+![The fabriq admin console](/admin-console.png)
+
+It reaches an instance through the adminapi HTTP surface, so any client can connect the
+same way: with a portable **[connection string](/docs/connection-string)** —
+`fabriq://<key>@host/<tenant>` — consumed by `connect()` in TypeScript and a full
+adminapi-mirror client package in Go. Both are verified by an opt-in
+**[authentication](/docs/authentication)** layer: per-tenant API keys for machine clients,
+and a username/password **dashboard login** for humans that mints a short-lived session
+token validated by the same key middleware.
+
 ## Where to go next
 
 <Cards>
+  <Card title="Admin Console" href="/docs/admin-console">
+    A web dashboard over every subsystem, a portable connection string, and opt-in
+    API-key + dashboard-login authentication.
+  </Card>
   <Card title="Getting Started" href="/docs/installation">
     Install fabriq, wire the facade, and run your first command, query, and
     subscription.

@@ -48,6 +48,44 @@ func TestValidateDefaultExpr(t *testing.T) {
 	}
 }
 
+func TestColumnsToRegistryRejectsReservedNames(t *testing.T) {
+	for _, name := range []string{"id", "tenant_id", "version"} {
+		_, err := columnsToRegistry([]schemaWriteColumn{{Name: name, Kind: "string"}})
+		if err == nil {
+			t.Fatalf("reserved column %q must be rejected", name)
+		}
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error for %q should name the column: %v", name, err)
+		}
+	}
+	// scope_id is consumer-declarable and must be accepted.
+	if _, err := columnsToRegistry([]schemaWriteColumn{{Name: "scope_id", Kind: "string"}}); err != nil {
+		t.Fatalf("scope_id must be accepted, got %v", err)
+	}
+}
+
+// A reserved column name must yield a crisp 400 at the boundary, not fall
+// through to a generic 500 via bind-error mapping, and the writer must never
+// be invoked.
+func TestHandleDefineRejectsReservedColumn(t *testing.T) {
+	w := &fakeWriter{}
+	srv := buildServer(t, writerBackedExt(t, w))
+	defer srv.Close()
+
+	resp := doJSON(t, http.MethodPost, srv.URL+"/admin/schema", map[string]any{
+		"type":    "gadget",
+		"columns": []map[string]any{{"name": "tenant_id", "kind": "string"}},
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if len(w.defined) != 0 {
+		t.Fatalf("defined len = %d, want 0", len(w.defined))
+	}
+}
+
 func TestValidSchemaIdent(t *testing.T) {
 	if !validSchemaIdent("order") || !validSchemaIdent("order_line2") {
 		t.Fatal("valid idents rejected")

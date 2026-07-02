@@ -35,6 +35,22 @@ const (
 	ColumnScope = "scope_id"
 )
 
+// reservedColumns is the set of structural columns fabriq injects and stamps on
+// every managed entity (id, tenant_id, version). It is the single source of
+// truth for "which names a domain/entity spec may not declare". ColumnScope is
+// intentionally excluded: it is opt-in and consumer-declared.
+var reservedColumns = map[string]bool{
+	ColumnID:      true,
+	ColumnTenant:  true,
+	ColumnVersion: true,
+}
+
+// IsReservedColumn reports whether name is a structural column fabriq manages
+// automatically (id, tenant_id, version). Entity specs must not declare a
+// domain column with a reserved name — fabriq provides and stamps these. Note
+// scope_id is NOT reserved: it is an opt-in column consumers declare themselves.
+func IsReservedColumn(name string) bool { return reservedColumns[name] }
+
 // Binding is the compiled relational shape of an entity, derived from its
 // grove-tagged model at registration time, or from a DynamicSchema.
 type Binding struct {
@@ -79,7 +95,7 @@ func (b *Binding) Required() []string {
 	if b.dynamic {
 		var out []string
 		for _, col := range b.Columns {
-			if col == ColumnID || col == ColumnTenant || col == ColumnVersion {
+			if IsReservedColumn(col) {
 				continue
 			}
 			dc := b.dynCols[col]
@@ -91,7 +107,7 @@ func (b *Binding) Required() []string {
 	}
 	var out []string
 	for _, col := range b.Columns {
-		if col == ColumnID || col == ColumnTenant || col == ColumnVersion {
+		if IsReservedColumn(col) {
 			continue
 		}
 		f := b.fields[col]
@@ -280,7 +296,7 @@ func bindDynamic(spec EntitySpec) (*Binding, error) {
 	// still carries the injected structural columns.
 	// Register domain columns.
 	for _, c := range s.Columns {
-		if c.Name == ColumnID || c.Name == ColumnTenant || c.Name == ColumnVersion {
+		if IsReservedColumn(c.Name) {
 			return nil, fmt.Errorf("fabriq: entity %q: column %q is structural and injected automatically", spec.Name, c.Name)
 		}
 		if !dynIdent.MatchString(c.Name) {

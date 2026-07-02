@@ -69,11 +69,42 @@ func TestDynamic_RejectsModelAndSchemaTogether(t *testing.T) {
 }
 
 func TestDynamic_RejectsRedeclaredStructuralColumn(t *testing.T) {
+	for _, name := range []string{registry.ColumnID, registry.ColumnTenant, registry.ColumnVersion} {
+		r := registry.New()
+		s := dynSpec()
+		s.Schema.Columns = append(s.Schema.Columns, registry.DynamicColumn{Name: name, Type: registry.ColText})
+		if err := r.Register(s); err == nil {
+			t.Fatalf("redeclaring reserved structural column %q must error", name)
+		}
+	}
+}
+
+// scope_id is structural-when-present but consumer-declared, so it must NOT be
+// rejected as a reserved name — a dynamic entity may opt into secondary scoping
+// by declaring it.
+func TestDynamic_AllowsScopeColumn(t *testing.T) {
 	r := registry.New()
 	s := dynSpec()
-	s.Schema.Columns = append(s.Schema.Columns, registry.DynamicColumn{Name: "version", Type: registry.ColInt})
-	if err := r.Register(s); err == nil {
-		t.Fatal("redeclaring a structural column must error")
+	s.Schema.Columns = append(s.Schema.Columns, registry.DynamicColumn{Name: registry.ColumnScope, Type: registry.ColText})
+	if err := r.Register(s); err != nil {
+		t.Fatalf("declaring scope_id must be allowed, got %v", err)
+	}
+	ent, _ := r.Get("orders")
+	if !ent.Binding.HasColumn(registry.ColumnScope) {
+		t.Fatal("scope_id not bound")
+	}
+}
+
+func TestIsReservedColumn(t *testing.T) {
+	for _, name := range []string{registry.ColumnID, registry.ColumnTenant, registry.ColumnVersion} {
+		if !registry.IsReservedColumn(name) {
+			t.Errorf("IsReservedColumn(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{registry.ColumnScope, "sku", "tenant", "id2", ""} {
+		if registry.IsReservedColumn(name) {
+			t.Errorf("IsReservedColumn(%q) = true, want false", name)
+		}
 	}
 }
 

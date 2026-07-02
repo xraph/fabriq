@@ -100,6 +100,9 @@ func columnsToRegistry(cols []schemaWriteColumn) ([]registry.DynamicColumn, erro
 		if !validSchemaIdent(c.Name) {
 			return nil, fmt.Errorf("invalid column name %q", c.Name)
 		}
+		if registry.IsReservedColumn(c.Name) {
+			return nil, fmt.Errorf("column %q is a reserved structural name (id, tenant_id and version are managed by fabriq)", c.Name)
+		}
 		ct, err := kindToColumnType(c.Kind)
 		if err != nil {
 			return nil, err

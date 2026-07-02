@@ -1,0 +1,123 @@
+---
+title: Admin Console
+description: A mountable, plugin-based web console for every fabriq subsystem — browse and edit entities, author schemas, run text/semantic/hybrid search, traverse the graph, manage files and CRDT documents, inspect the outbox, and run read-only SQL — all tenant-scoped.
+---
+
+The **fabriq-admin console** is a web dashboard over a running fabriq instance. It talks
+to the [adminapi](/docs/remote-protocol) HTTP surface (`forgeext/adminapi`) — the same
+surface the [connection string](/docs/connection-string) and remote clients use — and
+renders one interactive surface per subsystem. It is a library-first, runtime-pluggable
+React app: mount `<FabriqAdmin>` into a host app, or run the bundled `cmd/admin-demo`.
+
+![The fabriq admin console](/admin-console.png)
+
+Every request is [tenant-scoped](/docs/tenancy): a tenant switcher sets `X-Tenant-ID`, and
+all reads and writes route to that tenant. Each surface is capability-gated — it renders
+only when the instance advertises the backing capability, and write controls appear only
+when the matching write capability is present.
+
+## Surfaces
+
+<Cards>
+  <Card title="Overview" href="/docs/admin-console">
+    Engine capabilities (which subsystems this instance provides), tenant summary, and
+    quick links to every registered section.
+  </Card>
+  <Card title="Entities" href="/docs/dynamic-entities">
+    Browse any registered entity type with pagination and reference links, open a row
+    for its full record, and create / edit / delete — capability-badged per type.
+  </Card>
+  <Card title="Types" href="/docs/dynamic-entities">
+    Author dynamic entity schemas: list types, view a type's fields, create a type, add /
+    rename / drop fields, and delete a type — gated on the `schema.write` capability, with
+    typed-confirm on destructive actions.
+  </Card>
+  <Card title="Search" href="/docs/search">
+    Full-text, semantic (text→vector), and similar-to-entity search with ranked results.
+    Text search supports equality filters over indexed fields, sort, and pagination;
+    vector search supports embedding-meta filters. Manage stored embeddings inline.
+  </Card>
+  <Card title="Graph" href="/docs/graph">
+    Neighbors and traversal from a node, plus a read-only openCypher console with a
+    d3-force visualization of the returned subgraph.
+  </Card>
+  <Card title="Spatial" href="/docs/spatial">
+    Radius / within queries over geometries, returned with true-metre distances.
+  </Card>
+  <Card title="Files" href="/docs/file-plane">
+    Browse the file tree, create folders, upload, download, and delete — the catalog lives
+    in Postgres, bytes in the blob store.
+  </Card>
+  <Card title="Documents" href="/docs/documents">
+    Inspect a CRDT document's merged state and its update log.
+  </Card>
+  <Card title="Events" href="/docs/commands-and-events">
+    The transactional outbox, newest first, with the relay's publish state. Filter by
+    aggregate type and event type (multi-select, server-backed distinct values),
+    aggregate id, and publish state.
+  </Card>
+  <Card title="Live" href="/docs/live-queries">
+    Subscribe to a maintained, ordered window and watch enter/leave/move/update deltas
+    stream in.
+  </Card>
+  <Card title="Recall" href="/docs/recall">
+    The agent toolkit's hybrid recall — RRF fusion of vector, full-text, and graph
+    channels — plus guarded `remember` writes.
+  </Card>
+  <Card title="Distillation" href="/docs/distillation">
+    The per-tenant Merkle tree of summaries: browse the digest map and drill into nodes.
+  </Card>
+  <Card title="Cache · Projections · Migrations" href="/docs/rebuild-and-reconcile">
+    Cache stats and invalidation; projection blue-green status, reconcile, and rebuild;
+    migration status, run/rollback, drift, and ad-hoc DDL.
+  </Card>
+  <Card title="Query" href="/docs/relational">
+    A read-only SQL console (`query.raw` capability) over a read-only tenant transaction,
+    with a table / JSON result grid.
+  </Card>
+  <Card title="Plugins" href="/docs/admin-console">
+    Runtime Module Federation: load remote plugin surfaces into the console without a
+    rebuild.
+  </Card>
+</Cards>
+
+## Running it
+
+The console needs a fabriq instance exposing the adminapi. The quickest path is the
+bundled demo, which stands up the full stack (Postgres, Elasticsearch, FalkorDB, Redis,
+a `file://` blob store) and seeds illustrative data:
+
+```bash
+# from the fabriq repo — serves the adminapi on :8080
+go run ./cmd/admin-demo
+```
+
+Point the console at it (defaults to `http://localhost:8080/admin`):
+
+```bash
+# from the fabriq-admin repo
+pnpm --filter @fabriq/host dev   # Vite dev server, opens the console
+```
+
+By default the demo runs **unauthenticated** — the console loads straight in. To require
+credentials, enable [authentication](/docs/authentication) and, optionally, a
+[dashboard login](/docs/authentication#dashboard-login).
+
+## Mounting into a host app
+
+The console is a library. Import `<FabriqAdmin>` from `@fabriq/admin-sdk` and give it a
+client:
+
+```tsx
+import { FabriqAdmin, connect } from "@fabriq/admin-sdk"
+
+// Build a client from a connection string (carries endpoint + tenant + credential):
+const client = connect("fabriq://<key>@fabriq.internal/acme-corp")
+
+export function Console() {
+  return <FabriqAdmin client={client} plugins={[/* built-in + remote */]} />
+}
+```
+
+See [Connection string](/docs/connection-string) for how a client is built from a
+`fabriq://` DSN, and [Authentication](/docs/authentication) for API keys and login.

@@ -161,8 +161,8 @@ func (f faultyCache) Invalidate(context.Context, corecache.Keyspace, ...string) 
 	return f.err
 }
 func (f faultyCache) InvalidateKeyspace(context.Context, corecache.Keyspace) error { return f.err }
-func (f faultyCache) InvalidateEntity(context.Context, string) error              { return f.err }
-func (f faultyCache) Close() error                                                { return nil }
+func (f faultyCache) InvalidateEntity(context.Context, string) error               { return f.err }
+func (f faultyCache) Close() error                                                 { return nil }
 
 var _ corecache.Cache = faultyCache{}
 

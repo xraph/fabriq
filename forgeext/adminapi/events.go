@@ -240,7 +240,7 @@ func (c *adminController) handleEventBacklog(ctx forge.Context) error {
 // Returns the distinct, sorted aggregate types and event types present in the
 // request tenant's outbox. Like handleListEvents, the outbox has no row-level
 // security, so each scan is scoped to the request tenant via the app.tenant_id
-// GUC (current_setting returns '' when unset → matches no rows). The column
+// GUC (current_setting returns ” when unset → matches no rows). The column
 // names are compile-time literals (never request input), so the format-string
 // interpolation cannot inject.
 func (c *adminController) handleEventFacets(ctx forge.Context) error {

@@ -1,0 +1,108 @@
+---
+title: Authentication
+description: Hosted-fabriq auth for the adminapi — per-tenant API keys for machine clients (verified by a Bearer middleware) and a username/password dashboard login that mints a short-lived session token validated by the same middleware. Both opt-in; off by default.
+---
+
+The [adminapi](/docs/remote-protocol) is **auth-agnostic and opt-in**. Out of the box it
+performs no authentication — the host attaches whatever it wants through route middleware.
+Fabriq ships an optional, self-contained auth layer with two modes that share one
+verification path:
+
+- **API keys** — for machine clients (the [connection string](/docs/connection-string),
+  remote SDKs, agents). A `Bearer` credential the server verifies.
+- **Dashboard login** — for humans. Username/password that exchanges for a short-lived
+  **session token** the *same* key-verify middleware validates.
+
+With neither enabled, the console loads directly and every route behaves exactly as before.
+
+## API keys
+
+Enable the key layer by giving the adminapi a `KeyStore`:
+
+```go
+store := adminapi.NewKeyStore(groveDB)          // backed by the fabriq_api_key table
+ext := adminapi.NewAdminAPI(fabricExt, adminapi.WithAuth(store))
+```
+
+When `WithAuth` is set, a verify middleware is installed on **every** admin route. Each
+request must carry `Authorization: Bearer <key>`; the middleware looks the key up by hash,
+rejects unknown / revoked / expired keys with `401`, resolves the tenant, and stamps it
+onto the request context.
+
+### Tenant-bound vs multi-tenant keys
+
+A key record carries a nullable `tenant_id`:
+
+| Kind | Behaviour |
+| --- | --- |
+| **Tenant-bound** (`tenant_id` set) | Presenting the key authenticates *and* selects that tenant. A conflicting `X-Tenant-ID` header is a `403`. |
+| **Multi-tenant** (`tenant_id` null) | Authenticates a principal that may act across tenants; the request must supply an `X-Tenant-ID` selector (`400` if absent). |
+
+Keys are stored as a `sha256` hash plus a short display prefix — the plaintext is returned
+**once**, at issue time, and never persisted.
+
+### Managing keys
+
+When auth is enabled, a management surface is registered (gated on the `can_manage_keys`
+flag):
+
+```text
+POST   {base}/keys            → issue  {label, tenantId?, canManageKeys?}  → 201 {id, prefix, key}
+GET    {base}/keys            → list (redacted: no hash, no plaintext)
+DELETE {base}/keys/{id}       → revoke
+```
+
+**Bootstrap.** On start with auth enabled, if `FABRIQ_ADMIN_KEY` is set it is registered as
+a multi-tenant admin key; otherwise, if no admin key exists, one is generated and logged
+once so an operator can bootstrap.
+
+### Wire version
+
+Every response carries `X-Fabriq-Api-Version`. A request whose major version disagrees with
+the server is rejected with `426 Upgrade Required`; an absent header is tolerated.
+
+## Dashboard login
+
+For an interactive login screen on the [console](/docs/admin-console), enable a
+username/password credential (this requires `WithAuth` — login mints into the key store):
+
+```go
+ext := adminapi.NewAdminAPI(
+  fabricExt,
+  adminapi.WithAuth(store),
+  adminapi.WithAdminLogin("admin", os.Getenv("ADMIN_PASSWORD")),
+)
+```
+
+The password is bcrypt-hashed at startup (never stored in plaintext), and login is
+constant-time. Two routes are added:
+
+```text
+POST {base}/login   {username, password}  → 201 {token, expiresAt}   (exempt from the verify middleware)
+POST {base}/logout                        → 200  (revokes the presented session)
+```
+
+A successful login mints a **session token** — a key-store row that is multi-tenant,
+`can_manage_keys`, and carries an `expires_at` (default 12h). The console stores it and
+sends it as `Authorization: Bearer <token>`, so the ordinary key-verify middleware
+validates every subsequent request; an expired or logged-out session simply fails
+verification (`401`) and the console returns to the login screen. Because the session is
+multi-tenant, the console's tenant switcher selects the working tenant per request.
+
+`POST {base}/login` is the only route exempt from the verify middleware — it is the way in.
+Everything else, including `/logout`, stays gated.
+
+## In the demo
+
+`cmd/admin-demo` wires all of this from the environment:
+
+```bash
+ADMIN_DEMO_AUTH=1 \
+ADMIN_LOGIN_USER=admin ADMIN_LOGIN_PASSWORD=s3cret \
+go run ./cmd/admin-demo
+```
+
+With `ADMIN_DEMO_AUTH=1` it enables `WithAuth`, seeds a per-tenant admin key, and prints a
+ready-to-paste [connection string](/docs/connection-string) per tenant. Adding
+`ADMIN_LOGIN_PASSWORD` enables the dashboard login. Unset, the demo is unauthenticated —
+unchanged.

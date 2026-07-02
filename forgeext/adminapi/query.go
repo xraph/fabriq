@@ -78,7 +78,7 @@ func hasKeywordPrefix(s, keyword string) bool {
 var fromJoinIdentRe = regexp.MustCompile(`(?i)(\bfrom\b|\bjoin\b)(\s+)("?)([a-zA-Z_][a-zA-Z0-9_]*)("?)`)
 
 // sqlSkipRe matches regions the rewriter must treat as opaque: single-quoted
-// string literals (with '' escapes), line comments, and block comments — so a
+// string literals (with ” escapes), line comments, and block comments — so a
 // word like "from products" inside a literal or comment is never rewritten.
 var sqlSkipRe = regexp.MustCompile(`'(?:[^']|'')*'|--[^\n]*|/\*[\s\S]*?\*/`)
 
