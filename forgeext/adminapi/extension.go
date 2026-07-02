@@ -70,6 +70,9 @@ type config struct {
 	// of the configured password — the plaintext is never retained.
 	AdminLoginUser string
 	AdminLoginHash string
+	// authDisabled turns OFF secure-by-default auth provisioning. Set via
+	// WithAuthDisabled. See resolveAuthDefaults for the full decision table.
+	authDisabled bool
 }
 
 // Option configures the adminapi extension.
@@ -137,6 +140,35 @@ func WithAdminLogin(username, password string) Option {
 		}
 		c.AdminLoginHash = string(hash)
 	}
+}
+
+// WithAuthDisabled turns OFF secure-by-default auth: no KeyStore is
+// auto-provisioned and the admin API is served without authentication. Use for
+// trusted internal deployments or tests that intentionally run keyless.
+func WithAuthDisabled() Option { return func(c *config) { c.authDisabled = true } }
+
+// authDecision is the outcome of secure-by-default resolution. Start applies it.
+type authDecision struct {
+	ProvisionKeyStore bool   // build NewKeyStore(gdb) — only meaningful when a DB is available
+	DefaultLogin      bool   // set the admin/admin login surface
+	Warn              string // non-empty → log once at Start
+}
+
+// resolveAuthDefaults decides secure-by-default behavior WITHOUT side effects.
+// hasDB reports whether a *grove.DB is reachable from the parent.
+//   - authDisabled OR an explicit KeyStore → provision nothing.
+//   - not disabled, no KeyStore, hasDB → provision; and default login when no
+//     AdminLoginUser was configured (explicit creds are preserved).
+//   - not disabled, no KeyStore, no DB → provision nothing + warn (auth wanted
+//     but cannot be enforced without a DB; keeps nil-parent tests auth-off).
+func resolveAuthDefaults(cfg config, hasDB bool) authDecision {
+	if cfg.authDisabled || cfg.KeyStore != nil {
+		return authDecision{}
+	}
+	if !hasDB {
+		return authDecision{Warn: "auth is on by default but no Postgres DB is reachable — admin API is UNAUTHENTICATED; provide WithAuth or a Postgres-backed fabric, or set WithAuthDisabled to silence this"}
+	}
+	return authDecision{ProvisionKeyStore: true, DefaultLogin: cfg.AdminLoginUser == ""}
 }
 
 // Extension exposes the fabriq data fabric as a read-only admin HTTP surface.
