@@ -19,9 +19,11 @@ package adminapi
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/xraph/forge"
+	"github.com/xraph/grove"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/xraph/fabriq"
@@ -70,6 +72,9 @@ type config struct {
 	// of the configured password — the plaintext is never retained.
 	AdminLoginUser string
 	AdminLoginHash string
+	// authDisabled turns OFF secure-by-default auth provisioning. Set via
+	// WithAuthDisabled. See resolveAuthDefaults for the full decision table.
+	authDisabled bool
 }
 
 // Option configures the adminapi extension.
@@ -137,6 +142,35 @@ func WithAdminLogin(username, password string) Option {
 		}
 		c.AdminLoginHash = string(hash)
 	}
+}
+
+// WithAuthDisabled turns OFF secure-by-default auth: no KeyStore is
+// auto-provisioned and the admin API is served without authentication. Use for
+// trusted internal deployments or tests that intentionally run keyless.
+func WithAuthDisabled() Option { return func(c *config) { c.authDisabled = true } }
+
+// authDecision is the outcome of secure-by-default resolution. Start applies it.
+type authDecision struct {
+	ProvisionKeyStore bool   // build NewKeyStore(gdb) — only meaningful when a DB is available
+	DefaultLogin      bool   // set the admin/admin login surface
+	Warn              string // non-empty → log once at Start
+}
+
+// resolveAuthDefaults decides secure-by-default behavior WITHOUT side effects.
+// hasDB reports whether a *grove.DB is reachable from the parent.
+//   - authDisabled OR an explicit KeyStore → provision nothing.
+//   - not disabled, no KeyStore, hasDB → provision; and default login when no
+//     AdminLoginUser was configured (explicit creds are preserved).
+//   - not disabled, no KeyStore, no DB → provision nothing + warn (auth wanted
+//     but cannot be enforced without a DB; keeps nil-parent tests auth-off).
+func resolveAuthDefaults(cfg config, hasDB bool) authDecision {
+	if cfg.authDisabled || cfg.KeyStore != nil {
+		return authDecision{}
+	}
+	if !hasDB {
+		return authDecision{Warn: "auth is on by default but no Postgres DB is reachable — admin API is UNAUTHENTICATED; provide WithAuth or a Postgres-backed fabric, or set WithAuthDisabled to silence this"}
+	}
+	return authDecision{ProvisionKeyStore: true, DefaultLogin: cfg.AdminLoginUser == ""}
 }
 
 // Extension exposes the fabriq data fabric as a read-only admin HTTP surface.
@@ -215,11 +249,65 @@ func (e *Extension) Register(app forge.App) error {
 	if err := e.BaseExtension.Register(app); err != nil {
 		return err
 	}
+	// Secure-by-default auth MUST be resolved here, BEFORE RegisterController:
+	// controller.Routes() installs the auth middleware and registers the /keys +
+	// /login routes based on cfg (KeyStore/AdminLoginUser) at registration time,
+	// and Routes() runs synchronously inside RegisterController. The parent fabriq
+	// extension is a declared dependency, so it has Started (stores open) by the
+	// time this runs — the DB is reachable via groveFromParent. (Tests build the
+	// controller directly via newAdminController and never call Register, so they
+	// stay auth-off.)
+	if err := e.applyAuthDefaults(); err != nil {
+		return err
+	}
 	return app.RegisterController(newAdminController(e))
+}
+
+// applyAuthDefaults resolves and applies secure-by-default auth: auto-provision a
+// KeyStore from the fabric DB and default the admin/admin login, unless the host
+// opted out (WithAuthDisabled) or already configured auth. Decided purely by
+// resolveAuthDefaults; applied here so controller.Routes() (called next, in
+// Register) observes the resulting config.
+func (e *Extension) applyAuthDefaults() error {
+	d := resolveAuthDefaults(e.cfg, groveFromParent(e) != nil)
+	if d.Warn != "" {
+		log.Printf("adminapi: %s", d.Warn)
+	}
+	if d.ProvisionKeyStore {
+		e.cfg.KeyStore = NewKeyStore(groveFromParent(e))
+	}
+	if d.DefaultLogin {
+		hash, herr := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
+		if herr != nil {
+			return fmt.Errorf("adminapi: hash default admin password: %w", herr)
+		}
+		e.cfg.AdminLoginUser = "admin"
+		e.cfg.AdminLoginHash = string(hash)
+		log.Printf("adminapi: auth on by default — default admin/admin login enabled; override with WithAdminLogin or ADMIN_LOGIN_USER/PASSWORD")
+	}
+	return nil
+}
+
+// groveFromParent returns the primary shard's *grove.DB, or nil when the parent
+// / opened stores / Postgres adapter is absent (nil-parent tests, non-Postgres
+// deployments). Never panics.
+func groveFromParent(e *Extension) *grove.DB {
+	if e.parent == nil {
+		return nil
+	}
+	stores := e.parent.Stores()
+	if stores == nil || stores.Postgres == nil {
+		return nil
+	}
+	return stores.Postgres.Grove()
 }
 
 // Start resolves the fabriq facade from the started fabriq extension.
 func (e *Extension) Start(ctx context.Context) error {
+	// Auth defaulting (auto-provision KeyStore + default login) happens in
+	// Register (before routes are built). This guard also covers the direct-Start
+	// path used by tests: explicit WithAdminLogin without a resolvable KeyStore is
+	// a hard error (login set but no DB and no WithAuth).
 	if e.cfg.AdminLoginUser != "" && e.cfg.KeyStore == nil {
 		return fmt.Errorf("adminapi: WithAdminLogin requires WithAuth")
 	}
