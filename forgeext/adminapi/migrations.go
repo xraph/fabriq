@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -63,7 +64,7 @@ func (c *adminController) registerMigrationRoutes(r forge.Router) error {
 	if err := r.GET(base+"/migrations/jobs/:id/stream", c.handleMigrationJobStream, opts...); err != nil {
 		return err
 	}
-	return r.GET(base+"/migrations/scaffold", c.handleMigrationScaffold, opts...)
+	return r.POST(base+"/migrations/scaffold", c.handleMigrationScaffold, opts...)
 }
 
 // scaffoldNameRe / scaffoldVersionRe validate the scaffold inputs: a lowercase
@@ -82,11 +83,35 @@ func scaffoldVarName(name string) string {
 	return strings.Join(parts, "")
 }
 
+// scaffoldStmtBlock renders the body of an execAll([]string{...}) block: one
+// %q-quoted statement per line at 3-tab indent. Blank/whitespace-only entries
+// are dropped; when nothing is left it emits the TODO placeholder comment so the
+// generated file still compiles and reads like the hand-written migrations.
+func scaffoldStmtBlock(stmts []string, todo string) string {
+	var kept []string
+	for _, s := range stmts {
+		if s = strings.TrimSpace(s); s != "" {
+			kept = append(kept, s)
+		}
+	}
+	var b strings.Builder
+	if len(kept) == 0 {
+		fmt.Fprintf(&b, "\t\t\t%s\n", todo)
+		return b.String()
+	}
+	for _, s := range kept {
+		fmt.Fprintf(&b, "\t\t\t%q,\n", s)
+	}
+	return b.String()
+}
+
 // renderMigrationScaffold generates a grove Go migration-file skeleton (the same
 // shape as migrations/0001_outbox.go). It executes nothing — it returns text for
-// a developer to save into migrations/ and register in module.go. Returns an
-// error on an invalid name/version.
-func renderMigrationScaffold(name, version string) (filename, content string, err error) {
+// a developer to save into migrations/ and register in module.go. When up/down
+// statements are supplied they are emitted inside the execAll blocks so the file
+// is save-ready with no further editing; when empty, TODO placeholders are left.
+// Returns an error on an invalid name/version.
+func renderMigrationScaffold(name, version string, up, down []string) (filename, content string, err error) {
 	if !scaffoldNameRe.MatchString(name) {
 		return "", "", fmt.Errorf("invalid migration name %q (want lowercase snake_case)", name)
 	}
@@ -110,28 +135,41 @@ var migration%[1]s = &migrate.Migration{
 	Comment: "TODO: describe this migration",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
 		return execAll(ctx, exec, []string{
-			// TODO: forward DDL, e.g. "CREATE TABLE IF NOT EXISTS ...".
-		})
+%[4]s		})
 	},
 	Down: func(ctx context.Context, exec migrate.Executor) error {
 		return execAll(ctx, exec, []string{
-			// TODO: reverse DDL, e.g. "DROP TABLE IF EXISTS ...".
-		})
+%[5]s		})
 	},
 }
-`, scaffoldVarName(name), name, version)
+`, scaffoldVarName(name), name, version,
+		scaffoldStmtBlock(up, `// TODO: forward DDL, e.g. "CREATE TABLE IF NOT EXISTS ...".`),
+		scaffoldStmtBlock(down, `// TODO: reverse DDL, e.g. "DROP TABLE IF EXISTS ...".`))
 	return filename, content, nil
 }
 
-// handleMigrationScaffold serves GET {BasePath}/migrations/scaffold?name=&version=
-// — gated. Returns generated Go text; it never touches the database.
+// scaffoldRequest is the POST body for the scaffold endpoint. up/down are
+// optional forward/reverse DDL statements (one per element); when omitted the
+// generated file carries TODO placeholders.
+type scaffoldRequest struct {
+	Name    string   `json:"name"`
+	Version string   `json:"version"`
+	Up      []string `json:"up,omitempty"`
+	Down    []string `json:"down,omitempty"`
+}
+
+// handleMigrationScaffold serves POST {BasePath}/migrations/scaffold — gated.
+// Returns generated Go text; it never touches the database or the filesystem.
 func (c *adminController) handleMigrationScaffold(ctx forge.Context) error {
 	if err := c.requireSchemaAdmin(ctx); err != nil {
 		return err
 	}
-	name := strings.TrimSpace(ctx.Query("name"))
-	version := strings.TrimSpace(ctx.Query("version"))
-	filename, content, err := renderMigrationScaffold(name, version)
+	var req scaffoldRequest
+	if err := json.NewDecoder(ctx.Request().Body).Decode(&req); err != nil {
+		return forge.BadRequest("invalid request body: " + err.Error())
+	}
+	filename, content, err := renderMigrationScaffold(
+		strings.TrimSpace(req.Name), strings.TrimSpace(req.Version), req.Up, req.Down)
 	if err != nil {
 		return forge.BadRequest(err.Error())
 	}

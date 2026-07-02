@@ -2,13 +2,14 @@ package adminapi
 
 import (
 	"encoding/json"
+	"go/format"
 	"net/http"
 	"strings"
 	"testing"
 )
 
 func TestRenderMigrationScaffold(t *testing.T) {
-	fn, content, err := renderMigrationScaffold("add_widget", "202607010001")
+	fn, content, err := renderMigrationScaffold("add_widget", "202607010001", nil, nil)
 	if err != nil {
 		t.Fatalf("renderMigrationScaffold: %v", err)
 	}
@@ -24,11 +25,48 @@ func TestRenderMigrationScaffold(t *testing.T) {
 			t.Errorf("scaffold content missing %q", want)
 		}
 	}
-	if _, _, err := renderMigrationScaffold("Bad Name!", "202607010001"); err == nil {
+	// With no bodies, the TODO placeholders are present.
+	if !strings.Contains(content, "// TODO: forward DDL") || !strings.Contains(content, "// TODO: reverse DDL") {
+		t.Error("empty scaffold should keep TODO placeholders")
+	}
+	if _, _, err := renderMigrationScaffold("Bad Name!", "202607010001", nil, nil); err == nil {
 		t.Error("invalid name should error")
 	}
-	if _, _, err := renderMigrationScaffold("ok", "notdigits"); err == nil {
+	if _, _, err := renderMigrationScaffold("ok", "notdigits", nil, nil); err == nil {
 		t.Error("invalid version should error")
+	}
+}
+
+func TestRenderMigrationScaffold_WithBodies(t *testing.T) {
+	_, content, err := renderMigrationScaffold(
+		"add_widget", "202607010001",
+		[]string{`CREATE TABLE "widgets" (id text)`, "  ", "CREATE INDEX i ON widgets(id)"},
+		[]string{"DROP TABLE widgets"},
+	)
+	if err != nil {
+		t.Fatalf("renderMigrationScaffold: %v", err)
+	}
+	// Statements are %q-quoted into the execAll blocks; blank entries dropped.
+	for _, want := range []string{
+		`"CREATE TABLE \"widgets\" (id text)",`,
+		`"CREATE INDEX i ON widgets(id)",`,
+		`"DROP TABLE widgets",`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("scaffold content missing %q\n---\n%s", want, content)
+		}
+	}
+	// Placeholders must be gone once real statements are supplied.
+	if strings.Contains(content, "// TODO: forward DDL") || strings.Contains(content, "// TODO: reverse DDL") {
+		t.Error("filled scaffold should not keep TODO placeholders")
+	}
+	// The generated file must be valid, gofmt-clean Go (it's a code generator).
+	formatted, err := format.Source([]byte(content))
+	if err != nil {
+		t.Fatalf("generated migration is not valid Go: %v\n---\n%s", err, content)
+	}
+	if string(formatted) != content {
+		t.Errorf("generated migration is not gofmt-clean:\n--- got ---\n%s\n--- gofmt ---\n%s", content, formatted)
 	}
 }
 
@@ -38,10 +76,42 @@ func TestMigrationScaffold_403WhenGateOff(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := get(t, srv, "/admin/migrations/scaffold?name=x&version=1")
+	resp := doJSON(t, http.MethodPost, srv.URL+"/admin/migrations/scaffold",
+		map[string]any{"name": "x", "version": "1"})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 (gate off)", resp.StatusCode)
+	}
+}
+
+func TestMigrationScaffold_GeneratesFile(t *testing.T) {
+	world := buildTestWorld(t)
+	e := fakeBackedAdminExt(t, world, WithSchemaAdmin()) // gate ON
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := doJSON(t, http.MethodPost, srv.URL+"/admin/migrations/scaffold", map[string]any{
+		"name":    "add_widget",
+		"version": "202607010001",
+		"up":      []string{"CREATE TABLE widgets (id text)"},
+		"down":    []string{"DROP TABLE widgets"},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Filename string `json:"filename"`
+		Content  string `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Filename != "add_widget.go" {
+		t.Errorf("filename = %q, want add_widget.go", body.Filename)
+	}
+	if !strings.Contains(body.Content, `"CREATE TABLE widgets (id text)",`) {
+		t.Errorf("content missing supplied up statement:\n%s", body.Content)
 	}
 }
 
