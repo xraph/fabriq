@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -237,11 +238,14 @@ func (d *DocStore) Snapshot(ctx context.Context, docID string) (document.Materia
 	return document.Materialized{DocID: docID, Snapshot: raw, Version: version}, nil
 }
 
-// Compact implements document.Store: fold the log into the snapshot row
-// and trim it, one transaction. Merge results never change — only their
-// storage shape.
+// Compact implements document.Store: fold the log into the snapshot row and
+// trim it, one transaction. When archive is enabled for the entity, the
+// trimmed updates are first sealed into an immutable blob segment + index row
+// (blob Put before the DB commit) so history survives outside the DB. Merge
+// results never change — only their storage shape.
 func (d *DocStore) Compact(ctx context.Context, docID string) error {
-	if _, err := d.splitDocID(docID); err != nil {
+	ent, err := d.splitDocID(docID)
+	if err != nil {
 		return err
 	}
 	tid, err := tenant.Require(ctx)
@@ -259,6 +263,25 @@ func (d *DocStore) Compact(ctx context.Context, docID string) error {
 	if err != nil {
 		return err
 	}
+
+	archive := d.archiveEnabled(ent)
+
+	// When archiving, seal the trimmed range (prevSeq, maxSeq] to a blob BEFORE
+	// the DB tx. prevSeq is the pre-compact snapshot watermark; the sealed range
+	// tiles contiguously with earlier segments.
+	var (
+		segKey   string
+		segLo    int64
+		segCount int64
+		segBytes int64
+	)
+	if archive {
+		segKey, segLo, segCount, segBytes, err = d.sealSegment(ctx, docID, maxSeq)
+		if err != nil {
+			return err
+		}
+	}
+
 	return d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		// The snapshot inherits the doc's recorded scope (from the bookkeeping
 		// row) rather than the caller's ctx scope: compaction may run from an
@@ -272,9 +295,60 @@ func (d *DocStore) Compact(ctx context.Context, docID string) error {
 			docID, tid, raw, maxSeq).Exec(ctx); err != nil {
 			return err
 		}
+		if archive && segCount > 0 {
+			if _, err := tx.NewRaw(`INSERT INTO fabriq_crdt_segments
+				(doc_id, tenant_id, seq_lo, seq_hi, blob_key, byte_size, update_count, scope_id)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, (SELECT scope_id FROM fabriq_crdt_docs WHERE doc_id = $1))`,
+				docID, tid, segLo, maxSeq, segKey, segBytes, segCount).Exec(ctx); err != nil {
+				return err
+			}
+		}
 		_, err := tx.NewRaw(`DELETE FROM fabriq_crdt_updates WHERE doc_id = $1 AND seq <= $2`, docID, maxSeq).Exec(ctx)
 		return err
 	})
+}
+
+// sealSegment reads the trimmable updates (prevSeq, maxSeq], encodes them into
+// a segment, and Puts it to the blob store under a deterministic key. Returns
+// the key, the sealed range's low seq, the update count, and the byte size.
+// A zero count means there was nothing to seal (returns count 0, no blob written).
+func (d *DocStore) sealSegment(ctx context.Context, docID string, maxSeq int64) (key string, seqLo, count, size int64, err error) {
+	var prevSeq int64
+	var entries []segEntry
+	rerr := d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		var snaps []struct {
+			LastSeq int64 `grove:"last_seq"`
+		}
+		if e := tx.NewRaw(`SELECT last_seq FROM fabriq_crdt_snapshots WHERE doc_id = $1`, docID).Scan(ctx, &snaps); e != nil {
+			return e
+		}
+		if len(snaps) == 1 {
+			prevSeq = snaps[0].LastSeq
+		}
+		var rows []updateRow
+		if e := tx.NewRaw(
+			`SELECT seq, update_data FROM fabriq_crdt_updates WHERE doc_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq`,
+			docID, prevSeq, maxSeq).Scan(ctx, &rows); e != nil {
+			return e
+		}
+		for _, r := range rows {
+			entries = append(entries, segEntry{Seq: r.Seq, Data: r.UpdateData})
+		}
+		return nil
+	})
+	if rerr != nil {
+		return "", 0, 0, 0, rerr
+	}
+	if len(entries) == 0 {
+		return "", 0, 0, 0, nil
+	}
+	seqLo = prevSeq + 1
+	key = segmentKey(docID, seqLo, maxSeq)
+	body := encodeSegment(entries)
+	if _, e := d.blob.Put(ctx, key, bytes.NewReader(body), blob.PutOpts{ContentType: "application/octet-stream", Size: int64(len(body))}); e != nil {
+		return "", 0, 0, 0, fmt.Errorf("fabriq: seal segment %s: %w", key, e)
+	}
+	return key, seqLo, int64(len(entries)), int64(len(body)), nil
 }
 
 // mergedState folds snapshot + log tail through grove's merge engine,
