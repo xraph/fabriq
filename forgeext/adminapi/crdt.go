@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/forge"
 )
 
@@ -75,6 +76,23 @@ type syncWirePayload struct {
 	Updates  []json.RawMessage `json:"updates"`
 }
 
+// crdtEntityInfo describes one registered document (CRDT) entity for the admin
+// UI: its identity plus the CRDTSpec knobs. archiveHistory is the per-entity
+// override (nil pointer -> null = inherit the global default).
+type crdtEntityInfo struct {
+	Entity         string `json:"entity"`
+	Kind           string `json:"kind"`
+	Engine         string `json:"engine"`
+	SnapshotEvery  int    `json:"snapshotEvery"`
+	QuietWindowMs  int64  `json:"quietWindowMs"`
+	ArchiveHistory *bool  `json:"archiveHistory"`
+}
+
+// crdtEntitiesResponse is the payload for GET {BasePath}/crdt/entities.
+type crdtEntitiesResponse struct {
+	Items []crdtEntityInfo `json:"items"`
+}
+
 // registerCrdtRoutes wires the CRDT document-plane read routes onto the given
 // router. They share the same route options (auth/tenant middleware) as the
 // rest of the admin surface so the host controls the security boundary
@@ -93,6 +111,20 @@ func (c *adminController) registerCrdtRoutes(r forge.Router) error {
 	base := c.ext.cfg.BasePath
 	routeOpts := c.ext.cfg.RouteOptions
 
+	// Registered before the /crdt/:entity/:id param route so the static
+	// "entities" segment is matched first. Verified by
+	// TestCrdtEntities_ListsDocumentEntities: forge's router already
+	// prioritizes static segments over params, so no additional guard in
+	// handleCrdtSnapshot was needed.
+	entitiesOpts := append([]forge.RouteOption{
+		forge.WithName("fabriq.admin.crdt.entities"),
+		forge.WithSummary("List registered CRDT/document entities + their spec"),
+		forge.WithTags("Fabriq", "Admin"),
+	}, routeOpts...)
+	if err := r.GET(base+"/crdt/entities", c.handleCrdtEntities, entitiesOpts...); err != nil {
+		return err
+	}
+
 	snapOpts := append([]forge.RouteOption{
 		forge.WithName("fabriq.admin.crdt.snapshot"),
 		forge.WithSummary("Merged CRDT snapshot for a document (docId = <entity>/<id>)"),
@@ -108,6 +140,33 @@ func (c *adminController) registerCrdtRoutes(r forge.Router) error {
 		forge.WithTags("Fabriq", "Admin"),
 	}, routeOpts...)
 	return r.GET(base+"/crdt/:entity/:id/updates", c.handleCrdtUpdates, logOpts...)
+}
+
+// handleCrdtEntities serves GET {BasePath}/crdt/entities. It is a pure
+// registry read (no document store involved): it lists every KindDocument
+// entity (plus any entity carrying a CRDTSpec) along with the CRDT knobs the
+// admin UI surfaces for document tagging and spec display.
+func (c *adminController) handleCrdtEntities(ctx forge.Context) error {
+	reg, err := c.ext.resolveRegistry()
+	if err != nil {
+		return forge.InternalError(err)
+	}
+	items := make([]crdtEntityInfo, 0)
+	for _, ent := range reg.All() {
+		spec := ent.Spec
+		if spec.Kind != registry.KindDocument && spec.CRDT == nil {
+			continue
+		}
+		info := crdtEntityInfo{Entity: spec.Name, Kind: spec.Kind.String()}
+		if spec.CRDT != nil {
+			info.Engine = spec.CRDT.Engine
+			info.SnapshotEvery = spec.CRDT.SnapshotEvery
+			info.QuietWindowMs = spec.CRDT.QuietWindow.Milliseconds()
+			info.ArchiveHistory = spec.CRDT.ArchiveHistory
+		}
+		items = append(items, info)
+	}
+	return ctx.JSON(http.StatusOK, crdtEntitiesResponse{Items: items})
 }
 
 // docIDFromParams reconstructs the "<entity>/<id>" document id from the two
