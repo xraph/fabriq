@@ -34,21 +34,25 @@ flowchart TD
     GRAPH[("<b>FalkorDB</b><br/>graph projection")]
     ES[("<b>Elasticsearch</b><br/>search projection")]
     SUBS(["<b>live deltas</b> → subscribers"])
+    CACHE["<b>cache</b> — read-through (L1 + shared, event-invalidated)"]
     PORTS["<b>queries</b> — typed capability ports"]
 
     CMD --> FABRIC --> PG --> RELAY --> REDIS
     REDIS --> GRAPH
     REDIS --> ES
     REDIS --> SUBS
-    PG    -. read .-> PORTS
-    GRAPH -. read .-> PORTS
-    ES    -. read .-> PORTS
+    PORTS -. read .-> CACHE
+    CACHE -. miss .-> PG
+    CACHE -. miss .-> GRAPH
+    CACHE -. miss .-> ES
+    REDIS -. evict .-> CACHE
 ```
 
 One write path commits through the transactional outbox; the relay fans the
 event out to derived projections while the source of truth stays in Postgres.
-Reads never touch a projection's engine directly — they go through typed
-capability ports.
+Reads go through typed capability ports and a read-through cache — never a
+projection's engine directly — and the same event fan-out evicts stale cache
+entries, so reads stay consistent with the last committed write.
 
 Binaries:
 
