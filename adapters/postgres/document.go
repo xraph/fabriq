@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/grove/crdt"
 	"github.com/xraph/grove/drivers/pgdriver"
 
+	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/event"
@@ -30,13 +31,42 @@ import (
 type DocStore struct {
 	a     *Adapter
 	merge *crdt.MergeEngine
+
+	// blob is the byte-plane handle for offloaded history segments (nil =
+	// history stays in Postgres). archiveDefault is the global opt-in;
+	// per-entity CRDTSpec.ArchiveHistory overrides it. segCache serves sealed
+	// segments hot after first fetch.
+	blob           blob.Store
+	archiveDefault bool
+	segCache       *segmentCache
 }
 
 var _ document.Store = (*DocStore)(nil)
 
 // Documents returns the document-plane store.
 func (a *Adapter) Documents() *DocStore {
-	return &DocStore{a: a, merge: crdt.NewMergeEngine()}
+	return &DocStore{a: a, merge: crdt.NewMergeEngine(), segCache: newSegmentCache(128)}
+}
+
+// EnableArchive wires the blob handle and the global archive default. Called
+// by Open once the storage adapter exists; safe to call with def=false to set
+// only the default. A nil b leaves history in Postgres.
+func (d *DocStore) EnableArchive(b blob.Store, def bool) {
+	d.blob = b
+	d.archiveDefault = def
+}
+
+// archiveEnabled reports whether this entity's history should be offloaded:
+// requires a blob store, then the per-entity override if set, else the global
+// default.
+func (d *DocStore) archiveEnabled(ent *registry.Entity) bool {
+	if d.blob == nil || ent == nil || ent.Spec.CRDT == nil {
+		return false
+	}
+	if ent.Spec.CRDT.ArchiveHistory != nil {
+		return *ent.Spec.CRDT.ArchiveHistory
+	}
+	return d.archiveDefault
 }
 
 // splitDocID parses "<entity>/<id>" and validates the entity is a
