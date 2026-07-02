@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/tenant"
+	"github.com/xraph/fabriq/domain"
 )
 
 // extraFile describes one additional seed file: the folder it lives under (by
@@ -83,36 +83,31 @@ func seedExtraFiles(ctx context.Context, f *fabriq.Fabriq, tid string) (int, err
 	}
 
 	created := 0
-	// Cache each folder's existing child names so we probe once per folder.
-	childNames := map[string]map[string]bool{}
+	// Cache each folder's existing children (name -> node) so we probe once per
+	// folder. Uses the same create-or-heal path as seedFileTree so a blob-store
+	// reset that leaves these catalog rows dangling is repaired on restart too.
+	childByFolder := map[string]map[string]domain.FsNode{}
 
 	for _, ef := range extraFiles(tid) {
 		parentID, ok := folderID[ef.folder]
 		if !ok {
 			continue // base folder not seeded yet (seedFileTree runs first)
 		}
-		names, ok := childNames[ef.folder]
+		kids, ok := childByFolder[ef.folder]
 		if !ok {
-			kids, kerr := f.ListChildren(tctx, parentID, 200, 0)
-			if kerr != nil {
-				return created, fmt.Errorf("admin-demo: list %s for extra files %q: %w", ef.folder, tid, kerr)
+			kids, err = folderChildren(tctx, f, parentID)
+			if err != nil {
+				return created, fmt.Errorf("admin-demo: list %s for extra files %q: %w", ef.folder, tid, err)
 			}
-			names = map[string]bool{}
-			for _, k := range kids {
-				names[k.Name] = true
-			}
-			childNames[ef.folder] = names
+			childByFolder[ef.folder] = kids
 		}
-		if names[ef.name] {
-			continue // already present
+		wasCreated, eerr := ensureSeededFile(tctx, f, parentID, kids, ef.name, ef.contentType, ef.body)
+		if eerr != nil {
+			return created, fmt.Errorf("admin-demo: %s/%s for %q: %w", ef.folder, ef.name, tid, eerr)
 		}
-		if _, cerr := f.CreateFile(tctx, parentID, ef.name,
-			strings.NewReader(ef.body),
-			fabriq.CreateFileOpts{ContentType: ef.contentType}); cerr != nil {
-			return created, fmt.Errorf("admin-demo: create %s/%s for %q: %w", ef.folder, ef.name, tid, cerr)
+		if wasCreated {
+			created++
 		}
-		names[ef.name] = true
-		created++
 	}
 	return created, nil
 }

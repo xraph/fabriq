@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/xraph/forge"
 
@@ -56,6 +57,9 @@ type vectorSearchRequest struct {
 	ID string `json:"id"`
 	// K caps the number of returned matches (default 10).
 	K int `json:"k"`
+	// Filter restricts matches to embeddings whose meta contains all of these
+	// key=value pairs (AND-ed). Optional; empty means no meta filter.
+	Filter map[string]string `json:"filter,omitempty"`
 }
 
 // vectorMatchItem is one nearest-neighbour hit. Data is hydrated best-effort
@@ -137,6 +141,33 @@ func (c *adminController) handleSearch(ctx forge.Context) error {
 		limit = l
 	}
 
+	// Optional offset for pagination.
+	offset := 0
+	if oStr := ctx.Query("offset"); oStr != "" {
+		o, parseErr := strconv.Atoi(oStr)
+		if parseErr != nil || o < 0 {
+			return forge.BadRequest("query param 'offset' must be a non-negative integer")
+		}
+		offset = o
+	}
+
+	// Optional sort: an indexed column, optionally suffixed " DESC" (empty =
+	// sort by relevance score). Validated against indexed fields by the adapter.
+	sort := strings.TrimSpace(ctx.Query("sort"))
+
+	// Optional equality filters: repeated ?filter=field:value, AND-ed. Mirrors
+	// the live endpoint's map→Eqs pattern; columns must be indexed fields (the
+	// adapter validates and errors otherwise). Values are bound, never inlined.
+	var filter query.Where
+	for _, raw := range ctx.Request().URL.Query()["filter"] {
+		field, val, ok := strings.Cut(raw, ":")
+		field = strings.TrimSpace(field)
+		if !ok || field == "" {
+			return forge.BadRequest("query param 'filter' must be 'field:value'")
+		}
+		filter = append(filter, query.Eq(field, strings.TrimSpace(val)))
+	}
+
 	reqCtx := ctx.Request().Context()
 	searcher := fab.Search()
 
@@ -148,7 +179,7 @@ func (c *adminController) handleSearch(ctx forge.Context) error {
 	}
 
 	var rows []map[string]any
-	sq := query.SearchQuery{Entity: entityType, Query: q, Limit: limit}
+	sq := query.SearchQuery{Entity: entityType, Query: q, Filter: filter, Sort: sort, Limit: limit, Offset: offset}
 	if searchErr := searcher.Search(reqCtx, sq, &rows); searchErr != nil {
 		return renderError(ctx, searchErr)
 	}
@@ -231,7 +262,7 @@ func (c *adminController) handleVectorSearch(ctx forge.Context) error {
 	}
 
 	var matches []query.VectorMatch
-	vq := query.VectorQuery{Entity: req.Type, Embedding: embedding, K: k}
+	vq := query.VectorQuery{Entity: req.Type, Embedding: embedding, K: k, Filter: req.Filter}
 	if simErr := vec.Similar(reqCtx, vq, &matches); simErr != nil {
 		return renderError(ctx, simErr)
 	}

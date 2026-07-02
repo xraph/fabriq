@@ -14,6 +14,8 @@ import (
 const (
 	defaultEventLimit = 50
 	maxEventLimit     = 200
+	// maxEventFacets bounds each distinct-facet scan (aggregate/type values).
+	maxEventFacets = 1000
 )
 
 // eventItem is one row of the transactional outbox (the durable event log).
@@ -59,6 +61,16 @@ type eventBacklogResponse struct {
 	Unpublished int64 `json:"unpublished"`
 }
 
+// eventFacetsResponse is the payload for GET {BasePath}/events/facets — the
+// distinct aggregate types and event types present in the request tenant's
+// outbox. It powers the console's filter comboboxes (mirrors the entity-type
+// combobox) so an operator can pick from what actually exists instead of typing
+// a raw string.
+type eventFacetsResponse struct {
+	Aggregates []string `json:"aggregates"`
+	Types      []string `json:"types"`
+}
+
 // registerEventRoutes wires the outbox/event-log read routes.
 func (c *adminController) registerEventRoutes(r forge.Router) error {
 	base := c.ext.cfg.BasePath
@@ -78,7 +90,16 @@ func (c *adminController) registerEventRoutes(r forge.Router) error {
 		forge.WithSummary("Report the unpublished outbox depth"),
 		forge.WithTags("Fabriq", "Admin"),
 	}, routeOpts...)
-	return r.GET(base+"/events/backlog", c.handleEventBacklog, backlogOpts...)
+	if err := r.GET(base+"/events/backlog", c.handleEventBacklog, backlogOpts...); err != nil {
+		return err
+	}
+
+	facetsOpts := append([]forge.RouteOption{
+		forge.WithName("fabriq.admin.events.facets"),
+		forge.WithSummary("List distinct outbox aggregate types and event types (for filter comboboxes)"),
+		forge.WithTags("Fabriq", "Admin"),
+	}, routeOpts...)
+	return r.GET(base+"/events/facets", c.handleEventFacets, facetsOpts...)
 }
 
 // handleListEvents serves GET {BasePath}/events.
@@ -116,12 +137,31 @@ func (c *adminController) handleListEvents(ctx forge.Context) error {
 		args = append(args, v)
 		return "$" + strconv.Itoa(len(args))
 	}
-	if v := strings.TrimSpace(ctx.Query("aggregate")); v != "" {
-		conds = append(conds, "aggregate = "+bind(v))
+	// aggregate/type are multi-valued (OR): each accepts repeated query params
+	// (?aggregate=a&aggregate=b) and/or a comma-separated value, collapsed into a
+	// single "col IN ($n, ...)" over bound parameters. An empty set adds no
+	// predicate. Values are bound ($N), never interpolated.
+	q := ctx.Request().URL.Query()
+	inFilter := func(column string, raw []string) {
+		var vals []string
+		for _, r := range raw {
+			for _, part := range strings.Split(r, ",") {
+				if p := strings.TrimSpace(part); p != "" {
+					vals = append(vals, p)
+				}
+			}
+		}
+		if len(vals) == 0 {
+			return
+		}
+		ph := make([]string, len(vals))
+		for i, v := range vals {
+			ph[i] = bind(v)
+		}
+		conds = append(conds, column+" IN ("+strings.Join(ph, ", ")+")")
 	}
-	if v := strings.TrimSpace(ctx.Query("type")); v != "" {
-		conds = append(conds, "type = "+bind(v))
-	}
+	inFilter("aggregate", q["aggregate"])
+	inFilter("type", q["type"])
 	if v := strings.TrimSpace(ctx.Query("aggId")); v != "" {
 		conds = append(conds, "agg_id = "+bind(v))
 	}
@@ -193,4 +233,49 @@ func (c *adminController) handleEventBacklog(ctx forge.Context) error {
 		return renderError(ctx, err)
 	}
 	return ctx.JSON(http.StatusOK, eventBacklogResponse{Unpublished: n})
+}
+
+// handleEventFacets serves GET {BasePath}/events/facets.
+//
+// Returns the distinct, sorted aggregate types and event types present in the
+// request tenant's outbox. Like handleListEvents, the outbox has no row-level
+// security, so each scan is scoped to the request tenant via the app.tenant_id
+// GUC (current_setting returns '' when unset → matches no rows). The column
+// names are compile-time literals (never request input), so the format-string
+// interpolation cannot inject.
+func (c *adminController) handleEventFacets(ctx forge.Context) error {
+	fab, err := c.ext.resolveFabric()
+	if err != nil {
+		return forge.InternalError(err)
+	}
+	reqCtx := ctx.Request().Context()
+
+	distinct := func(column string) ([]string, error) {
+		sql := fmt.Sprintf(`SELECT DISTINCT %s AS v
+			FROM fabriq_outbox
+			WHERE tenant_id = current_setting('app.tenant_id', true) AND %s <> ''
+			ORDER BY v
+			LIMIT %d`, column, column, maxEventFacets)
+		var rows []struct {
+			V string `grove:"v"`
+		}
+		if qErr := fab.Relational().Query(reqCtx, &rows, sql); qErr != nil {
+			return nil, qErr
+		}
+		out := make([]string, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, r.V)
+		}
+		return out, nil
+	}
+
+	aggregates, err := distinct("aggregate")
+	if err != nil {
+		return renderError(ctx, err)
+	}
+	types, err := distinct("type")
+	if err != nil {
+		return renderError(ctx, err)
+	}
+	return ctx.JSON(http.StatusOK, eventFacetsResponse{Aggregates: aggregates, Types: types})
 }
