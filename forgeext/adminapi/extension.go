@@ -115,15 +115,16 @@ type Extension struct {
 	parent *forgeext.Extension
 	cfg    config
 
-	mu        sync.Mutex
-	fabric    query.Fabric         // resolved in Start
-	fab       *fabriq.Fabriq       // concrete facade, resolved in Start (powers the file-plane endpoints)
-	reg       *registry.Registry   // schema registry, resolved in Start (powers types/schema introspection)
-	cas       blob.CAS             // content-addressed store, resolved in Start; nil when EnableCas is off (powers digest summaries)
-	stateRepo projection.StateRepo // projection bookkeeping, resolved in Start; nil when no Postgres store (powers the projections status endpoint)
-	cache     corecache.Cache      // engine cache, resolved in Start; nil when Redis is not configured (powers the cache admin endpoints)
-	stores    *fabriq.Stores       // opened adapters, resolved in Start; nil in fake-backed tests (powers projection reconcile/rebuild)
-	dynWriter dynamicSchemaWriter  // schema-write facade override for tests; nil means use fab (resolved in Start)
+	mu            sync.Mutex
+	authInstalled bool                 // guards the one-time middleware prepend in Routes()
+	fabric        query.Fabric         // resolved in Start
+	fab           *fabriq.Fabriq       // concrete facade, resolved in Start (powers the file-plane endpoints)
+	reg           *registry.Registry   // schema registry, resolved in Start (powers types/schema introspection)
+	cas           blob.CAS             // content-addressed store, resolved in Start; nil when EnableCas is off (powers digest summaries)
+	stateRepo     projection.StateRepo // projection bookkeeping, resolved in Start; nil when no Postgres store (powers the projections status endpoint)
+	cache         corecache.Cache      // engine cache, resolved in Start; nil when Redis is not configured (powers the cache admin endpoints)
+	stores        *fabriq.Stores       // opened adapters, resolved in Start; nil in fake-backed tests (powers projection reconcile/rebuild)
+	dynWriter     dynamicSchemaWriter  // schema-write facade override for tests; nil means use fab (resolved in Start)
 }
 
 // dynamicSchemaWriter is the subset of *fabriq.Fabriq the schema-write handlers
@@ -187,7 +188,7 @@ func (e *Extension) Register(app forge.App) error {
 }
 
 // Start resolves the fabriq facade from the started fabriq extension.
-func (e *Extension) Start(_ context.Context) error {
+func (e *Extension) Start(ctx context.Context) error {
 	f := e.parent.Fabriq()
 	if f == nil {
 		return fmt.Errorf("fabriq-admin-api: requires the fabriq facade (started)")
@@ -221,6 +222,16 @@ func (e *Extension) Start(_ context.Context) error {
 		e.stores = stores
 	}
 	e.mu.Unlock()
+
+	// When auth is enabled, ensure a usable can-manage-keys admin key exists so
+	// an operator is never locked out of a fresh install (env-supplied via
+	// FABRIQ_ADMIN_KEY, otherwise one generated + logged once). Idempotent.
+	if e.cfg.KeyStore != nil {
+		if err := bootstrapAdminKey(ctx, e.cfg.KeyStore); err != nil {
+			return fmt.Errorf("fabriq-admin-api: bootstrap admin key: %w", err)
+		}
+	}
+
 	e.MarkStarted()
 	return nil
 }

@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log"
+	"os"
 	"time"
 
 	"github.com/xraph/grove"
@@ -151,6 +153,98 @@ func (s *relationalKeyStore) Issue(ctx context.Context, spec KeySpec) (IssuedKey
 	}
 
 	return IssuedKey{ID: id, Prefix: prefix, Key: key}, nil
+}
+
+// Ensure inserts a row for the EXACT plaintext key (hashed) if one does not
+// already exist, and reports whether the row already existed. It is used by the
+// admin-key bootstrap to honour FABRIQ_ADMIN_KEY: the caller supplies a known
+// plaintext, so — unlike Issue — no key is generated. The INSERT ... ON CONFLICT
+// (key_hash) DO NOTHING is idempotent, so repeated bootstraps are safe.
+//
+// Ensure is deliberately NOT on the KeyStore interface: only the concrete store
+// can insert a caller-chosen key, and the bootstrap type-asserts for it.
+func (s *relationalKeyStore) Ensure(ctx context.Context, key string, spec KeySpec) (existed bool, err error) {
+	hash := hashKey(key)
+	prefix := key
+	if len(prefix) > 7 {
+		prefix = prefix[:7]
+	}
+
+	id := event.NewID()
+	createdAt := time.Now().UTC()
+
+	// tenant_id is nullable: "" -> NULL (multi-tenant).
+	var tenantArg any
+	if spec.TenantID != "" {
+		tenantArg = spec.TenantID
+	}
+
+	const insert = `INSERT INTO fabriq_api_key
+		(id, prefix, key_hash, tenant_id, label, can_manage_keys, created_at, revoked_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
+		ON CONFLICT (key_hash) DO NOTHING`
+	res, err := s.pg.NewRaw(insert,
+		id, prefix, hash, tenantArg, spec.Label, spec.CanManageKeys, createdAt,
+	).Exec(ctx)
+	if err != nil {
+		return false, fmt.Errorf("adminapi: ensure api key: %w", err)
+	}
+	// Zero rows affected means the ON CONFLICT fired: the key already existed.
+	if n, aerr := res.RowsAffected(); aerr == nil && n == 0 {
+		return true, nil
+	}
+	return false, nil
+}
+
+// bootstrapAdminKey ensures the instance has a usable can-manage-keys admin key
+// once auth is enabled, so an operator is never locked out of a fresh install.
+//
+//   - If FABRIQ_ADMIN_KEY is set, ensure a multi-tenant CanManageKeys row for
+//     THAT exact key. This needs the concrete store's Ensure method (the KeyStore
+//     interface cannot insert a caller-chosen key); if the store does not provide
+//     it, log that the env key can't be honoured and fall through.
+//   - Otherwise, if the store has no CanManageKeys key yet, Issue one and log the
+//     plaintext ONCE to stderr. If one already exists, do nothing.
+//
+// The function is idempotent: the env path relies on ON CONFLICT DO NOTHING, and
+// the generated path only issues when List shows no manage key.
+func bootstrapAdminKey(ctx context.Context, store KeyStore) error {
+	if envKey := os.Getenv("FABRIQ_ADMIN_KEY"); envKey != "" {
+		es, ok := store.(interface {
+			Ensure(context.Context, string, KeySpec) (bool, error)
+		})
+		if !ok {
+			log.Printf("adminapi: FABRIQ_ADMIN_KEY is set but this KeyStore cannot honour a preset key; ignoring")
+			return nil
+		}
+		existed, err := es.Ensure(ctx, envKey, KeySpec{Label: "bootstrap", CanManageKeys: true})
+		if err != nil {
+			return fmt.Errorf("adminapi: bootstrap FABRIQ_ADMIN_KEY: %w", err)
+		}
+		if !existed {
+			log.Printf("adminapi: registered FABRIQ_ADMIN_KEY as a multi-tenant admin key")
+		}
+		return nil
+	}
+
+	// No env key: only issue if there is no can-manage key already.
+	recs, err := store.List(ctx)
+	if err != nil {
+		return fmt.Errorf("adminapi: bootstrap list keys: %w", err)
+	}
+	for _, r := range recs {
+		if r.CanManageKeys && r.RevokedAt == nil {
+			return nil // a usable admin key already exists — nothing to do.
+		}
+	}
+
+	issued, err := store.Issue(ctx, KeySpec{Label: "bootstrap", CanManageKeys: true})
+	if err != nil {
+		return fmt.Errorf("adminapi: bootstrap issue admin key: %w", err)
+	}
+	// Log the plaintext ONCE to stderr — it is never recoverable afterwards.
+	fmt.Fprintf(os.Stderr, "adminapi: generated bootstrap admin key (store it now; it will not be shown again): %s\n", issued.Key)
+	return nil
 }
 
 // Lookup resolves a key by hash. No tenant scoping — the table is

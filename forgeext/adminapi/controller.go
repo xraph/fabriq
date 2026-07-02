@@ -55,6 +55,21 @@ func newAdminController(e *Extension) *adminController {
 func (c *adminController) Name() string { return "fabriq:admin" }
 
 func (c *adminController) Routes(r forge.Router) error {
+	// When auth is enabled (WithAuth set a KeyStore), gate EVERY admin route by
+	// prepending the verifying middleware to cfg.RouteOptions. The install must
+	// mutate the FIELD (not the local routeOpts below), because each
+	// registerXRoutes sub-func reads c.ext.cfg.RouteOptions directly. BasePath +
+	// RouteOptions are finalised before Routes() runs, so this is safe. The
+	// authInstalled guard makes the prepend idempotent in case Routes() is ever
+	// invoked more than once, so the middleware can never be double-installed.
+	if c.ext.cfg.KeyStore != nil && !c.ext.authInstalled {
+		c.ext.cfg.RouteOptions = append(
+			[]forge.RouteOption{forge.WithMiddleware(authMiddleware(c.ext.cfg.KeyStore, c.ext.cfg.BasePath))},
+			c.ext.cfg.RouteOptions...,
+		)
+		c.ext.authInstalled = true
+	}
+
 	base := c.ext.cfg.BasePath
 	routeOpts := c.ext.cfg.RouteOptions
 
