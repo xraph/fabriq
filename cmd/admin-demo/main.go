@@ -483,11 +483,7 @@ func run() error {
 		return err
 	}
 
-	// The adminapi extension is auth-agnostic: the host attaches tenant
-	// resolution via WithRouteOptions. tenantMiddleware reads X-Tenant-ID and
-	// stamps the tenant onto every admin route's request context.
 	adminOpts := []adminapi.Option{
-		adminapi.WithRouteOptions(forge.WithMiddleware(tenantMiddleware)),
 		// The demo embedder backs TEXT-mode vector queries (POST /search/vector
 		// with {query}). Similar-to-entity ({id}) reuses a stored embedding and
 		// needs no embedder. Both query the same illustrative space the seed step
@@ -505,19 +501,24 @@ func run() error {
 		// ad-hoc DDL) so the demo exercises the Migrations console end to end.
 		adminapi.WithSchemaAdmin(),
 	}
-	// ADMIN_DEMO_AUTH=1 only: gate every /admin route on a valid per-tenant
-	// key (adminapi's controller auto-installs the verifying middleware once
-	// WithAuth's KeyStore is non-nil — see forgeext/adminapi/controller.go).
-	// Unset/!=1: adminAuthOpt is nil and adminOpts is exactly the pre-existing
-	// list, so the default path is unchanged.
 	if adminAuthOpt != nil {
+		// ADMIN_DEMO_AUTH=1: gate every /admin route on a valid API key/session.
+		// The verifying middleware (auto-installed once WithAuth's KeyStore is
+		// non-nil — forgeext/adminapi/controller.go) IS the tenant authority: it
+		// resolves the tenant from the key (tenant-bound) or the X-Tenant-ID
+		// selector (multi-tenant/session) and exempts POST /login. So we do NOT
+		// also install the demo's tenantMiddleware — it would 400 /login (no
+		// tenant exists at login time) and duplicate tenant resolution.
 		adminOpts = append(adminOpts, adminAuthOpt)
-	}
-	// ADMIN_LOGIN_PASSWORD set (and ADMIN_DEMO_AUTH=1) only: also enable the
-	// dashboard-login surface. adminLoginOpt is nil otherwise, so the default
-	// path (and auth-without-login path) is unchanged.
-	if adminLoginOpt != nil {
-		adminOpts = append(adminOpts, adminLoginOpt)
+		// ADMIN_LOGIN_PASSWORD also set: enable the dashboard-login surface.
+		if adminLoginOpt != nil {
+			adminOpts = append(adminOpts, adminLoginOpt)
+		}
+	} else {
+		// Auth off (default): the extension is auth-agnostic, so the demo attaches
+		// tenant resolution itself — tenantMiddleware reads X-Tenant-ID and stamps
+		// the tenant onto every admin route. Unchanged legacy behavior.
+		adminOpts = append(adminOpts, adminapi.WithRouteOptions(forge.WithMiddleware(tenantMiddleware)))
 	}
 	adminExt := adminapi.NewAdminAPI(fabricExt, adminOpts...)
 	if err := app.RegisterExtension(adminExt); err != nil {
