@@ -7,8 +7,10 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/registry"
 )
 
 // entityWriteRequest is the request body for POST and PUT {BasePath}/entities.
@@ -203,6 +205,17 @@ func (c *adminController) handleDeleteEntity(ctx forge.Context) error {
 		AggID:  id,
 	}); execErr != nil {
 		return renderError(ctx, execErr)
+	}
+
+	// If this is a document (CRDT) entity, purge its offloaded history too so no
+	// orphaned segments/blobs remain. Best-effort: skip silently when the store
+	// does not implement HistoryPurger or the entity isn't a document.
+	if reg, rerr := c.ext.resolveRegistry(); rerr == nil {
+		if ent, ok := reg.Get(entityType); ok && (ent.Spec.Kind == registry.KindDocument || ent.Spec.CRDT != nil) {
+			if purger, ok := fab.Document().(document.HistoryPurger); ok {
+				_ = purger.DeleteHistory(reqCtx, entityType+"/"+id)
+			}
+		}
 	}
 
 	ctx.Response().WriteHeader(http.StatusNoContent)

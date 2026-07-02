@@ -6,7 +6,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/xraph/fabriq/core/document"
+	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/forge"
 )
 
@@ -75,6 +78,40 @@ type syncWirePayload struct {
 	Updates  []json.RawMessage `json:"updates"`
 }
 
+// crdtEntityInfo describes one registered document (CRDT) entity for the admin
+// UI: its identity plus the CRDTSpec knobs. archiveHistory is the per-entity
+// override (nil pointer -> null = inherit the global default).
+type crdtEntityInfo struct {
+	Entity         string `json:"entity"`
+	Kind           string `json:"kind"`
+	Engine         string `json:"engine"`
+	SnapshotEvery  int    `json:"snapshotEvery"`
+	QuietWindowMs  int64  `json:"quietWindowMs"`
+	ArchiveHistory *bool  `json:"archiveHistory"`
+}
+
+// crdtEntitiesResponse is the payload for GET {BasePath}/crdt/entities.
+type crdtEntitiesResponse struct {
+	Items []crdtEntityInfo `json:"items"`
+}
+
+// crdtSegmentItem is one sealed history segment's metadata, as recorded in
+// fabriq_crdt_segments and surfaced via document.SegmentLister.
+type crdtSegmentItem struct {
+	SegSeq      int64  `json:"segSeq"`
+	SeqLo       int64  `json:"seqLo"`
+	SeqHi       int64  `json:"seqHi"`
+	UpdateCount int64  `json:"updateCount"`
+	ByteSize    int64  `json:"byteSize"`
+	At          string `json:"at"`
+}
+
+// crdtSegmentsResponse is the payload for GET {BasePath}/crdt/:entity/:id/segments.
+type crdtSegmentsResponse struct {
+	DocID string            `json:"docId"`
+	Items []crdtSegmentItem `json:"items"`
+}
+
 // registerCrdtRoutes wires the CRDT document-plane read routes onto the given
 // router. They share the same route options (auth/tenant middleware) as the
 // rest of the admin surface so the host controls the security boundary
@@ -84,6 +121,7 @@ type syncWirePayload struct {
 //
 //	GET {base}/crdt/:docId          merged snapshot of a document
 //	GET {base}/crdt/:docId/updates  the document's tail update log (metadata)
+//	GET {base}/crdt/:docId/segments the document's sealed history segments
 //
 // Both return 501 when the instance has no document plane configured (no
 // KindDocument / CRDTSpec entity is registered, or the store reports
@@ -92,6 +130,20 @@ type syncWirePayload struct {
 func (c *adminController) registerCrdtRoutes(r forge.Router) error {
 	base := c.ext.cfg.BasePath
 	routeOpts := c.ext.cfg.RouteOptions
+
+	// Registered before the /crdt/:entity/:id param route so the static
+	// "entities" segment is matched first. Verified by
+	// TestCrdtEntities_ListsDocumentEntities: forge's router already
+	// prioritizes static segments over params, so no additional guard in
+	// handleCrdtSnapshot was needed.
+	entitiesOpts := append([]forge.RouteOption{
+		forge.WithName("fabriq.admin.crdt.entities"),
+		forge.WithSummary("List registered CRDT/document entities + their spec"),
+		forge.WithTags("Fabriq", "Admin"),
+	}, routeOpts...)
+	if err := r.GET(base+"/crdt/entities", c.handleCrdtEntities, entitiesOpts...); err != nil {
+		return err
+	}
 
 	snapOpts := append([]forge.RouteOption{
 		forge.WithName("fabriq.admin.crdt.snapshot"),
@@ -107,7 +159,52 @@ func (c *adminController) registerCrdtRoutes(r forge.Router) error {
 		forge.WithSummary("Append-only update-log metadata for a document"),
 		forge.WithTags("Fabriq", "Admin"),
 	}, routeOpts...)
-	return r.GET(base+"/crdt/:entity/:id/updates", c.handleCrdtUpdates, logOpts...)
+	if err := r.GET(base+"/crdt/:entity/:id/updates", c.handleCrdtUpdates, logOpts...); err != nil {
+		return err
+	}
+
+	segOpts := append([]forge.RouteOption{
+		forge.WithName("fabriq.admin.crdt.segments"),
+		forge.WithSummary("Sealed history segments for a document"),
+		forge.WithTags("Fabriq", "Admin"),
+	}, routeOpts...)
+	if err := r.GET(base+"/crdt/:entity/:id/segments", c.handleCrdtSegments, segOpts...); err != nil {
+		return err
+	}
+
+	histOpts := append([]forge.RouteOption{
+		forge.WithName("fabriq.admin.crdt.history"),
+		forge.WithSummary("Raw update range for a document (offloaded segments + log)"),
+		forge.WithTags("Fabriq", "Admin"),
+	}, routeOpts...)
+	return r.GET(base+"/crdt/:entity/:id/history", c.handleCrdtHistory, histOpts...)
+}
+
+// handleCrdtEntities serves GET {BasePath}/crdt/entities. It is a pure
+// registry read (no document store involved): it lists every KindDocument
+// entity (plus any entity carrying a CRDTSpec) along with the CRDT knobs the
+// admin UI surfaces for document tagging and spec display.
+func (c *adminController) handleCrdtEntities(ctx forge.Context) error {
+	reg, err := c.ext.resolveRegistry()
+	if err != nil {
+		return forge.InternalError(err)
+	}
+	items := make([]crdtEntityInfo, 0)
+	for _, ent := range reg.All() {
+		spec := ent.Spec
+		if spec.Kind != registry.KindDocument && spec.CRDT == nil {
+			continue
+		}
+		info := crdtEntityInfo{Entity: spec.Name, Kind: spec.Kind.String()}
+		if spec.CRDT != nil {
+			info.Engine = spec.CRDT.Engine
+			info.SnapshotEvery = spec.CRDT.SnapshotEvery
+			info.QuietWindowMs = spec.CRDT.QuietWindow.Milliseconds()
+			info.ArchiveHistory = spec.CRDT.ArchiveHistory
+		}
+		items = append(items, info)
+	}
+	return ctx.JSON(http.StatusOK, crdtEntitiesResponse{Items: items})
 }
 
 // docIDFromParams reconstructs the "<entity>/<id>" document id from the two
@@ -232,6 +329,151 @@ func (c *adminController) handleCrdtUpdates(ctx forge.Context) error {
 		HasSnapshot:  len(payload.Snapshot) > 0,
 		Items:        items,
 	})
+}
+
+// handleCrdtSegments serves GET {BasePath}/crdt/:entity/:id/segments.
+//
+// It lists the sealed history segments recorded for a document (when the
+// configured document.Store implements document.SegmentLister). Unlike
+// handleCrdtSnapshot/handleCrdtUpdates, entity validation goes through the
+// REGISTRY rather than a Store.Snapshot probe: the fake document store used in
+// tests defers Snapshot (always not-configured), so a Snapshot-based check
+// would wrongly report 501 for a registered document entity that simply has
+// no segments yet. The registry is the same deterministic signal
+// crdtConfigured() already relies on.
+//
+// Returns 400 on a malformed docId, 501 when the document plane is not
+// configured at all, and 404 when :entity does not name a registered document
+// (KindDocument or CRDT-tagged) entity. A registered document entity with no
+// segments (or a store that doesn't implement SegmentLister) returns 200 with
+// an empty items list.
+func (c *adminController) handleCrdtSegments(ctx forge.Context) error {
+	fab, err := c.ext.resolveFabric()
+	if err != nil {
+		return forge.InternalError(err)
+	}
+	if !c.crdtConfigured() {
+		return c.crdtNotConfigured(ctx)
+	}
+	docID, ok := docIDFromParams(ctx)
+	if !ok {
+		return forge.BadRequest("docId must be <entity>/<id>")
+	}
+	reg, err := c.ext.resolveRegistry()
+	if err != nil {
+		return forge.InternalError(err)
+	}
+	ent, ok := reg.Get(ctx.Param("entity"))
+	if !ok || (ent.Spec.Kind != registry.KindDocument && ent.Spec.CRDT == nil) {
+		return forge.NotFound("not a document entity")
+	}
+	items := make([]crdtSegmentItem, 0)
+	if lister, ok := fab.Document().(document.SegmentLister); ok {
+		segs, lerr := lister.ListSegments(ctx.Request().Context(), docID)
+		if lerr != nil {
+			return renderError(ctx, lerr)
+		}
+		for _, s := range segs {
+			items = append(items, crdtSegmentItem{
+				SegSeq: s.SegSeq, SeqLo: s.SeqLo, SeqHi: s.SeqHi,
+				UpdateCount: s.UpdateCount, ByteSize: s.ByteSize,
+				At: s.At.UTC().Format(time.RFC3339),
+			})
+		}
+	}
+	return ctx.JSON(http.StatusOK, crdtSegmentsResponse{DocID: docID, Items: items})
+}
+
+// maxHistoryRange bounds one /history read (mirrors the /updates cap).
+const maxHistoryRange = 200
+
+// crdtHistoryItem is one raw update entry in a document's history range, as
+// returned by document.HistoryReader.ReadHistory.
+type crdtHistoryItem struct {
+	Seq     int64  `json:"seq"`
+	Size    int    `json:"size"`
+	Preview string `json:"preview"`
+}
+
+// crdtHistoryResponse is the payload for GET {BasePath}/crdt/:entity/:id/history.
+type crdtHistoryResponse struct {
+	DocID string            `json:"docId"`
+	Items []crdtHistoryItem `json:"items"`
+}
+
+// handleCrdtHistory serves GET {BasePath}/crdt/:entity/:id/history?from=&to=.
+//
+// It reads a bounded [from, to] range of raw updates (offloaded segments +
+// log) through document.HistoryReader when the configured store implements
+// it. Like handleCrdtSegments, entity validation goes through the REGISTRY
+// rather than a Store.Snapshot probe, since the fake document store used in
+// tests defers Snapshot (always not-configured).
+//
+// Returns 400 on a malformed docId or a malformed from/to, 501 when the
+// document plane is not configured at all, and 404 when :entity does not name
+// a registered document (KindDocument or CRDT-tagged) entity. A registered
+// document entity with no history in range (or a store that doesn't implement
+// HistoryReader) returns 200 with an empty items list.
+func (c *adminController) handleCrdtHistory(ctx forge.Context) error {
+	fab, err := c.ext.resolveFabric()
+	if err != nil {
+		return forge.InternalError(err)
+	}
+	if !c.crdtConfigured() {
+		return c.crdtNotConfigured(ctx)
+	}
+	docID, ok := docIDFromParams(ctx)
+	if !ok {
+		return forge.BadRequest("docId must be <entity>/<id>")
+	}
+	reg, err := c.ext.resolveRegistry()
+	if err != nil {
+		return forge.InternalError(err)
+	}
+	ent, ok := reg.Get(ctx.Param("entity"))
+	if !ok || (ent.Spec.Kind != registry.KindDocument && ent.Spec.CRDT == nil) {
+		return forge.NotFound("not a document entity")
+	}
+
+	// Parse from/to; default to a bounded recent window [1, maxHistoryRange].
+	from := int64(1)
+	to := int64(maxHistoryRange)
+	if v := ctx.Query("from"); v != "" {
+		n, perr := strconv.ParseInt(v, 10, 64)
+		if perr != nil || n < 0 {
+			return forge.BadRequest("from must be a non-negative integer")
+		}
+		from = n
+	}
+	if v := ctx.Query("to"); v != "" {
+		n, perr := strconv.ParseInt(v, 10, 64)
+		if perr != nil || n < 0 {
+			return forge.BadRequest("to must be a non-negative integer")
+		}
+		to = n
+	}
+	if to < from {
+		return forge.BadRequest("to must be >= from")
+	}
+	if to-from+1 > maxHistoryRange {
+		to = from + maxHistoryRange - 1 // cap the window
+	}
+
+	items := make([]crdtHistoryItem, 0)
+	if reader, ok := fab.Document().(document.HistoryReader); ok {
+		ups, herr := reader.ReadHistory(ctx.Request().Context(), docID, from, to)
+		if herr != nil {
+			return renderError(ctx, herr)
+		}
+		for _, u := range ups {
+			items = append(items, crdtHistoryItem{
+				Seq:     u.Seq,
+				Size:    len(u.Update),
+				Preview: previewBase64(u.Update),
+			})
+		}
+	}
+	return ctx.JSON(http.StatusOK, crdtHistoryResponse{DocID: docID, Items: items})
 }
 
 // previewBase64 returns a base64 preview of the first updatePreviewBytes of the
