@@ -24,19 +24,31 @@ storage engines while enforcing three structural invariants:
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    CMD["<b>commands</b><br/><code>f.Exec(cmd)</code><br/>validated against the registry"]
+    FABRIC["<b>fabriq</b> — the facade<br/>core/registry · core/command · core/event · core/projection · core/subscribe"]
+    PG[("<b>Postgres</b> + Timescale + pgvector<br/>state + versioned event + outbox<br/>commit atomically — the source of truth")]
+    RELAY["<b>leader-elected relay</b><br/>wakes on LISTEN/NOTIFY, publishes in order"]
+    REDIS[["<b>Redis Streams</b> — ordered fan-out"]]
+    GRAPH[("<b>FalkorDB</b><br/>graph projection")]
+    ES[("<b>Elasticsearch</b><br/>search projection")]
+    SUBS(["<b>live deltas</b> → subscribers"])
+    PORTS["<b>queries</b> — typed capability ports"]
+
+    CMD --> FABRIC --> PG --> RELAY --> REDIS
+    REDIS --> GRAPH
+    REDIS --> ES
+    REDIS --> SUBS
+    PG    -. read .-> PORTS
+    GRAPH -. read .-> PORTS
+    ES    -. read .-> PORTS
 ```
-        commands                queries (capability ports)        deltas
-           │                            │                           ▲
-           ▼                            ▼                           │
-┌──────────────────────────────────────────────────────────────────┴─────┐
-│ fabriq (facade)                                                          │
-│  core/registry  core/command  core/event  core/projection  core/subscribe
-│  ─────────────────────────── ports ──────────────────────────────────  │
-│  adapters/postgres  adapters/redis  adapters/falkordb  adapters/elastic  │
-└──────────────────────────────────────────────────────────────────────────┘
-     Postgres+Timescale+pgvector   Redis Streams   FalkorDB    Elasticsearch
-        (source of truth)           (fan-out)      (projection) (projection)
-```
+
+One write path commits through the transactional outbox; the relay fans the
+event out to derived projections while the source of truth stays in Postgres.
+Reads never touch a projection's engine directly — they go through typed
+capability ports.
 
 Binaries:
 
