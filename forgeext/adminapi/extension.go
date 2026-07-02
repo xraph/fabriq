@@ -19,9 +19,11 @@ package adminapi
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/xraph/forge"
+	"github.com/xraph/grove"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/xraph/fabriq"
@@ -250,8 +252,44 @@ func (e *Extension) Register(app forge.App) error {
 	return app.RegisterController(newAdminController(e))
 }
 
+// groveFromParent returns the primary shard's *grove.DB, or nil when the parent
+// / opened stores / Postgres adapter is absent (nil-parent tests, non-Postgres
+// deployments). Never panics.
+func groveFromParent(e *Extension) *grove.DB {
+	if e.parent == nil {
+		return nil
+	}
+	stores := e.parent.Stores()
+	if stores == nil || stores.Postgres == nil {
+		return nil
+	}
+	return stores.Postgres.Grove()
+}
+
 // Start resolves the fabriq facade from the started fabriq extension.
 func (e *Extension) Start(ctx context.Context) error {
+	// Secure-by-default: auto-provision a KeyStore from the fabric DB and default
+	// the login surface unless the host opted out (WithAuthDisabled) or already
+	// configured auth. Decided purely (resolveAuthDefaults); applied here.
+	d := resolveAuthDefaults(e.cfg, groveFromParent(e) != nil)
+	if d.Warn != "" {
+		log.Printf("adminapi: %s", d.Warn)
+	}
+	if d.ProvisionKeyStore {
+		e.cfg.KeyStore = NewKeyStore(groveFromParent(e))
+	}
+	if d.DefaultLogin {
+		hash, herr := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
+		if herr != nil {
+			return fmt.Errorf("adminapi: hash default admin password: %w", herr)
+		}
+		e.cfg.AdminLoginUser = "admin"
+		e.cfg.AdminLoginHash = string(hash)
+		log.Printf("adminapi: auth on by default — default admin/admin login enabled; override with WithAdminLogin or ADMIN_LOGIN_USER/PASSWORD")
+	}
+
+	// Explicit WithAdminLogin without any resolvable KeyStore is still a hard
+	// error (e.g. login set but no DB and no WithAuth).
 	if e.cfg.AdminLoginUser != "" && e.cfg.KeyStore == nil {
 		return fmt.Errorf("adminapi: WithAdminLogin requires WithAuth")
 	}
