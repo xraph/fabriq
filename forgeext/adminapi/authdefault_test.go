@@ -32,14 +32,14 @@ func TestResolveAuthDefaults(t *testing.T) {
 // stubStore is a no-op KeyStore for the "explicit store" case.
 type stubStore struct{}
 
-func (stubStore) Issue(ctx context.Context, spec KeySpec) (IssuedKey, error) {
+func (stubStore) Issue(_ context.Context, _ KeySpec) (IssuedKey, error) {
 	return IssuedKey{}, nil
 }
-func (stubStore) IssueSession(ctx context.Context, ttl time.Duration) (IssuedKey, error) {
+func (stubStore) IssueSession(_ context.Context, _ time.Duration) (IssuedKey, error) {
 	return IssuedKey{}, nil
 }
-func (stubStore) Lookup(ctx context.Context, keyHash string) (KeyRecord, bool, error) {
+func (stubStore) Lookup(_ context.Context, _ string) (KeyRecord, bool, error) {
 	return KeyRecord{}, false, nil
 }
-func (stubStore) List(ctx context.Context) ([]KeyRecord, error) { return nil, nil }
-func (stubStore) Revoke(ctx context.Context, id string) error   { return nil }
+func (stubStore) List(_ context.Context) ([]KeyRecord, error) { return nil, nil }
+func (stubStore) Revoke(_ context.Context, _ string) error    { return nil }

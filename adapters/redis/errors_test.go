@@ -44,7 +44,7 @@ func TestTranslateRedis(t *testing.T) {
 
 func TestTranslateRedis_PassThrough(t *testing.T) {
 	existing := fabriqerr.New(fabriqerr.CodeNotFound, "x")
-	if got := translateRedis("x", existing); got != error(existing) {
+	if got := translateRedis("x", existing); !errors.Is(got, existing) {
 		t.Fatal("structured error must pass through")
 	}
 }

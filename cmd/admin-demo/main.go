@@ -52,7 +52,7 @@ import (
 )
 
 const (
-	defaultDSN    = "postgres://fabriq:fabriq@localhost:5433/fabriq?sslmode=disable"
+	defaultDSN    = "postgres://fabriq:fabriq@localhost:5433/fabriq?sslmode=disable" //nolint:gosec // demo-only local DSN; not a real credential.
 	defaultAddr   = ":8080"
 	defaultES     = "http://localhost:9200"
 	defaultFalkor = "localhost:6390"
@@ -238,7 +238,7 @@ func run() error {
 		ent, ok := reg.Get(name)
 		if !ok {
 			_ = f.Close()
-			return errMissingEntity(name)
+			return missingEntityError(name)
 		}
 		if err := stores.Postgres.EnsureDynamic(ctx, ent); err != nil {
 			_ = f.Close()
@@ -522,17 +522,20 @@ func tenantMiddleware(next forge.Handler) forge.Handler {
 
 // corsMiddleware is a small app-wide CORS middleware tuned for the fabriq-admin
 // SPA: it allows any origin (no credentials), the admin verb set, and the
-// X-Tenant-ID / Content-Type request headers, and short-circuits preflight
-// OPTIONS with 204. A custom middleware (rather than middleware.CORS) is used so
-// a bare OPTIONS preflight — without an Access-Control-Request-Method header —
-// still returns 204 rather than falling through to routing.
+// Authorization / X-Tenant-ID / Content-Type request headers, and short-circuits
+// preflight OPTIONS with 204. A custom middleware (rather than middleware.CORS) is
+// used so a bare OPTIONS preflight — without an Access-Control-Request-Method
+// header — still returns 204 rather than falling through to routing.
 func corsMiddleware(next forge.Handler) forge.Handler {
 	return func(ctx forge.Context) error {
 		w := ctx.Response()
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", "*")
 		h.Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
-		h.Set("Access-Control-Allow-Headers", "Content-Type,X-Tenant-ID")
+		// Authorization is required now that auth is on by default — the SPA
+		// sends `Authorization: Bearer <session token>`; without it here the
+		// browser's preflight rejects every authed request.
+		h.Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Tenant-ID")
 		// Expose Content-Disposition so the SPA's file download can read the
 		// server-provided attachment filename cross-origin (browsers hide
 		// non-safelisted response headers from fetch() unless exposed).
@@ -606,10 +609,10 @@ func productSpec() registry.EntitySpec {
 	}
 }
 
-// errMissingEntity reports a registry lookup miss for a just-registered entity.
-type errMissingEntity string
+// missingEntityError reports a registry lookup miss for a just-registered entity.
+type missingEntityError string
 
-func (e errMissingEntity) Error() string {
+func (e missingEntityError) Error() string {
 	return "admin-demo: entity " + string(e) + " not found in registry after registration"
 }
 

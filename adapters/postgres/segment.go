@@ -23,8 +23,8 @@ func encodeSegment(entries []segEntry) []byte {
 	buf := make([]byte, 0, size)
 	var hdr [12]byte
 	for _, e := range entries {
-		binary.BigEndian.PutUint64(hdr[0:8], uint64(e.Seq)) // #nosec G115 -- seqs are bigserial, below int64 max
-		binary.BigEndian.PutUint32(hdr[8:12], uint32(len(e.Data)))
+		binary.BigEndian.PutUint64(hdr[0:8], uint64(e.Seq))        // #nosec G115 -- seqs are bigserial, below int64 max
+		binary.BigEndian.PutUint32(hdr[8:12], uint32(len(e.Data))) // #nosec G115 -- segment payloads are far below uint32 max
 		buf = append(buf, hdr[:]...)
 		buf = append(buf, e.Data...)
 	}

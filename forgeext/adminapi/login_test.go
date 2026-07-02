@@ -60,14 +60,14 @@ var _ KeyStore = (*sessionKeyStore)(nil)
 // in keys_test.go) AND WithAdminLogin configured, plus the auth middleware
 // installed via WithRouteOptions so /login is reachable unauthenticated and
 // every other route (including /logout) is gated end-to-end.
-func buildLoginExt(t *testing.T, username, password string) (*Extension, *sessionKeyStore) {
+func buildLoginExt(t *testing.T) (*Extension, *sessionKeyStore) {
 	t.Helper()
 	world := buildTestWorld(t)
 	store := newSessionKeyStore()
 
 	e := NewAdminAPI(nil,
 		WithAuth(store),
-		WithAdminLogin(username, password),
+		WithAdminLogin("admin", "s3cret"),
 		WithRouteOptions(forge.WithMiddleware(authMiddleware(store, "/admin"))),
 	)
 	e.fabric = fabriqtest.NewFabric(world)
@@ -75,18 +75,14 @@ func buildLoginExt(t *testing.T, username, password string) (*Extension, *sessio
 	return e, store
 }
 
-// postJSON issues a POST to srv at path with the given JSON body and optional
-// bearer token.
-func postJSON(t *testing.T, srv, path, bearer, body string) *http.Response {
+// postJSON issues a POST to srv's /admin/login with the given JSON body.
+func postJSON(t *testing.T, srv, body string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, srv+path, strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, srv+"/admin/login", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
-	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("do request: %v", err)
@@ -95,11 +91,11 @@ func postJSON(t *testing.T, srv, path, bearer, body string) *http.Response {
 }
 
 func TestLogin_ValidCredentials_IssuesSessionToken(t *testing.T) {
-	e, _ := buildLoginExt(t, "admin", "s3cret")
+	e, _ := buildLoginExt(t)
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL, "/admin/login", "", `{"username":"admin","password":"s3cret"}`)
+	resp := postJSON(t, srv.URL, `{"username":"admin","password":"s3cret"}`)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
@@ -138,11 +134,11 @@ func TestLogin_ValidCredentials_IssuesSessionToken(t *testing.T) {
 }
 
 func TestLogin_WrongPassword_401(t *testing.T) {
-	e, _ := buildLoginExt(t, "admin", "s3cret")
+	e, _ := buildLoginExt(t)
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL, "/admin/login", "", `{"username":"admin","password":"wrong"}`)
+	resp := postJSON(t, srv.URL, `{"username":"admin","password":"wrong"}`)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -156,11 +152,11 @@ func TestLogin_WrongPassword_401(t *testing.T) {
 }
 
 func TestLogin_WrongUsername_401(t *testing.T) {
-	e, _ := buildLoginExt(t, "admin", "s3cret")
+	e, _ := buildLoginExt(t)
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL, "/admin/login", "", `{"username":"nope","password":"s3cret"}`)
+	resp := postJSON(t, srv.URL, `{"username":"nope","password":"s3cret"}`)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -177,11 +173,11 @@ func TestLogin_WrongUsername_401(t *testing.T) {
 // from authMiddleware's bearer-token check — a keyless request must still
 // reach the handler (and fail on credentials, not on missing Authorization).
 func TestLogin_ReachableWithoutBearerToken(t *testing.T) {
-	e, _ := buildLoginExt(t, "admin", "s3cret")
+	e, _ := buildLoginExt(t)
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL, "/admin/login", "", `{"username":"admin","password":"s3cret"}`)
+	resp := postJSON(t, srv.URL, `{"username":"admin","password":"s3cret"}`)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
@@ -191,11 +187,11 @@ func TestLogin_ReachableWithoutBearerToken(t *testing.T) {
 }
 
 func TestLogout_RevokesPresentedToken(t *testing.T) {
-	e, store := buildLoginExt(t, "admin", "s3cret")
+	e, store := buildLoginExt(t)
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	loginResp := postJSON(t, srv.URL, "/admin/login", "", `{"username":"admin","password":"s3cret"}`)
+	loginResp := postJSON(t, srv.URL, `{"username":"admin","password":"s3cret"}`)
 	defer loginResp.Body.Close()
 	if loginResp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(loginResp.Body)
@@ -232,8 +228,8 @@ func TestLogout_RevokesPresentedToken(t *testing.T) {
 		t.Fatalf("logout status = %d, want 200, body = %s", resp.StatusCode, b)
 	}
 	var got logoutResponse
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decode logout: %v", err)
+	if derr := json.NewDecoder(resp.Body).Decode(&got); derr != nil {
+		t.Fatalf("decode logout: %v", derr)
 	}
 	if !got.LoggedOut {
 		t.Error("loggedOut must be true")
@@ -282,7 +278,7 @@ func TestWithAdminLogin_NotConfigured_RoutesNotRegistered(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL, "/admin/login", "", `{"username":"admin","password":"s3cret"}`)
+	resp := postJSON(t, srv.URL, `{"username":"admin","password":"s3cret"}`)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNotFound {

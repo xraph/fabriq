@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -307,7 +308,7 @@ func TestClient_DownloadFile(t *testing.T) {
 }
 
 func TestClient_DownloadFile_FallsBackToIDWhenNoContentDisposition(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("data"))
 	}))
@@ -327,7 +328,7 @@ func TestClient_DownloadFile_FallsBackToIDWhenNoContentDisposition(t *testing.T)
 }
 
 func TestClient_DownloadFile_NonSuccessReturnsAPIError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"node not found"}}`))
@@ -347,8 +348,8 @@ func TestClient_DownloadFile_NonSuccessReturnsAPIError(t *testing.T) {
 		t.Errorf("DownloadFile() filename = %q, want empty on error", filename)
 	}
 
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("err = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusNotFound {

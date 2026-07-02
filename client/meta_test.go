@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -146,7 +147,7 @@ func TestClient_GetTypeCapabilities(t *testing.T) {
 }
 
 func TestClient_GetTypeCapabilities_UnknownType(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unknown dynamic entity type: bogus"})
@@ -159,8 +160,8 @@ func TestClient_GetTypeCapabilities_UnknownType(t *testing.T) {
 	if err == nil {
 		t.Fatal("GetTypeCapabilities() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("GetTypeCapabilities() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusBadRequest {

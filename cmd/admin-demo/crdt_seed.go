@@ -52,7 +52,8 @@ func pageSpec() registry.EntitySpec {
 // wire format: a JSON-encoded non-empty []crdt.ChangeRecord. The HLC wall clock
 // orders concurrent writes; a higher hlcWall wins. This mirrors the integration
 // test helper of the same name (adapters/postgres/document_scope_integration_test.go).
-func crdtLWWUpdate(table, docID, field string, value any, hlcWall int64, node string) ([]byte, error) {
+func crdtLWWUpdate(table, docID, field string, value any, hlcWall int64) ([]byte, error) {
+	const node = "admin-demo-seed"
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
@@ -93,8 +94,7 @@ func seedDemoDoc(ctx context.Context, f *fabriq.Fabriq, tid string) (bool, error
 		return true, nil // already seeded
 	}
 
-	const node = "admin-demo-seed"
-	title, terr := crdtLWWUpdate(pageSpec().Schema.Table, docID, "title", "Welcome to fabriq", 1_000, node)
+	title, terr := crdtLWWUpdate(pageSpec().Schema.Table, docID, "title", "Welcome to fabriq", 1_000)
 	if terr != nil {
 		return false, terr
 	}
@@ -102,7 +102,7 @@ func seedDemoDoc(ctx context.Context, f *fabriq.Fabriq, tid string) (bool, error
 		return false, fmt.Errorf("apply title update: %w", aerr)
 	}
 	body, berr := crdtLWWUpdate(pageSpec().Schema.Table, docID, "body",
-		"This page is a live CRDT document. Edits merge field-by-field via grove-crdt.", 1_001, node)
+		"This page is a live CRDT document. Edits merge field-by-field via grove-crdt.", 1_001)
 	if berr != nil {
 		return false, berr
 	}

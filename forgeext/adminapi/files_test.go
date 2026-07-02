@@ -45,7 +45,7 @@ func fsRegistry(t *testing.T) *registry.Registry {
 // exercise the not-configured (501) path. CAS is always nil here (no fake CAS),
 // so CreateFile/GetBlob surface ErrStoreNotConfigured → 501 — the honest
 // upload/download coverage without standing up a real CAS.
-func realFabriqExt(t *testing.T, reg *registry.Registry, withBlob bool, opts ...Option) (*Extension, *fabriqtest.World) {
+func realFabriqExt(t *testing.T, reg *registry.Registry, withBlob bool) *Extension {
 	t.Helper()
 	world := fabriqtest.NewWorld(reg)
 
@@ -59,15 +59,15 @@ func realFabriqExt(t *testing.T, reg *registry.Registry, withBlob bool, opts ...
 	}
 
 	// Prepend the tenant middleware so the real fabric (which requires a tenant
-	// in context) sees one; route options the caller passes can still override.
-	opts = append([]Option{
+	// in context) sees one.
+	opts := []Option{
 		WithRouteOptions(forge.WithMiddleware(tenantMiddleware)),
-	}, opts...)
+	}
 	e := NewAdminAPI(nil, opts...) // nil parent — bypass forgeext.Extension
 	e.fabric = f
 	e.fab = f
 	e.reg = reg
-	return e, world
+	return e
 }
 
 // buildFileServer registers the controller on a fresh app and returns a server.
@@ -88,7 +88,7 @@ func buildFileServer(t *testing.T, e *Extension) *httptest.Server {
 // plane is unwired.
 func TestFilesNotConfigured(t *testing.T) {
 	reg := fsRegistry(t)
-	e, _ := realFabriqExt(t, reg, false /* no blob */)
+	e := realFabriqExt(t, reg, false /* no blob */)
 	srv := buildFileServer(t, e)
 	defer srv.Close()
 
@@ -119,7 +119,7 @@ func TestFilesNotConfigured(t *testing.T) {
 // plane is configured (validation runs before the store call).
 func TestFilesValidation(t *testing.T) {
 	reg := fsRegistry(t)
-	e, _ := realFabriqExt(t, reg, true /* blob configured */)
+	e := realFabriqExt(t, reg, true /* blob configured */)
 	srv := buildFileServer(t, e)
 	defer srv.Close()
 
@@ -159,13 +159,13 @@ func TestFilesValidation(t *testing.T) {
 // depend on the fake's NULL semantics.
 func TestFilesFolderCreateGetTrash(t *testing.T) {
 	reg := fsRegistry(t)
-	e, _ := realFabriqExt(t, reg, true /* blob configured */)
+	e := realFabriqExt(t, reg, true /* blob configured */)
 	srv := buildFileServer(t, e)
 	defer srv.Close()
 
 	// Listing the root succeeds (status only — see NOTE on fake NULL semantics).
 	var list fileListResponse
-	decode(t, doReq(t, srv, http.MethodGet, "/admin/files", ""), &list)
+	decode(t, doReq(t, srv, http.MethodGet, "/admin/files", ""), &list) //nolint:bodyclose // decode closes the response body.
 
 	// Create a folder at root.
 	var folder fileNode
@@ -185,7 +185,7 @@ func TestFilesFolderCreateGetTrash(t *testing.T) {
 
 	// GetNode returns it.
 	var got fileNode
-	decode(t, doReq(t, srv, http.MethodGet, "/admin/files/"+folder.ID, ""), &got)
+	decode(t, doReq(t, srv, http.MethodGet, "/admin/files/"+folder.ID, ""), &got) //nolint:bodyclose // decode closes the response body.
 	if got.ID != folder.ID || got.Kind != "folder" {
 		t.Fatalf("get node mismatch: %+v", got)
 	}
@@ -219,7 +219,7 @@ func TestFilesFolderCreateGetTrash(t *testing.T) {
 // honest coverage for the upload/download path without a real CAS in unit tests.
 func TestFilesUploadWithoutCAS(t *testing.T) {
 	reg := fsRegistry(t)
-	e, _ := realFabriqExt(t, reg, true /* blob configured, CAS nil */)
+	e := realFabriqExt(t, reg, true /* blob configured, CAS nil */)
 	srv := buildFileServer(t, e)
 	defer srv.Close()
 

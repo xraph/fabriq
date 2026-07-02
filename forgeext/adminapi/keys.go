@@ -105,20 +105,12 @@ func (c *adminController) handleIssueKey(ctx forge.Context) error {
 		return forge.BadRequest("field 'label' is required")
 	}
 
-	issued, err := store.Issue(ctx.Request().Context(), KeySpec{
-		Label:         req.Label,
-		TenantID:      req.TenantID,
-		CanManageKeys: req.CanManageKeys,
-	})
+	issued, err := store.Issue(ctx.Request().Context(), KeySpec(req))
 	if err != nil {
 		return renderError(ctx, err)
 	}
 
-	return ctx.JSON(http.StatusCreated, issueKeyResponse{
-		ID:     issued.ID,
-		Prefix: issued.Prefix,
-		Key:    issued.Key,
-	})
+	return ctx.JSON(http.StatusCreated, issueKeyResponse(issued))
 }
 
 // handleListKeys serves GET {BasePath}/keys.

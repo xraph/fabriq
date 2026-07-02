@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -98,7 +99,7 @@ func TestClient_GraphNeighbors_OmitsOptionalQueryParams(t *testing.T) {
 }
 
 func TestClient_GraphNeighbors_NotConfigured(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotImplemented)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "graph not configured"})
@@ -111,8 +112,8 @@ func TestClient_GraphNeighbors_NotConfigured(t *testing.T) {
 	if err == nil {
 		t.Fatal("GraphNeighbors() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("GraphNeighbors() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusNotImplemented {
@@ -234,7 +235,7 @@ func TestClient_GraphQuery(t *testing.T) {
 }
 
 func TestClient_GraphQuery_MutatingRejected(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -252,8 +253,8 @@ func TestClient_GraphQuery_MutatingRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("GraphQuery() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("GraphQuery() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusBadRequest {

@@ -70,7 +70,7 @@ func (c *adminController) registerMigrationRoutes(r forge.Router) error {
 // scaffoldNameRe / scaffoldVersionRe validate the scaffold inputs: a lowercase
 // snake_case migration name and an all-digit version (grove uses a timestamp).
 var scaffoldNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-var scaffoldVersionRe = regexp.MustCompile(`^[0-9]+$`)
+var scaffoldVersionRe = regexp.MustCompile(`^\d+$`)
 
 // scaffoldVarName turns "add_widget" into "AddWidget" for the migration var name.
 func scaffoldVarName(name string) string {

@@ -62,9 +62,9 @@ func (localEmbedder) vector(s string) []float32 {
 		// Sign from a high bit so distinct tokens can cancel/reinforce rather
 		// than every token only ever adding positive mass.
 		if sum&0x80000000 != 0 {
-			v[bucket] -= 1
+			v[bucket]--
 		} else {
-			v[bucket] += 1
+			v[bucket]++
 		}
 	}
 	return l2normalize(v)

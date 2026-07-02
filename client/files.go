@@ -162,7 +162,7 @@ func (c *Client) DeleteFile(ctx context.Context, id string) error {
 func (c *Client) DownloadFile(ctx context.Context, id string) (io.ReadCloser, string, error) {
 	fullURL := c.baseURL + "/files/" + url.PathEscape(id) + "/content"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, http.NoBody)
 	if err != nil {
 		return nil, "", fmt.Errorf("client: build request: %w", err)
 	}
@@ -178,7 +178,7 @@ func (c *Client) DownloadFile(ctx context.Context, id string) (io.ReadCloser, st
 		hc = http.DefaultClient
 	}
 
-	resp, err := hc.Do(req)
+	resp, err := hc.Do(req) // #nosec G704 -- URL is built from the configured base URL plus a path-escaped id, not attacker-controlled.
 	if err != nil {
 		return nil, "", fmt.Errorf("client: request failed: %w", err)
 	}

@@ -16,11 +16,6 @@ import (
 // (fabriq_geometries via Spatial().Upsert), so the SPA can run radius queries.
 const placeEntity = "place"
 
-// placeCount is the number of place rows seeded per tenant. ~12 points spread
-// across a handful of real-world cities so a radius query returns an interesting
-// subset (a couple near the centre, the rest excluded).
-const placeCount = 12
-
 // place is one seed fixture: a name + category + city, anchored at a real-world
 // WGS84 coordinate. The coordinate goes into the spatial plane (SRID 4326) and
 // is echoed back through the match meta by the adminapi spatial endpoint.

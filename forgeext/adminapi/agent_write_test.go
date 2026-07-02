@@ -16,7 +16,7 @@ func TestRemember_AllowedCreate(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/agent/remember", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/agent/remember",
 		map[string]any{"entity": "widget", "op": "create", "payload": map[string]any{"name": "Remembered"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -40,7 +40,7 @@ func TestRemember_DeniedByDefault(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/agent/remember", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/agent/remember",
 		map[string]any{"entity": "widget", "op": "create", "payload": map[string]any{"name": "X"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
@@ -56,7 +56,7 @@ func TestRemember_NotAllowedOp(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/agent/remember", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/agent/remember",
 		map[string]any{"entity": "widget", "op": "delete", "aggId": "some-id"})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {

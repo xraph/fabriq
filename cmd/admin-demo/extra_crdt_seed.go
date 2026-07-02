@@ -95,15 +95,14 @@ func seedExtraCRDTDocs(ctx context.Context, f *fabriq.Fabriq, tid string) (int, 
 			continue // already seeded
 		}
 
-		const node = "admin-demo-seed"
-		title, terr := crdtLWWUpdate(d.table, docID, "title", d.title, 2_000, node)
+		title, terr := crdtLWWUpdate(d.table, docID, "title", d.title, 2_000)
 		if terr != nil {
 			return seeded, terr
 		}
 		if aerr := store.ApplyUpdate(tctx, docID, title); aerr != nil {
 			return seeded, fmt.Errorf("apply title update %s: %w", docID, aerr)
 		}
-		body, berr := crdtLWWUpdate(d.table, docID, "body", d.body, 2_001, node)
+		body, berr := crdtLWWUpdate(d.table, docID, "body", d.body, 2_001)
 		if berr != nil {
 			return seeded, berr
 		}

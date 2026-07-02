@@ -133,7 +133,7 @@ func keysReq(t *testing.T, method, srv, path, bearer string, body io.Reader) *ht
 // authn_middleware_test.go but also threading WithAuth so registerKeyRoutes
 // fires. adminKey is pre-seeded into the store with CanManageKeys so callers
 // can exercise the CRUD routes; it is tenant-bound to testTenantID.
-func buildKeysExt(t *testing.T) (*Extension, *liveKeyStore, string) {
+func buildKeysExt(t *testing.T) (*Extension, string) {
 	t.Helper()
 	world := buildTestWorld(t)
 	store := newLiveKeyStore()
@@ -146,11 +146,11 @@ func buildKeysExt(t *testing.T) (*Extension, *liveKeyStore, string) {
 	)
 	e.fabric = fabriqtest.NewFabric(world)
 	e.reg = world.Registry
-	return e, store, adminKey
+	return e, adminKey
 }
 
 func TestIssueKey_CreatesAndAuthenticates(t *testing.T) {
-	e, _, adminKey := buildKeysExt(t)
+	e, adminKey := buildKeysExt(t)
 	srv := buildServer(t, e)
 	defer srv.Close()
 
@@ -190,7 +190,7 @@ func TestIssueKey_CreatesAndAuthenticates(t *testing.T) {
 }
 
 func TestIssueKey_TenantBoundManageKey_StillWorks(t *testing.T) {
-	e, _, adminKey := buildKeysExt(t)
+	e, adminKey := buildKeysExt(t)
 	srv := buildServer(t, e)
 	defer srv.Close()
 
@@ -207,7 +207,7 @@ func TestIssueKey_TenantBoundManageKey_StillWorks(t *testing.T) {
 }
 
 func TestIssueKey_MissingLabel_400(t *testing.T) {
-	e, _, adminKey := buildKeysExt(t)
+	e, adminKey := buildKeysExt(t)
 	srv := buildServer(t, e)
 	defer srv.Close()
 
@@ -221,7 +221,7 @@ func TestIssueKey_MissingLabel_400(t *testing.T) {
 }
 
 func TestListKeys_ReturnsIssuedKeyWithoutSecret(t *testing.T) {
-	e, _, adminKey := buildKeysExt(t)
+	e, adminKey := buildKeysExt(t)
 	srv := buildServer(t, e)
 	defer srv.Close()
 
@@ -281,7 +281,7 @@ func TestListKeys_ReturnsIssuedKeyWithoutSecret(t *testing.T) {
 }
 
 func TestRevokeKey_RevokesAndBlocksSubsequentAuth(t *testing.T) {
-	e, _, adminKey := buildKeysExt(t)
+	e, adminKey := buildKeysExt(t)
 	srv := buildServer(t, e)
 	defer srv.Close()
 

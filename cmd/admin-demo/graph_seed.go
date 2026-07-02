@@ -156,5 +156,5 @@ func hashIndex(s string, n int) int {
 	}
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(s))
-	return int(h.Sum32() % uint32(n))
+	return int(h.Sum32() % uint32(n)) // #nosec G115 -- n is guarded > 0 and small; no overflow
 }

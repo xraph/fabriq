@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -65,7 +66,7 @@ func TestClient_RunQuery(t *testing.T) {
 }
 
 func TestClient_RunQuery_BadRequest(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "only read-only SELECT/WITH queries are allowed"})
@@ -78,8 +79,8 @@ func TestClient_RunQuery_BadRequest(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunQuery() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("RunQuery() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusBadRequest {
@@ -88,7 +89,7 @@ func TestClient_RunQuery_BadRequest(t *testing.T) {
 }
 
 func TestClient_RunQuery_NotImplemented(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotImplemented)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "raw query not available (no relational store opened)"})
@@ -101,8 +102,8 @@ func TestClient_RunQuery_NotImplemented(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunQuery() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("RunQuery() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusNotImplemented {

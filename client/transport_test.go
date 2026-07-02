@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -148,7 +149,7 @@ func TestClient_Do_ErrorShapes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.status)
 				_, _ = w.Write([]byte(tt.body))
@@ -161,8 +162,8 @@ func TestClient_Do_ErrorShapes(t *testing.T) {
 				t.Fatalf("do() expected error, got nil")
 			}
 
-			apiErr, ok := err.(*APIError)
-			if !ok {
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) {
 				t.Fatalf("do() error type = %T, want *APIError", err)
 			}
 			if apiErr.Status != tt.wantStatus {

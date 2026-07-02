@@ -48,7 +48,7 @@ func TestMapErr_PassThroughStructured(t *testing.T) {
 		t.Fatal("nil must stay nil")
 	}
 	existing := fabriqerr.New(fabriqerr.CodeNotFound, "x")
-	if got := mapErr(existing); got != error(existing) {
+	if got := mapErr(existing); !errors.Is(got, existing) {
 		t.Fatal("already-structured error must pass through unchanged")
 	}
 }

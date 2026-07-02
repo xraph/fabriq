@@ -69,7 +69,7 @@ func TestTranslateES_Transport(t *testing.T) {
 
 func TestTranslateES_PassThrough(t *testing.T) {
 	existing := fabriqerr.New(fabriqerr.CodeNotFound, "x")
-	if got := translateES("op", existing); got != error(existing) {
+	if got := translateES("op", existing); !errors.Is(got, existing) {
 		t.Fatal("structured error must pass through unchanged")
 	}
 }

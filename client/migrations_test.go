@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -58,7 +59,7 @@ func TestClient_GetMigrationStatus(t *testing.T) {
 }
 
 func TestClient_GetMigrationStatus_NotImplemented(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotImplemented)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "migration status unavailable"})
@@ -71,8 +72,8 @@ func TestClient_GetMigrationStatus_NotImplemented(t *testing.T) {
 	if err == nil {
 		t.Fatal("GetMigrationStatus() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("GetMigrationStatus() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusNotImplemented {
@@ -112,7 +113,7 @@ func TestClient_RunMigrations(t *testing.T) {
 }
 
 func TestClient_RunMigrations_Forbidden(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "schema admin not enabled"})
@@ -125,8 +126,8 @@ func TestClient_RunMigrations_Forbidden(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunMigrations() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("RunMigrations() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusForbidden {
@@ -166,7 +167,7 @@ func TestClient_RollbackMigrations(t *testing.T) {
 }
 
 func TestClient_RollbackMigrations_Conflict(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "another migration run is in progress"})
@@ -179,8 +180,8 @@ func TestClient_RollbackMigrations_Conflict(t *testing.T) {
 	if err == nil {
 		t.Fatal("RollbackMigrations() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("RollbackMigrations() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusConflict {
@@ -230,7 +231,7 @@ func TestClient_GetMigrationJob(t *testing.T) {
 }
 
 func TestClient_GetMigrationJob_NotFound(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "no such job"})
@@ -243,8 +244,8 @@ func TestClient_GetMigrationJob_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("GetMigrationJob() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("GetMigrationJob() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusNotFound {
@@ -320,7 +321,7 @@ func TestClient_ScaffoldMigration(t *testing.T) {
 }
 
 func TestClient_ScaffoldMigration_Forbidden(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "schema admin not enabled"})
@@ -333,8 +334,8 @@ func TestClient_ScaffoldMigration_Forbidden(t *testing.T) {
 	if err == nil {
 		t.Fatal("ScaffoldMigration() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("ScaffoldMigration() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusForbidden {
@@ -391,7 +392,7 @@ func TestClient_GetSchemaDrift(t *testing.T) {
 }
 
 func TestClient_GetSchemaDrift_NotImplemented(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotImplemented)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "drift not available (no relational store)"})
@@ -404,8 +405,8 @@ func TestClient_GetSchemaDrift_NotImplemented(t *testing.T) {
 	if err == nil {
 		t.Fatal("GetSchemaDrift() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("GetSchemaDrift() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusNotImplemented {
@@ -452,7 +453,7 @@ func TestClient_RunDDL(t *testing.T) {
 }
 
 func TestClient_RunDDL_Forbidden(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "schema admin not enabled"})
@@ -465,8 +466,8 @@ func TestClient_RunDDL_Forbidden(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunDDL() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("RunDDL() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusForbidden {
@@ -475,7 +476,7 @@ func TestClient_RunDDL_Forbidden(t *testing.T) {
 }
 
 func TestClient_RunDDL_BadRequest(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "syntax error at or near \"FOO\""})
@@ -488,8 +489,8 @@ func TestClient_RunDDL_BadRequest(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunDDL() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("RunDDL() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusBadRequest {

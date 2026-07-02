@@ -46,7 +46,7 @@ func httpStatusOrCode(e *APIError) string {
 // the body is JSON-decoded into out (skipped if out is nil). On a non-2xx
 // response, do returns a *APIError describing the failure - it never fails
 // the call just because the error body could not be parsed.
-func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any, out any) error {
+func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, out any) error {
 	fullURL := c.baseURL + path
 	if len(query) > 0 {
 		fullURL += "?" + query.Encode()
@@ -80,7 +80,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		hc = http.DefaultClient
 	}
 
-	resp, err := hc.Do(req)
+	resp, err := hc.Do(req) // #nosec G704 -- URL is built from the configured base URL plus a fixed path, not attacker-controlled.
 	if err != nil {
 		return fmt.Errorf("client: request failed: %w", err)
 	}

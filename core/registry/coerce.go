@@ -56,7 +56,7 @@ func CoerceToColumn(t ColumnType, v any) (any, error) {
 		case int64:
 			return n, nil
 		case uint:
-			return int64(n), nil
+			return int64(n), nil // #nosec G115 -- coerced DB int values fit in int64
 		case uint8:
 			return int64(n), nil
 		case uint16:

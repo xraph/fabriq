@@ -15,7 +15,7 @@ func TestExecCommand_Create(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/commands", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/commands",
 		map[string]any{"entity": "widget", "op": "create", "payload": map[string]any{"name": "Gizmo"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -42,7 +42,7 @@ func TestExecBatch_AllOrNothing(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/commands/batch", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/commands/batch",
 		map[string]any{"commands": []any{
 			map[string]any{"entity": "widget", "op": "create", "payload": map[string]any{"name": "A"}},
 			map[string]any{"entity": "widget", "op": "create", "payload": map[string]any{"name": "B"}},
@@ -68,7 +68,7 @@ func TestExecCommand_UnknownOp(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/commands", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/commands",
 		map[string]any{"entity": "widget", "op": "frobnicate", "payload": map[string]any{"name": "x"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -82,7 +82,7 @@ func TestExecCommand_UpdateMissingAggId(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/commands", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/commands",
 		map[string]any{"entity": "widget", "op": "update", "payload": map[string]any{"name": "x"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -96,7 +96,7 @@ func TestExecBatch_Empty(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/commands/batch", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/commands/batch",
 		map[string]any{"commands": []any{}})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -112,14 +112,14 @@ func TestExecCommand_VersionConflict(t *testing.T) {
 
 	body := map[string]any{"entity": "widget", "op": "create", "aggId": "01HWIDGETFIXEDID0000000001",
 		"payload": map[string]any{"name": "First"}}
-	r1 := doWrite(t, http.MethodPost, srv.URL+"/admin/commands", testTenantID, body)
+	r1 := doWrite(t, http.MethodPost, srv.URL+"/admin/commands", body)
 	r1.Body.Close()
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("first create status = %d, want 200", r1.StatusCode)
 	}
 
 	// Create-on-existing is a version conflict (expected version 0, stored 1).
-	r2 := doWrite(t, http.MethodPost, srv.URL+"/admin/commands", testTenantID, body)
+	r2 := doWrite(t, http.MethodPost, srv.URL+"/admin/commands", body)
 	defer r2.Body.Close()
 	if r2.StatusCode != http.StatusConflict {
 		t.Fatalf("second create status = %d, want 409", r2.StatusCode)

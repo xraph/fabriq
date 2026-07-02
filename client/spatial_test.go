@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -121,7 +122,7 @@ func TestClient_SpatialWithin_OmitsZeroLimit(t *testing.T) {
 }
 
 func TestClient_SpatialWithin_NotConfigured(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotImplemented)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "spatial not configured"})
@@ -139,8 +140,8 @@ func TestClient_SpatialWithin_NotConfigured(t *testing.T) {
 	if err == nil {
 		t.Fatal("SpatialWithin() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("SpatialWithin() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusNotImplemented {
@@ -149,7 +150,7 @@ func TestClient_SpatialWithin_NotConfigured(t *testing.T) {
 }
 
 func TestClient_SpatialWithin_BadRequest(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -171,8 +172,8 @@ func TestClient_SpatialWithin_BadRequest(t *testing.T) {
 	if err == nil {
 		t.Fatal("SpatialWithin() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("SpatialWithin() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusBadRequest {

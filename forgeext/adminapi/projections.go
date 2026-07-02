@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -232,7 +233,7 @@ func (c *adminController) handleProjectionRebuild(ctx forge.Context) error {
 // projectionAdminError maps reconcile/rebuild resolution errors: no stores → 501,
 // an unknown/unconfigured projection → 400.
 func (c *adminController) projectionAdminError(ctx forge.Context, err error) error {
-	if err == errNoStores {
+	if errors.Is(err, errNoStores) {
 		return ctx.JSON(http.StatusNotImplemented, map[string]string{"error": err.Error()})
 	}
 	return forge.BadRequest(err.Error())

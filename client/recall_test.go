@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -94,7 +95,7 @@ func TestClient_Recall(t *testing.T) {
 }
 
 func TestClient_Recall_NotConfigured(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotImplemented)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "recall not configured"})
@@ -107,8 +108,8 @@ func TestClient_Recall_NotConfigured(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Recall() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("err type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusNotImplemented {
@@ -117,7 +118,7 @@ func TestClient_Recall_NotConfigured(t *testing.T) {
 }
 
 func TestClient_Recall_EmptyQuery(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "body field 'query' is required"})
@@ -130,8 +131,8 @@ func TestClient_Recall_EmptyQuery(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Recall() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("err type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusBadRequest {
@@ -174,7 +175,7 @@ func TestClient_GetWritePolicy(t *testing.T) {
 }
 
 func TestClient_GetWritePolicy_EmptyDeniesAll(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(WritePolicy{Allow: map[string][]string{}})
@@ -240,7 +241,7 @@ func TestClient_Remember(t *testing.T) {
 }
 
 func TestClient_Remember_NotAllowed(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -260,8 +261,8 @@ func TestClient_Remember_NotAllowed(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Remember() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("err type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusForbidden {

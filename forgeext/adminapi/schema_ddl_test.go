@@ -34,7 +34,7 @@ func TestAdhocDDL_403WhenGateOff(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/schema/ddl", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/schema/ddl",
 		map[string]any{"sql": "CREATE TABLE x (id text)"})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {

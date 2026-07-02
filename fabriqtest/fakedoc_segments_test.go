@@ -25,8 +25,8 @@ func TestFakeDocSegmentsAndHistory(t *testing.T) {
 	if err != nil || len(hist) != 1 || hist[0].Seq != 1 {
 		t.Fatalf("ReadHistory = %+v err=%v", hist, err)
 	}
-	if err := fd.DeleteHistory(ctx, "page/x"); err != nil {
-		t.Fatal(err)
+	if derr := fd.DeleteHistory(ctx, "page/x"); derr != nil {
+		t.Fatal(derr)
 	}
 	if !fd.DeletedHistory("page/x") {
 		t.Fatal("DeleteHistory should have been recorded")

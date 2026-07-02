@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -81,7 +82,7 @@ func TestClient_GetEntitySchema(t *testing.T) {
 }
 
 func TestClient_GetEntitySchema_UnknownType(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unknown dynamic entity type: bogus"})
@@ -94,8 +95,8 @@ func TestClient_GetEntitySchema_UnknownType(t *testing.T) {
 	if err == nil {
 		t.Fatal("GetEntitySchema() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("GetEntitySchema() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusBadRequest {
@@ -162,7 +163,7 @@ func TestClient_CreateEntityType(t *testing.T) {
 }
 
 func TestClient_CreateEntityType_Conflict(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "entity widget registered twice"})
@@ -175,8 +176,8 @@ func TestClient_CreateEntityType_Conflict(t *testing.T) {
 	if err == nil {
 		t.Fatal("CreateEntityType() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("CreateEntityType() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusConflict {
@@ -231,7 +232,7 @@ func TestClient_AddEntityFields(t *testing.T) {
 }
 
 func TestClient_AddEntityFields_UnknownType(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unknown dynamic entity type: bogus"})
@@ -244,8 +245,8 @@ func TestClient_AddEntityFields_UnknownType(t *testing.T) {
 	if err == nil {
 		t.Fatal("AddEntityFields() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("AddEntityFields() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusNotFound {
@@ -321,7 +322,7 @@ func TestClient_DropEntityField(t *testing.T) {
 }
 
 func TestClient_DropEntityField_ConfirmMismatch(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "confirmation required: pass ?confirm=sku"})
@@ -334,8 +335,8 @@ func TestClient_DropEntityField_ConfirmMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("DropEntityField() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("DropEntityField() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusBadRequest {
@@ -376,7 +377,7 @@ func TestClient_DeleteEntityType(t *testing.T) {
 }
 
 func TestClient_DeleteEntityType_NotImplemented(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotImplemented)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "dynamic entity operations unavailable"})
@@ -389,8 +390,8 @@ func TestClient_DeleteEntityType_NotImplemented(t *testing.T) {
 	if err == nil {
 		t.Fatal("DeleteEntityType() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("DeleteEntityType() error type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusNotImplemented {

@@ -512,7 +512,7 @@ func TestHandleAlterUnknownType(t *testing.T) {
 	// The registry has the type registered (so the handler's own union lookup
 	// passes), but the facade itself reports "unknown" (e.g. a race where the
 	// type was dropped between the registry read and the DDL call).
-	w := &fakeWriter{failWith: errUnknownEntityForTest("gadget")}
+	w := &fakeWriter{failWith: unknownEntityForTestError("gadget")}
 	ext := writerBackedExt(t, w)
 	if err := ext.reg.Register(registry.EntitySpec{
 		Name: "gadget", Kind: registry.KindAggregate,
@@ -536,11 +536,11 @@ func TestHandleAlterUnknownType(t *testing.T) {
 	}
 }
 
-// errUnknownEntityForTest mimics the SP1 facade's "cannot alter unknown
+// unknownEntityForTestError mimics the SP1 facade's "cannot alter unknown
 // entity" message shape so mapSchemaError's string-matching path is exercised.
-type errUnknownEntityForTest string
+type unknownEntityForTestError string
 
-func (e errUnknownEntityForTest) Error() string {
+func (e unknownEntityForTestError) Error() string {
 	return "fabriq: cannot alter unknown entity \"" + string(e) + "\""
 }
 

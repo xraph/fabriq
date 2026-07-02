@@ -81,7 +81,7 @@ func TestProjectionReconcile_NoStores(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/projections/reconcile", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/projections/reconcile",
 		map[string]any{"projection": "search"})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotImplemented {

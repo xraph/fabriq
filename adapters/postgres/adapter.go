@@ -468,14 +468,14 @@ const maxRawQueryRows = 2000
 
 // scanMapsCapped is scanMaps with a hard row cap. It returns the column list in
 // result order and whether the cap was hit (truncated). It closes rows.
-func scanMapsCapped(rows driver.Rows, max int) (out []map[string]any, cols []string, truncated bool, err error) {
+func scanMapsCapped(rows driver.Rows, limit int) (out []map[string]any, cols []string, truncated bool, err error) {
 	defer func() { _ = rows.Close() }()
 	cols, err = rows.Columns()
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("fabriq: scanMapsCapped columns: %w", err)
 	}
 	for rows.Next() {
-		if len(out) >= max {
+		if len(out) >= limit {
 			truncated = true
 			break
 		}
@@ -508,11 +508,11 @@ var RawQueryTimeout = 15 * time.Second
 // context.DeadlineExceeded — and leaves every other error (bad SQL, etc.) as-is.
 func classifyQueryErr(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%w: %v", fabriqerr.ErrQueryTimeout, err)
+		return fmt.Errorf("%w: %w", fabriqerr.ErrQueryTimeout, err)
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "57014" {
-		return fmt.Errorf("%w: %v", fabriqerr.ErrQueryTimeout, err)
+		return fmt.Errorf("%w: %w", fabriqerr.ErrQueryTimeout, err)
 	}
 	return err
 }
@@ -523,7 +523,7 @@ func classifyQueryErr(err error) error {
 // contains the reads; the backstop still guards against touching a non-RLS
 // table without a tenant_id predicate. A statement_timeout (default 15s,
 // tunable via RawQueryTimeout) and a row cap bound cost.
-func (a *Adapter) QueryDynamicReadOnly(ctx context.Context, sql string, args ...any) ([]map[string]any, []string, bool, error) {
+func (a *Adapter) QueryDynamicReadOnly(ctx context.Context, sql string, args ...any) (out []map[string]any, cols []string, truncated bool, err error) {
 	if gerr := a.backstop.guardRawSQL(sql); gerr != nil {
 		return nil, nil, false, gerr
 	}
@@ -539,13 +539,13 @@ func (a *Adapter) QueryDynamicReadOnly(ctx context.Context, sql string, args ...
 
 	// SET and set_config are permitted in a read-only transaction; only data
 	// writes are blocked.
-	if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tid); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tid); err != nil {
 		return nil, nil, false, fmt.Errorf("fabriq: stamp tenant: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `SELECT set_config('app.scope_id', $1, true)`, tenant.ScopeOrEmpty(ctx)); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT set_config('app.scope_id', $1, true)`, tenant.ScopeOrEmpty(ctx)); err != nil {
 		return nil, nil, false, fmt.Errorf("fabriq: stamp scope: %w", err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = '%dms'`, RawQueryTimeout.Milliseconds())); err != nil {
+	if _, err = tx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = '%dms'`, RawQueryTimeout.Milliseconds())); err != nil {
 		return nil, nil, false, fmt.Errorf("fabriq: set timeout: %w", err)
 	}
 

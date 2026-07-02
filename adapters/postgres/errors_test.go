@@ -68,7 +68,7 @@ func TestTranslatePg_RegexFallback_RejectsMalformedToken(t *testing.T) {
 	if errors.As(out, &fe) {
 		t.Fatalf("malformed 6-char token must not be classified, got *fabriqerr.Error: %+v", fe)
 	}
-	if out != err {
+	if !errors.Is(out, err) {
 		t.Fatalf("malformed token must pass through unchanged, got %v", out)
 	}
 }
@@ -87,7 +87,7 @@ func TestTranslatePg_PassThrough(t *testing.T) {
 	}
 	// Already-structured errors are returned unchanged.
 	existing := fabriqerr.New(fabriqerr.CodeNotFound, "x", fabriqerr.WithEntity("a", "1"))
-	if got := translatePg("", "", "", existing); got != error(existing) {
+	if got := translatePg("", "", "", existing); !errors.Is(got, existing) {
 		t.Fatal("already-structured error must pass through unchanged")
 	}
 	// The rich NotFoundError passes through (still matches sentinel).
@@ -97,7 +97,7 @@ func TestTranslatePg_PassThrough(t *testing.T) {
 	}
 	// A non-driver internal error is left untouched (boundary sanitizes it).
 	plain := errors.New("fabriq: some internal invariant broke")
-	if got := translatePg("", "", "", plain); got != plain {
+	if got := translatePg("", "", "", plain); !errors.Is(got, plain) {
 		t.Fatal("non-driver error must pass through unchanged")
 	}
 }

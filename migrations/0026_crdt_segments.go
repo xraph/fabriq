@@ -18,7 +18,11 @@ var migration0026CRDTSegments = &migrate.Migration{
 	Version: "202607010026",
 	Comment: "CRDT history offload: segment index (seq range -> blob key)",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
-		stmts := []string{
+		// Scope-aware tenant policy, same shape as migration 0013 applies to the
+		// other CRDT content tables.
+		policy := ScopeAwareTenantPolicy("fabriq_crdt_segments")
+		stmts := make([]string, 0, 4+len(policy))
+		stmts = append(stmts,
 			`CREATE TABLE IF NOT EXISTS fabriq_crdt_segments (
 				doc_id       TEXT NOT NULL,
 				seg_seq      BIGINT GENERATED ALWAYS AS IDENTITY,
@@ -36,10 +40,8 @@ var migration0026CRDTSegments = &migrate.Migration{
 				ON fabriq_crdt_segments (doc_id, seq_lo, seq_hi)`,
 			`ALTER TABLE fabriq_crdt_segments ENABLE ROW LEVEL SECURITY`,
 			`ALTER TABLE fabriq_crdt_segments FORCE ROW LEVEL SECURITY`,
-		}
-		// Scope-aware tenant policy, same shape as migration 0013 applies to the
-		// other CRDT content tables.
-		stmts = append(stmts, ScopeAwareTenantPolicy("fabriq_crdt_segments")...)
+		)
+		stmts = append(stmts, policy...)
 		return execAll(ctx, exec, stmts)
 	},
 	Down: func(ctx context.Context, exec migrate.Executor) error {

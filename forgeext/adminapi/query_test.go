@@ -42,7 +42,7 @@ func TestQueryRaw_501WithoutStores(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/query", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/query",
 		map[string]any{"sql": "SELECT 1"})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotImplemented {

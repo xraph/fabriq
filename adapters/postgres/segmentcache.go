@@ -21,11 +21,11 @@ type segCacheEntry struct {
 	val []document.HistoryUpdate
 }
 
-func newSegmentCache(max int) *segmentCache {
-	if max <= 0 {
-		max = 128
+func newSegmentCache(maxEntries int) *segmentCache {
+	if maxEntries <= 0 {
+		maxEntries = 128
 	}
-	return &segmentCache{max: max, ll: list.New(), item: map[string]*list.Element{}}
+	return &segmentCache{max: maxEntries, ll: list.New(), item: map[string]*list.Element{}}
 }
 
 func (c *segmentCache) get(key string) ([]document.HistoryUpdate, bool) {
@@ -36,14 +36,16 @@ func (c *segmentCache) get(key string) ([]document.HistoryUpdate, bool) {
 		return nil, false
 	}
 	c.ll.MoveToFront(el)
-	return el.Value.(*segCacheEntry).val, true
+	entry, _ := el.Value.(*segCacheEntry)
+	return entry.val, true
 }
 
 func (c *segmentCache) put(key string, v []document.HistoryUpdate) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if el, ok := c.item[key]; ok {
-		el.Value.(*segCacheEntry).val = v
+		entry, _ := el.Value.(*segCacheEntry)
+		entry.val = v
 		c.ll.MoveToFront(el)
 		return
 	}
@@ -55,6 +57,7 @@ func (c *segmentCache) put(key string, v []document.HistoryUpdate) {
 			break
 		}
 		c.ll.Remove(back)
-		delete(c.item, back.Value.(*segCacheEntry).key)
+		entry, _ := back.Value.(*segCacheEntry)
+		delete(c.item, entry.key)
 	}
 }

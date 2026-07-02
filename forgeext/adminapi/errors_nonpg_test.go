@@ -149,8 +149,8 @@ func TestGraphNeighbors_UnstructuredBackendErrorDoesNotLeak(t *testing.T) {
 // handleCacheInvalidate (cache_admin.go:176's cache.InvalidateEntity call).
 type faultyCache struct{ err error }
 
-func (f faultyCache) GetOrLoad(ctx context.Context, ks corecache.Keyspace, key string,
-	load func(context.Context) ([]byte, error)) ([]byte, error) {
+func (f faultyCache) GetOrLoad(_ context.Context, _ corecache.Keyspace, _ string,
+	_ func(context.Context) ([]byte, error)) ([]byte, error) {
 	return nil, f.err
 }
 func (f faultyCache) Get(context.Context, corecache.Keyspace, string) ([]byte, bool, error) {
@@ -191,7 +191,7 @@ func TestCacheInvalidate_UnstructuredBackendErrorDoesNotLeak(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/cache/invalidate", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/cache/invalidate",
 		map[string]any{"entity": "widget"})
 	if resp.StatusCode != http.StatusInternalServerError {
 		resp.Body.Close()

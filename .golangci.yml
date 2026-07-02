@@ -154,6 +154,13 @@ linters:
       - path: core/crypto/
         text: "avoid package names that conflict"
         linters: [revive]
+      # cmd/admin-demo is a local demo/dev server whose startup banner logs
+      # operator-supplied config (listen addr, service URLs, blob DSN) and
+      # sample curl commands; G706 log-injection does not apply to a hand-run
+      # demo printing its own configuration.
+      - path: cmd/admin-demo/
+        text: "G706"
+        linters: [gosec]
 
 formatters:
   enable:

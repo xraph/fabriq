@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -13,7 +12,7 @@ import (
 	"time"
 
 	"github.com/xraph/grove"
-	"github.com/xraph/grove/drivers/pgdriver"
+	"github.com/xraph/grove/drivers/pgdriver" //nolint:depguard // the KeyStore resolves an instance-global, tenant-nullable auth table that no fabriq port expresses; it uses the raw pg driver deliberately, mirroring adapters/postgres.
 
 	"github.com/xraph/fabriq/core/event"
 )
@@ -48,12 +47,6 @@ func generateKey() (key, prefix, hash string, err error) {
 func hashKey(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:])
-}
-
-// constantTimeEqualHash compares two hash strings in constant time to avoid
-// timing side-channels during key verification.
-func constantTimeEqualHash(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // KeySpec describes a key to be issued. TenantID == "" issues a multi-tenant
@@ -296,8 +289,8 @@ func (s *relationalKeyStore) Lookup(ctx context.Context, keyHash string) (KeyRec
 	defer func() { _ = rows.Close() }()
 
 	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return KeyRecord{}, false, fmt.Errorf("adminapi: lookup api key rows: %w", err)
+		if rerr := rows.Err(); rerr != nil {
+			return KeyRecord{}, false, fmt.Errorf("adminapi: lookup api key rows: %w", rerr)
 		}
 		return KeyRecord{}, false, nil
 	}

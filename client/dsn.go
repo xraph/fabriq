@@ -57,10 +57,7 @@ func ParseDSN(s string) (DSN, error) {
 
 	// Determine TLS: default off for localhost/127.0.0.1, on otherwise;
 	// explicit ?tls= overrides.
-	tls := true
-	if host == "localhost" || host == "127.0.0.1" {
-		tls = false
-	}
+	tls := host != "localhost" && host != "127.0.0.1"
 	if v := query.Get("tls"); v != "" {
 		parsed, err := strconv.ParseBool(v)
 		if err != nil {
@@ -119,7 +116,7 @@ func (d DSN) BaseURL() string {
 }
 
 func trimLeadingSlash(s string) string {
-	if len(s) > 0 && s[0] == '/' {
+	if s != "" && s[0] == '/' {
 		return s[1:]
 	}
 	return s

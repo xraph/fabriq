@@ -147,7 +147,7 @@ func TestMigrateUp_403WhenGateOff(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/migrations/up", testTenantID, map[string]any{})
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/migrations/up", map[string]any{})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 (gate off)", resp.StatusCode)
@@ -163,7 +163,7 @@ func TestMigrateUp_501WhenGateOnButNoParent(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/migrations/up", testTenantID, map[string]any{})
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/migrations/up", map[string]any{})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want 501 (nil parent, gate on)", resp.StatusCode)

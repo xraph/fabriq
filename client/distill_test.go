@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -57,7 +58,7 @@ func TestClient_GetDigestMap(t *testing.T) {
 }
 
 func TestClient_GetDigestMap_EmptyNodes(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(DigestMap{
@@ -128,7 +129,7 @@ func TestClient_GetDigestNode(t *testing.T) {
 }
 
 func TestClient_GetDigestNode_NotConfigured(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotImplemented)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "distillation plane not configured"})
@@ -141,8 +142,8 @@ func TestClient_GetDigestNode_NotConfigured(t *testing.T) {
 	if err == nil {
 		t.Fatalf("GetDigestNode() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("err type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusNotImplemented {

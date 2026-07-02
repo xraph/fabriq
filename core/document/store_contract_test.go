@@ -18,4 +18,4 @@ func TestHistoryUpdateShape(t *testing.T) {
 }
 
 // staticHistoryReaderCheck fails to compile if HistoryReader drifts.
-var _ = func(hr HistoryReader) {}
+var _ = func(_ HistoryReader) {}

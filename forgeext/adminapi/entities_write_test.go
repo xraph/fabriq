@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// doWrite issues a request with a JSON body and the given tenant header.
-func doWrite(t *testing.T, method, url, tenantID string, body map[string]any) *http.Response {
+// doWrite issues a request with a JSON body and the test tenant header.
+func doWrite(t *testing.T, method, url string, body map[string]any) *http.Response {
 	t.Helper()
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -21,7 +21,7 @@ func doWrite(t *testing.T, method, url, tenantID string, body map[string]any) *h
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(testTenantHeader, tenantID)
+	req.Header.Set(testTenantHeader, testTenantID)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("do request: %v", err)
@@ -32,13 +32,13 @@ func doWrite(t *testing.T, method, url, tenantID string, body map[string]any) *h
 // postEntity issues POST {base}/entities for the test tenant.
 func postEntity(t *testing.T, srv *httptest.Server, body map[string]any) *http.Response {
 	t.Helper()
-	return doWrite(t, http.MethodPost, srv.URL+"/admin/entities", testTenantID, body)
+	return doWrite(t, http.MethodPost, srv.URL+"/admin/entities", body)
 }
 
 // putEntity issues PUT {base}/entities/{id} for the test tenant.
 func putEntity(t *testing.T, srv *httptest.Server, id string, body map[string]any) *http.Response {
 	t.Helper()
-	return doWrite(t, http.MethodPut, srv.URL+"/admin/entities/"+id, testTenantID, body)
+	return doWrite(t, http.MethodPut, srv.URL+"/admin/entities/"+id, body)
 }
 
 // deleteEntity issues DELETE {base}/entities/{id}?type=... for the test tenant.

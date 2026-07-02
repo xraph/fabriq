@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -106,7 +107,7 @@ func TestClient_ExecCommand_OmitsOptionalFields(t *testing.T) {
 }
 
 func TestClient_ExecCommand_Conflict(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -127,8 +128,8 @@ func TestClient_ExecCommand_Conflict(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ExecCommand() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("err type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusConflict {
@@ -189,7 +190,7 @@ func TestClient_ExecBatch(t *testing.T) {
 }
 
 func TestClient_ExecBatch_TooLarge(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -204,8 +205,8 @@ func TestClient_ExecBatch_TooLarge(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ExecBatch() expected error, got nil")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("err type = %T, want *APIError", err)
 	}
 	if apiErr.Status != http.StatusBadRequest {

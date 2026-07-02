@@ -15,7 +15,7 @@ func TestVectorDeleteByMeta_MissingEntity(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/vector/delete-by-meta", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/vector/delete-by-meta",
 		map[string]any{"filter": map[string]any{"status": "x"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -30,7 +30,7 @@ func TestVectorDeleteByMeta_EmptyFilterWithoutAll(t *testing.T) {
 	defer srv.Close()
 
 	// Empty filter is the wipe-all path — rejected unless {all:true}.
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/vector/delete-by-meta", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/vector/delete-by-meta",
 		map[string]any{"entity": "product"})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {

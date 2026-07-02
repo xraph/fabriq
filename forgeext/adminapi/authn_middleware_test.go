@@ -56,13 +56,12 @@ func (f *fakeKeyStore) Revoke(context.Context, string) error { return nil }
 // fakeBackedAdminExt (which installs the header-only tenantMiddleware), this
 // installs authMiddleware so the full auth path is exercised. The fabric is
 // pre-resolved from the world, bypassing Start / fabriq.Open.
-func authTestExt(t *testing.T, store KeyStore, opts ...Option) *Extension {
+func authTestExt(t *testing.T, store KeyStore) *Extension {
 	t.Helper()
 	world := buildTestWorld(t)
-	opts = append([]Option{
+	e := NewAdminAPI(nil, // nil parent — bypass forgeext.Extension
 		WithRouteOptions(forge.WithMiddleware(authMiddleware(store, "/admin"))),
-	}, opts...)
-	e := NewAdminAPI(nil, opts...) // nil parent — bypass forgeext.Extension
+	)
 	e.fabric = fabriqtest.NewFabric(world)
 	e.reg = world.Registry
 	return e

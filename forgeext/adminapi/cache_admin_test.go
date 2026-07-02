@@ -43,7 +43,7 @@ func TestCacheInvalidate_NotConfigured(t *testing.T) {
 	srv := buildServer(t, e)
 	defer srv.Close()
 
-	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/cache/invalidate", testTenantID,
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/cache/invalidate",
 		map[string]any{"entity": "widget"})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotImplemented {

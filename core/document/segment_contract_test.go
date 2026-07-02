@@ -20,4 +20,4 @@ func TestSegmentInfoJSONTags(t *testing.T) {
 }
 
 // Compile-time capability assertions.
-var _ = func(sl SegmentLister, hp HistoryPurger) {}
+var _ = func(_ SegmentLister, _ HistoryPurger) {}
