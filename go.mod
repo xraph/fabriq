@@ -15,15 +15,16 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/redis v0.42.0
 	github.com/xraph/confy v0.5.2
 	github.com/xraph/forge v1.8.0
-	github.com/xraph/grove v1.5.7
-	github.com/xraph/grove/drivers/pgdriver v1.5.7
-	github.com/xraph/grove/kv v1.5.7
-	github.com/xraph/grove/kv/drivers/redisdriver v1.5.7
-	github.com/xraph/shield v1.5.1
+	github.com/xraph/grove v1.5.8
+	github.com/xraph/grove/drivers/pgdriver v1.5.8
+	github.com/xraph/grove/kv v1.5.8
+	github.com/xraph/grove/kv/drivers/redisdriver v1.5.8
+	github.com/xraph/shield v1.5.2
 	github.com/xraph/trove v1.5.1
 	github.com/xraph/vessel v1.0.2
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
+	golang.org/x/crypto v0.51.0
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -142,7 +143,6 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
