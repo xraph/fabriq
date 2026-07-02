@@ -1,6 +1,6 @@
 ---
 title: Documents
-description: The CRDT document plane — append-only update log, seq-vector sync, compaction, and quiet-window materialization back into ordinary entities.
+description: The CRDT document plane — append-only update log, seq-vector sync, compaction with optional history offload to the blob plane, and quiet-window materialization back into ordinary entities.
 ---
 
 The document plane backs `KindDocument` entities: collaborative documents — page-builder pages, annotations — where concurrent editing is normal and last-write-wins rows would destroy work. These entities are **not** written through the command plane (`Exec` rejects them). They converge through CRDT merges in an append-only log and only periodically *materialize* into ordinary rows. The plane is implemented in `adapters/postgres` (`DocStore`), folding the log through grove's `crdt.MergeEngine` (HLC-stamped field merge) — referenced, never reimplemented.
@@ -14,6 +14,12 @@ type CRDTSpec struct {
 	Engine        string        // engine reference, e.g. "grove-crdt"
 	SnapshotEvery int           // compact after this many updates
 	QuietWindow   time.Duration // idle window before materialization
+
+	// ArchiveHistory offloads sealed update history to the blob plane on
+	// Compact (latest state stays in the DB). nil = inherit the global
+	// Config.Documents.ArchiveHistory default; a non-nil pointer overrides
+	// it per entity. See "History offload" below.
+	ArchiveHistory *bool
 }
 ```
 
@@ -95,6 +101,78 @@ type Materialized struct {
 
 `Compact` folds the update log into a snapshot row at the current high-water seq and trims log rows with `seq <= last_seq`, in one transaction. It changes storage shape only — never merge results — and bounds reconnect cost for long-lived documents. Cadence is governed by `CRDTSpec.SnapshotEvery`; in production it runs as the worker's leader-elected compactor job, not from request handlers.
 
+By default the trimmed log tail is simply dropped — the compacted snapshot already carries its merged effect. With **history offload** enabled (below), that tail is instead *sealed into a blob segment* before it leaves the log, so the full raw edit history stays reconstructable without keeping it in Postgres.
+
+## History offload
+
+Long-lived documents accumulate a large raw update log. Compaction keeps the *current* state cheap, but the trimmed updates are gone. **History offload** keeps them — moved off Postgres into the [blob plane](/docs/file-plane) as immutable, content-addressed segments, so full edit history remains available at object-store cost while the hot path stays small.
+
+On `Compact` with offload enabled, the tail being trimmed (`seq <= last_seq`) is first **sealed** into one immutable segment: its updates are serialized and written to the blob store, and a single index row is recorded in `fabriq_crdt_segments` mapping the contiguous `[seqLo, seqHi]` range to the segment's blob key — then the log rows are deleted, all in the compaction transaction. Snapshot and Sync are unaffected: they read the compacted snapshot plus the live tail exactly as before, byte-for-byte identical whether offload is on or off.
+
+### Reading offloaded history
+
+Offloading adds three **optional, type-asserted capabilities** on the store (consumers assert for them, mirroring `blob.Presigner`/`Ranger`). Stores that do not offload need not implement them:
+
+```go
+// Reconstruct a raw update range, transparently spanning sealed blob
+// segments and the still-in-DB tail.
+type HistoryReader interface {
+	ReadHistory(ctx context.Context, docID string, seqLo, seqHi int64) ([]HistoryUpdate, error)
+}
+
+// List a document's sealed segments (storage-shape metadata; blob keys
+// are an internal detail and intentionally not exposed).
+type SegmentLister interface {
+	ListSegments(ctx context.Context, docID string) ([]SegmentInfo, error)
+}
+
+// Delete a document's offloaded history — segment blobs + index rows.
+// The admin delete path purges history when a document entity is removed.
+type HistoryPurger interface {
+	DeleteHistory(ctx context.Context, docID string) error
+}
+```
+
+```go
+type SegmentInfo struct {
+	SegSeq      int64     // segment ordinal
+	SeqLo       int64     // inclusive seq range start
+	SeqHi       int64     // inclusive seq range end
+	UpdateCount int64     // updates sealed in this segment
+	ByteSize    int64     // segment payload size
+	At          time.Time // seal time
+}
+```
+
+`ReadHistory` returns every update with `seqLo <= seq <= seqHi` in seq order, unioning the sealed segments (fetched from the blob store and served through an in-process LRU cache) with any updates still in the live log. `fabriq_crdt_segments` is a tenant-scoped content table with the same [scope-aware RLS](/docs/tenancy) as the CRDT update/snapshot tables.
+
+### Enabling it
+
+Offload is off by default and opt-in at two levels:
+
+```go
+f, _, err := fabriq.Open(ctx, reg, fabriq.Config{
+	// ...
+	Documents: fabriq.DocumentsConfig{ArchiveHistory: true}, // global default
+})
+```
+
+Per entity, `CRDTSpec.ArchiveHistory *bool` overrides the global default (`nil` inherits it):
+
+```go
+CRDT: &registry.CRDTSpec{
+	Engine:         "grove-crdt",
+	SnapshotEvery:  200,
+	ArchiveHistory: ptr(true), // this entity offloads even if the global default is off
+},
+```
+
+<Callout type="warn">
+Offload requires a configured [blob store](/docs/file-plane) (`Storage`) — the sealed
+segments live there. `Open` **fails fast** if `Documents.ArchiveHistory` (or any entity's
+`CRDTSpec.ArchiveHistory`) is set while no storage driver is configured.
+</Callout>
+
 ## Live sync transport
 
 Bidirectional sync rides the subscription hub's connection layer with **no conflation and no coalescing** — CRDT frames must arrive complete and in order. The conflating delta path ([Subscriptions](/docs/subscriptions)) and the document sync path share connections, never semantics. The seam is the hub's raw channel pair, `Hub.SubscribeRaw` / `Hub.PublishRaw`, distinct from the conflated `Subscribe` / `Publish`.
@@ -130,6 +208,7 @@ Until a document goes quiet, its edits exist only in the CRDT log — projection
 </Callout>
 
 <Cards>
-  <Card title="Registry" href="/docs/registry">CRDTSpec — declaring Engine, SnapshotEvery, and QuietWindow on a document entity.</Card>
+  <Card title="Registry" href="/docs/registry">CRDTSpec — declaring Engine, SnapshotEvery, QuietWindow, and ArchiveHistory on a document entity.</Card>
+  <Card title="File Plane" href="/docs/file-plane">The blob store that holds sealed history segments — content-addressed, reference-counted, reconciler-GC'd.</Card>
   <Card title="Deployment" href="/docs/deployment">The leader-elected worker that runs the materializer and compactor jobs.</Card>
 </Cards>
