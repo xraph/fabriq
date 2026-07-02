@@ -85,6 +85,10 @@ type KeyRecord struct {
 	CanManageKeys bool
 	CreatedAt     time.Time
 	RevokedAt     *time.Time
+	// ExpiresAt is nil for keys that never expire. Session tokens (issued via
+	// IssueSession) always set it; the authn middleware denies a resolved key
+	// once ExpiresAt is in the past, mirroring how RevokedAt is enforced.
+	ExpiresAt *time.Time
 }
 
 // KeyStore is the persistence port for hosted-fabriq API keys. It operates on
@@ -94,6 +98,11 @@ type KeyRecord struct {
 type KeyStore interface {
 	// Issue mints a new key, persists its hash, and returns the plaintext once.
 	Issue(ctx context.Context, spec KeySpec) (IssuedKey, error)
+	// IssueSession mints a multi-tenant, manage-keys session token that
+	// expires after ttl. It is the foundation for dashboard login: a session
+	// is just an expiring KeyStore row, validated by the same middleware path
+	// as any other API key.
+	IssueSession(ctx context.Context, ttl time.Duration) (IssuedKey, error)
 	// Lookup resolves a key by its sha256 hex hash with NO tenant scoping.
 	// Revoked keys still return (found=true): revocation is enforced by the
 	// middleware, not by hiding the row.
@@ -150,6 +159,33 @@ func (s *relationalKeyStore) Issue(ctx context.Context, spec KeySpec) (IssuedKey
 		id, prefix, hash, tenantArg, spec.Label, spec.CanManageKeys, createdAt,
 	).Exec(ctx); err != nil {
 		return IssuedKey{}, fmt.Errorf("adminapi: insert api key: %w", err)
+	}
+
+	return IssuedKey{ID: id, Prefix: prefix, Key: key}, nil
+}
+
+// IssueSession mints a fresh key exactly like Issue, but stamps expires_at =
+// now+ttl and hardcodes a multi-tenant, manage-keys, "session"-labelled row:
+// a session is deliberately just an expiring KeyStore row, so it is resolved
+// and (once expired) denied by the exact same Lookup + middleware path as any
+// other API key.
+func (s *relationalKeyStore) IssueSession(ctx context.Context, ttl time.Duration) (IssuedKey, error) {
+	key, prefix, hash, err := generateKey()
+	if err != nil {
+		return IssuedKey{}, fmt.Errorf("adminapi: generate session key: %w", err)
+	}
+
+	id := event.NewID()
+	createdAt := time.Now().UTC()
+	expiresAt := createdAt.Add(ttl)
+
+	const insert = `INSERT INTO fabriq_api_key
+		(id, prefix, key_hash, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at)
+		VALUES ($1, $2, $3, NULL, $4, $5, $6, NULL, $7)`
+	if _, err := s.pg.NewRaw(insert,
+		id, prefix, hash, "session", true, createdAt, expiresAt,
+	).Exec(ctx); err != nil {
+		return IssuedKey{}, fmt.Errorf("adminapi: insert session key: %w", err)
 	}
 
 	return IssuedKey{ID: id, Prefix: prefix, Key: key}, nil
@@ -250,7 +286,7 @@ func bootstrapAdminKey(ctx context.Context, store KeyStore) error {
 // Lookup resolves a key by hash. No tenant scoping — the table is
 // instance-global. Returns (zero, false, nil) when no row matches.
 func (s *relationalKeyStore) Lookup(ctx context.Context, keyHash string) (KeyRecord, bool, error) {
-	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at
+	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at
 		FROM fabriq_api_key
 		WHERE key_hash = $1`
 	rows, err := s.pg.Query(ctx, q, keyHash)
@@ -275,7 +311,7 @@ func (s *relationalKeyStore) Lookup(ctx context.Context, keyHash string) (KeyRec
 
 // List returns every stored key as a redacted KeyRecord, newest first.
 func (s *relationalKeyStore) List(ctx context.Context) ([]KeyRecord, error) {
-	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at
+	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at
 		FROM fabriq_api_key
 		ORDER BY id DESC`
 	rows, err := s.pg.Query(ctx, q)
@@ -315,8 +351,9 @@ func scanKeyRecord(rows interface{ Scan(...any) error }) (KeyRecord, error) {
 		rec     KeyRecord
 		tenant  sql.NullString
 		revoked sql.NullTime
+		expires sql.NullTime
 	)
-	if err := rows.Scan(&rec.ID, &rec.Prefix, &tenant, &rec.Label, &rec.CanManageKeys, &rec.CreatedAt, &revoked); err != nil {
+	if err := rows.Scan(&rec.ID, &rec.Prefix, &tenant, &rec.Label, &rec.CanManageKeys, &rec.CreatedAt, &revoked, &expires); err != nil {
 		return KeyRecord{}, fmt.Errorf("adminapi: scan api key: %w", err)
 	}
 	if tenant.Valid {
@@ -325,6 +362,10 @@ func scanKeyRecord(rows interface{ Scan(...any) error }) (KeyRecord, error) {
 	if revoked.Valid {
 		t := revoked.Time
 		rec.RevokedAt = &t
+	}
+	if expires.Valid {
+		t := expires.Time
+		rec.ExpiresAt = &t
 	}
 	return rec, nil
 }

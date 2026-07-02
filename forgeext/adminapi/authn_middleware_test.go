@@ -36,6 +36,12 @@ func (f *fakeKeyStore) Issue(context.Context, KeySpec) (IssuedKey, error) {
 	return IssuedKey{}, nil
 }
 
+// IssueSession is not exercised by the middleware tests (which only drive
+// Lookup); it satisfies the KeyStore interface with a canned token.
+func (f *fakeKeyStore) IssueSession(context.Context, time.Duration) (IssuedKey, error) {
+	return IssuedKey{}, nil
+}
+
 func (f *fakeKeyStore) Lookup(_ context.Context, keyHash string) (KeyRecord, bool, error) {
 	rec, ok := f.byHash[keyHash]
 	return rec, ok, nil
@@ -156,6 +162,22 @@ func TestAuthMiddleware_RevokedKey_401(t *testing.T) {
 	defer srv.Close()
 
 	resp := authReq(t, srv.URL, "/admin/meta", map[string]string{"Authorization": "Bearer fq_revoked"})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	assertVersionHeader(t, resp)
+}
+
+func TestAuthMiddleware_ExpiredKey_401(t *testing.T) {
+	store := newFakeKeyStore()
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	store.add("fq_expired", KeyRecord{ID: "k1", TenantID: testTenantID, ExpiresAt: &past})
+	srv := buildServer(t, authTestExt(t, store))
+	defer srv.Close()
+
+	resp := authReq(t, srv.URL, "/admin/meta", map[string]string{"Authorization": "Bearer fq_expired"})
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusUnauthorized {

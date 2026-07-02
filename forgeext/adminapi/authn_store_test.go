@@ -5,6 +5,7 @@ package adminapi
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/registry"
@@ -166,6 +167,59 @@ func TestKeyStore_ListRedactsHash(t *testing.T) {
 	}
 	if !seen[a.ID] || !seen[b.ID] {
 		t.Fatalf("List missing issued ids: %+v", recs)
+	}
+}
+
+// TestKeyStore_IssueSession_Expires exercises the session-token path end to
+// end: a short-TTL session resolves as found with a future ExpiresAt right
+// after issue, and a near-immediate-expiry session's ExpiresAt is in the past
+// by the time we check it.
+func TestKeyStore_IssueSession_Expires(t *testing.T) {
+	ctx := context.Background()
+	ks := newKeyStoreDB(t)
+
+	issued, err := ks.IssueSession(ctx, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
+	}
+	if issued.ID == "" || issued.Prefix == "" || issued.Key == "" {
+		t.Fatalf("IssueSession returned empty fields: %+v", issued)
+	}
+
+	rec, found, err := ks.Lookup(ctx, hashKey(issued.Key))
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if !found {
+		t.Fatal("Lookup: expected found=true for the issued session")
+	}
+	if rec.ExpiresAt == nil {
+		t.Fatal("Lookup rec.ExpiresAt is nil, want set")
+	}
+	if !rec.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("Lookup rec.ExpiresAt = %v, want in the future immediately after issue", rec.ExpiresAt)
+	}
+
+	// A session issued with a tiny (already-elapsed by the time we check) TTL
+	// must have an ExpiresAt in the past.
+	shortLived, err := ks.IssueSession(ctx, 1*time.Nanosecond)
+	if err != nil {
+		t.Fatalf("IssueSession (short-lived): %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+
+	rec2, found, err := ks.Lookup(ctx, hashKey(shortLived.Key))
+	if err != nil {
+		t.Fatalf("Lookup (short-lived): %v", err)
+	}
+	if !found {
+		t.Fatal("Lookup (short-lived): expected found=true")
+	}
+	if rec2.ExpiresAt == nil {
+		t.Fatal("Lookup (short-lived) rec.ExpiresAt is nil, want set")
+	}
+	if !rec2.ExpiresAt.Before(time.Now().UTC()) {
+		t.Fatalf("Lookup (short-lived) rec.ExpiresAt = %v, want in the past", rec2.ExpiresAt)
 	}
 }
 

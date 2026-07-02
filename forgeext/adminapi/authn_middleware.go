@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/xraph/forge"
 
@@ -35,6 +36,7 @@ const bearerPrefix = "bearer "
 //
 //	missing/malformed Authorization        → 401
 //	Lookup miss OR RevokedAt != nil        → 401
+//	ExpiresAt != nil and in the past       → 401
 //	Lookup error                           → 500
 //	tenant-bound key, X-Tenant-ID mismatch → 403
 //	multi-tenant key, X-Tenant-ID absent   → 400
@@ -69,7 +71,7 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 			if err != nil {
 				return deny(ctx, http.StatusInternalServerError, "key lookup failed")
 			}
-			if !found || rec.RevokedAt != nil {
+			if !found || rec.RevokedAt != nil || (rec.ExpiresAt != nil && rec.ExpiresAt.Before(time.Now())) {
 				return deny(ctx, http.StatusUnauthorized, "invalid or revoked API key")
 			}
 

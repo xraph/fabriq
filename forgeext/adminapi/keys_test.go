@@ -65,6 +65,12 @@ func (s *liveKeyStore) Issue(_ context.Context, spec KeySpec) (IssuedKey, error)
 	return IssuedKey{ID: id, Prefix: prefix, Key: key}, nil
 }
 
+// IssueSession is not exercised by the keys tests; it satisfies the KeyStore
+// interface with a canned token.
+func (s *liveKeyStore) IssueSession(_ context.Context, _ time.Duration) (IssuedKey, error) {
+	return IssuedKey{}, fmt.Errorf("liveKeyStore: IssueSession not implemented")
+}
+
 func (s *liveKeyStore) Lookup(_ context.Context, keyHash string) (KeyRecord, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

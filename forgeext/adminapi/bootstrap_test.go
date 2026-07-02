@@ -64,6 +64,12 @@ func (s *bootstrapKeyStore) Issue(_ context.Context, spec KeySpec) (IssuedKey, e
 	return IssuedKey{ID: id, Prefix: prefix, Key: key}, nil
 }
 
+// IssueSession is not exercised by the bootstrap tests; it satisfies the
+// KeyStore interface with a canned token.
+func (s *bootstrapKeyStore) IssueSession(_ context.Context, _ time.Duration) (IssuedKey, error) {
+	return IssuedKey{}, fmt.Errorf("bootstrapKeyStore: IssueSession not implemented")
+}
+
 func (s *bootstrapKeyStore) Lookup(_ context.Context, keyHash string) (KeyRecord, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
