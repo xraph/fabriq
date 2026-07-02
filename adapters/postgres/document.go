@@ -413,6 +413,37 @@ func (d *DocStore) ReadHistory(ctx context.Context, docID string, seqLo, seqHi i
 	return out, nil
 }
 
+// DeleteHistory purges a document's offloaded history: every segment blob and
+// its index row. The GC seam for document deletion. Blob deletes run first
+// (best-effort per key); the index rows are dropped last so a partial failure
+// leaves recoverable pointers rather than orphaned rows.
+func (d *DocStore) DeleteHistory(ctx context.Context, docID string) error {
+	if _, err := d.splitDocID(docID); err != nil {
+		return err
+	}
+	type segRow struct {
+		BlobKey string `grove:"blob_key"`
+	}
+	var segs []segRow
+	if err := d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		return tx.NewRaw(`SELECT blob_key FROM fabriq_crdt_segments WHERE doc_id = $1`, docID).Scan(ctx, &segs)
+	}); err != nil {
+		return err
+	}
+	if d.blob != nil {
+		for _, s := range segs {
+			if err := d.blob.Delete(ctx, s.BlobKey); err != nil {
+				return fmt.Errorf("fabriq: delete history segment %s: %w", s.BlobKey, err)
+			}
+			d.segCache.put(s.BlobKey, nil) // drop any cached copy
+		}
+	}
+	return d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		_, err := tx.NewRaw(`DELETE FROM fabriq_crdt_segments WHERE doc_id = $1`, docID).Exec(ctx)
+		return err
+	})
+}
+
 // loadSegment returns a sealed segment's decoded updates, from the cache when
 // present, otherwise fetching the blob, decoding, and caching it.
 func (d *DocStore) loadSegment(ctx context.Context, blobKey string) ([]document.HistoryUpdate, error) {

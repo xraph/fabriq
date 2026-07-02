@@ -120,3 +120,30 @@ func TestReadHistorySpansSegmentsAndDB(t *testing.T) {
 		t.Fatalf("cached read = %d updates (err=%v)", len(hist2), err)
 	}
 }
+
+// TestDeleteHistoryRemovesSegments proves the Task 8 GC seam: DeleteHistory
+// purges every sealed segment blob for a document plus its
+// fabriq_crdt_segments index rows.
+func TestDeleteHistoryRemovesSegments(t *testing.T) {
+	ctx := context.Background()
+	_, app := newDocScopeHarness(t)
+	ds := app.Documents()
+	fb := fabriqtest.NewFakeBlob()
+	ds.EnableArchive(fb, true)
+	tctx, _ := tenant.WithTenant(ctx, "t1")
+	docID := "page/" + event.NewID()
+
+	_ = ds.ApplyUpdate(tctx, docID, crdtLWWUpdate(t, "pages", docID, "title", "a", 100, "n1"))
+	if err := ds.Compact(tctx, docID); err != nil {
+		t.Fatal(err)
+	}
+	if objs, _ := fb.List(tctx, "crdt/"+docID+"/seg/"); len(objs) != 1 {
+		t.Fatalf("precondition: want 1 segment, got %d", len(objs))
+	}
+	if err := ds.DeleteHistory(tctx, docID); err != nil {
+		t.Fatalf("DeleteHistory: %v", err)
+	}
+	if objs, _ := fb.List(tctx, "crdt/"+docID+"/seg/"); len(objs) != 0 {
+		t.Fatalf("segments not purged, %d remain", len(objs))
+	}
+}
