@@ -79,3 +79,44 @@ func TestCompactWithoutArchiveDeletes(t *testing.T) {
 		t.Fatalf("archive off must write no segments, got %d", len(objs))
 	}
 }
+
+// TestReadHistorySpansSegmentsAndDB proves the Task 7 read path: ReadHistory
+// reconstructs a gap-free, ordered range from sealed blob segments (cached
+// after first fetch) plus rows still in the hot DB tail. A seq lives in
+// exactly one tier (sealing deletes it from the DB), so combining both
+// sources and sorting by seq recovers the original range exactly.
+func TestReadHistorySpansSegmentsAndDB(t *testing.T) {
+	ctx := context.Background()
+	_, app := newDocScopeHarness(t)
+	ds := app.Documents()
+	ds.EnableArchive(fabriqtest.NewFakeBlob(), true)
+	tctx, _ := tenant.WithTenant(ctx, "t1")
+	docID := "page/" + event.NewID()
+
+	// seq 1,2 sealed by Compact; seq 3 stays in the hot tail.
+	_ = ds.ApplyUpdate(tctx, docID, crdtLWWUpdate(t, "pages", docID, "title", "a", 100, "n1"))
+	_ = ds.ApplyUpdate(tctx, docID, crdtLWWUpdate(t, "pages", docID, "title", "b", 200, "n1"))
+	if err := ds.Compact(tctx, docID); err != nil {
+		t.Fatal(err)
+	}
+	_ = ds.ApplyUpdate(tctx, docID, crdtLWWUpdate(t, "pages", docID, "title", "c", 300, "n1")) // seq 3, unsealed
+
+	hist, err := ds.ReadHistory(tctx, docID, 1, 3)
+	if err != nil {
+		t.Fatalf("ReadHistory: %v", err)
+	}
+	if len(hist) != 3 {
+		t.Fatalf("want 3 updates spanning segment+DB, got %d", len(hist))
+	}
+	for i, h := range hist {
+		if h.Seq != int64(i+1) {
+			t.Fatalf("hist[%d].Seq = %d, want %d", i, h.Seq, i+1)
+		}
+	}
+
+	// second read hits the cache for the sealed segment; still correct
+	hist2, err := ds.ReadHistory(tctx, docID, 1, 2)
+	if err != nil || len(hist2) != 2 {
+		t.Fatalf("cached read = %d updates (err=%v)", len(hist2), err)
+	}
+}

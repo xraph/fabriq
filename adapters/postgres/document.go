@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -43,6 +45,7 @@ type DocStore struct {
 }
 
 var _ document.Store = (*DocStore)(nil)
+var _ document.HistoryReader = (*DocStore)(nil)
 
 // Documents returns the document-plane store.
 func (a *Adapter) Documents() *DocStore {
@@ -349,6 +352,92 @@ func (d *DocStore) sealSegment(ctx context.Context, docID string, maxSeq int64) 
 		return "", 0, 0, 0, fmt.Errorf("fabriq: seal segment %s: %w", key, e)
 	}
 	return key, seqLo, int64(len(entries)), int64(len(body)), nil
+}
+
+// ReadHistory returns every update with seqLo <= seq <= seqHi in seq order,
+// drawn from sealed blob segments (cached after first fetch) and the live
+// update log. A referenced segment blob that is missing is a hard error — never
+// silently skipped (that would be undetected data loss).
+func (d *DocStore) ReadHistory(ctx context.Context, docID string, seqLo, seqHi int64) ([]document.HistoryUpdate, error) {
+	if _, err := d.splitDocID(docID); err != nil {
+		return nil, err
+	}
+	if seqLo > seqHi {
+		return nil, nil
+	}
+	out := make([]document.HistoryUpdate, 0, 16)
+
+	// 1) Sealed segments overlapping [seqLo, seqHi].
+	type segRow struct {
+		SeqLo   int64  `grove:"seq_lo"`
+		SeqHi   int64  `grove:"seq_hi"`
+		BlobKey string `grove:"blob_key"`
+	}
+	var segs []segRow
+	if err := d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		return tx.NewRaw(
+			`SELECT seq_lo, seq_hi, blob_key FROM fabriq_crdt_segments
+			 WHERE doc_id = $1 AND seq_hi >= $2 AND seq_lo <= $3 ORDER BY seq_lo`,
+			docID, seqLo, seqHi).Scan(ctx, &segs)
+	}); err != nil {
+		return nil, err
+	}
+	for _, s := range segs {
+		updates, cerr := d.loadSegment(ctx, s.BlobKey)
+		if cerr != nil {
+			return nil, cerr
+		}
+		for _, u := range updates {
+			if u.Seq >= seqLo && u.Seq <= seqHi {
+				out = append(out, u)
+			}
+		}
+	}
+
+	// 2) Still-in-DB updates in range (hot tail + any not-yet-sealed rows).
+	var rows []updateRow
+	if err := d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		return tx.NewRaw(
+			`SELECT seq, update_data FROM fabriq_crdt_updates WHERE doc_id = $1 AND seq >= $2 AND seq <= $3 ORDER BY seq`,
+			docID, seqLo, seqHi).Scan(ctx, &rows)
+	}); err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out = append(out, document.HistoryUpdate{Seq: r.Seq, Update: json.RawMessage(r.UpdateData)})
+	}
+
+	// A seq lives in exactly one tier (sealing deletes from the DB), so a plain
+	// sort yields the ordered, gap-free range.
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
+}
+
+// loadSegment returns a sealed segment's decoded updates, from the cache when
+// present, otherwise fetching the blob, decoding, and caching it.
+func (d *DocStore) loadSegment(ctx context.Context, blobKey string) ([]document.HistoryUpdate, error) {
+	if v, ok := d.segCache.get(blobKey); ok {
+		return v, nil
+	}
+	rc, _, err := d.blob.Get(ctx, blobKey)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: missing history segment %s: %w", blobKey, err)
+	}
+	defer func() { _ = rc.Close() }()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := decodeSegment(body)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: corrupt history segment %s: %w", blobKey, err)
+	}
+	updates := make([]document.HistoryUpdate, len(entries))
+	for i, e := range entries {
+		updates[i] = document.HistoryUpdate{Seq: e.Seq, Update: json.RawMessage(e.Data)}
+	}
+	d.segCache.put(blobKey, updates)
+	return updates, nil
 }
 
 // mergedState folds snapshot + log tail through grove's merge engine,
