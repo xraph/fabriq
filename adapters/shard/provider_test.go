@@ -1,0 +1,307 @@
+package shard
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/xraph/fabriq/core/fabriqerr"
+)
+
+// fakeDialer records opens/closes and can be told to fail per shard.
+type fakeDialer struct {
+	mu     sync.Mutex
+	opens  map[string]int
+	closes map[string]int
+	fail   map[string]error
+	delay  time.Duration
+}
+
+func newFakeDialer() *fakeDialer {
+	return &fakeDialer{opens: map[string]int{}, closes: map[string]int{}, fail: map[string]error{}}
+}
+
+func (f *fakeDialer) dial(_ context.Context, shardID string) (Shard, func() error, error) {
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail[shardID]; err != nil {
+		return Shard{}, nil, err
+	}
+	f.opens[shardID]++
+	return Shard{ID: shardID}, func() error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.closes[shardID]++
+		return nil
+	}, nil
+}
+
+func (f *fakeDialer) counts(shardID string) (opens, closes int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.opens[shardID], f.closes[shardID]
+}
+
+func TestPoolManager_LazyOpensOnce_Singleflight(t *testing.T) {
+	d := newFakeDialer()
+	d.delay = 20 * time.Millisecond
+	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 8})
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	var failures atomic.Int32
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sh, release, err := p.Acquire(ctx, "s1")
+			if err != nil || sh.ID != "s1" {
+				failures.Add(1)
+				return
+			}
+			release()
+		}()
+	}
+	wg.Wait()
+	if failures.Load() != 0 {
+		t.Fatalf("%d acquires failed", failures.Load())
+	}
+	if opens, _ := d.counts("s1"); opens != 1 {
+		t.Fatalf("dialed %d times, want 1 (singleflight)", opens)
+	}
+}
+
+func TestPoolManager_LRUEvictsIdleFirst_NeverEvictsHeld(t *testing.T) {
+	d := newFakeDialer()
+	now := time.Unix(0, 0)
+	p := NewPoolManager(d.dial, PoolManagerConfig{
+		MaxActive: 2, AcquireTimeout: 200 * time.Millisecond,
+		now: func() time.Time { now = now.Add(time.Millisecond); return now },
+	})
+	ctx := context.Background()
+
+	_, r1, err := p.Acquire(ctx, "held")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// idle opens second (more recent), then goes idle.
+	_, r2, err := p.Acquire(ctx, "idle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2()
+
+	// Opening a third shard must evict "idle" (refs==0), never "held".
+	_, r3, err := p.Acquire(ctx, "third")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, closes := d.counts("idle"); closes != 1 {
+		t.Fatal("idle shard was not evicted")
+	}
+	if _, closes := d.counts("held"); closes != 0 {
+		t.Fatal("held shard must never be evicted")
+	}
+	r1()
+	r3()
+}
+
+func TestPoolManager_CapBlocksThenTimesOut(t *testing.T) {
+	d := newFakeDialer()
+	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 1, AcquireTimeout: 120 * time.Millisecond})
+	ctx := context.Background()
+
+	_, release, err := p.Acquire(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, _, err = p.Acquire(ctx, "b")
+	if fabriqerr.CodeOf(err) != fabriqerr.CodeUnavailable {
+		t.Fatalf("err = %v, want CodeUnavailable", err)
+	}
+	if time.Since(start) < 100*time.Millisecond {
+		t.Fatal("acquire must wait for capacity before failing")
+	}
+	release()
+
+	// With capacity released the same acquire succeeds.
+	_, r2, err := p.Acquire(ctx, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2()
+}
+
+func TestPoolManager_ReleaseUnblocksWaiter(t *testing.T) {
+	d := newFakeDialer()
+	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 1, AcquireTimeout: 2 * time.Second})
+	ctx := context.Background()
+
+	_, release, err := p.Acquire(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, r, err := p.Acquire(ctx, "b")
+		if err == nil {
+			r()
+		}
+		done <- err
+	}()
+	time.Sleep(30 * time.Millisecond)
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiter failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter never unblocked")
+	}
+}
+
+func TestPoolManager_DialFailureBreaker(t *testing.T) {
+	d := newFakeDialer()
+	boom := errors.New("boom")
+	d.fail["down"] = boom
+	now := time.Unix(1000, 0)
+	p := NewPoolManager(d.dial, PoolManagerConfig{
+		MaxActive: 4, DialBackoff: time.Second,
+		now: func() time.Time { return now },
+	})
+	ctx := context.Background()
+
+	if _, _, err := p.Acquire(ctx, "down"); !errors.Is(err, boom) {
+		t.Fatalf("first dial err = %v, want cause boom", err)
+	}
+	// Breaker open: no second dial inside the backoff window.
+	if _, _, err := p.Acquire(ctx, "down"); fabriqerr.CodeOf(err) != fabriqerr.CodeUnavailable {
+		t.Fatalf("err = %v, want CodeUnavailable", err)
+	}
+	if opens, _ := d.counts("down"); opens != 0 {
+		t.Fatal("failed dials must not count as opens")
+	}
+	// Recovery after the window.
+	d.mu.Lock()
+	delete(d.fail, "down")
+	d.mu.Unlock()
+	now = now.Add(3 * time.Second)
+	sh, release, err := p.Acquire(ctx, "down")
+	if err != nil || sh.ID != "down" {
+		t.Fatalf("post-recovery acquire: %v", err)
+	}
+	release()
+}
+
+func TestPoolManager_DoubleReleaseIsSafe(t *testing.T) {
+	d := newFakeDialer()
+	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 2})
+	_, release, err := p.Acquire(context.Background(), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	release() // idempotent
+	open, held := p.Stats()
+	if open != 1 || held != 0 {
+		t.Fatalf("stats = open %d held %d, want 1/0", open, held)
+	}
+}
+
+// staticDirectory routes every tenant to a fixed shard id (test helper).
+type staticDirectory map[string]string
+
+func (s staticDirectory) Shard(_ context.Context, tenantID string) (string, error) {
+	id, ok := s[tenantID]
+	if !ok {
+		return "", fabriqerr.New(fabriqerr.CodeNotFound, "unknown tenant.")
+	}
+	return id, nil
+}
+
+func TestDynamicSet_RoutesByTenant(t *testing.T) {
+	d := newFakeDialer()
+	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 4})
+	ds := NewDynamicSet(staticDirectory{"t1": "c1/db1", "t2": "c1/db2"}, p)
+
+	sh, release, err := ds.AcquireFor(context.Background(), "t1")
+	if err != nil || sh.ID != "c1/db1" {
+		t.Fatalf("t1 → %v (%v)", sh.ID, err)
+	}
+	release()
+	sh, release, err = ds.AcquireFor(context.Background(), "t2")
+	if err != nil || sh.ID != "c1/db2" {
+		t.Fatalf("t2 → %v (%v)", sh.ID, err)
+	}
+	release()
+	if _, _, err := ds.AcquireFor(context.Background(), "ghost"); fabriqerr.CodeOf(err) != fabriqerr.CodeNotFound {
+		t.Fatalf("ghost err = %v, want CodeNotFound", err)
+	}
+}
+
+// BenchmarkDynamicSet_AcquireHot is the request hot path with a resolved,
+// cached shard. Spec target: < 200 ns/op, ≤ 1 alloc.
+func BenchmarkDynamicSet_AcquireHot(b *testing.B) {
+	d := newFakeDialer()
+	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 4})
+	ds := NewDynamicSet(staticDirectory{"t1": "c1/db1"}, p)
+	ctx := context.Background()
+	if _, r, err := ds.AcquireFor(ctx, "t1"); err != nil {
+		b.Fatal(err)
+	} else {
+		r()
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, release, err := ds.AcquireFor(ctx, "t1")
+		if err != nil {
+			b.Fatal(err)
+		}
+		release()
+	}
+}
+
+// BenchmarkPoolManager_ChurnLRU: zipf-ish access over more shards than the
+// cap; asserts a healthy hit ratio for the hot set.
+func BenchmarkPoolManager_ChurnLRU(b *testing.B) {
+	d := newFakeDialer()
+	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 16, AcquireTimeout: time.Second})
+	ctx := context.Background()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// 90% of traffic on 8 hot shards, 10% across 64 cold ones.
+		var id string
+		if i%10 != 0 {
+			id = fmt.Sprintf("hot-%d", i%8)
+		} else {
+			id = fmt.Sprintf("cold-%d", i%64)
+		}
+		_, release, err := p.Acquire(ctx, id)
+		if err != nil {
+			b.Fatal(err)
+		}
+		release()
+	}
+	b.StopTimer()
+	totalOpens := 0
+	d.mu.Lock()
+	for id, n := range d.opens {
+		if len(id) > 3 && id[:3] == "hot" {
+			totalOpens += n
+		}
+	}
+	d.mu.Unlock()
+	if b.N > 1000 && totalOpens > 8*3 {
+		b.Fatalf("hot shards re-dialed %d times — LRU is thrashing the hot set", totalOpens)
+	}
+}
