@@ -10,37 +10,6 @@ import (
 	"github.com/xraph/fabriq/domain"
 )
 
-// fsPathRewriteKey is the ctx key carrying the old/new path prefixes from a
-// move/rename facade call to the in-tx path-rewrite hook. The hook cannot read
-// the prior row value (it fires after ApplyChange), so the facade — which read
-// the node before the command — hands the prefixes through ctx.
-type fsPathRewriteKey struct{}
-
-type fsPathRewrite struct {
-	movedID   string
-	oldPrefix string
-	newPrefix string
-}
-
-// fsPathRewriteHook rewrites descendant paths inside the move/rename command's
-// transaction. It is inert unless the facade set fsPathRewriteKey on ctx, so it
-// is safe to register for every Fabriq and costs nothing for non-move writes.
-var fsPathRewriteHook = command.HookFunc(func(ctx context.Context, tx command.Tx, change command.Change) error {
-	pr, ok := ctx.Value(fsPathRewriteKey{}).(*fsPathRewrite)
-	if !ok || pr == nil || change.Envelope.AggID != pr.movedID {
-		return nil
-	}
-	// '/%' (not '%') so siblings like "/ax" don't match the prefix "/a".
-	// id <> $3 leaves the moved node itself (already updated by the command).
-	return tx.Exec(ctx,
-		`UPDATE fs_nodes
-		    SET path = $1 || substr(path, length($2) + 1), updated_at = now()
-		  WHERE tenant_id = current_setting('app.tenant_id', true)
-		    AND path LIKE $2 || '/%'
-		    AND id <> $3`,
-		pr.newPrefix, pr.oldPrefix, pr.movedID)
-})
-
 // dirOf returns the parent-path portion of a node path ("/a/b/c" -> "/a/b",
 // "/a" -> "").
 func dirOf(path string) string {
@@ -51,8 +20,8 @@ func dirOf(path string) string {
 	return path[:i]
 }
 
-// RenameNode renames a node in place, rewriting its own path and (in the same
-// tx) all descendant paths. One event for the node.
+// RenameNode renames a node in place. One command, one event — descendants
+// are untouched because paths are derived from adjacency at read time.
 func (f *Fabriq) RenameNode(ctx context.Context, id, newName string) (FsRef, error) {
 	node, err := f.GetNode(ctx, id)
 	if err != nil {
@@ -66,13 +35,16 @@ func (f *Fabriq) RenameNode(ctx context.Context, id, newName string) (FsRef, err
 	} else if exists {
 		return FsRef{}, ErrNodeNameConflict
 	}
-	oldPath := node.Path
-	newPath := childPath(dirOf(oldPath), newName)
-	return f.applyMove(ctx, &node, node.ParentID, newName, oldPath, newPath)
+	oldPath, err := f.nodePathOf(ctx, node)
+	if err != nil {
+		return FsRef{}, fmt.Errorf("fabriq: RenameNode: %w", err)
+	}
+	return f.applyMove(ctx, &node, node.ParentID, newName, childPath(dirOf(oldPath), newName))
 }
 
-// MoveNode re-parents a node under newParentID, rewriting its own path and all
-// descendant paths in the same tx. Rejects moving into its own subtree.
+// MoveNode re-parents a node under newParentID. One command, one event —
+// no descendant writes. Rejects moving into its own subtree by walking the
+// new parent's ancestor chain.
 func (f *Fabriq) MoveNode(ctx context.Context, id, newParentID string) (FsRef, error) {
 	node, err := f.GetNode(ctx, id)
 	if err != nil {
@@ -81,33 +53,43 @@ func (f *Fabriq) MoveNode(ctx context.Context, id, newParentID string) (FsRef, e
 	if node.IsLocked {
 		return FsRef{}, ErrNodeLocked
 	}
+	if newParentID == id {
+		return FsRef{}, fmt.Errorf("fabriq: MoveNode: cannot move %q into its own subtree", id)
+	}
 	newParentPath, err := f.parentContext(ctx, newParentID)
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: MoveNode: %w", err)
 	}
-	// Cycle guard: the new parent must not be the node or under it.
-	if newParentID == id || newParentPath == node.Path || strings.HasPrefix(newParentPath, node.Path+"/") {
-		return FsRef{}, fmt.Errorf("fabriq: MoveNode: cannot move %q into its own subtree", id)
+	if newParentID != "" {
+		parent, err := f.GetNode(ctx, newParentID)
+		if err != nil {
+			return FsRef{}, fmt.Errorf("fabriq: MoveNode: %w", err)
+		}
+		chain, err := f.chainToRoot(ctx, parent)
+		if err != nil {
+			return FsRef{}, fmt.Errorf("fabriq: MoveNode: %w", err)
+		}
+		for _, anc := range chain {
+			if anc.ID == id {
+				return FsRef{}, fmt.Errorf("fabriq: MoveNode: cannot move %q into its own subtree", id)
+			}
+		}
 	}
 	if exists, err := f.siblingExists(ctx, newParentID, node.Name); err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: MoveNode: %w", err)
 	} else if exists {
 		return FsRef{}, ErrNodeNameConflict
 	}
-	oldPath := node.Path
-	newPath := childPath(newParentPath, node.Name)
-	return f.applyMove(ctx, &node, newParentID, node.Name, oldPath, newPath)
+	return f.applyMove(ctx, &node, newParentID, node.Name, childPath(newParentPath, node.Name))
 }
 
-// applyMove issues the single node OpUpdate with the new parent/name/path and
-// hands the prefixes to the path-rewrite hook via ctx.
-func (f *Fabriq) applyMove(ctx context.Context, node *domain.FsNode, newParentID, newName, oldPath, newPath string) (FsRef, error) {
+// applyMove issues the single node OpUpdate with the new parent/name.
+// newPath is only echoed in the FsRef — nothing persists it.
+func (f *Fabriq) applyMove(ctx context.Context, node *domain.FsNode, newParentID, newName, newPath string) (FsRef, error) {
 	node.ParentID = newParentID
 	node.Name = newName
-	node.Path = newPath
 	node.UpdatedAt = time.Now().UTC()
-	rctx := context.WithValue(ctx, fsPathRewriteKey{}, &fsPathRewrite{movedID: node.ID, oldPrefix: oldPath, newPrefix: newPath})
-	res, err := f.exec.Exec(rctx, command.Command{Entity: "fs_node", Op: command.OpUpdate, AggID: node.ID, Payload: node})
+	res, err := f.exec.Exec(ctx, command.Command{Entity: "fs_node", Op: command.OpUpdate, AggID: node.ID, Payload: node})
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: move/rename: %w", err)
 	}
