@@ -34,6 +34,7 @@ func TestStoresBlobReconcilerAccessor(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = owner.Close()
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 
 	// CAS enabled → accessor returns a reconciler.

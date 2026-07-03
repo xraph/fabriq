@@ -62,6 +62,29 @@ func TestLoadConfig_PrefixedKey(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_ShardPins verifies the shardPins map binds from the config
+// manager alongside the shards list (config.yaml-only, like shards itself —
+// the FABRIQ_* env overlay cannot express a map).
+func TestLoadConfig_ShardPins(t *testing.T) {
+	cm := confy.NewTestConfyImplWithData(map[string]any{
+		// []any of map[string]any is the shape YAML parsing produces.
+		"shards": []any{
+			map[string]any{"id": "shard-a", "dsn": "postgres://pg-a/fabriq"},
+			map[string]any{"id": "shard-b", "dsn": "postgres://pg-b/fabriq"},
+		},
+		"shardPins": map[string]any{
+			"acme": "shard-b",
+		},
+	})
+	got := forgeext.LoadConfig(cm, "")
+	if len(got.Shards) != 2 {
+		t.Fatalf("shards did not bind: %+v", got.Shards)
+	}
+	if got.ShardPins["acme"] != "shard-b" {
+		t.Fatalf("shardPins did not bind: %+v", got.ShardPins)
+	}
+}
+
 func TestOptions_Distill(t *testing.T) {
 	var cfg forgeext.Config
 	for _, o := range []forgeext.Option{

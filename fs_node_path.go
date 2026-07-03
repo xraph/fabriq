@@ -129,16 +129,16 @@ func (f *Fabriq) descendantNodes(ctx context.Context, rootID string, includeTras
 	err := f.Relational().Query(ctx, &rows, `
 		WITH RECURSIVE sub (id, rel_path, depth) AS (
 			SELECT n.id, ''::text, 0
-			  FROM fs_nodes n
+			  FROM fabriq_fs_nodes n
 			 WHERE n.id = $1
 			UNION ALL
 			SELECT c.id, sub.rel_path || '/' || c.name, sub.depth + 1
-			  FROM fs_nodes c
+			  FROM fabriq_fs_nodes c
 			  JOIN sub ON c.parent_id = sub.id
 			 WHERE sub.depth < $3
 		)
 		SELECT f.*
-		  FROM fs_nodes f
+		  FROM fabriq_fs_nodes f
 		  JOIN sub ON sub.id = f.id
 		 WHERE f.id <> $1
 		   AND ($2::boolean OR f.deleted_at IS NULL)

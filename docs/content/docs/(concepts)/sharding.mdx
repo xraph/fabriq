@@ -32,12 +32,33 @@ shards:
 When `shards` is set, the top-level `postgres.dsn` is ignored. The shard with the lowest `id` is the **primary** — it backs health checks, the migrations CLI, and the document plane.
 
 <Callout type="warn">
-  Multi-shard can only be configured through a mounted `config.yaml`. The shards list is a list of structs, which the `FABRIQ_*` environment overlay cannot express — `FABRIQ_POSTGRES_DSN` configures the single-shard case only.
+  Multi-shard can only be configured through a mounted `config.yaml`. The shards list is a list of structs (and `shardPins` a map), which the `FABRIQ_*` environment overlay cannot express — `FABRIQ_POSTGRES_DSN` configures the single-shard case only.
 </Callout>
 
 ## The directory
 
 The tenant → shard mapping is a deterministic **hash** of the tenant id over the configured shard ids (memoized in-process for 30s). It needs no coordination: every replica computes the same placement from the same shard list.
+
+### Pinning tenants to shards
+
+`shardPins` overrides hash placement for specific tenants — for data-residency or high-value tenants that must live on a known shard, without dropping down to `fabriq.New` and a custom `Directory`:
+
+```yaml
+# config.yaml — pin acme-corp onto shard-b, everyone else keeps hashing
+shards:
+  - id: "shard-a"
+    dsn: "postgres://fabriq_app:***@pg-a:5432/fabriq?sslmode=require"
+  - id: "shard-b"
+    dsn: "postgres://fabriq_app:***@pg-b:5432/fabriq?sslmode=require"
+shardPins:
+  acme-corp: "shard-b"
+```
+
+An exact tenant-id match routes to the pinned shard; every other tenant falls back to the hash. A pin naming a shard id not in `shards` is rejected at `Open`, before anything is dialed. Library users get the same behaviour from `shard.PinnedDirectory(pins, fallback)`.
+
+<Callout type="warn">
+  **Pinning places, it does not move.** A pin only controls routing — pinning an existing tenant whose data was hash-placed elsewhere routes it to a shard that lacks its data. Pin a tenant **before** its first write, or move its rows yourself first. And like hash placement, the document plane is unaffected: CRDT documents stay on the primary shard regardless of pins.
+</Callout>
 
 <Callout type="warn">
   **Shard count is fixed at deploy time.** Because placement is a pure hash of the tenant id, adding or removing a shard re-hashes existing tenants onto different shards — and Fabriq performs no data move, so a re-placed tenant would route to a database that lacks its data. Choose the shard count up front. Online rebalancing arrives with the catalog-backed directory (see [Status](#status)).
@@ -66,7 +87,7 @@ All shards carry the same schema; there is no separate catalog database to migra
 ## Status
 
 <Callout type="info">
-  **Implemented:** the tenant→shard routing layer behind the ports, multi-shard `Open`, the hash directory, and the per-shard outbox relay. **Not yet:** a catalog-backed placement directory (explicit tenant→shard mapping with controlled moves), online tenant rebalancing, a shard-aware migrate CLI, and sharding of the document plane (single-shard on the primary today).
+  **Implemented:** the tenant→shard routing layer behind the ports, multi-shard `Open`, the hash directory, config-pinned tenant→shard overrides (`shardPins`), and the per-shard outbox relay. **Not yet:** a catalog-backed placement directory (explicit tenant→shard mapping with controlled moves), online tenant rebalancing, a shard-aware migrate CLI, and sharding of the document plane (single-shard on the primary today).
 </Callout>
 
 <Cards>

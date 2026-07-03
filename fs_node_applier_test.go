@@ -66,7 +66,7 @@ func TestFsNodeSearchProjectionFields(t *testing.T) {
 	}
 
 	for _, m := range muts {
-		if di, ok := m.(projection.DocIndex); ok && di.Index == "fs_nodes" {
+		if di, ok := m.(projection.DocIndex); ok && di.Index == "fabriq_fs_nodes" {
 			if _, has := di.Doc["path"]; has {
 				t.Fatal("search doc must NOT include path")
 			}
@@ -76,5 +76,5 @@ func TestFsNodeSearchProjectionFields(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("no DocIndex for fs_nodes produced")
+	t.Fatal("no DocIndex for fabriq_fs_nodes produced")
 }

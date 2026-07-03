@@ -81,7 +81,7 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 		}),
 		BlobGCRefDriftCorrected: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "fabriq_blob_gc_ref_drift_corrected_total",
-			Help: "blob_cas ref_count values corrected from the catalog truth.",
+			Help: "fabriq_blob_cas ref_count values corrected from the catalog truth.",
 		}),
 		BlobGCBroken: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "fabriq_blob_gc_broken",

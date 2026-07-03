@@ -24,7 +24,7 @@ import (
 // can write nodes, the agent Toolkit's read API (Map/Digest) resolves it, and
 // the adminapi distill capability flag flips to true.
 //
-// The physical digest_nodes table is created by fabriq's own migrations
+// The physical fabriq_digest_nodes table is created by fabriq's own migrations
 // (0022-0024), which fabriq.Open runs — no EnsureDynamic is needed (this is a
 // typed grove model, not a DynamicSchema).
 func digestNodeSpec() registry.EntitySpec {

@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"sync"
 )
@@ -20,14 +21,42 @@ type Registry struct {
 	mu       sync.RWMutex
 	entities map[string]*Entity
 	byModel  map[reflect.Type]*Entity
+
+	// tablePrefix namespaces STATIC entity tables (WithTablePrefix) so a
+	// host embedding fabriq next to its own tables cannot clash. fabriq_*
+	// and ds_* tables are already namespaces and are never re-prefixed.
+	tablePrefix string
+}
+
+// Option configures a Registry at construction.
+type Option func(*Registry)
+
+// tablePrefixPattern is the shape a table prefix must have: lower-snake,
+// starting with a letter, ending with the separating underscore.
+var tablePrefixPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*_$`)
+
+// WithTablePrefix namespaces every static entity table registered with
+// this registry (e.g. "acme_" turns table "widgets" into "acme_widgets").
+// fabriq_* infra tables and ds_* dynamic tables keep their existing
+// namespaces. An invalid prefix panics: this is wiring-time
+// misconfiguration, not runtime input.
+func WithTablePrefix(prefix string) Option {
+	if prefix != "" && !tablePrefixPattern.MatchString(prefix) {
+		panic(fmt.Sprintf("fabriq: invalid table prefix %q (want lower-snake ending in _)", prefix))
+	}
+	return func(r *Registry) { r.tablePrefix = prefix }
 }
 
 // New returns an empty registry.
-func New() *Registry {
-	return &Registry{
+func New(opts ...Option) *Registry {
+	r := &Registry{
 		entities: make(map[string]*Entity),
 		byModel:  make(map[reflect.Type]*Entity),
 	}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
 }
 
 // validateAndBind runs all spec validation and computes the Binding. It takes
@@ -41,7 +70,7 @@ func (r *Registry) validateAndBind(spec EntitySpec) (*Binding, error) {
 		return nil, fmt.Errorf("fabriq: entity %q: KindDocument requires a CRDT spec", spec.Name)
 	}
 
-	binding, err := bind(spec)
+	binding, err := bind(spec, r.tablePrefix)
 	if err != nil {
 		return nil, err
 	}

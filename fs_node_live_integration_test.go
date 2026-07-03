@@ -35,6 +35,7 @@ func openFsLiveTest(t *testing.T) (*fabriq.Fabriq, *fabriq.Stores) {
 		t.Fatal(err)
 	}
 	_ = closeFn()
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
 		Postgres: fabriq.PostgresConfig{DSN: appDSN},

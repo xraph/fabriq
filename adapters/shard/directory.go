@@ -33,6 +33,38 @@ func (h hashDirectory) Shard(_ context.Context, tenantID string) (string, error)
 	return h.ids[int(sum.Sum32())%len(h.ids)], nil
 }
 
+// PinnedDirectory routes explicitly pinned tenants to their pinned shard and
+// delegates every other tenant to fallback. It is the config-driven override
+// for residency / high-value tenants that must live on a specific shard
+// without replacing the whole directory: an exact tenant-id match wins, the
+// hash placement stays in charge of the rest. Pins are copied, so later
+// caller mutations do not change routing. PinnedDirectory does not know the
+// shard set — a pin naming an unknown shard is rejected by Config.Validate at
+// Open time, and Set.ForTenant fails loudly for any directory that names a
+// shard the set does not hold.
+func PinnedDirectory(pins map[string]string, fallback Directory) Directory {
+	copied := make(map[string]string, len(pins))
+	for tid, id := range pins {
+		copied[tid] = id
+	}
+	return pinnedDirectory{pins: copied, fallback: fallback}
+}
+
+type pinnedDirectory struct {
+	pins     map[string]string
+	fallback Directory
+}
+
+func (p pinnedDirectory) Shard(ctx context.Context, tenantID string) (string, error) {
+	if id, ok := p.pins[tenantID]; ok {
+		return id, nil
+	}
+	if p.fallback == nil {
+		return "", fmt.Errorf("fabriq: pinned directory has no fallback for tenant %q", tenantID)
+	}
+	return p.fallback.Shard(ctx, tenantID)
+}
+
 // Cached memoizes a directory's tenant→shard answers for ttl, so the hot
 // path does not pay a lookup per operation. Placement is stable (a tenant's
 // shard does not change without an explicit move), so a short TTL is purely

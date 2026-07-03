@@ -48,6 +48,7 @@ func TestInTenantTx_ClassifiesDriverError(t *testing.T) {
 	_ = owner.Close()
 
 	// Open as the restricted app role so RLS actually applies.
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {

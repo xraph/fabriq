@@ -384,9 +384,14 @@ func (e *Extension) runDocumentPlane(ctx context.Context, interval time.Duration
 	defer ticker.Stop()
 	// Materialization is latency-sensitive (quiet-window detection) and
 	// runs every tick; the compaction sweep scans and aggregates the whole
-	// log table, so it runs on a much slower cadence.
-	const compactEvery = 30
-	tick := 0
+	// log table, so it runs on its own, much slower cadence
+	// (Config.DocCompactInterval; default 30s).
+	compactInterval := e.cfg.DocCompactInterval
+	if compactInterval <= 0 {
+		compactInterval = 30 * time.Second
+	}
+	compactTicker := time.NewTicker(compactInterval)
+	defer compactTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -399,10 +404,14 @@ func (e *Extension) runDocumentPlane(ctx context.Context, interval time.Duration
 				continue
 			}
 			_, _ = stores.Docs.MaterializeQuiet(ctx, nil)
-			tick++
-			if tick%compactEvery == 0 {
-				_, _ = stores.Docs.CompactDue(ctx)
+		case <-compactTicker.C:
+			e.mu.Lock()
+			stores := e.stores
+			e.mu.Unlock()
+			if stores == nil {
+				continue
 			}
+			_, _ = stores.Docs.CompactDue(ctx)
 		}
 	}
 }

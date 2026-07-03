@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/domain"
 	"github.com/xraph/fabriq/fabriqtest"
 	"github.com/xraph/fabriq/migrations"
 )
@@ -61,6 +62,7 @@ func newDocTypeHarness(t *testing.T, noTypeCheck bool) (*postgres.Adapter, *post
 		t.Fatalf("EnsureDynamic: %v", err)
 	}
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {

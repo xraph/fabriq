@@ -45,6 +45,7 @@ func graphE2E(t *testing.T) (*fabriq.Fabriq, *fabriq.Stores, *registry.Registry)
 	}
 	_ = closeFn()
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
 		Postgres:      fabriq.PostgresConfig{DSN: appDSN},

@@ -150,7 +150,7 @@ func TestDistillL0_GuardRedactsBeforeSummary(t *testing.T) {
 
 // TestToVals_NilChildParentBecomeEmptySlices verifies that a digestRow with nil
 // ChildIDs/ParentIDs produces non-nil []string values in toVals(), satisfying
-// the JSONB NOT NULL constraint on digest_nodes.child_ids / parent_ids.
+// the JSONB NOT NULL constraint on fabriq_digest_nodes.child_ids / parent_ids.
 func TestToVals_NilChildParentBecomeEmptySlices(t *testing.T) {
 	r := digestRow{ID: "digest:0:note:x", Level: 0, Kind: "entity"} // ChildIDs/ParentIDs nil
 	v := r.toVals()

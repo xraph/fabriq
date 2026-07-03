@@ -36,6 +36,7 @@ func TestBlobGCEndToEndCrossTenant(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = owner.Close()
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 
 	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
