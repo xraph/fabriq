@@ -97,7 +97,10 @@ func New(reg *registry.Registry, ports Ports, opts ...Option) (*Fabriq, error) {
 		opt(&s)
 	}
 
-	exec, err := command.NewExecutor(reg, ports.Store, s.executorOptions...)
+	// The fs move cycle guard registers first so it vetoes before any
+	// user-registered hook (audit etc.) writes rows for a doomed command.
+	execOpts := append([]command.ExecutorOption{command.WithHooks(fsMoveCycleGuardHook(ports.Relational))}, s.executorOptions...)
+	exec, err := command.NewExecutor(reg, ports.Store, execOpts...)
 	if err != nil {
 		return nil, err
 	}
