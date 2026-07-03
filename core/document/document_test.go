@@ -20,8 +20,11 @@ package document_test
 // state violating business rules does NOT materialize; the document is
 // flagged for resolution and no event is emitted.
 //
-// TODO(phase 7): TestCompact_FoldsLogIntoSnapshot — Compact moves seq <=
-// last_seq into the snapshot and Sync output is unchanged before/after.
+// DONE(phase 7): TestCompact_FoldsLogIntoSnapshot — covered by the postgres
+// integration tests: TestCompactDue_* (document_compactdue_integration_test.go)
+// prove the log folds into the snapshot at budget with the merged state
+// unchanged, and TestScope_DocumentSyncFilter's compact subtest proves Sync
+// output is equivalent before/after compaction.
 //
 // TODO(phase 7): TestSyncBypassesConflation — document sync frames ride
 // Hub.PublishRaw; a burst of updates is delivered complete and in order

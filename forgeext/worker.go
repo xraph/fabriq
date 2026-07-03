@@ -372,7 +372,10 @@ func (e *Extension) gcBlobAll(ctx context.Context) {
 
 // runDocumentPlane is the materializer + compactor: every interval it
 // materializes quiet documents (one ordinary versioned event each) and
-// compacts logs past their SnapshotEvery budget. Leader-elected (1003).
+// compacts logs at their SnapshotEvery budget. Leader-elected (1003).
+// Both sweeps go through stores.Docs — the archive-wired store — so
+// compaction seals trimmed history to blob segments when configured
+// (Postgres.Documents() would mint a store without the blob handle).
 func (e *Extension) runDocumentPlane(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		return
@@ -390,7 +393,8 @@ func (e *Extension) runDocumentPlane(ctx context.Context, interval time.Duration
 			if stores == nil {
 				continue
 			}
-			_, _ = stores.Postgres.Documents().MaterializeQuiet(ctx, nil)
+			_, _ = stores.Docs.MaterializeQuiet(ctx, nil)
+			_, _ = stores.Docs.CompactDue(ctx)
 		}
 	}
 }
