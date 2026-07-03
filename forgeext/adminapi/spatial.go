@@ -109,7 +109,7 @@ func (c *adminController) registerSpatialRoutes(r forge.Router) error {
 
 	withinOpts := append([]forge.RouteOption{
 		forge.WithName("fabriq.admin.spatial.within"),
-		forge.WithSummary("Spatial radius search (body: {entity, lng, lat, radiusM, limit?})"),
+		forge.WithSummary("Spatial radius search (body: {entity, lng+lat OR centerId[, centerEntity], radiusM, limit?, filter?})"),
 		forge.WithTags("Fabriq", "Admin"),
 	}, routeOpts...)
 	return r.POST(base+"/spatial/within", c.handleSpatialWithin, withinOpts...)
@@ -117,12 +117,18 @@ func (c *adminController) registerSpatialRoutes(r forge.Router) error {
 
 // handleSpatialWithin serves POST {BasePath}/spatial/within.
 //
-// Request body:
+// Request body — the center is either an explicit point OR an anchor asset:
 //
 //	{ "entity": "<entityName>", "lng": -122.42, "lat": 37.77, "radiusM": 50000, "limit": 10 }
+//	{ "entity": "equipment", "centerId": "<siteId>", "centerEntity": "site", "radiusM": 2000, "filter": {"tag":"pump"} }
+//
+// When centerId is set the server resolves that entity's geometry as the center
+// and excludes it from the matches; otherwise lng/lat are required. filter is
+// AND-ed equality over the geometry meta.
 //
 // Returns 501 when the instance has no spatial backend configured, and 400 when
-// entity, lng, lat, or radiusM is missing/invalid.
+// entity is missing, lng/lat are missing without a centerId, radiusM is invalid,
+// or centerId does not resolve to a stored geometry.
 func (c *adminController) handleSpatialWithin(ctx forge.Context) error {
 	fab, err := c.ext.resolveFabric()
 	if err != nil {
