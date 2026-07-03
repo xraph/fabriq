@@ -270,6 +270,151 @@ func TestSpatialWithin_ZeroCoordsHonored(t *testing.T) {
 	}
 }
 
+// TestSpatialWithin_CenterByID verifies an anchor entity's stored geometry can
+// be used as the query centre (centerId/centerEntity) instead of an explicit
+// lng/lat, and that Filter is passed through as an AND-ed equality match.
+func TestSpatialWithin_CenterByID(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(placeSpec()); err != nil {
+		t.Fatalf("register place: %v", err)
+	}
+	if err := reg.Register(registry.EntitySpec{
+		Name: "equipment", Kind: registry.KindAggregate,
+		Schema: &registry.DynamicSchema{
+			Table: "ds_equipment",
+			Columns: []registry.DynamicColumn{
+				{Name: "tag", Type: registry.ColText, NotNull: true},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("register equipment: %v", err)
+	}
+	if err := reg.Validate(); err != nil {
+		t.Fatalf("validate registry: %v", err)
+	}
+
+	world := fabriqtest.NewWorld(reg)
+	exec, err := command.NewExecutor(reg, world.Store)
+	if err != nil {
+		t.Fatalf("new executor: %v", err)
+	}
+	ctx, err := tenant.WithTenant(t.Context(), testTenantID)
+	if err != nil {
+		t.Fatalf("with tenant: %v", err)
+	}
+
+	siteRes, err := exec.Exec(ctx, command.Command{
+		Entity: "place", Op: command.OpCreate,
+		Payload: map[string]any{"name": "Plant A", "city": "SF"},
+	})
+	if err != nil {
+		t.Fatalf("seed plantA: %v", err)
+	}
+	plantAID := siteRes.AggID
+	if upErr := world.Spatial.Upsert(ctx, "place", plantAID, query.Geometry{WKT: pointWKT(-122.42, 37.77), SRID: 4326}, map[string]any{"name": "Plant A"}); upErr != nil {
+		t.Fatalf("spatial upsert plantA: %v", upErr)
+	}
+
+	pumpRes, err := exec.Exec(ctx, command.Command{
+		Entity: "equipment", Op: command.OpCreate,
+		Payload: map[string]any{"tag": "pump"},
+	})
+	if err != nil {
+		t.Fatalf("seed pump1: %v", err)
+	}
+	pump1ID := pumpRes.AggID
+	if upErr := world.Spatial.Upsert(ctx, "equipment", pump1ID, query.Geometry{WKT: pointWKT(-122.4201, 37.7701), SRID: 4326}, map[string]any{"tag": "pump"}); upErr != nil {
+		t.Fatalf("spatial upsert pump1: %v", upErr)
+	}
+
+	valveRes, err := exec.Exec(ctx, command.Command{
+		Entity: "equipment", Op: command.OpCreate,
+		Payload: map[string]any{"tag": "valve"},
+	})
+	if err != nil {
+		t.Fatalf("seed valve1: %v", err)
+	}
+	valve1ID := valveRes.AggID
+	if upErr := world.Spatial.Upsert(ctx, "equipment", valve1ID, query.Geometry{WKT: pointWKT(-122.4202, 37.7702), SRID: 4326}, map[string]any{"tag": "valve"}); upErr != nil {
+		t.Fatalf("spatial upsert valve1: %v", upErr)
+	}
+
+	e := fakeBackedAdminExt(t, world)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	// near site plantA, filter tag=pump → only pump1, anchor excluded
+	// (equipment != site so no self-hit anyway).
+	resp := postSpatial(t, srv, map[string]any{
+		"entity": "equipment", "centerId": plantAID, "centerEntity": "place",
+		"radiusM": 5000, "filter": map[string]string{"tag": "pump"},
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var got spatialWithinResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Matches) != 1 || got.Matches[0].ID != pump1ID {
+		t.Fatalf("want [%s], got %+v", pump1ID, got.Matches)
+	}
+}
+
+// TestSpatialWithin_CenterByID_ExcludesSelf verifies that when centerEntity
+// defaults to the searched entity, the anchor id is excluded from its own
+// results.
+func TestSpatialWithin_CenterByID_ExcludesSelf(t *testing.T) {
+	places := []seedPlace{
+		{name: "A", city: "SF", lng: -122.42, lat: 37.77},
+		{name: "B", city: "SF", lng: -122.4205, lat: 37.7705},
+	}
+	world, ids := buildSpatialWorld(t, places)
+	e := fakeBackedAdminExt(t, world)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := postSpatial(t, srv, map[string]any{
+		"entity": "place", "centerId": ids["A"], "radiusM": 5000,
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var got spatialWithinResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, m := range got.Matches {
+		if m.ID == ids["A"] {
+			t.Fatalf("anchor %q must be excluded, got %+v", ids["A"], got.Matches)
+		}
+	}
+}
+
+// TestSpatialWithin_UnknownCenterID_400 verifies an unresolvable centerId
+// yields 400, not a 500 or a silently-empty result.
+func TestSpatialWithin_UnknownCenterID_400(t *testing.T) {
+	world, _ := buildSpatialWorld(t, sfFixtures)
+	e := fakeBackedAdminExt(t, world)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := postSpatial(t, srv, map[string]any{
+		"entity": "place", "centerId": "ghost", "radiusM": 5000,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400, body = %s", resp.StatusCode, body)
+	}
+}
+
 // TestMeta_SpatialCapability verifies the spatial.read capability slug is advertised.
 func TestMeta_SpatialCapability(t *testing.T) {
 	world, _ := buildSpatialWorld(t, sfFixtures)

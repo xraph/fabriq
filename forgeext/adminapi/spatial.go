@@ -31,6 +31,13 @@ type spatialWithinRequest struct {
 	RadiusM float64 `json:"radiusM"`
 	// Limit caps the number of returned matches (default 25).
 	Limit int `json:"limit"`
+	// CenterID, when set, makes the server resolve that entity's stored geometry
+	// as the query center (lng/lat are then not required) and exclude it from
+	// matches. CenterEntity defaults to Entity.
+	CenterID     string `json:"centerId"`
+	CenterEntity string `json:"centerEntity"`
+	// Filter is AND-ed equality over the geometry meta (e.g. {"tag":"pump"}).
+	Filter map[string]string `json:"filter"`
 	// lngSet/latSet record whether the caller supplied the coordinate at all, so
 	// a legitimate 0.0 (e.g. the prime meridian / equator) is not mistaken for a
 	// missing field. They are populated by UnmarshalJSON.
@@ -43,11 +50,14 @@ type spatialWithinRequest struct {
 // is honoured as a real coordinate.
 func (r *spatialWithinRequest) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Entity  string   `json:"entity"`
-		Lng     *float64 `json:"lng"`
-		Lat     *float64 `json:"lat"`
-		RadiusM float64  `json:"radiusM"`
-		Limit   int      `json:"limit"`
+		Entity       string            `json:"entity"`
+		Lng          *float64          `json:"lng"`
+		Lat          *float64          `json:"lat"`
+		RadiusM      float64           `json:"radiusM"`
+		Limit        int               `json:"limit"`
+		CenterID     string            `json:"centerId"`
+		CenterEntity string            `json:"centerEntity"`
+		Filter       map[string]string `json:"filter"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -55,6 +65,9 @@ func (r *spatialWithinRequest) UnmarshalJSON(data []byte) error {
 	r.Entity = raw.Entity
 	r.RadiusM = raw.RadiusM
 	r.Limit = raw.Limit
+	r.CenterID = raw.CenterID
+	r.CenterEntity = raw.CenterEntity
+	r.Filter = raw.Filter
 	if raw.Lng != nil {
 		r.Lng = *raw.Lng
 		r.lngSet = true
@@ -123,11 +136,13 @@ func (c *adminController) handleSpatialWithin(ctx forge.Context) error {
 	if req.Entity == "" {
 		return forge.BadRequest("field 'entity' is required")
 	}
-	if !req.lngSet {
-		return forge.BadRequest("field 'lng' is required")
-	}
-	if !req.latSet {
-		return forge.BadRequest("field 'lat' is required")
+	if req.CenterID == "" {
+		if !req.lngSet {
+			return forge.BadRequest("field 'lng' is required (or provide 'centerId')")
+		}
+		if !req.latSet {
+			return forge.BadRequest("field 'lat' is required (or provide 'centerId')")
+		}
 	}
 	if req.RadiusM <= 0 {
 		return forge.BadRequest("field 'radiusM' must be a positive number")
@@ -148,18 +163,40 @@ func (c *adminController) handleSpatialWithin(ctx forge.Context) error {
 		return c.spatialNotConfigured(ctx)
 	}
 
-	var matches []query.SpatialMatch
-	sq := query.SpatialQuery{
-		Entity:  req.Entity,
-		Center:  query.Geometry{WKT: fmt.Sprintf("POINT(%v %v)", req.Lng, req.Lat), SRID: 4326},
-		RadiusM: req.RadiusM,
-		K:       limit,
+	// Resolve the query center: an explicit point, or an anchor asset's geometry.
+	center := query.Geometry{WKT: fmt.Sprintf("POINT(%v %v)", req.Lng, req.Lat), SRID: 4326}
+	excludeID := ""
+	if req.CenterID != "" {
+		centerEntity := req.CenterEntity
+		if centerEntity == "" {
+			centerEntity = req.Entity
+		}
+		geom, _, ok, gErr := spatial.Get(reqCtx, centerEntity, req.CenterID)
+		if gErr != nil {
+			return renderError(ctx, gErr)
+		}
+		if !ok {
+			return forge.BadRequest(fmt.Sprintf("centerId %q not found in %q", req.CenterID, centerEntity))
+		}
+		center = geom
+		if centerEntity == req.Entity {
+			excludeID = req.CenterID // anchor is in the searched set → drop it
+		}
 	}
+
+	// Over-fetch by one when excluding the anchor so the caller still gets `limit`.
+	k := limit
+	if excludeID != "" {
+		k = limit + 1
+	}
+
+	var matches []query.SpatialMatch
+	sq := query.SpatialQuery{Entity: req.Entity, Center: center, RadiusM: req.RadiusM, K: k, Filter: req.Filter}
 	if withinErr := spatial.Within(reqCtx, sq, &matches); withinErr != nil {
 		return renderError(ctx, withinErr)
 	}
 
-	items := c.hydrateSpatialMatches(reqCtx, fab, req.Entity, matches)
+	items := c.hydrateSpatialMatches(reqCtx, fab, req.Entity, matches, excludeID, limit)
 	return ctx.JSON(http.StatusOK, spatialWithinResponse{Matches: items})
 }
 
@@ -171,10 +208,14 @@ func (c *adminController) handleSpatialWithin(ctx forge.Context) error {
 // the map-native List path the rest of the admin surface uses for dynamic
 // entities (mirrors hydrateMatches for vector search).
 func (c *adminController) hydrateSpatialMatches(
-	ctx context.Context, fab query.Fabric, entityType string, matches []query.SpatialMatch,
+	ctx context.Context, fab query.Fabric, entityType string, matches []query.SpatialMatch, excludeID string, limit int,
 ) []spatialMatchItem {
 	items := make([]spatialMatchItem, 0, len(matches))
 	for _, m := range matches {
+		if excludeID != "" && m.ID == excludeID {
+			continue
+		}
+
 		item := spatialMatchItem{ID: m.ID, DistanceM: m.DistanceM}
 
 		// Echo coordinates back from the match meta when the seed stored them.
@@ -192,6 +233,9 @@ func (c *adminController) hydrateSpatialMatches(
 			item.Data = rows[0]
 		}
 		items = append(items, item)
+		if len(items) >= limit {
+			break
+		}
 	}
 	return items
 }
