@@ -14,13 +14,14 @@ import (
 	"github.com/xraph/fabriq/core/tenant"
 )
 
-// Advisory lock keys per singleton role. Stable across versions; never reuse
-// a key for a different role.
+// Advisory lock keys live with the adapter (postgres.LockKey*) so the
+// static worker's leader election and the catalog-mode sweeper's per-pass
+// claims can never diverge — same keys, same databases, one worker wins.
 const (
-	lockKeyRelay         = int64(1001)
-	lockKeyReconciler    = int64(1002)
-	lockKeyDocumentPlane = int64(1003)
-	lockKeyBlobGC        = int64(1004)
+	lockKeyRelay         = postgres.LockKeyRelay
+	lockKeyReconciler    = postgres.LockKeyReconciler
+	lockKeyDocumentPlane = postgres.LockKeyDocumentPlane
+	lockKeyBlobGC        = postgres.LockKeyBlobGC
 )
 
 // Run implements forge.RunnableExtension: supervise the leader-elected relay
@@ -37,7 +38,12 @@ func (e *Extension) Run(ctx context.Context) error {
 		return fmt.Errorf("fabriq: Run called before Start")
 	}
 	if stores.Postgres == nil {
-		return fmt.Errorf("fabriq: the worker plane does not run in catalog mode yet (the catalog-mode sweeper is pending); set RunWorker=false")
+		// Catalog mode: the worker plane is the sweeper (spec 2026-07-03 D5),
+		// not boot-time per-shard loops.
+		if stores.Catalog == nil || stores.TenantSweeper() == nil {
+			return fmt.Errorf("fabriq: Run needs either a primary shard or a tenant catalog")
+		}
+		return e.runCatalogSweeper()
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())

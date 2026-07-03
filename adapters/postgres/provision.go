@@ -86,8 +86,8 @@ func (c *ClusterOps) CreateDatabase(ctx context.Context, clusterID, database str
 		return err
 	}
 	db := pgdriver.New()
-	if err := db.Open(ctx, dsn); err != nil {
-		return fmt.Errorf("fabriq: dial cluster %s: %w", clusterID, err)
+	if openErr := db.Open(ctx, dsn); openErr != nil {
+		return fmt.Errorf("fabriq: dial cluster %s: %w", clusterID, openErr)
 	}
 	defer func() { _ = db.Close() }()
 
@@ -119,8 +119,8 @@ func (c *ClusterOps) Migrate(ctx context.Context, clusterID, database string) (s
 		return "", err
 	}
 	db := pgdriver.New()
-	if err := db.Open(ctx, dsn); err != nil {
-		return "", fmt.Errorf("fabriq: dial tenant db %s/%s: %w", clusterID, database, err)
+	if openErr := db.Open(ctx, dsn); openErr != nil {
+		return "", fmt.Errorf("fabriq: dial tenant db %s/%s: %w", clusterID, database, openErr)
 	}
 	defer func() { _ = db.Close() }()
 

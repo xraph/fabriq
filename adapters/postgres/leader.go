@@ -67,7 +67,7 @@ func (e *Elector) Run(ctx context.Context, lead func(ctx context.Context) error)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := e.campaign(ctx, lead); err != nil && ctx.Err() != nil {
+		if _, err := e.campaign(ctx, lead); err != nil && ctx.Err() != nil {
 			return ctx.Err()
 		}
 		select {
@@ -78,19 +78,29 @@ func (e *Elector) Run(ctx context.Context, lead func(ctx context.Context) error)
 	}
 }
 
-func (e *Elector) campaign(ctx context.Context, lead func(ctx context.Context) error) error {
+// TryLead makes one non-blocking claim: if the advisory lock is free it
+// runs lead while holding it and reports true; if another session holds
+// the lock it reports false immediately without running lead. This is the
+// catalog-mode sweeper's per-tenant-database work claim — many sweeper
+// replicas race, exactly one does each tenant's pass.
+func (e *Elector) TryLead(ctx context.Context, lead func(ctx context.Context) error) (bool, error) {
+	return e.campaign(ctx, lead)
+}
+
+// campaign makes one claim attempt, reporting whether the lock was won.
+func (e *Elector) campaign(ctx context.Context, lead func(ctx context.Context) error) (bool, error) {
 	conn, err := e.pg.AcquireConn(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer conn.Release()
 
 	var got bool
 	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, e.key).Scan(&got); err != nil {
-		return fmt.Errorf("fabriq: try advisory lock: %w", err)
+		return false, fmt.Errorf("fabriq: try advisory lock: %w", err)
 	}
 	if !got {
-		return nil
+		return false, nil
 	}
 
 	leadCtx, cancel := context.WithCancel(ctx)
@@ -130,5 +140,5 @@ func (e *Elector) campaign(ctx context.Context, lead func(ctx context.Context) e
 		_ = conn.QueryRow(releaseCtx, `SELECT pg_advisory_unlock($1)`, e.key).Scan(&released)
 	}()
 
-	return lead(leadCtx)
+	return true, lead(leadCtx)
 }

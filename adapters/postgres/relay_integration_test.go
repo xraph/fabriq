@@ -176,6 +176,51 @@ func TestElector_ExactlyOneLeaderAndFailover(t *testing.T) {
 	}
 }
 
+func TestElector_TryLead_LosesCleanlyThenWins(t *testing.T) {
+	h, _ := newRelayHarness(t)
+	const key = int64(424243)
+
+	// A long-running leader holds the lock…
+	holding := make(chan struct{})
+	ctx1, stop1 := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = postgres.NewElector(h.A, key).Run(ctx1, func(ctx context.Context) error {
+			close(holding)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+	<-holding
+
+	// …so a TryLead claim loses cleanly: no error, lead never runs.
+	ctx := context.Background()
+	led, err := postgres.NewElector(h.A, key).TryLead(ctx, func(context.Context) error {
+		t.Error("lead ran despite a held lock")
+		return nil
+	})
+	if err != nil || led {
+		t.Fatalf("TryLead against a held lock = (%v, %v), want (false, nil)", led, err)
+	}
+
+	// Once the holder releases, the claim wins and lead runs.
+	stop1()
+	wg.Wait()
+	ran := false
+	waitForCond(t, 5*time.Second, func() bool {
+		won, tryErr := postgres.NewElector(h.A, key).TryLead(ctx, func(context.Context) error {
+			ran = true
+			return nil
+		})
+		return tryErr == nil && won
+	})
+	if !ran {
+		t.Fatal("lead did not run after the lock was released")
+	}
+}
+
 func waitForCond(t testing.TB, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

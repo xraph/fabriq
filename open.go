@@ -24,6 +24,7 @@ import (
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/subscribe"
+	"github.com/xraph/fabriq/core/sweep"
 )
 
 // Open dials the configured stores and assembles a Fabriq:
@@ -313,6 +314,9 @@ type Stores struct {
 	Catalog *postgres.CatalogStore
 	// pool owns catalog-mode tenant pools (nil outside catalog mode).
 	pool *shard.PoolManager
+	// router is the catalog-mode DynamicSet the sweeper acquires tenant
+	// shards through (nil outside catalog mode).
+	router shard.Router
 	// Docs is the document-plane store on the primary shard, with history
 	// archiving wired when Storage is configured. The worker plane must use
 	// this instance — Postgres.Documents() mints a fresh store without the
@@ -344,6 +348,27 @@ type Stores struct {
 	customAppliers []projection.CustomApplier
 	// cancelFns stop background workers (e.g. the L1 evict tailer) on Close.
 	cancelFns []func()
+}
+
+// TenantSweeper returns the catalog-mode per-tenant maintenance seam for
+// the sweep engine: acquire the tenant's shard through the router (which
+// enforces the catalog's active-state and version gates), run one
+// claim-guarded pass, release. Nil outside catalog mode.
+func (s *Stores) TenantSweeper() sweep.TenantSweeper {
+	if s.router == nil {
+		return nil
+	}
+	return func(ctx context.Context, tenantID string, compact bool) (sweep.Result, error) {
+		sh, release, err := s.router.AcquireFor(ctx, tenantID)
+		if err != nil {
+			return sweep.Result{}, err
+		}
+		defer release()
+		if sh.Maintenance == nil {
+			return sweep.Result{}, nil
+		}
+		return sh.Maintenance.Sweep(ctx, compact)
+	}
 }
 
 // Close releases every opened adapter (every shard, plus the projections).

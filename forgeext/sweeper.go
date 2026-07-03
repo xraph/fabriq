@@ -1,0 +1,73 @@
+package forgeext
+
+import (
+	"context"
+	"sync"
+
+	"github.com/xraph/forge"
+
+	"github.com/xraph/fabriq/core/sweep"
+	"github.com/xraph/fabriq/migrations"
+)
+
+// runCatalogSweeper is the catalog-mode worker plane: one sweep engine per
+// replica walks the tenant catalog and runs claim-guarded maintenance
+// passes (relay -> materialize -> compact) against each active tenant's
+// database. Replicas cooperate through the per-database advisory locks, so
+// scaling out never duplicates work. Redis wake nudges (published by the
+// facade write path) give busy tenants sub-second relay latency.
+//
+// Called from Run under its RunWorker gate; mirrors Run's lifecycle
+// contract (returns immediately, torn down by Shutdown).
+func (e *Extension) runCatalogSweeper() error {
+	e.mu.Lock()
+	stores := e.stores
+	e.mu.Unlock()
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	e.mu.Lock()
+	e.cancel, e.done = cancel, done
+	e.mu.Unlock()
+
+	var logger forge.Logger
+	if app := e.App(); app != nil {
+		logger = app.Logger()
+	}
+
+	engine := sweep.New(stores.Catalog, stores.TenantSweeper(), sweep.Config{
+		CompactEvery: e.cfg.DocCompactInterval,
+		MinVersion:   migrations.HeadVersion(),
+		OnError: func(tenantID string, err error) {
+			if logger != nil {
+				logger.Warn("fabriq: tenant sweep failed",
+					forge.String("tenant", tenantID), forge.Error(err))
+			}
+		},
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		supervise(runCtx, logger, "sweeper", engine.Run)
+	}()
+
+	// The wake subscription turns write-path nudges into immediate passes.
+	// Losing it is safe — the scan cadence still sweeps everyone.
+	if stores.Redis != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "sweeper:wake", func(c context.Context) error {
+				return stores.Redis.SubscribeWakes(c, engine.Wake, nil)
+			})
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	return nil
+}

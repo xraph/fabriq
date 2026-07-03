@@ -201,8 +201,8 @@ func TestSuspendResume_Lifecycle(t *testing.T) {
 		t.Fatalf("suspend: %+v (%v)", e, err)
 	}
 	// Suspended tenants cannot be re-provisioned (explicit resume only).
-	if _, err := p.Provision(ctx, "acme", "c1"); fabriqerr.CodeOf(err) != fabriqerr.CodeUnavailable {
-		t.Fatalf("provision suspended: %v", err)
+	if _, perr := p.Provision(ctx, "acme", "c1"); fabriqerr.CodeOf(perr) != fabriqerr.CodeUnavailable {
+		t.Fatalf("provision suspended: %v", perr)
 	}
 	e, err = p.Resume(ctx, "acme")
 	if err != nil || e.State != catalog.StateActive {
@@ -213,7 +213,7 @@ func TestSuspendResume_Lifecycle(t *testing.T) {
 	}
 }
 
-func seedFleet(t *testing.T, cat catalog.Catalog, p *provision.Provisioner, n int) {
+func seedFleet(t *testing.T, _ catalog.Catalog, p *provision.Provisioner, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
 		if _, err := p.Provision(context.Background(), fmt.Sprintf("t-%03d", i), "c1"); err != nil {

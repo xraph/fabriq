@@ -105,6 +105,27 @@ func (r *Relay) Run(ctx context.Context) error {
 	}
 }
 
+// DrainAll drains the outbox until empty (batches of the configured size)
+// and returns the number of envelopes published — the single-pass form the
+// catalog-mode sweeper runs under its per-tenant-database claim, where
+// Run's LISTEN/NOTIFY loop would hold a connection per tenant forever.
+func (r *Relay) DrainAll(ctx context.Context) (int, error) {
+	total := 0
+	for {
+		n, err := r.drainOnce(ctx)
+		if err != nil {
+			return total, err
+		}
+		if r.onPublish != nil && n > 0 {
+			r.onPublish(n)
+		}
+		total += n
+		if n < r.batch {
+			return total, nil
+		}
+	}
+}
+
 // outboxScanRow mirrors the relay's SELECT below.
 type outboxScanRow struct {
 	ID                   string `grove:"id"`

@@ -34,6 +34,9 @@ type syncingDocStore struct {
 	// authz is the document-plane hook (WithDocumentAuthz), set by Open
 	// after the facade assembles its settings.
 	authz func(ctx context.Context, docID string) error
+	// wake nudges the catalog-mode sweeper after an append (nil in static
+	// mode, where the boot-time materializer polls on its own).
+	wake func(ctx context.Context, tenantID string)
 }
 
 var _ document.Store = (*syncingDocStore)(nil)
@@ -61,6 +64,9 @@ func (s *syncingDocStore) ApplyUpdate(ctx context.Context, docID string, update 
 		Version: seq, Type: registry.EventType(entity, "sync"),
 		At: time.Now().UTC(), PayloadSchemaVersion: 1, Payload: json.RawMessage(update),
 	})
+	if s.wake != nil {
+		s.wake(ctx, tid)
+	}
 	return nil
 }
 

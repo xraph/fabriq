@@ -8,23 +8,25 @@ import (
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
 	"github.com/xraph/fabriq/adapters/shard"
+	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/migrations"
 )
 
 // openCatalogMode assembles the db-per-tenant deployment (spec 2026-07-03):
 // every port routes through a DynamicSet whose directory is the tenant
-// catalog and whose shards are lazily-dialed per-tenant databases.
+// catalog and whose shards are lazily-dialed per-tenant databases. The
+// worker plane is the catalog sweeper (forgeext), fed by Stores.TenantSweeper
+// and woken by the write path's Redis nudges.
 //
 // v1 serving scope (each gap fails fast in validateCatalogMode and is
 // recorded in the spec's deviation log):
-//   - projections (graph/search), the outbox relay and live queries wait
-//     for the catalog-mode sweeper — commands still write their outbox
-//     rows transactionally, so history is intact when the relay lands;
-//   - document history archiving (blob offload) is not wired yet;
-//   - the worker plane refuses to start (forgeext guards on a nil
-//     Stores.Postgres).
+//   - projections (graph/search) and live queries wait for routed
+//     projection bookkeeping;
+//   - document history archiving (blob offload) is not wired yet.
 func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Option) (*Fabriq, *Stores, error) {
 	if err := validateCatalogMode(cfg); err != nil {
 		return nil, nil, err
@@ -38,6 +40,24 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 
 	dir := shard.CatalogDirectory(catStore, cfg.Catalog.CacheTTL,
 		shard.WithMinVersion(migrations.HeadVersion()))
+
+	stores := &Stores{Catalog: catStore, customAppliers: cfg.CustomAppliers}
+	stores.state = routingState{stores: stores}
+
+	// Redis opens before the dialer: each tenant shard's maintenance
+	// surface relays its outbox through this one shared transport.
+	var rd *redis.Adapter
+	if cfg.Redis.Addr != "" {
+		rd, err = redis.Open(ctx, redis.Config{
+			Addr: cfg.Redis.Addr, DB: cfg.Redis.DB,
+			Username: cfg.Redis.Username, Password: cfg.Redis.Password,
+		}, redis.WithChannelMaxLen(cfg.Subscriptions.StreamMaxLen))
+		if err != nil {
+			_ = catStore.Close()
+			return nil, nil, err
+		}
+		stores.Redis = rd
+	}
 
 	// The dialer opens one tenant database's full adapter stack; the pool
 	// manager owns its lifetime (LRU idle eviction, breaker).
@@ -58,11 +78,16 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		if oerr != nil {
 			return shard.Shard{}, nil, oerr
 		}
+		var pub event.Publisher // stays a nil interface when Redis is off
+		if rd != nil {
+			pub = rd
+		}
 		return shard.Shard{
 			ID: shardID, Store: a, Relational: a,
 			Vector: postgres.NewVectorAdapter(a), Timeseries: a,
-			Spatial:   postgres.NewSpatialAdapter(a),
-			Documents: a.Documents(),
+			Spatial:     postgres.NewSpatialAdapter(a),
+			Documents:   a.Documents(),
+			Maintenance: postgres.NewMaintenance(a, reg, pub),
 		}, a.Close, nil
 	}
 
@@ -70,9 +95,8 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		MaxActive: cfg.Catalog.MaxActiveShards,
 	})
 	dset := shard.NewDynamicSet(dir, pm)
-
-	stores := &Stores{Catalog: catStore, pool: pm, customAppliers: cfg.CustomAppliers}
-	stores.state = routingState{stores: stores}
+	stores.pool = pm
+	stores.router = dset
 
 	docRouter := shard.NewDocuments(dset)
 	ports := Ports{
@@ -82,25 +106,25 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		Vector:     shard.NewVector(dset),
 		Spatial:    shard.NewSpatial(dset),
 		Documents:  docRouter,
-		// ProjectionState reads route like everything else once the
-		// sweeper lands; until then the not-configured default applies.
+		// ProjectionState reads route like everything else once routed
+		// projection bookkeeping lands; until then the not-configured
+		// default applies.
 	}
 
 	allOpts := append(cfg.Options(), opts...)
 
-	if cfg.Redis.Addr != "" {
-		rd, rerr := redis.Open(ctx, redis.Config{
-			Addr: cfg.Redis.Addr, DB: cfg.Redis.DB,
-			Username: cfg.Redis.Username, Password: cfg.Redis.Password,
-		}, redis.WithChannelMaxLen(cfg.Subscriptions.StreamMaxLen))
-		if rerr != nil {
-			_ = catStore.Close()
-			return nil, nil, rerr
-		}
-		stores.Redis = rd
+	if rd != nil {
 		allOpts = append(allOpts, withTailer(rd))
-		// Per-tenant documents fan out live exactly like the static plane.
-		ports.Documents = &syncingDocStore{seqDocStore: docRouter, pub: rd, reg: reg}
+		// The write path nudges the sweeper so a busy tenant's outbox is
+		// relayed within one pass, not one backoff window. Best-effort:
+		// the sweep cadence is the delivery guarantee.
+		wake := func(wctx context.Context, tenantID string) {
+			_ = rd.PublishWake(wctx, tenantID)
+		}
+		ports.Store = &nudgingStore{Store: ports.Store, wake: wake}
+		// Per-tenant documents fan out live exactly like the static plane,
+		// and nudge the materializer.
+		ports.Documents = &syncingDocStore{seqDocStore: docRouter, pub: rd, reg: reg, wake: wake}
 	}
 
 	f, ferr := New(reg, ports, allOpts...)
@@ -115,12 +139,29 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 	return f, stores, nil
 }
 
+// nudgingStore wakes the catalog-mode sweeper after every committed
+// command transaction — the outbox has rows exactly when a tx commits.
+type nudgingStore struct {
+	command.Store
+	wake func(ctx context.Context, tenantID string)
+}
+
+func (s *nudgingStore) InTenantTx(ctx context.Context, fn func(ctx context.Context, tx command.Tx) error) error {
+	err := s.Store.InTenantTx(ctx, fn)
+	if err == nil {
+		if tid, terr := tenant.Require(ctx); terr == nil {
+			s.wake(ctx, tid)
+		}
+	}
+	return err
+}
+
 // validateCatalogMode rejects configuration the v1 serving path cannot
 // honor yet — failing fast beats silently-dead subsystems.
 func validateCatalogMode(cfg Config) error {
 	var missing []string
 	if cfg.Projections.Graph || cfg.Projections.Search {
-		missing = append(missing, "projections (graph/search need the catalog-mode sweeper)")
+		missing = append(missing, "projections (graph/search need routed projection bookkeeping)")
 	}
 	if cfg.Documents.ArchiveHistory {
 		missing = append(missing, "document history archiving")

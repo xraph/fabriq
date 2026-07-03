@@ -93,13 +93,16 @@ func TestElector_DedicatedConnNotUsedConcurrentlyOnAbdication(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := e.campaign(ctx, func(_ context.Context) error {
+	led, err := e.campaign(ctx, func(_ context.Context) error {
 		// Abdicate only once the watchdog is demonstrably inside a query.
 		<-watchdogTicked
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("campaign: %v", err)
+	}
+	if !led {
+		t.Fatal("campaign reported the lock as lost despite winning it")
 	}
 
 	if conn.overlap.Load() {

@@ -19,6 +19,7 @@ import (
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/sweep"
 	"github.com/xraph/fabriq/core/tenant"
 )
 
@@ -36,6 +37,10 @@ type Shard struct {
 	// leave it nil (the primary's doc store serves, ADR 0007 step 2);
 	// catalog mode fills it per tenant database.
 	Documents document.Store
+	// Maintenance is the shard's single-pass worker surface for the
+	// catalog-mode sweeper. Static deployments leave it nil (the worker
+	// plane runs its own boot-time loops).
+	Maintenance sweep.Maintainer
 }
 
 // Directory resolves a tenant to its shard id. Implementations range from a
