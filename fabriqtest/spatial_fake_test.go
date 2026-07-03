@@ -45,3 +45,57 @@ func TestFakeSpatial_Delete(t *testing.T) {
 		t.Fatalf("deleted geometry must not match, got %#v", got)
 	}
 }
+
+func TestFakeSpatial_Get(t *testing.T) {
+	f := &FakeSpatial{data: map[string]map[string]map[string]geoEntry{}}
+	ctx, _ := tenant.WithTenant(context.Background(), "acme")
+	if err := f.Upsert(ctx, "site", "s1", query.Geometry{WKT: "POINT (-122.42 37.77)", SRID: 4326}, map[string]any{"name": "Plant A"}); err != nil {
+		t.Fatal(err)
+	}
+	geom, meta, ok, err := f.Get(ctx, "site", "s1")
+	if err != nil || !ok {
+		t.Fatalf("want ok, got ok=%v err=%v", ok, err)
+	}
+	if geom.SRID != 4326 || meta["name"] != "Plant A" {
+		t.Fatalf("unexpected geom/meta: %+v %+v", geom, meta)
+	}
+	// A point must round-trip through Within as a valid center.
+	var got []query.SpatialMatch
+	if err := f.Within(ctx, query.SpatialQuery{Entity: "site", Center: geom, RadiusM: 1000, K: 5}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "s1" {
+		t.Fatalf("want [s1], got %#v", got)
+	}
+	// Missing id → ok=false, nil error.
+	_, _, ok, err = f.Get(ctx, "site", "nope")
+	if err != nil || ok {
+		t.Fatalf("missing id want ok=false nil err, got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestFakeSpatial_WithinFilter(t *testing.T) {
+	f := &FakeSpatial{data: map[string]map[string]map[string]geoEntry{}}
+	ctx, _ := tenant.WithTenant(context.Background(), "acme")
+	up := func(id, wkt, tag string) {
+		if err := f.Upsert(ctx, "equipment", id, query.Geometry{WKT: wkt, SRID: 0}, map[string]any{"tag": tag}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	up("pump-near", "POINT (1 0)", "pump")   // dist 1
+	up("valve-near", "POINT (2 0)", "valve") // dist 2
+	up("pump-far", "POINT (5 0)", "pump")    // dist 5
+
+	var got []query.SpatialMatch
+	if err := f.Within(ctx, query.SpatialQuery{
+		Entity: "equipment",
+		Center: query.Geometry{WKT: "POINT (0 0)", SRID: 0},
+		RadiusM: 100, K: 10,
+		Filter: map[string]string{"tag": "pump"},
+	}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "pump-near" || got[1].ID != "pump-far" {
+		t.Fatalf("want [pump-near,pump-far], got %#v", got)
+	}
+}

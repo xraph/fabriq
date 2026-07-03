@@ -67,6 +67,45 @@ func (s *SpatialAdapter) Delete(ctx context.Context, entity, id string) error {
 	})
 }
 
+// Get implements query.SpatialQuerier: fetch the stored geometry (as WKT) and
+// meta for (tenant, entity, id). ok=false (nil error) when the id has no row.
+func (s *SpatialAdapter) Get(ctx context.Context, entity, id string) (query.Geometry, map[string]any, bool, error) {
+	if _, err := tenant.Require(ctx); err != nil {
+		return query.Geometry{}, nil, false, err
+	}
+	var geom query.Geometry
+	var meta map[string]any
+	var found bool
+	err := s.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		tid, _ := tenant.FromContext(ctx)
+		const sql = `SELECT ST_AsText(geom) AS wkt, srid, meta::text AS meta
+			FROM fabriq_geometries WHERE tenant_id=$1 AND entity=$2 AND id=$3`
+		var rows []struct {
+			WKT  string `grove:"wkt"`
+			SRID int    `grove:"srid"`
+			Meta string `grove:"meta"`
+		}
+		if err := tx.NewRaw(sql, tid, entity, id).Scan(ctx, &rows); err != nil {
+			return fmt.Errorf("fabriq: get geometry %s/%s: %w", entity, id, err)
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		found = true
+		geom = query.Geometry{WKT: rows[0].WKT, SRID: rows[0].SRID}
+		if rows[0].Meta != "" && rows[0].Meta != "{}" {
+			if err := json.Unmarshal([]byte(rows[0].Meta), &meta); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return query.Geometry{}, nil, false, err
+	}
+	return geom, meta, found, nil
+}
+
 // geoRow is the scan target for Within.
 type geoRow struct {
 	ID   string  `grove:"id"`
@@ -94,26 +133,33 @@ func (s *SpatialAdapter) Within(ctx context.Context, q query.SpatialQuery, into 
 	// metric. For SRID 4326 dist is geography metres; otherwise planar metres in
 	// the geometry's own units. (Ordering by dist rather than the KNN operator
 	// `<->` avoids degree-vs-metre disagreement across latitudes for 4326.)
-	var sql string
+	distExpr := "ST_Distance(geom, c)"
+	dwithin := "ST_DWithin(geom, c, $5)"
 	if q.Center.SRID == 4326 {
-		sql = `SELECT id, ST_Distance(geom::geography, c::geography) AS dist, meta::text AS meta
-			FROM fabriq_geometries, (SELECT ST_GeomFromText($1, $2) AS c) cc
-			WHERE tenant_id = $3 AND entity = $4
-			  AND ST_DWithin(geom::geography, c::geography, $5)
-			ORDER BY dist ASC
-			LIMIT $6`
-	} else {
-		sql = `SELECT id, ST_Distance(geom, c) AS dist, meta::text AS meta
-			FROM fabriq_geometries, (SELECT ST_GeomFromText($1, $2) AS c) cc
-			WHERE tenant_id = $3 AND entity = $4
-			  AND ST_DWithin(geom, c, $5)
-			ORDER BY dist ASC
-			LIMIT $6`
+		distExpr = "ST_Distance(geom::geography, c::geography)"
+		dwithin = "ST_DWithin(geom::geography, c::geography, $5)"
 	}
+	args := []any{q.Center.WKT, q.Center.SRID, "", q.Entity, q.RadiusM, k}
+	filterClause := ""
+	if len(q.Filter) > 0 {
+		fj, err := json.Marshal(q.Filter)
+		if err != nil {
+			return err
+		}
+		filterClause = " AND meta @> $7::jsonb"
+		args = append(args, string(fj))
+	}
+	sql := fmt.Sprintf(`SELECT id, %s AS dist, meta::text AS meta
+		FROM fabriq_geometries, (SELECT ST_GeomFromText($1, $2) AS c) cc
+		WHERE tenant_id = $3 AND entity = $4
+		  AND %s%s
+		ORDER BY dist ASC
+		LIMIT $6`, distExpr, dwithin, filterClause)
 	return s.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
+		args[2] = tid
 		var rows []geoRow
-		if err := tx.NewRaw(sql, q.Center.WKT, q.Center.SRID, tid, q.Entity, q.RadiusM, k).Scan(ctx, &rows); err != nil {
+		if err := tx.NewRaw(sql, args...).Scan(ctx, &rows); err != nil {
 			return fmt.Errorf("fabriq: within %s: %w", q.Entity, err)
 		}
 		for _, r := range rows {

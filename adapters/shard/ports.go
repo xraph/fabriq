@@ -178,6 +178,15 @@ func (s *Spatial) Within(ctx context.Context, q query.SpatialQuery, into any) er
 	return sh.Spatial.Within(ctx, q, into)
 }
 
+// Get routes a single-geometry read to the tenant's shard.
+func (s *Spatial) Get(ctx context.Context, entity, id string) (query.Geometry, map[string]any, bool, error) {
+	sh, err := s.set.For(ctx)
+	if err != nil {
+		return query.Geometry{}, nil, false, err
+	}
+	return sh.Spatial.Get(ctx, entity, id)
+}
+
 // Delete routes a geometry delete to the tenant's shard.
 func (s *Spatial) Delete(ctx context.Context, entity, id string) error {
 	sh, err := s.set.For(ctx)

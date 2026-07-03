@@ -223,6 +223,9 @@ type SpatialQuerier interface {
 	// Within returns entities whose geometry lies within q.RadiusM of q.Center,
 	// nearest-first, scanned into *[]SpatialMatch.
 	Within(ctx context.Context, q SpatialQuery, into any) error
+	// Get returns the stored geometry and meta for (tenant, entity, id).
+	// ok is false (with a nil error) when no geometry exists for the id.
+	Get(ctx context.Context, entity, id string) (geom Geometry, meta map[string]any, ok bool, err error)
 	// Delete removes the geometry for (tenant, entity, id).
 	Delete(ctx context.Context, entity, id string) error
 }
@@ -241,6 +244,9 @@ type SpatialQuery struct {
 	Center  Geometry
 	RadiusM float64 // radius in metres
 	K       int     // cap; <=0 → adapter default
+	// Filter is an AND-ed set of equality predicates evaluated against the
+	// stored geometry meta (JSONB). Empty → no filter. e.g. {"tag":"pump"}.
+	Filter map[string]string
 }
 
 // SpatialMatch is one nearest-neighbour hit, nearest first.

@@ -1327,6 +1327,22 @@ func (f *FakeSpatial) Delete(ctx context.Context, entity, id string) error {
 	return nil
 }
 
+// Get implements query.SpatialQuerier. Returns ok=false (nil error) when the
+// id is absent, out of scope, or stored as a non-point (NaN) geometry.
+func (f *FakeSpatial) Get(ctx context.Context, entity, id string) (query.Geometry, map[string]any, bool, error) {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return query.Geometry{}, nil, false, err
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	e, ok := f.data[tid][entity][id]
+	if !ok || !scopeVisible(ctx, e.scope) || math.IsNaN(e.x) {
+		return query.Geometry{}, nil, false, nil
+	}
+	return query.Geometry{WKT: fmt.Sprintf("POINT (%v %v)", e.x, e.y), SRID: e.srid}, e.meta, true, nil
+}
+
 // Within implements query.SpatialQuerier. Results are scanned into
 // *[]query.SpatialMatch, nearest-first; ties break by ID.
 func (f *FakeSpatial) Within(ctx context.Context, q query.SpatialQuery, into any) error {
@@ -1350,6 +1366,9 @@ func (f *FakeSpatial) Within(ctx context.Context, q query.SpatialQuery, into any
 			continue
 		}
 		if math.IsNaN(e.x) {
+			continue
+		}
+		if !metaMatchesFilter(e.meta, q.Filter) {
 			continue
 		}
 		var d float64
@@ -1405,6 +1424,18 @@ func parseWKTPoint(wkt string) (x, y, z float64, ok bool) {
 		}
 	}
 	return xf, yf, zf, true
+}
+
+// metaMatchesFilter reports whether meta satisfies every k=v in filter
+// (stringified equality). An empty/nil filter always matches.
+func metaMatchesFilter(meta map[string]any, filter map[string]string) bool {
+	for k, v := range filter {
+		mv, ok := meta[k]
+		if !ok || fmt.Sprintf("%v", mv) != v {
+			return false
+		}
+	}
+	return true
 }
 
 // haversineM returns great-circle distance in metres between two lat/lon points.
