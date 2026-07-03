@@ -113,6 +113,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 			Maintenance: postgres.NewMaintenance(a, reg, pub),
 			Projection:  a.ProjectionState(),
 			Replay:      a,
+			Live:        a.NewLiveStore(),
 		}, a.Close, nil
 	}
 
@@ -135,6 +136,11 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		// tenant's own database (WaitForProjection, engine state).
 		ProjectionState: stores.state,
 	}
+
+	// Live queries route per tenant (Postgres is the exact-top-N oracle in
+	// each tenant DB). The facade only exposes LiveQuery when a tailer is
+	// present, so without Redis this stays a typed not-configured error.
+	ports.Live = shard.NewLive(dset)
 
 	// Projection sinks are SHARED infrastructure (one graph store / search
 	// cluster, tenant-scoped by naming) — only the bookkeeping is

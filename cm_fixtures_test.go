@@ -35,6 +35,7 @@ func cmRegistry(t *testing.T) *registry.Registry {
 	if err := reg.Register(registry.EntitySpec{
 		Name: "cmwidget", Kind: registry.KindAggregate, Model: (*cmWidget)(nil),
 		Search: registry.SearchSpec{Index: "cmwidgets", Fields: []string{"name"}},
+		Live:   &registry.LiveSpec{},
 	}); err != nil {
 		t.Fatal(err)
 	}

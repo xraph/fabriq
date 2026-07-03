@@ -19,6 +19,7 @@ import (
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/sweep"
@@ -51,6 +52,19 @@ type Shard struct {
 	// Replay is the shard's event-truth surface for rebuilds/reconcile.
 	// Static deployments leave it nil; catalog mode fills it per tenant DB.
 	Replay ReplaySource
+	// Live is the shard's live-query snapshot/refill oracle. Static
+	// deployments leave it nil (the primary's LiveStore serves, wired
+	// directly into Ports.Live); catalog mode fills it per tenant DB.
+	Live LiveSource
+}
+
+// LiveSource is the shard's live-query snapshot/refill oracle (Postgres is
+// the exact-top-N truth). Static single-shard deployments serve it from the
+// primary; catalog mode fills Shard.Live per tenant database.
+type LiveSource interface {
+	Snapshot(ctx context.Context, q livequery.LiveQuery, limit int) ([]livequery.Row, error)
+	After(ctx context.Context, q livequery.LiveQuery, after livequery.Cursor, limit int) ([]livequery.Row, error)
+	Members(ctx context.Context, q livequery.LiveQuery) ([]string, error)
 }
 
 // ProjectionStateStore is the per-shard projection bookkeeping the engines,
