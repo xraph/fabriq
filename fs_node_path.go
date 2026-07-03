@@ -50,6 +50,17 @@ func (f *Fabriq) chainToRoot(ctx context.Context, node domain.FsNode) ([]domain.
 	return chain, nil
 }
 
+// pathFromChain builds the absolute path ("/a/b/name") from a
+// [node, parent, ..., root] chain as returned by chainToRoot.
+func pathFromChain(chain []domain.FsNode) string {
+	var b strings.Builder
+	for i := len(chain) - 1; i >= 0; i-- {
+		b.WriteString("/")
+		b.WriteString(chain[i].Name)
+	}
+	return b.String()
+}
+
 // nodePathOf computes node's absolute path ("/a/b/name") by walking the
 // parent chain. Paths are read-time derivations now — nothing persists them.
 func (f *Fabriq) nodePathOf(ctx context.Context, node domain.FsNode) (string, error) {
@@ -57,12 +68,7 @@ func (f *Fabriq) nodePathOf(ctx context.Context, node domain.FsNode) (string, er
 	if err != nil {
 		return "", err
 	}
-	var b strings.Builder
-	for i := len(chain) - 1; i >= 0; i-- {
-		b.WriteString("/")
-		b.WriteString(chain[i].Name)
-	}
-	return b.String(), nil
+	return pathFromChain(chain), nil
 }
 
 // NodePath returns the node's absolute path, computed from the adjacency
@@ -114,7 +120,8 @@ func (f *Fabriq) GetNodeByPath(ctx context.Context, path string) (domain.FsNode,
 // under a trashed folder is still found (matches the old path-prefix
 // semantics); includeTrashed only controls the final result filter. Tenant
 // scoping rides on the RelationalQuerier tenant guard (RLS on SQL backends;
-// the fake's scope check on List).
+// the fake's scope check on List). Ordering is byte-wise (COLLATE "C") to
+// stay identical to descendantsAdjacencyWalk's Go `<` sort.
 func (f *Fabriq) descendantNodes(ctx context.Context, rootID string, includeTrashed bool) ([]domain.FsNode, error) {
 	var rows []domain.FsNode
 	err := f.Relational().Query(ctx, &rows, `
@@ -133,7 +140,7 @@ func (f *Fabriq) descendantNodes(ctx context.Context, rootID string, includeTras
 		  JOIN sub ON sub.id = f.id
 		 WHERE f.id <> $1
 		   AND ($2::boolean OR f.deleted_at IS NULL)
-		 ORDER BY sub.rel_path`,
+		 ORDER BY sub.rel_path COLLATE "C"`,
 		rootID, includeTrashed, fsMaxDepth)
 	if err != nil {
 		if errors.Is(err, fabriqerr.ErrRawSQLUnsupported) {
@@ -150,8 +157,10 @@ func (f *Fabriq) descendantNodes(ctx context.Context, rootID string, includeTras
 // under a trashed folder must still be found), root excluded from the
 // result, includeTrashed applied only to the final set, depth bounded by
 // fsMaxDepth (cycle backstop — returns an error rather than looping
-// silently), and the result sorted by relative path to match "ORDER BY
-// sub.rel_path".
+// silently), and the result sorted by relative path (byte-wise, COLLATE "C")
+// to match "ORDER BY sub.rel_path". One known divergence: at fsMaxDepth the
+// CTE silently truncates the subtree (its recursive term just stops
+// expanding), while this walk returns an error.
 func (f *Fabriq) descendantsAdjacencyWalk(ctx context.Context, rootID string, includeTrashed bool) ([]domain.FsNode, error) {
 	type queued struct {
 		node      domain.FsNode

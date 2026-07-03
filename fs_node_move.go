@@ -43,8 +43,9 @@ func (f *Fabriq) RenameNode(ctx context.Context, id, newName string) (FsRef, err
 }
 
 // MoveNode re-parents a node under newParentID. One command, one event —
-// no descendant writes. Rejects moving into its own subtree by walking the
-// new parent's ancestor chain.
+// no descendant writes. Validates newParentID is a folder and rejects moving
+// into its own subtree, both from a single walk of the new parent's ancestor
+// chain (also used to derive the new path) rather than two.
 func (f *Fabriq) MoveNode(ctx context.Context, id, newParentID string) (FsRef, error) {
 	node, err := f.GetNode(ctx, id)
 	if err != nil {
@@ -56,14 +57,14 @@ func (f *Fabriq) MoveNode(ctx context.Context, id, newParentID string) (FsRef, e
 	if newParentID == id {
 		return FsRef{}, fmt.Errorf("fabriq: MoveNode: cannot move %q into its own subtree", id)
 	}
-	newParentPath, err := f.parentContext(ctx, newParentID)
-	if err != nil {
-		return FsRef{}, fmt.Errorf("fabriq: MoveNode: %w", err)
-	}
+	var newParentPath string
 	if newParentID != "" {
 		parent, err := f.GetNode(ctx, newParentID)
 		if err != nil {
 			return FsRef{}, fmt.Errorf("fabriq: MoveNode: %w", err)
+		}
+		if parent.NodeType != "folder" {
+			return FsRef{}, fmt.Errorf("fabriq: MoveNode: %w", ErrNotContainer)
 		}
 		chain, err := f.chainToRoot(ctx, parent)
 		if err != nil {
@@ -74,6 +75,7 @@ func (f *Fabriq) MoveNode(ctx context.Context, id, newParentID string) (FsRef, e
 				return FsRef{}, fmt.Errorf("fabriq: MoveNode: cannot move %q into its own subtree", id)
 			}
 		}
+		newParentPath = pathFromChain(chain)
 	}
 	if exists, err := f.siblingExists(ctx, newParentID, node.Name); err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: MoveNode: %w", err)
