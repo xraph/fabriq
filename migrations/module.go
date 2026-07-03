@@ -107,3 +107,14 @@ func extensionAvailable(ctx context.Context, exec migrate.Executor, name string)
 	}
 	return n > 0, rows.Err()
 }
+
+// HeadVersion returns the newest migration version in fabriq's chain —
+// the fleet roller records it per tenant database, and catalog-mode
+// routing fails closed below it.
+func HeadVersion() string {
+	ms := Group().Migrations()
+	if len(ms) == 0 {
+		return ""
+	}
+	return ms[len(ms)-1].Version
+}

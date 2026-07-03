@@ -54,7 +54,7 @@ func main() {
 		// app.Start() every store first — disable it and ship ours.
 		cli.WithDisableMigrationCommands(),
 		cli.WithExtraCommands(
-			migrateCommand(), inspectCommand(), rebuildCommand(), reconcileCommand(),
+			migrateCommand(), inspectCommand(), rebuildCommand(), reconcileCommand(), tenantCommand(),
 		),
 	)
 }

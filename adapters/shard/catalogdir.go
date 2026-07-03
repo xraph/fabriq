@@ -22,22 +22,42 @@ import (
 // stable, so the TTL is a freshness bound: a suspension or a
 // just-provisioned tenant takes effect within one TTL — and repeated
 // lookups of unknown tenants cannot storm the control database.
-func CatalogDirectory(cat catalog.Catalog, ttl time.Duration) Directory {
-	return CatalogDirectoryWithClock(cat, ttl, time.Now)
-}
-
-// CatalogDirectoryWithClock is CatalogDirectory with an injectable clock
-// (TTL tests).
-func CatalogDirectoryWithClock(cat catalog.Catalog, ttl time.Duration, now func() time.Time) Directory {
+func CatalogDirectory(cat catalog.Catalog, ttl time.Duration, opts ...CatalogDirOption) Directory {
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
-	return &catalogDirectory{
+	d := &catalogDirectory{
 		cat:   cat,
 		ttl:   ttl,
-		now:   now,
+		now:   time.Now,
 		cache: map[string]catalogCacheEntry{},
 	}
+	for _, o := range opts {
+		o(d)
+	}
+	return d
+}
+
+// CatalogDirOption configures a CatalogDirectory.
+type CatalogDirOption func(*catalogDirectory)
+
+// WithCatalogClock injects the clock (TTL tests).
+func WithCatalogClock(now func() time.Time) CatalogDirOption {
+	return func(d *catalogDirectory) { d.now = now }
+}
+
+// WithMinVersion fails routing CLOSED for tenants whose database is
+// recorded below the binary's migration floor (spec D7): serving a schema
+// older than the code expects corrupts, so the tenant gets a typed
+// CodeUnavailable until the fleet roller catches it up.
+func WithMinVersion(v string) CatalogDirOption {
+	return func(d *catalogDirectory) { d.minVersion = v }
+}
+
+// CatalogDirectoryWithClock is retained for tests predating the option
+// form.
+func CatalogDirectoryWithClock(cat catalog.Catalog, ttl time.Duration, now func() time.Time) Directory {
+	return CatalogDirectory(cat, ttl, WithCatalogClock(now))
 }
 
 type catalogCacheEntry struct {
@@ -47,9 +67,10 @@ type catalogCacheEntry struct {
 }
 
 type catalogDirectory struct {
-	cat catalog.Catalog
-	ttl time.Duration
-	now func() time.Time
+	cat        catalog.Catalog
+	ttl        time.Duration
+	now        func() time.Time
+	minVersion string
 
 	mu    sync.RWMutex
 	cache map[string]catalogCacheEntry
@@ -87,6 +108,16 @@ func (d *catalogDirectory) resolve(ctx context.Context, tenantID string) (string
 			"tenant is not routable.",
 			fabriqerr.WithEntity("tenant", tenantID),
 			fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{"state": string(entry.State)}}))
+	}
+	// Version gate (D7): grove migration versions are zero-padded numeric
+	// strings, so lexicographic comparison is version order.
+	if d.minVersion != "" && entry.Version < d.minVersion {
+		return "", fabriqerr.New(fabriqerr.CodeUnavailable,
+			"tenant database is below the binary's migration floor.",
+			fabriqerr.WithEntity("tenant", tenantID),
+			fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{
+				"version": entry.Version, "floor": d.minVersion,
+			}}))
 	}
 	return entry.ShardID(), nil
 }

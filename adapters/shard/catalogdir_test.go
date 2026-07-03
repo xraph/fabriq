@@ -180,3 +180,27 @@ func BenchmarkCatalogDirectory_CachedResolve(b *testing.B) {
 		}
 	}
 }
+
+func TestCatalogDirectory_VersionGateFailsClosed(t *testing.T) {
+	cat := fabriqtest.NewFakeCatalog()
+	e := seedTenant(t, cat, "acme", catalog.StateActive)
+	e.Version = "202606120001"
+	if _, err := cat.Put(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	dir := shard.CatalogDirectory(cat, time.Minute, shard.WithMinVersion("202607030030"))
+	if _, err := dir.Shard(context.Background(), "acme"); codeOf(err) != fabriqerr.CodeUnavailable {
+		t.Fatalf("stale tenant must fail closed, got %v", err)
+	}
+
+	// At or above the floor routes normally.
+	e2, _ := cat.Get(context.Background(), "acme")
+	e2.Version = "202607030030"
+	if _, err := cat.Put(context.Background(), e2); err != nil {
+		t.Fatal(err)
+	}
+	dir2 := shard.CatalogDirectory(cat, time.Minute, shard.WithMinVersion("202607030030"))
+	if _, err := dir2.Shard(context.Background(), "acme"); err != nil {
+		t.Fatalf("current tenant must route: %v", err)
+	}
+}
