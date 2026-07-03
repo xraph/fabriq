@@ -46,6 +46,14 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 	}
 	clusterOps := postgres.NewClusterOps(cfg.Catalog.ClusterDSNs)
 
+	// Boot assertions (spec P6): every cluster dials NOW, and the serving
+	// credentials are not superuser — misconfiguration fails the boot, not
+	// the first unlucky tenant request.
+	if bootErr := clusterOps.AssertBoot(ctx, cfg.Catalog.AllowSuperuser); bootErr != nil {
+		_ = catStore.Close()
+		return nil, nil, bootErr
+	}
+
 	dir := shard.CatalogDirectory(catStore, cfg.Catalog.CacheTTL,
 		shard.WithMinVersion(migrations.HeadVersion()))
 
@@ -85,6 +93,13 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		)
 		if oerr != nil {
 			return shard.Shard{}, nil, oerr
+		}
+		// Verify the database actually accepts connections (grove dials
+		// lazily): a dead tenant database must fail HERE so the pool's
+		// breaker opens, not on every individual query afterwards.
+		if perr := a.Ping(dctx); perr != nil {
+			_ = a.Close()
+			return shard.Shard{}, nil, perr
 		}
 		var pub event.Publisher // stays a nil interface when Redis is off
 		if rd != nil {

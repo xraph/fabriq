@@ -85,6 +85,11 @@ type CatalogConfig struct {
 	// MaxActiveShards caps concurrently-open tenant database pools (LRU
 	// evicted, idle first). Zero falls back to 128.
 	MaxActiveShards int `yaml:"maxActiveShards" json:"maxActiveShards"`
+	// AllowSuperuser skips the boot refusal of superuser cluster
+	// credentials — dev/test ONLY. RLS inside a tenant database does not
+	// bind superusers, and the serving tier must not hold rights it does
+	// not need; provisioning (the CLI) is a separate, privileged concern.
+	AllowSuperuser bool `yaml:"allowSuperuser" json:"allowSuperuser"`
 }
 
 // Enabled reports whether catalog mode is configured.
@@ -227,6 +232,9 @@ func (c Config) Validate() error {
 	if c.Catalog.Enabled() {
 		if len(c.Shards) > 0 || len(c.ShardPins) > 0 {
 			return fmt.Errorf("fabriq: config: catalog mode is mutually exclusive with shards/shardPins (one routing authority)")
+		}
+		if c.Postgres.DSN != "" {
+			return fmt.Errorf("fabriq: config: catalog mode is mutually exclusive with postgres.dsn (tenant databases come from the catalog, not a primary)")
 		}
 		if len(c.Catalog.ClusterDSNs) == 0 {
 			return fmt.Errorf("fabriq: config: catalog.clusterDsns requires at least one cluster")

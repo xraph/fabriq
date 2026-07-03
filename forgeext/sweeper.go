@@ -3,10 +3,12 @@ package forgeext
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq/core/sweep"
+	"github.com/xraph/fabriq/internal/metrics"
 	"github.com/xraph/fabriq/migrations"
 )
 
@@ -31,13 +33,41 @@ func (e *Extension) runCatalogSweeper() error {
 	e.mu.Unlock()
 
 	var logger forge.Logger
-	if app := e.App(); app != nil {
+	app := e.App()
+	if app != nil {
 		logger = app.Logger()
+	}
+
+	// Observability: /metrics plus per-pass sweeper counters and pool
+	// gauges (spec P6). Best-effort — a metrics failure never blocks the
+	// worker plane.
+	var m *metrics.Metrics
+	if app != nil {
+		if wired, err := wireObservability(app, stores); err == nil {
+			m = wired
+			e.mu.Lock()
+			e.metrics = m
+			e.mu.Unlock()
+		}
 	}
 
 	engine := sweep.New(stores.Catalog, stores.TenantSweeper(), sweep.Config{
 		CompactEvery: e.cfg.DocCompactInterval,
 		MinVersion:   migrations.HeadVersion(),
+		OnPass: func(st sweep.Stats) {
+			if m == nil {
+				return
+			}
+			m.SweepPassDuration.Observe(st.Duration.Seconds())
+			m.SweepEligible.Set(float64(st.Eligible))
+			m.SweepSweptTotal.Add(float64(st.Swept))
+			m.SweepBusyTotal.Add(float64(st.Busy))
+			m.SweepErrorsTotal.Add(float64(st.Errors))
+			if open, held, ok := stores.PoolStats(); ok {
+				m.PoolShardsOpen.Set(float64(open))
+				m.PoolShardsHeld.Set(float64(held))
+			}
+		},
 		OnError: func(tenantID string, err error) {
 			if logger != nil {
 				logger.Warn("fabriq: tenant sweep failed",
@@ -82,6 +112,24 @@ func (e *Extension) runCatalogSweeper() error {
 		go func() {
 			defer wg.Done()
 			supervise(runCtx, logger, "proj:search", func(c context.Context) error { return sengine.Run(c, consumer) })
+		}()
+	}
+
+	// The tracked-tenants gauge moves slowly; poll it off the pass path.
+	if m != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-runCtx.Done():
+					return
+				case <-ticker.C:
+					m.SweepTenantsTracked.Set(float64(engine.TrackedTenants()))
+				}
+			}
 		}()
 	}
 

@@ -371,6 +371,16 @@ func (s *Stores) TenantSweeper() sweep.TenantSweeper {
 	}
 }
 
+// PoolStats reports the catalog-mode shard pool's live counters
+// (observability). ok is false outside catalog mode.
+func (s *Stores) PoolStats() (open, held int, ok bool) {
+	if s.pool == nil {
+		return 0, 0, false
+	}
+	open, held = s.pool.Stats()
+	return open, held, true
+}
+
 // Close releases every opened adapter (every shard, plus the projections).
 func (s *Stores) Close() error {
 	// Cancel background workers first so they stop blocking on their

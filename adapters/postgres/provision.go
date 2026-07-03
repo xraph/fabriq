@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/xraph/grove/drivers/pgdriver"
@@ -47,6 +48,36 @@ func (c *ClusterOps) clusterDSN(clusterID string) (string, error) {
 			"unknown cluster.", fabriqerr.WithEntity("cluster", clusterID))
 	}
 	return dsn, nil
+}
+
+// AssertBoot fails fast on cluster misconfiguration at Open time instead
+// of per request (spec P6): every configured cluster must dial, and the
+// serving credentials must not be superuser (RLS inside a tenant database
+// does not bind superusers) unless explicitly allowed for dev/test.
+// Clusters are checked in id order so the first error is deterministic.
+func (c *ClusterOps) AssertBoot(ctx context.Context, allowSuperuser bool) error {
+	ids := make([]string, 0, len(c.clusterDSNs))
+	for id := range c.clusterDSNs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		db := pgdriver.New()
+		if err := db.Open(ctx, c.clusterDSNs[id]); err != nil {
+			return fmt.Errorf("fabriq: catalog boot check: cluster %q does not dial: %w", id, err)
+		}
+		var super string
+		err := db.QueryRow(ctx, `SELECT current_setting('is_superuser')`).Scan(&super)
+		_ = db.Close()
+		if err != nil {
+			// grove opens lazily; the first query IS the dial.
+			return fmt.Errorf("fabriq: catalog boot check: cluster %q does not dial: %w", id, err)
+		}
+		if super == "on" && !allowSuperuser {
+			return fmt.Errorf("fabriq: catalog boot check: cluster %q credentials are superuser — RLS does not bind superusers; serve with a dedicated role (catalog.allowSuperuser overrides for dev/test)", id)
+		}
+	}
+	return nil
 }
 
 // TenantDSN derives the DSN for one tenant database on a cluster — the

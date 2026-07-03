@@ -54,6 +54,8 @@ type TenantSweeper func(ctx context.Context, tenantID string, compact bool) (Res
 
 // Stats summarizes one engine pass.
 type Stats struct {
+	// Duration is the pass's wall-clock time (by the engine's clock).
+	Duration time.Duration
 	// Scanned is every catalog entry seen.
 	Scanned int
 	// Eligible is the active, version-current subset.
@@ -310,6 +312,7 @@ func (e *Engine) Pass(ctx context.Context) Stats {
 	}
 
 	wg.Wait()
+	stats.Duration = e.cfg.Now().Sub(now)
 
 	// Decay: drop state for tenants that left the eligible set — a
 	// suspended or deleted tenant is owed no bookkeeping.

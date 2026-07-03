@@ -74,6 +74,13 @@ func (s *CatalogStore) Get(ctx context.Context, tenantID string) (catalog.Entry,
 	}
 	defer rows.Close()
 	if !rows.Next() {
+		// A failed iteration also reports "no rows" — surface it as the
+		// transport failure it is. Answering NotFound during a catalog
+		// outage would get negative-cached by the directory and route a
+		// LIVE tenant off for a full TTL.
+		if err := rows.Err(); err != nil {
+			return catalog.Entry{}, translatePg("catalog get", "tenant_catalog", "", err)
+		}
 		return catalog.Entry{}, fabriqerr.New(fabriqerr.CodeNotFound,
 			"tenant is not in the catalog.", fabriqerr.WithEntity("tenant", tenantID))
 	}
@@ -105,6 +112,9 @@ func (s *CatalogStore) Put(ctx context.Context, e catalog.Entry) (catalog.Entry,
 		}
 		defer rows.Close()
 		if !rows.Next() {
+			if err := rows.Err(); err != nil { // transport failure, not a conflict
+				return catalog.Entry{}, translatePg("catalog create", "tenant_catalog", "", err)
+			}
 			return catalog.Entry{}, fabriqerr.New(fabriqerr.CodeAlreadyExists,
 				"tenant is already in the catalog.", fabriqerr.WithEntity("tenant", e.TenantID))
 		}
@@ -127,6 +137,9 @@ func (s *CatalogStore) Put(ctx context.Context, e catalog.Entry) (catalog.Entry,
 	}
 	defer rows.Close()
 	if !rows.Next() {
+		if err := rows.Err(); err != nil { // transport failure, not a lost CAS
+			return catalog.Entry{}, translatePg("catalog update", "tenant_catalog", "", err)
+		}
 		return catalog.Entry{}, fabriqerr.New(fabriqerr.CodeVersionConflict,
 			"catalog entry was modified concurrently.", fabriqerr.WithEntity("tenant", e.TenantID))
 	}

@@ -36,4 +36,10 @@ func TestConfigValidate_CatalogMode(t *testing.T) {
 	if err := emptyEntry.Validate(); err == nil {
 		t.Fatal("empty cluster id must be rejected")
 	}
+
+	withPrimary := base
+	withPrimary.Postgres.DSN = "postgres://primary/db"
+	if err := withPrimary.Validate(); err == nil {
+		t.Fatal("catalog + postgres.dsn must be rejected (ambiguous source of truth)")
+	}
 }

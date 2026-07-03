@@ -48,7 +48,7 @@ func TestCatalogMode_SearchProjectionAcrossTenantDBs(t *testing.T) {
 
 	reg := cmRegistry(t)
 	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
-		Catalog:       fabriq.CatalogConfig{DSN: dsn, ClusterDSNs: map[string]string{"c1": dsn}},
+		Catalog:       fabriq.CatalogConfig{DSN: dsn, ClusterDSNs: map[string]string{"c1": dsn}, AllowSuperuser: true},
 		Redis:         fabriq.RedisConfig{Addr: redisAddr},
 		Elasticsearch: fabriq.ElasticsearchConfig{Addrs: []string{esURL}},
 		Projections:   fabriq.ProjectionsConfig{Search: true},

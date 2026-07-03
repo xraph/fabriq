@@ -37,6 +37,16 @@ type Metrics struct {
 	EmbedEventsTotal   prometheus.Counter
 	EmbedFailuresTotal prometheus.Counter
 
+	// Catalog-mode sweeper instruments.
+	SweepPassDuration   prometheus.Histogram
+	SweepTenantsTracked prometheus.Gauge
+	SweepEligible       prometheus.Gauge
+	SweepSweptTotal     prometheus.Counter
+	SweepBusyTotal      prometheus.Counter
+	SweepErrorsTotal    prometheus.Counter
+	PoolShardsOpen      prometheus.Gauge
+	PoolShardsHeld      prometheus.Gauge
+
 	// Distillation worker (proj:distill) instruments.
 	DistillNodesTotal          prometheus.Counter
 	DistillSummariesTotal      prometheus.Counter
@@ -99,6 +109,39 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fabriq_embed_failures_total",
 			Help: "Events the embed worker failed to process (transient; left pending for retry).",
 		}),
+		SweepPassDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "fabriq_sweep_pass_duration_seconds",
+			Help:    "Wall-clock duration of one catalog sweep pass.",
+			Buckets: prometheus.ExponentialBuckets(0.005, 2, 12), // 5ms .. ~10s
+		}),
+		SweepTenantsTracked: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "fabriq_sweep_tenants_tracked",
+			Help: "Tenants in the sweeper's idle-backoff table (last pass).",
+		}),
+		SweepEligible: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "fabriq_sweep_tenants_eligible",
+			Help: "Active, version-current tenants seen by the last sweep pass.",
+		}),
+		SweepSweptTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_sweep_swept_total",
+			Help: "Tenant maintenance passes dispatched by the sweeper.",
+		}),
+		SweepBusyTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_sweep_busy_total",
+			Help: "Tenant maintenance passes that found work.",
+		}),
+		SweepErrorsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_sweep_errors_total",
+			Help: "Tenant maintenance passes that failed (tenant backs off).",
+		}),
+		PoolShardsOpen: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "fabriq_pool_shards_open",
+			Help: "Tenant database pools currently open (catalog mode).",
+		}),
+		PoolShardsHeld: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "fabriq_pool_shards_held",
+			Help: "Open tenant database pools with in-flight acquisitions.",
+		}),
 		DistillNodesTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "fabriq_distill_nodes_total", Help: "Digest nodes (re)built by the distill worker."}),
 		DistillSummariesTotal: prometheus.NewCounter(prometheus.CounterOpts{
@@ -120,6 +163,9 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 		m.OutboxBacklog, m.TenantHookTrips, m.ConflationDepth, m.ProjectionLag, m.RelayPublished,
 		m.BlobGCBytesFreed, m.BlobGCCollected, m.BlobGCRefDriftCorrected, m.BlobGCBroken, m.BlobGCOrphans,
 		m.EmbedEventsTotal, m.EmbedFailuresTotal,
+		m.SweepPassDuration, m.SweepTenantsTracked, m.SweepEligible,
+		m.SweepSweptTotal, m.SweepBusyTotal, m.SweepErrorsTotal,
+		m.PoolShardsOpen, m.PoolShardsHeld,
 		m.DistillNodesTotal, m.DistillSummariesTotal, m.DistillShortCircuitTotal, m.DistillGuardBlockedTotal, m.DistillFailuresTotal,
 		m.DistillSplitsTotal, m.DistillDedupTotal, m.DistillIntermediateGCTotal,
 	} {

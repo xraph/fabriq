@@ -31,6 +31,8 @@ f.Exec(ctx, cmd)                          // "acme" now owns aggregate, event, a
 
 From that first write, the tenant's rows are isolated by every layer below — RLS, per-engine stamping, the backstop — without any registry to keep in sync. This is deliberate: minting a tenant is free and coordination-free, which is what makes [sharding](/docs/sharding) (route by tenant id, no catalog) and single-tenant-per-instance deployments work without a control plane.
 
+The one exception is **catalog mode** ([database per tenant](/docs/db-per-tenant)): when every tenant gets its own physical database, minting one is necessarily an explicit, provisioned act — `fabriq tenant provision` creates and migrates the database and flips the tenant routable.
+
 The corollary is that fabriq cannot tell you a tenant id is *unknown* — only that it is malformed (`WithTenant` errors) or unstamped (`Require` returns `ErrNoTenant`). **Authorization is your auth layer's job**: deciding whether a caller may act as a given tenant happens before `WithTenant`, in the middleware that mints the context from a validated claim. fabriq trusts the stamped id and isolates on it; it does not authenticate it.
 
 Because there is no registry, the list of live tenants is **derived, not stored**. `Stores.AllTenants` unions every shard's outbox-known tenants — the same discovery the reconciler and `rebuild --all-tenants` use:

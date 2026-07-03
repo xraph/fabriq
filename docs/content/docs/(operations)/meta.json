@@ -5,6 +5,7 @@
     "remote-protocol",
     "cli",
     "migrations",
+    "db-per-tenant",
     "rebuild-and-reconcile",
     "observability",
     "runbooks"

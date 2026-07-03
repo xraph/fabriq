@@ -156,6 +156,16 @@ func (a *Adapter) Close() error {
 // Grove exposes the grove handle (hook-guarded pool path) for advanced
 // embedding. Tenant tables are NOT reachable through it — the backstop
 // denies them; use the fabric ports.
+// Ping verifies the database actually accepts connections — grove/pgx
+// dial lazily, so Open succeeding does not prove the database exists.
+// The catalog-mode dialer pings before handing the shard to the pool, so
+// a dead tenant database fails AT DIAL TIME and the pool's breaker opens
+// instead of every query failing individually.
+func (a *Adapter) Ping(ctx context.Context) error {
+	var one int
+	return a.pg.QueryRow(ctx, `SELECT 1`).Scan(&one)
+}
+
 func (a *Adapter) Grove() *grove.DB { return a.gdb }
 
 // Driver exposes the typed pg driver for worker-plane components living in

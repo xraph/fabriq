@@ -49,7 +49,7 @@ func TestSweeper_TwoTenantDBs_RelaysAndMaterializes(t *testing.T) {
 
 	reg := cmRegistry(t)
 	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
-		Catalog: fabriq.CatalogConfig{DSN: dsn, ClusterDSNs: map[string]string{"c1": dsn}},
+		Catalog: fabriq.CatalogConfig{DSN: dsn, ClusterDSNs: map[string]string{"c1": dsn}, AllowSuperuser: true},
 		Redis:   fabriq.RedisConfig{Addr: redisAddr},
 	})
 	if err != nil {

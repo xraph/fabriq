@@ -1,0 +1,159 @@
+---
+title: Database per tenant
+description: Catalog mode — one fabriq tier serving a dedicated Postgres database per tenant, with explicit provisioning, a bounded pool, and a sweeping worker plane.
+---
+
+Catalog mode gives every tenant its **own Postgres database** behind one
+fabriq tier. The facade, `core/`, and every call site are unchanged — the
+tenant on `ctx` routes to that tenant's database instead of a shared one.
+Choose it for contractual isolation, per-tenant backup/restore/export,
+residency, or hosts (like TwinOS) that co-locate fabriq's tables with
+other extensions' tables in one database per tenant.
+
+```yaml
+catalog:
+  dsn: postgres://fabriq_ctl@ctl-db:5432/fabriq_control   # control plane
+  clusterDsns:                                            # server-level DSNs
+    eu-1: postgres://fabriq_app@pg-eu-1:5432/postgres
+    us-1: postgres://fabriq_app@pg-us-1:5432/postgres
+  cacheTtl: 30s          # route freshness (suspension visibility)
+  maxActiveShards: 128   # open tenant pools, LRU-evicted idle-first
+```
+
+Catalog mode is mutually exclusive with `postgres.dsn` and `shards` — one
+routing authority. Projections additionally require `redis`.
+
+## Topology
+
+- **Control database** — holds only `fabriq_tenant_catalog` (tenant →
+  cluster, database name, state, migration version). It is consulted on
+  route cache misses and by the sweeper's scans; it is never a data path.
+  "One small Postgres" is the intended size.
+- **Clusters** — ordinary Postgres servers named in `clusterDsns`. Spread
+  tenants across **hundreds of databases per cluster, not thousands**:
+  autovacuum, backups, and connection memory all scale with database
+  count. Add clusters before a cluster's database count gets silly.
+  Residency falls out of placement: an EU tenant provisions onto `eu-1`
+  and its rows never leave it.
+- **Tenant databases** — created by provisioning, named `fabriq_{tenant}`,
+  each carrying fabriq's full migration chain (all infra tables are
+  `fabriq_`-prefixed, so forge extensions' prefixed tables co-exist).
+  RLS stays ON inside each database: routing is the first isolation
+  boundary, RLS the second.
+- **One fabriq tier** — any number of replicas. Serving pools are lazy
+  (dial on first touch) and capped (`maxActiveShards`); worker replicas
+  cooperate per tenant database via advisory locks.
+
+## Credentials
+
+The serving tier must **not** be superuser — RLS does not bind superusers,
+and boot refuses such credentials (`catalog.allowSuperuser: true` exists
+for dev/test only). Give the serving role CONNECT + DML on tenant
+databases. Provisioning (the CLI) is a separate concern and needs
+CREATEDB + the migration chain's rights; run it with its own role.
+
+Every cluster DSN is dialed at boot — a dead or misconfigured cluster
+fails the deploy, not the first tenant request routed to it.
+
+## Provisioning runbook
+
+Provisioning is **explicit** (never an implicit first-write side effect)
+and **idempotent** (re-running converges; a crash resumes from the
+catalog state row):
+
+```bash
+export FABRIQ_CATALOG_DSN=postgres://fabriq_ctl@ctl-db:5432/fabriq_control
+export FABRIQ_CLUSTER_DSNS="eu-1=postgres://...,us-1=postgres://..."
+
+fabriq tenant provision acme --cluster eu-1   # pending→creating→migrating→active
+fabriq tenant list                            # states + versions, fleet-wide
+fabriq tenant suspend acme                    # route off within cacheTtl; DB untouched
+fabriq tenant resume acme
+```
+
+fabriq **never drops a database**. Offboarding is `suspend` (routes the
+tenant off); the physical `DROP DATABASE` is a deliberate human step
+after whatever retention your contracts demand. A tenant stuck in
+`failed` is listable (`tenant list`) and safe to re-`provision`.
+
+### Fleet upgrades
+
+Each catalog entry records its database's migration version, and the
+router **fails closed**: a tenant whose database is below the binary's
+migration floor gets a typed 503 instead of a silently-corrupting serve.
+Rolling a new fabriq version is therefore:
+
+```bash
+fabriq tenant migrate-all --batch 8 --max-failures 3
+```
+
+The roller walks the fleet in bounded batches, records new versions, and
+stops at the failure budget (always safe to re-run). Deploy binaries and
+roll in either order — the gate protects both directions.
+
+## Worker plane (the sweeper)
+
+Instead of boot-time loops per database, worker replicas run a **sweeper**:
+scan the catalog, and for each active tenant try-claim that database's own
+advisory locks for one maintenance pass — relay the outbox, materialize
+quiet CRDT documents, compact due logs. Losers of a claim skip cleanly, so
+any number of replicas cooperate.
+
+Idle tenants back off exponentially (5s → 5min) in a decaying table; the
+write path publishes `fabriq:wake:{tenant}` over Redis so busy tenants are
+swept on the next pass. Cost tracks **active** tenants, not fleet size — a
+full scheduling pass over 10k catalog entries with 100 active costs ~20ms.
+
+Projection sinks (graph/search) stay shared; each tenant's projection
+bookkeeping lives in its own database. Blue-green rebuilds, the drift
+reconciler, live queries and document history archiving are not yet
+routed in catalog mode (they return typed errors or are documented gaps).
+
+## Connections and PgBouncer
+
+fabriq's own pools are already bounded: `maxActiveShards` × per-shard pool
+size is the tier's connection ceiling, and idle-first LRU eviction closes
+cold tenants' pools. If cluster-side connection memory still bites (many
+tiers, small servers), put **PgBouncer in transaction mode** in front of
+each cluster and point `clusterDsns` at it — fabriq speaks plain
+parameterized SQL on the serving path. Two caveats:
+
+- The **worker's advisory-lock claims and the relay's LISTEN/NOTIFY need
+  real sessions.** Point the worker replicas at the clusters directly (or
+  a session-mode pool); the serving tier can ride transaction mode.
+- `SET LOCAL` (fabriq's tenant stamping) is transaction-scoped and safe
+  in transaction mode.
+
+## Failure contracts
+
+| Failure | Behavior |
+| --- | --- |
+| Control DB down | Cached routes keep serving until `cacheTtl`; uncached tenants 503 (`unavailable`); the sweeper pauses; recovery is immediate — transport errors are never negative-cached |
+| Tenant DB down | That tenant's dial breaker opens (fast 503s, no dial storm); neighbors unaffected; the sweeper isolates and backs off; recovery is automatic once it dials |
+| Provisioning crash | The catalog row resumes the state machine; `failed` tenants are listable |
+| Version skew | Router fails closed per tenant until `migrate-all` catches it up |
+| Pool cap hit | Acquire waits ≤ 5s for an evictable pool, then 503 |
+| Two workers, one tenant | Advisory lock: one wins, the loser skips silently |
+
+These are tested contracts (`chaos_catalog_integration_test.go`), not
+aspirations.
+
+## Observability
+
+`/metrics` (forge extension) gains, beyond the shared instruments:
+`fabriq_sweep_pass_duration_seconds`, `fabriq_sweep_tenants_tracked`,
+`fabriq_sweep_tenants_eligible`, `fabriq_sweep_{swept,busy,errors}_total`,
+and `fabriq_pool_shards_{open,held}`. Watch errors-total (a tenant
+backing off on failures) and pool open vs cap (undersized
+`maxActiveShards` shows up as acquire waits).
+
+## Choosing a mode
+
+| | `single`/`shards` (ADR 0002/0007) | `catalog` (ADR 0011) |
+| --- | --- | --- |
+| Isolation | RLS rows / RLS + shard | **physical database** + RLS |
+| Tenants per DB | many | **one** |
+| Onboarding | implicit | explicit verb (< 5s) |
+| Backup/restore per tenant | filtered export | **pg_dump the database** |
+| Fleet ceiling | shard count | pool-capped, thousands |
+| Worker plane | boot-time loops | catalog sweeper |
