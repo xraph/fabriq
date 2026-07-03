@@ -36,6 +36,11 @@ type GatewayConfig struct {
 	// (e.g. pkgAuth.RequirePermission(...), forge.WithSSEMessage(...)). fabriq
 	// stays auth-scheme-agnostic.
 	RouteOptions []forge.RouteOption
+	// EnableDocEndpoints mounts the CRDT document endpoints (docs/update,
+	// docs/sync, docs/subscribe, docs/presence) under BasePath. OPT-IN:
+	// update is a write surface, so a live-query-only gateway must not
+	// grow it silently on upgrade.
+	EnableDocEndpoints bool
 }
 
 // GatewayOption is a functional option for GatewayConfig.
@@ -67,6 +72,13 @@ func WithGatewaySSEHeartbeat(d time.Duration) GatewayOption {
 // (auth, AsyncAPI/OpenAPI documentation).
 func WithGatewayRouteOptions(opts ...forge.RouteOption) GatewayOption {
 	return func(c *GatewayConfig) { c.RouteOptions = append(c.RouteOptions, opts...) }
+}
+
+// WithGatewayDocEndpoints mounts the CRDT document sync + presence
+// endpoints (opt-in: docs/update is a write surface — pair it with
+// fabriq.WithDocumentAuthz and auth middleware via route options).
+func WithGatewayDocEndpoints() GatewayOption {
+	return func(c *GatewayConfig) { c.EnableDocEndpoints = true }
 }
 
 // clusterBackend adapts the in-process cluster.Gateway (which returns a loose
@@ -139,7 +151,13 @@ func (g *GatewayExtension) Register(app forge.App) error {
 	if err := app.RegisterController(newLiveSSEController(g)); err != nil {
 		return err
 	}
-	return app.RegisterController(newLiveWSController(g))
+	if err := app.RegisterController(newLiveWSController(g)); err != nil {
+		return err
+	}
+	if g.cfg.EnableDocEndpoints {
+		return app.RegisterController(newDocsController(g))
+	}
+	return nil
 }
 
 // Start builds the cluster.Gateway over the facade's Redis transport and runs

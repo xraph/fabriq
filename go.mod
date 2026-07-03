@@ -165,3 +165,8 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+// PRE-PUSH BLOCKER: local grove with the text CRDT + ApplyChange work
+// (branch feat/crdt-yjs-parity). Swap for a tagged grove release before
+// pushing fabriq.
+replace github.com/xraph/grove => ../../xraph/forgery/grove

@@ -332,11 +332,22 @@ func TestFakeVector_SimilarOrdersByCosine(t *testing.T) {
 
 // --- FakeDocumentStore -------------------------------------------------------------
 
-func TestFakeDocumentStore_DeferredPlane(t *testing.T) {
+func TestFakeDocumentStore_LivePlane(t *testing.T) {
 	w := fabriqtest.NewWorld(ftRegistry(t))
 	ctx := ftCtx(t, "acme")
-	if err := w.Docs.ApplyUpdate(ctx, "D1", []byte{1}); err == nil || !strings.Contains(err.Error(), "document plane") {
-		t.Fatalf("deferred plane must say so, got %v", err)
+	// Malformed updates are rejected (must be a non-empty []ChangeRecord)...
+	if err := w.Docs.ApplyUpdate(ctx, "D1", []byte{1}); err == nil || !strings.Contains(err.Error(), "ChangeRecord") {
+		t.Fatalf("malformed update must be rejected, got %v", err)
+	}
+	// ...and well-formed ones append and sync back (full contract suite
+	// lives in core/document/document_test.go).
+	update := []byte(`[{"field":"title","crdt_type":"lww","hlc":{"ts":1,"c":0,"node":"a"},"node_id":"a","value":"hi"}]`)
+	if err := w.Docs.ApplyUpdate(ctx, "D1", update); err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	raw, err := w.Docs.Sync(ctx, "D1", nil)
+	if err != nil || !strings.Contains(string(raw), `"title"`) {
+		t.Fatalf("Sync = %s (%v)", raw, err)
 	}
 }
 

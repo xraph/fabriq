@@ -1,6 +1,27 @@
 # CRDT Document Plane — Design (Phase 7)
 
-Status: **implemented** (2026-06-12): the Postgres document store (adapters/postgres/document.go) folds the append-only update log through grove's MergeField engine; Sync exchanges seq-based vectors (snapshot + tail after compaction); quiet-window materialization emits ONE ordinary <entity>.updated event (version++) through the outbox with post-merge validation flagging; compaction is storage-only. Doc ids are "<entity>/<ulid>" — the registry binds the relational shape. Remaining: the live WS/SSE sync endpoint riding Hub.PublishRaw (the seam exists; clients can poll Sync today), and grove crdt-js client wiring.
+Status: **implemented, full CRDT surface** (2026-07-02): the Postgres
+document store (adapters/postgres/document.go) folds the append-only
+update log through grove's canonical `crdt.ApplyChange` — every type
+merges losslessly (LWW, PN-counter, OR-set, RGA list, nested document,
+and the character-level **text** CRDT with formatting). Sync exchanges
+seq-based vectors (snapshot + tail after compaction); quiet-window
+materialization emits ONE ordinary <entity>.updated event (version++)
+through the outbox with post-merge validation flagging (projections:
+counter totals, set/list element arrays, text strings —
+document.ProjectValues). The worker's leader-elected document-plane loop
+drives BOTH MaterializeQuiet and CompactDue (SnapshotEvery budget,
+physical row counts); Compact GCs tombstones behind a 1h horizon (text
+skeletonizes — addresses preserved). Live sync is first-class at the
+gateway: POST docs/update|sync + SSE docs/subscribe (RAW frames via
+syncingDocStore fan-out → Hub.SubscribeRaw), with ephemeral presence
+(docpresence channel, capped stream, never persisted). fabriqtest's
+FakeDocumentStore implements the same contract (core/document contract
+suite). grove crdt-js mirrors the full type surface incl. text
+(golden-fixture cross-engine parity). Doc ids are "<entity>/<ulid>" —
+the registry binds the relational shape. Remaining: WS multiplexing of
+doc frames on the live WS controller (SSE + HTTP cover sync today);
+secondary-scope support (tracked separately).
 
 ## What this plane is for
 

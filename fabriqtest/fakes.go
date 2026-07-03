@@ -9,6 +9,8 @@ package fabriqtest
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -18,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/xraph/grove/crdt"
 
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
@@ -1019,8 +1023,11 @@ func (f *FakeProjectionState) AppliedVersion(_ context.Context, tenantID, proj, 
 
 // --- FakeDocumentStore (document.Store) ----------------------------------------------
 
-// FakeDocumentStore is the deferred document plane: ApplyUpdate/Sync/Snapshot/
-// Compact all state the live CRDT plane is not implemented yet (phase 7).
+// FakeDocumentStore is a real in-memory document plane: an append-only
+// per-doc update log with monotonic seqs, seq-vector Sync (snapshot + tail,
+// mirroring the postgres wire shape), grove-engine folds via
+// crdt.ApplyChange, and log-into-snapshot compaction — the contract suite
+// in core/document runs against it.
 //
 // It additionally implements the optional history-offload capabilities
 // (document.SegmentLister, document.HistoryReader, document.HistoryPurger)
@@ -1030,32 +1037,158 @@ func (f *FakeProjectionState) AppliedVersion(_ context.Context, tenantID, proj, 
 // DeletedHistory.
 type FakeDocumentStore struct {
 	mu       sync.Mutex
+	docs     map[string]*fakeDoc
 	segments map[string][]document.SegmentInfo
 	history  map[string][]document.HistoryUpdate
 	purged   map[string]bool
 }
 
-func (*FakeDocumentStore) errDeferred() error {
-	return fmt.Errorf("fabriq: document plane not implemented yet (phase 7 scaffold): %w", fabriqerr.ErrStoreNotConfigured)
+type fakeDoc struct {
+	log      []fakeUpdate
+	nextSeq  int64
+	snapSeq  int64
+	snapshot *crdt.State
 }
 
-// ApplyUpdate implements document.Store (deferred).
-func (f *FakeDocumentStore) ApplyUpdate(context.Context, string, []byte) error {
-	return f.errDeferred()
+type fakeUpdate struct {
+	seq  int64
+	data []byte
 }
 
-// Sync implements document.Store (deferred).
-func (f *FakeDocumentStore) Sync(context.Context, string, []byte) ([]byte, error) {
-	return nil, f.errDeferred()
+func (f *FakeDocumentStore) doc(docID string) *fakeDoc {
+	if f.docs == nil {
+		f.docs = map[string]*fakeDoc{}
+	}
+	d, ok := f.docs[docID]
+	if !ok {
+		d = &fakeDoc{nextSeq: 1}
+		f.docs[docID] = d
+	}
+	return d
 }
 
-// Snapshot implements document.Store (deferred).
-func (f *FakeDocumentStore) Snapshot(context.Context, string) (document.Materialized, error) {
-	return document.Materialized{}, f.errDeferred()
+// ApplyUpdate implements document.Store: append one encoded update
+// (a non-empty JSON []crdt.ChangeRecord) to the doc's log.
+func (f *FakeDocumentStore) ApplyUpdate(_ context.Context, docID string, update []byte) error {
+	var changes []crdt.ChangeRecord
+	if err := json.Unmarshal(update, &changes); err != nil || len(changes) == 0 {
+		return fmt.Errorf("fabriq: update for %s is not a non-empty []ChangeRecord: %w", docID, err)
+	}
+	if err := document.ValidateUpdate(crdt.NewMergeEngine(), changes); err != nil {
+		return fmt.Errorf("fabriq: invalid update for %s: %w", docID, err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.doc(docID)
+	d.log = append(d.log, fakeUpdate{seq: d.nextSeq, data: append([]byte(nil), update...)})
+	d.nextSeq++
+	return nil
 }
 
-// Compact implements document.Store (deferred).
-func (f *FakeDocumentStore) Compact(context.Context, string) error { return f.errDeferred() }
+// Sync implements document.Store: 8-byte big-endian last-seen seq in,
+// JSON {seq, snapshot?, updates[]} out (snapshot when the client is
+// behind the compaction floor) — the postgres adapter's wire shape.
+func (f *FakeDocumentStore) Sync(_ context.Context, docID string, stateVector []byte) ([]byte, error) {
+	since := int64(0)
+	if len(stateVector) == 8 {
+		since = int64(binary.BigEndian.Uint64(stateVector)) // #nosec G115 -- test fake; seqs are tiny
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.doc(docID)
+
+	payload := struct {
+		Seq      int64             `json:"seq"`
+		Snapshot json.RawMessage   `json:"snapshot,omitempty"`
+		Updates  []json.RawMessage `json:"updates"`
+	}{Seq: since}
+
+	if since < d.snapSeq && d.snapshot != nil {
+		raw, err := json.Marshal(d.snapshot)
+		if err != nil {
+			return nil, err
+		}
+		payload.Snapshot = raw
+		payload.Seq = d.snapSeq
+		since = d.snapSeq
+	}
+	for _, u := range d.log {
+		if u.seq > since {
+			payload.Updates = append(payload.Updates, json.RawMessage(u.data))
+			payload.Seq = u.seq
+		}
+	}
+	return json.Marshal(payload)
+}
+
+// mergedStateLocked folds snapshot + log tail through grove's engine.
+func (d *fakeDoc) mergedStateLocked(docID string) (*crdt.State, error) {
+	state := crdt.NewState("fabriq_docs", docID)
+	if d.snapshot != nil {
+		raw, err := json.Marshal(d.snapshot)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(raw, state); err != nil {
+			return nil, err
+		}
+	}
+	engine := crdt.NewMergeEngine()
+	for _, u := range d.log {
+		if u.seq <= d.snapSeq {
+			continue
+		}
+		var changes []crdt.ChangeRecord
+		if err := json.Unmarshal(u.data, &changes); err != nil {
+			return nil, fmt.Errorf("fabriq: corrupt update %d for %s: %w", u.seq, docID, err)
+		}
+		for i := range changes {
+			// The shared document-plane fold — identical degradation
+			// semantics to the postgres adapter (contract parity).
+			document.FoldChange(engine, state, &changes[i])
+		}
+	}
+	return state, nil
+}
+
+// Snapshot implements document.Store: merged state projected onto
+// column-keyed values.
+func (f *FakeDocumentStore) Snapshot(_ context.Context, docID string) (document.Materialized, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.doc(docID)
+	state, err := d.mergedStateLocked(docID)
+	if err != nil {
+		return document.Materialized{}, err
+	}
+	raw, err := json.Marshal(document.ProjectValues(state))
+	if err != nil {
+		return document.Materialized{}, err
+	}
+	return document.Materialized{DocID: docID, Snapshot: raw}, nil
+}
+
+// Compact implements document.Store: fold the log into the snapshot and
+// trim it (storage-only; Sync output is unchanged).
+func (f *FakeDocumentStore) Compact(_ context.Context, docID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.doc(docID)
+	state, err := d.mergedStateLocked(docID)
+	if err != nil {
+		return err
+	}
+	maxSeq := d.snapSeq
+	for _, u := range d.log {
+		if u.seq > maxSeq {
+			maxSeq = u.seq
+		}
+	}
+	d.snapshot = state
+	d.snapSeq = maxSeq
+	d.log = nil
+	return nil
+}
 
 // SeedSegments seeds the sealed-segment metadata ListSegments returns for
 // docID, replacing any previously seeded segments for that doc.

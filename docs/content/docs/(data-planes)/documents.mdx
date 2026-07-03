@@ -3,7 +3,9 @@ title: Documents
 description: The CRDT document plane — append-only update log, seq-vector sync, compaction with optional history offload to the blob plane, and quiet-window materialization back into ordinary entities.
 ---
 
-The document plane backs `KindDocument` entities: collaborative documents — page-builder pages, annotations — where concurrent editing is normal and last-write-wins rows would destroy work. These entities are **not** written through the command plane (`Exec` rejects them). They converge through CRDT merges in an append-only log and only periodically *materialize* into ordinary rows. The plane is implemented in `adapters/postgres` (`DocStore`), folding the log through grove's `crdt.MergeEngine` (HLC-stamped field merge) — referenced, never reimplemented.
+The document plane backs `KindDocument` entities: collaborative documents — page-builder pages, annotations — where concurrent editing is normal and last-write-wins rows would destroy work. These entities are **not** written through the command plane (`Exec` rejects them). They converge through CRDT merges in an append-only log and only periodically *materialize* into ordinary rows. The plane is implemented in `adapters/postgres` (`DocStore`), folding the log through grove's canonical `crdt.ApplyChange` — referenced, never reimplemented.
+
+The **full grove type surface** merges losslessly: LWW registers, PN-counters, OR-sets (exact observed-remove), RGA lists, nested documents, and the character-level **text** CRDT (formatting attributes, stable cursor positions, Quill-style deltas). Materialization projects each onto its column shape: counter totals, set/list element arrays, text strings, resolved document maps. `@grove-js/crdt` mirrors every type in the browser, with cross-engine convergence pinned by golden fixtures.
 
 ## Declaring a document entity
 
@@ -191,7 +193,24 @@ for frame := range frames {
 }
 ```
 
-On the write side, every `ApplyUpdate` fans its frame out on that channel as a best-effort live notification — the log is the truth, and clients heal any dropped frame through `Sync` (each frame carries the log seq as `Version` for gap detection). Awareness traffic (cursors, who's-online) rides a separate ephemeral Redis pub/sub path and is never persisted.
+On the write side, every `ApplyUpdate` fans its frame out on that channel as a best-effort live notification — the log is the truth, and clients heal any dropped frame through `Sync` (each frame carries the log seq as `Version` for gap detection).
+
+### Gateway endpoints
+
+The [gateway extension](/docs/deployment) terminates the document plane at the edge (paths under its `BasePath`, default `/api/v1/live`):
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /docs/update` | `{docId, update}` — append one update (base64 `[]ChangeRecord`) |
+| `POST /docs/sync` | `{docId, stateVector}` — snapshot + missing updates |
+| `GET /docs/subscribe?id=…` | SSE of RAW `sync` frames (`id` = log seq; a gap means re-sync) |
+| `POST /docs/presence` | `{docId, node, data}` — publish one awareness frame |
+
+Auth is the host app's: attach middleware via the gateway's `RouteOptions`; the handlers require a tenant on the request context.
+
+### Presence (awareness)
+
+Cursors, selections and who's-online ride `Fabriq.PublishDocumentPresence` / `SubscribeDocumentPresence` — an ephemeral channel (`docpresence:{tenant}:{docID}`) on a capped Redis stream tailed from "now": never persisted, no delivery guarantees, exactly the semantics awareness wants. `GET /docs/subscribe?id=…&presence=1` interleaves `presence` events into the SSE stream.
 
 ## Materialization — the bridge back into the fabric
 

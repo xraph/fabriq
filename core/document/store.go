@@ -39,10 +39,10 @@ type Materialized struct {
 	Version int64
 }
 
-// Store is the document-plane port. The production implementation (phase 7)
-// lives in adapters/postgres backed by crdt_updates + crdt_snapshots;
-// fabriqtest provides a fake that returns ErrStoreNotConfigured-style
-// errors until then.
+// Store is the document-plane port. The production implementation lives
+// in adapters/postgres backed by crdt_updates + crdt_snapshots;
+// fabriqtest.FakeDocumentStore is a real in-memory implementation the
+// contract suite in this package runs against.
 type Store interface {
 	// ApplyUpdate appends one encoded CRDT update to the document's log.
 	ApplyUpdate(ctx context.Context, docID string, update []byte) error

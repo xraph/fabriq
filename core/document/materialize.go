@@ -1,21 +1,21 @@
 package document
 
-// PHASE 7 SCAFFOLD — materialization.
+// Materialization — the bridge from the CRDT log back into the fabric —
+// is IMPLEMENTED in the postgres adapter (DocStore.MaterializeQuiet in
+// adapters/postgres/document.go) and driven by the forgeext worker's
+// leader-elected document-plane loop. Contract:
 //
-// Contract (normative; see DESIGN.md):
+//   - After CRDTSpec.QuietWindow of silence on a document with updates
+//     beyond the last materialization, merge the log (grove engine, the
+//     shared FoldChange), project values (ProjectValues), run post-merge
+//     validation (registry.CoerceRow + the optional ValidateFunc), and —
+//     only on success — write the entity row plus exactly ONE ordinary
+//     <entity>.updated event (version+1) through the transactional
+//     outbox, with the materialization watermark in the same tx (a crash
+//     can never re-emit).
+//   - Validation failures flag the document for resolution (flag_reason
+//     recorded); flagged documents are skipped by both sweeps until an
+//     operator intervenes.
 //
-//   - After a document's quiet window (CRDTSpec.QuietWindow) with no new
-//     updates, the materializer merges the update log (grove's crdt
-//     engine — referenced, never reimplemented), runs POST-MERGE
-//     VALIDATION (CRDTs converge but do not guarantee business validity;
-//     violations flag the document for resolution instead of
-//     materializing), writes the snapshot into the entity's relational
-//     row, and emits ONE ordinary domain event (<entity>.updated,
-//     version++) through the transactional outbox.
-//   - Projections, search and audit therefore see CRDT documents as
-//     perfectly normal entities; nothing downstream knows the row was
-//     CRDT-merged.
-//   - The materializer is a fabriq-worker job (leader-elected per shard).
-//
-// TODO(phase 7): Materializer{Store, command.Store, validator hook} +
-// quiet-window scheduling driven by crdt_updates arrival times.
+// Behavior is pinned by TestDocMaterialize_* (adapters/postgres) and the
+// worker integration suite; see DESIGN.md for the full plane contract.

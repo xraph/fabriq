@@ -109,6 +109,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 	stores := &Stores{Postgres: pg, Shards: set, shardPG: shardPG, customAppliers: cfg.CustomAppliers}
 	stores.state = routingState{stores: stores}
 	docStore := pg.Documents()
+	stores.Docs = docStore
 	ports := Ports{
 		Store:           shard.NewStore(set),
 		Relational:      shard.NewRelational(set),
@@ -289,10 +290,15 @@ type Stores struct {
 	// the document plane (which stays single-shard in step 2) use it. For
 	// per-tenant work use Shards / ShardPGs.
 	Postgres *postgres.Adapter
-	Redis    *redis.Adapter
-	Falkor   *falkordb.Adapter
-	Elastic  *elastic.Adapter
-	Blob     *trovestore.Adapter // nil when Storage not configured
+	// Docs is the document-plane store on the primary shard, with history
+	// archiving wired when Storage is configured. The worker plane must use
+	// this instance — Postgres.Documents() mints a fresh store without the
+	// blob handle, which would silently skip history sealing on compaction.
+	Docs    *postgres.DocStore
+	Redis   *redis.Adapter
+	Falkor  *falkordb.Adapter
+	Elastic *elastic.Adapter
+	Blob    *trovestore.Adapter // nil when Storage not configured
 	// CAS is the content-addressable store (nil when EnableCas is false).
 	CAS *trovestore.CASStore
 	// Cache is the engine cache (nil when Redis is not configured).
