@@ -1329,15 +1329,15 @@ func (f *FakeSpatial) Delete(ctx context.Context, entity, id string) error {
 
 // Get implements query.SpatialQuerier. Returns ok=false (nil error) when the
 // id is absent, out of scope, or stored as a non-point (NaN) geometry.
-func (f *FakeSpatial) Get(ctx context.Context, entity, id string) (query.Geometry, map[string]any, bool, error) {
-	tid, err := tenant.Require(ctx)
-	if err != nil {
-		return query.Geometry{}, nil, false, err
+func (f *FakeSpatial) Get(ctx context.Context, entity, id string) (geom query.Geometry, meta map[string]any, ok bool, err error) {
+	tid, rerr := tenant.Require(ctx)
+	if rerr != nil {
+		return query.Geometry{}, nil, false, rerr
 	}
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	e, ok := f.data[tid][entity][id]
-	if !ok || !scopeVisible(ctx, e.scope) || math.IsNaN(e.x) {
+	e, found := f.data[tid][entity][id]
+	if !found || !scopeVisible(ctx, e.scope) || math.IsNaN(e.x) {
 		return query.Geometry{}, nil, false, nil
 	}
 	return query.Geometry{WKT: fmt.Sprintf("POINT (%v %v)", e.x, e.y), SRID: e.srid}, e.meta, true, nil

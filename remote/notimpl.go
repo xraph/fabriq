@@ -29,7 +29,7 @@ func (niSpatial) Upsert(context.Context, string, string, query.Geometry, map[str
 	return ErrNotImplemented
 }
 func (niSpatial) Within(context.Context, query.SpatialQuery, any) error { return ErrNotImplemented }
-func (niSpatial) Get(context.Context, string, string) (query.Geometry, map[string]any, bool, error) {
+func (niSpatial) Get(context.Context, string, string) (geom query.Geometry, meta map[string]any, ok bool, err error) {
 	return query.Geometry{}, nil, false, ErrNotImplemented
 }
 func (niSpatial) Delete(context.Context, string, string) error { return ErrNotImplemented }

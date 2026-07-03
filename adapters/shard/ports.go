@@ -179,10 +179,10 @@ func (s *Spatial) Within(ctx context.Context, q query.SpatialQuery, into any) er
 }
 
 // Get routes a single-geometry read to the tenant's shard.
-func (s *Spatial) Get(ctx context.Context, entity, id string) (query.Geometry, map[string]any, bool, error) {
-	sh, err := s.set.For(ctx)
-	if err != nil {
-		return query.Geometry{}, nil, false, err
+func (s *Spatial) Get(ctx context.Context, entity, id string) (geom query.Geometry, meta map[string]any, ok bool, err error) {
+	sh, ferr := s.set.For(ctx)
+	if ferr != nil {
+		return query.Geometry{}, nil, false, ferr
 	}
 	return sh.Spatial.Get(ctx, entity, id)
 }

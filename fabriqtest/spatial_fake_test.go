@@ -61,8 +61,8 @@ func TestFakeSpatial_Get(t *testing.T) {
 	}
 	// A point must round-trip through Within as a valid center.
 	var got []query.SpatialMatch
-	if err := f.Within(ctx, query.SpatialQuery{Entity: "site", Center: geom, RadiusM: 1000, K: 5}, &got); err != nil {
-		t.Fatal(err)
+	if werr := f.Within(ctx, query.SpatialQuery{Entity: "site", Center: geom, RadiusM: 1000, K: 5}, &got); werr != nil {
+		t.Fatal(werr)
 	}
 	if len(got) != 1 || got[0].ID != "s1" {
 		t.Fatalf("want [s1], got %#v", got)
@@ -88,8 +88,8 @@ func TestFakeSpatial_WithinFilter(t *testing.T) {
 
 	var got []query.SpatialMatch
 	if err := f.Within(ctx, query.SpatialQuery{
-		Entity: "equipment",
-		Center: query.Geometry{WKT: "POINT (0 0)", SRID: 0},
+		Entity:  "equipment",
+		Center:  query.Geometry{WKT: "POINT (0 0)", SRID: 0},
 		RadiusM: 100, K: 10,
 		Filter: map[string]string{"tag": "pump"},
 	}, &got); err != nil {
