@@ -192,3 +192,14 @@ func SafeMessage(code Code) string {
 		return "An internal error occurred."
 	}
 }
+
+// CodeOf extracts the structured code from an error chain ("" when the
+// chain carries no *Error) — the classification seam callers use to map
+// errors onto transport statuses without unwrapping by hand.
+func CodeOf(err error) Code {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Code
+	}
+	return ""
+}

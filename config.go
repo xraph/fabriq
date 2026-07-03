@@ -23,7 +23,13 @@ type Config struct {
 	// both). Like Shards it is config.yaml-only: the FABRIQ_* env overlay
 	// cannot express a map. Note the document plane stays on the primary shard
 	// regardless of pinning (ADR 0007 step 2).
-	ShardPins     map[string]string   `yaml:"shardPins" json:"shardPins"`
+	ShardPins map[string]string `yaml:"shardPins" json:"shardPins"`
+	// Catalog enables db-per-tenant CATALOG MODE (spec 2026-07-03): each
+	// tenant owns a dedicated database, routed by the control-plane catalog
+	// instead of hash placement. Mutually exclusive with Shards/ShardPins.
+	// Like Shards it is config.yaml-only (the env overlay cannot express
+	// the cluster map).
+	Catalog       CatalogConfig       `yaml:"catalog" json:"catalog"`
 	Redis         RedisConfig         `yaml:"redis" json:"redis"`
 	FalkorDB      FalkorDBConfig      `yaml:"falkordb" json:"falkordb"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
@@ -63,6 +69,26 @@ func (c Config) WithInjectedGrove(db *grove.DB) Config {
 // when none). It lets a host (e.g. the forge extension) tell whether grove
 // resolution succeeded without re-reading the container.
 func (c Config) InjectedGrove() *grove.DB { return c.primaryGrove }
+
+// CatalogConfig configures db-per-tenant catalog mode.
+type CatalogConfig struct {
+	// DSN locates the CONTROL database holding fabriq_tenant_catalog.
+	// Setting it turns catalog mode on.
+	DSN string `yaml:"dsn" json:"dsn"`
+	// ClusterDSNs maps cluster ids to server-level DSNs (no database path
+	// or a maintenance database); a tenant's database lives on the cluster
+	// its catalog entry names. At least one cluster is required.
+	ClusterDSNs map[string]string `yaml:"clusterDsns" json:"clusterDsns"`
+	// CacheTTL bounds route freshness (suspension / new-tenant visibility).
+	// Zero falls back to 30s.
+	CacheTTL time.Duration `yaml:"cacheTtl" json:"cacheTtl"`
+	// MaxActiveShards caps concurrently-open tenant database pools (LRU
+	// evicted, idle first). Zero falls back to 128.
+	MaxActiveShards int `yaml:"maxActiveShards" json:"maxActiveShards"`
+}
+
+// Enabled reports whether catalog mode is configured.
+func (c CatalogConfig) Enabled() bool { return c.DSN != "" }
 
 // PostgresConfig locates the source of truth. Required unless Shards is set
 // (it is the one-shard shorthand).
@@ -178,8 +204,8 @@ func (c Config) Validate() error {
 			}
 			seen[s.ID] = struct{}{}
 		}
-	} else if c.Postgres.DSN == "" && c.primaryGrove == nil {
-		return fmt.Errorf("fabriq: config: postgres.dsn (or shards, or an injected grove.DB) is required (postgres is the source of truth)")
+	} else if c.Postgres.DSN == "" && c.primaryGrove == nil && !c.Catalog.Enabled() {
+		return fmt.Errorf("fabriq: config: postgres.dsn (or shards, catalog mode, or an injected grove.DB) is required (postgres is the source of truth)")
 	}
 	if len(c.ShardPins) > 0 {
 		if len(c.Shards) == 0 {
@@ -196,6 +222,22 @@ func (c Config) Validate() error {
 			if _, ok := ids[sid]; !ok {
 				return fmt.Errorf("fabriq: config: shardPins: tenant %q pinned to unknown shard %q", tid, sid)
 			}
+		}
+	}
+	if c.Catalog.Enabled() {
+		if len(c.Shards) > 0 || len(c.ShardPins) > 0 {
+			return fmt.Errorf("fabriq: config: catalog mode is mutually exclusive with shards/shardPins (one routing authority)")
+		}
+		if len(c.Catalog.ClusterDSNs) == 0 {
+			return fmt.Errorf("fabriq: config: catalog.clusterDsns requires at least one cluster")
+		}
+		for id, dsn := range c.Catalog.ClusterDSNs {
+			if id == "" || dsn == "" {
+				return fmt.Errorf("fabriq: config: catalog.clusterDsns entries need both a cluster id and a dsn")
+			}
+		}
+		if c.Catalog.MaxActiveShards < 0 {
+			return fmt.Errorf("fabriq: config: catalog.maxActiveShards must be >= 0")
 		}
 	}
 	if c.Projections.Graph && c.FalkorDB.Addr == "" {
