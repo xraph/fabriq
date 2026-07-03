@@ -150,6 +150,17 @@ func run() error {
 	if err := reg.Register(placeSpec()); err != nil {
 		return err
 	}
+	// The demo dynamic "site" + "equipment" entities: an asset-anchored,
+	// tag-filtered spatial scenario layered on top of place. Each site is a
+	// facility anchor and each equipment row is a tagged asset ringing it;
+	// both are relational records AND points in the spatial plane, seeded via
+	// Spatial().Upsert below (see equipment_seed.go).
+	if err := reg.Register(siteSpec()); err != nil {
+		return err
+	}
+	if err := reg.Register(equipmentSpec()); err != nil {
+		return err
+	}
 	if err := reg.Register(adminapi.PluginRemoteSpec()); err != nil {
 		return err
 	}
@@ -234,7 +245,7 @@ func run() error {
 	// 3. EnsureDynamic creates the physical Postgres table for each dynamic
 	//    entity (managed additive DDL). fabriq.Open exposes the primary shard's
 	//    *postgres.Adapter via Stores.Postgres, which carries EnsureDynamic.
-	for _, name := range []string{productEntity, customerEntity, orderEntity, placeEntity, adminapi.PluginRemoteEntityType, pageEntity, noteEntity} {
+	for _, name := range []string{productEntity, customerEntity, orderEntity, placeEntity, siteEntity, equipmentEntity, adminapi.PluginRemoteEntityType, pageEntity, noteEntity} {
 		ent, ok := reg.Get(name)
 		if !ok {
 			_ = f.Close()
@@ -254,6 +265,7 @@ func run() error {
 	fsFoldersTotal, fsFilesTotal := 0, 0
 	docsSeeded := 0
 	placesTotal := 0
+	equipmentTotal := 0
 	distillNodesTotal := 0
 	telemetryPointsTotal := 0
 	for _, tid := range demoTenants {
@@ -284,6 +296,18 @@ func run() error {
 			return perr
 		}
 		placesTotal += pn
+		// Seed the site + equipment entities + their geometry into the spatial
+		// plane, layered on top of place: one site per tenant (near that
+		// tenant's place cluster) ringed by 8 tagged equipment points. This is
+		// what exercises the adminapi spatial endpoint's centerId (near-asset)
+		// and tag filter wiring against live demo data. Count-guarded on the
+		// equipment table, so re-running on every startup is safe.
+		en, eerr := seedEquipment(ctx, f, tid)
+		if eerr != nil {
+			_ = f.Close()
+			return eerr
+		}
+		equipmentTotal += en
 		// Populate the Search (Elasticsearch) and Vector (pgvector) planes for the
 		// tenant's products via the DIRECT write paths (Search.ApplyMutations and
 		// Vector.Upsert) — no projection worker. Idempotent: ES bulk gates on the
@@ -495,7 +519,7 @@ func run() error {
 		return err
 	}
 
-	logStartup(addr, esURL, falkorAddr, blobDSN, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal, fsFoldersTotal, fsFilesTotal, docsSeeded, placesTotal, distillNodesTotal, telemetryPointsTotal)
+	logStartup(addr, esURL, falkorAddr, blobDSN, embedder.Dims(), indexedTotal, graphNodesTotal, graphEdgesTotal, fsFoldersTotal, fsFilesTotal, docsSeeded, placesTotal, equipmentTotal, distillNodesTotal, telemetryPointsTotal)
 	return app.Run()
 }
 
@@ -619,7 +643,7 @@ func (e missingEntityError) Error() string {
 // logStartup prints the base URL, what got wired (ES url, FalkorDB addr,
 // embedder dims, indexed products, seeded graph nodes/edges), and a couple of
 // sample curl commands.
-func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles, docs, places, distillNodes, telemetryPoints int) {
+func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles, docs, places, equipment, distillNodes, telemetryPoints int) {
 	base := "http://localhost" + addr
 	log.Printf("admin-demo listening on %s (admin base: %s/admin)", addr, base)
 	log.Printf("  seeded tenants: acme-corp, globex (%d products each)", seedCount)
@@ -630,6 +654,7 @@ func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNod
 	log.Printf("  files: blob=%s bucket=%q CAS=on; seeded %d folders + %d files across tenants", blobDSN, blobBucket, fsFolders, fsFiles)
 	log.Printf("  crdt: document plane (postgres + grove-crdt) wired; seeded %d demo doc(s) (%s/%s) across tenants", docs, pageEntity, demoPageID)
 	log.Printf("  spatial: postgis (fabriq_geometries) wired; seeded %d place point(s) across tenants (acme-corp: SF+NYC, globex: London/Berlin/Tokyo)", places)
+	log.Printf("  spatial: place (category) + site/equipment (tag) — try near-asset + tag filter in the Spatial page; seeded %d equipment point(s) across tenants", equipment)
 	log.Printf("  distill: context-distillation tree (digest_node) built from product+customer rows via demo embedder + stub summarizer + CAS; %d L0 leaves across tenants", distillNodes)
 	log.Printf("  timeseries: tag_readings (plain-PG telemetry table) wired; bulk-wrote %d readings across tenants (signals: cpu.load, mem.used.pct, requests.rate, latency.p95.ms)", telemetryPoints)
 	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true graph:true files:true crdt:true distill:true", base)
@@ -641,6 +666,7 @@ func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNod
 	log.Printf("  try: curl -s '%s/admin/crdt/%s/%s/updates' -H 'X-Tenant-ID: acme-corp'  # update-log metadata", base, pageEntity, demoPageID)
 	log.Printf("  try: curl -s '%s/admin/entities?type=product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
 	log.Printf("  try: curl -s -X POST %s/admin/spatial/within -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"entity\":\"place\",\"lng\":-122.42,\"lat\":37.77,\"radiusM\":50000,\"limit\":10}'  # places near SF", base)
+	log.Printf("  try: curl -s -X POST %s/admin/spatial/within -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"entity\":\"equipment\",\"centerEntity\":\"site\",\"centerId\":\"<plant-a-id>\",\"radiusM\":500,\"filter\":{\"tag\":\"pump\"},\"limit\":10}'  # pumps near plant-a", base)
 	log.Printf("  try: curl -s '%s/admin/distill/map' -H 'X-Tenant-ID: acme-corp'  # context-distillation tree outline", base)
 	log.Printf("  try: curl -s '%s/admin/distill/node/%s' -H 'X-Tenant-ID: acme-corp'  # tenant root + L1 children", base, agent.TenantRootID())
 	log.Printf("  try: curl -s '%s/admin/timeseries/keys' -H 'X-Tenant-ID: acme-corp'  # telemetry series keys", base)
