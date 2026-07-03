@@ -1,6 +1,7 @@
 package forgeext
 
 import (
+	"strings"
 	"time"
 
 	"github.com/xraph/forge"
@@ -127,7 +128,19 @@ func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 		}
 	}
 	bind("postgres", &cfg.Postgres)
-	bind("shards", &cfg.Shards)
+	// shards is a struct list and shardPins a map — confy's Bind decodes those
+	// only through struct fields, not into a bare slice/map target, so they
+	// bind via a wrapper struct at the parent key (the same kind of special
+	// case as elasticsearch.addrs below).
+	if cm.IsSet(prefix+"shards") || cm.IsSet(prefix+"shardPins") {
+		var wrap struct {
+			Shards    []fabriq.ShardConfig `yaml:"shards"`
+			ShardPins map[string]string    `yaml:"shardPins"`
+		}
+		_ = cm.Bind(strings.TrimSuffix(prefix, "."), &wrap)
+		cfg.Shards = wrap.Shards
+		cfg.ShardPins = wrap.ShardPins
+	}
 	bind("redis", &cfg.Redis)
 	bind("falkordb", &cfg.FalkorDB)
 	bind("elasticsearch", &cfg.Elasticsearch)

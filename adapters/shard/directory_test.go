@@ -77,6 +77,72 @@ func TestCached_MemoizesWithinTTL(t *testing.T) {
 	}
 }
 
+func TestPinnedDirectory_PinTakesPrecedence(t *testing.T) {
+	fallback := shard.HashDirectory("a", "b")
+	dir := shard.PinnedDirectory(map[string]string{"acme": "b"}, fallback)
+	ctx := context.Background()
+
+	// The pin wins regardless of where the hash would place the tenant.
+	id, err := dir.Shard(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "b" {
+		t.Fatalf("pinned tenant routed to %q, want %q", id, "b")
+	}
+}
+
+func TestPinnedDirectory_FallsBackForUnpinnedTenants(t *testing.T) {
+	inner := &countingDir{id: "a"}
+	dir := shard.PinnedDirectory(map[string]string{"acme": "b"}, inner)
+	ctx := context.Background()
+
+	id, err := dir.Shard(ctx, "globex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "a" {
+		t.Fatalf("unpinned tenant routed to %q, want fallback %q", id, "a")
+	}
+	if inner.calls != 1 {
+		t.Fatalf("fallback consulted %d times, want 1", inner.calls)
+	}
+
+	// A pin hit never consults the fallback.
+	if _, err := dir.Shard(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if inner.calls != 1 {
+		t.Fatalf("pin hit consulted fallback: %d calls", inner.calls)
+	}
+}
+
+func TestPinnedDirectory_NilFallback(t *testing.T) {
+	dir := shard.PinnedDirectory(map[string]string{"acme": "b"}, nil)
+	ctx := context.Background()
+
+	if id, err := dir.Shard(ctx, "acme"); err != nil || id != "b" {
+		t.Fatalf("pinned tenant should route without a fallback, got (%q, %v)", id, err)
+	}
+	if _, err := dir.Shard(ctx, "globex"); err == nil {
+		t.Fatal("unpinned tenant with nil fallback must error")
+	}
+}
+
+func TestPinnedDirectory_CopiesPins(t *testing.T) {
+	pins := map[string]string{"acme": "b"}
+	dir := shard.PinnedDirectory(pins, shard.HashDirectory("a"))
+	pins["acme"] = "mutated"
+
+	id, err := dir.Shard(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "b" {
+		t.Fatalf("caller mutation leaked into directory: routed to %q", id)
+	}
+}
+
 func TestSet_ResolveID_And_ForTenant(t *testing.T) {
 	s0, s1 := &stub{id: "0"}, &stub{id: "1"}
 	set, err := shard.New(shard.HashDirectory("0", "1"), shardFor(s0), shardFor(s1))

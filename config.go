@@ -14,8 +14,16 @@ import (
 // `fabriqd` loads from YAML, hence the yaml tags. Entities are not
 // configured here — they are registered in code via the registry.
 type Config struct {
-	Postgres      PostgresConfig      `yaml:"postgres" json:"postgres"`
-	Shards        []ShardConfig       `yaml:"shards" json:"shards"`
+	Postgres PostgresConfig `yaml:"postgres" json:"postgres"`
+	Shards   []ShardConfig  `yaml:"shards" json:"shards"`
+	// ShardPins pins specific tenants to specific shards (tenant id → shard
+	// id), overriding hash placement — for residency / high-value tenants that
+	// must live on a known shard. Unpinned tenants keep hashing. Requires
+	// Shards; every pin must name a configured shard id (Validate enforces
+	// both). Like Shards it is config.yaml-only: the FABRIQ_* env overlay
+	// cannot express a map. Note the document plane stays on the primary shard
+	// regardless of pinning (ADR 0007 step 2).
+	ShardPins     map[string]string   `yaml:"shardPins" json:"shardPins"`
 	Redis         RedisConfig         `yaml:"redis" json:"redis"`
 	FalkorDB      FalkorDBConfig      `yaml:"falkordb" json:"falkordb"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
@@ -172,6 +180,23 @@ func (c Config) Validate() error {
 		}
 	} else if c.Postgres.DSN == "" && c.primaryGrove == nil {
 		return fmt.Errorf("fabriq: config: postgres.dsn (or shards, or an injected grove.DB) is required (postgres is the source of truth)")
+	}
+	if len(c.ShardPins) > 0 {
+		if len(c.Shards) == 0 {
+			return fmt.Errorf("fabriq: config: shardPins requires shards (pinning is a multi-shard routing override)")
+		}
+		ids := make(map[string]struct{}, len(c.Shards))
+		for _, s := range c.Shards {
+			ids[s.ID] = struct{}{}
+		}
+		for tid, sid := range c.ShardPins {
+			if tid == "" {
+				return fmt.Errorf("fabriq: config: shardPins has an empty tenant id (pinned to shard %q)", sid)
+			}
+			if _, ok := ids[sid]; !ok {
+				return fmt.Errorf("fabriq: config: shardPins: tenant %q pinned to unknown shard %q", tid, sid)
+			}
+		}
 	}
 	if c.Projections.Graph && c.FalkorDB.Addr == "" {
 		return fmt.Errorf("fabriq: config: projections.graph enabled but falkordb.addr is empty")

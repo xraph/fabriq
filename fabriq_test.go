@@ -225,6 +225,42 @@ func TestConfig_Validate(t *testing.T) {
 	}
 }
 
+// TestConfig_Validate_ShardPins mirrors the shard-list validation: pins are
+// checked at Open time (Open calls Validate before dialing anything), so a
+// pin naming an unknown shard is rejected before a single connection opens.
+func TestConfig_Validate_ShardPins(t *testing.T) {
+	sharded := fabriq.Config{Shards: []fabriq.ShardConfig{
+		{ID: "shard-a", DSN: "postgres://pg-a/fabriq"},
+		{ID: "shard-b", DSN: "postgres://pg-b/fabriq"},
+	}}
+
+	good := sharded
+	good.ShardPins = map[string]string{"acme": "shard-b"}
+	if err := good.Validate(); err != nil {
+		t.Fatalf("valid shard pins rejected: %v", err)
+	}
+
+	unknown := sharded
+	unknown.ShardPins = map[string]string{"acme": "shard-z"}
+	if err := unknown.Validate(); err == nil {
+		t.Fatal("pin naming an unknown shard must fail")
+	}
+
+	noShards := fabriq.Config{
+		Postgres:  fabriq.PostgresConfig{DSN: "postgres://localhost/fabriq"},
+		ShardPins: map[string]string{"acme": "0"},
+	}
+	if err := noShards.Validate(); err == nil {
+		t.Fatal("shard pins without a shards list must fail")
+	}
+
+	emptyTenant := sharded
+	emptyTenant.ShardPins = map[string]string{"": "shard-a"}
+	if err := emptyTenant.Validate(); err == nil {
+		t.Fatal("pin with an empty tenant id must fail")
+	}
+}
+
 func TestFabriq_For_Typed(t *testing.T) {
 	w := fabriqtest.NewWorld(fReg(t))
 	f := newFabric(t, w)
