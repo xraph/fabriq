@@ -319,3 +319,21 @@ var (
 	_ Router   = (*DynamicSet)(nil)
 	_ Provider = (*PoolManager)(nil)
 )
+
+// CloseAll tears down every open shard (process shutdown). Held shards are
+// closed too — pgx pool Close blocks until in-flight connections return.
+func (p *PoolManager) CloseAll() error {
+	p.mu.Lock()
+	entries := p.entries
+	p.entries = map[string]*poolEntry{}
+	p.mu.Unlock()
+	var firstErr error
+	for _, e := range entries {
+		if e.ready && e.close != nil {
+			if err := e.close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}

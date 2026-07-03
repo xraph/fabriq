@@ -36,6 +36,9 @@ func (e *Extension) Run(ctx context.Context) error {
 	if stores == nil {
 		return fmt.Errorf("fabriq: Run called before Start")
 	}
+	if stores.Postgres == nil {
+		return fmt.Errorf("fabriq: the worker plane does not run in catalog mode yet (the catalog-mode sweeper is pending); set RunWorker=false")
+	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

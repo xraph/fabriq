@@ -17,6 +17,7 @@ import (
 	"sort"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/tenant"
 )
@@ -31,6 +32,10 @@ type Shard struct {
 	Vector     query.VectorQuerier
 	Timeseries query.TSQuerier
 	Spatial    query.SpatialQuerier
+	// Documents is the shard's CRDT document plane. Static deployments
+	// leave it nil (the primary's doc store serves, ADR 0007 step 2);
+	// catalog mode fills it per tenant database.
+	Documents document.Store
 }
 
 // Directory resolves a tenant to its shard id. Implementations range from a

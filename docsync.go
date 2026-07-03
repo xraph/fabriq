@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/event"
@@ -21,8 +20,15 @@ import (
 // document's RAW channel (doc:{tenant}:{docID}), so collaborators see it
 // immediately. Frames never touch the main event stream — projections
 // only ever see materialization events.
+// seqDocStore is the document store shape the fan-out decorator needs:
+// the port plus the seq-returning apply (gap detection on live frames).
+type seqDocStore interface {
+	document.Store
+	ApplyUpdateWithSeq(ctx context.Context, docID string, update []byte) (int64, error)
+}
+
 type syncingDocStore struct {
-	*postgres.DocStore
+	seqDocStore
 	pub *redis.Adapter
 	reg *registry.Registry
 	// authz is the document-plane hook (WithDocumentAuthz), set by Open

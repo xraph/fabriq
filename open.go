@@ -46,6 +46,13 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		return nil, nil, err
 	}
 
+	// Catalog mode (db-per-tenant) is a separate assembly: no boot-time
+	// shard list — the catalog is the routing authority and tenant
+	// databases dial lazily.
+	if cfg.Catalog.Enabled() {
+		return openCatalogMode(ctx, reg, cfg, opts...)
+	}
+
 	// Dial the source-of-truth shard(s). Config.Shards routes tenants across
 	// several Postgres databases (ADR 0007); a bare Postgres.DSN is the
 	// degenerate one-shard deployment. The facade ports route through the
@@ -156,7 +163,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		allOpts = append(allOpts, withTailer(rd))
 		// With a transport available, document updates fan out live. The
 		// document plane stays on the primary shard (ADR 0007 step 2).
-		ports.Documents = &syncingDocStore{DocStore: docStore, pub: rd, reg: reg}
+		ports.Documents = &syncingDocStore{seqDocStore: docStore, pub: rd, reg: reg}
 
 		ca, cerr := fcache.Open(ctx, fcache.Config{
 			Addr:     cfg.Redis.Addr,
@@ -302,6 +309,10 @@ type Stores struct {
 	// the document plane (which stays single-shard in step 2) use it. For
 	// per-tenant work use Shards / ShardPGs.
 	Postgres *postgres.Adapter
+	// Catalog is the db-per-tenant control plane (nil outside catalog mode).
+	Catalog *postgres.CatalogStore
+	// pool owns catalog-mode tenant pools (nil outside catalog mode).
+	pool *shard.PoolManager
 	// Docs is the document-plane store on the primary shard, with history
 	// archiving wired when Storage is configured. The worker plane must use
 	// this instance — Postgres.Documents() mints a fresh store without the
@@ -365,6 +376,16 @@ func (s *Stores) Close() error {
 	}
 	for _, a := range s.shardPG {
 		if err := a.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if s.pool != nil {
+		if err := s.pool.CloseAll(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if s.Catalog != nil {
+		if err := s.Catalog.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
