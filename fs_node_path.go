@@ -2,7 +2,9 @@ package fabriq
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	fabriqerr "github.com/xraph/fabriq/core/fabriqerr"
@@ -105,11 +107,14 @@ func (f *Fabriq) GetNodeByPath(ctx context.Context, path string) (domain.FsNode,
 }
 
 // descendantNodes returns every node under rootID (root excluded) in
-// depth-first path order, via one recursive CTE. The recursion is NOT
-// filtered by deleted_at — a live grandchild under a trashed folder is
-// still found (matches the old path-prefix semantics); includeTrashed
-// only controls the final result filter. Tenant scoping rides on the
-// RelationalQuerier.Query tenant guard (RLS).
+// depth-first path order. SQL backends run one recursive CTE; backends that
+// report ErrRawSQLUnsupported (e.g. the fabriqtest in-memory fake) fall back
+// to descendantsAdjacencyWalk, a portable List-based walk with identical
+// semantics. The recursion is NOT filtered by deleted_at — a live grandchild
+// under a trashed folder is still found (matches the old path-prefix
+// semantics); includeTrashed only controls the final result filter. Tenant
+// scoping rides on the RelationalQuerier tenant guard (RLS on SQL backends;
+// the fake's scope check on List).
 func (f *Fabriq) descendantNodes(ctx context.Context, rootID string, includeTrashed bool) ([]domain.FsNode, error) {
 	var rows []domain.FsNode
 	err := f.Relational().Query(ctx, &rows, `
@@ -131,7 +136,68 @@ func (f *Fabriq) descendantNodes(ctx context.Context, rootID string, includeTras
 		 ORDER BY sub.rel_path`,
 		rootID, includeTrashed, fsMaxDepth)
 	if err != nil {
+		if errors.Is(err, fabriqerr.ErrRawSQLUnsupported) {
+			return f.descendantsAdjacencyWalk(ctx, rootID, includeTrashed)
+		}
 		return nil, err
 	}
 	return rows, nil
+}
+
+// descendantsAdjacencyWalk reproduces descendantNodes' CTE semantics on
+// backends with no raw-SQL escape hatch: a breadth-first walk over parent_id
+// via List, with no deleted_at filter during traversal (a live grandchild
+// under a trashed folder must still be found), root excluded from the
+// result, includeTrashed applied only to the final set, depth bounded by
+// fsMaxDepth (cycle backstop — returns an error rather than looping
+// silently), and the result sorted by relative path to match "ORDER BY
+// sub.rel_path".
+func (f *Fabriq) descendantsAdjacencyWalk(ctx context.Context, rootID string, includeTrashed bool) ([]domain.FsNode, error) {
+	type queued struct {
+		node      domain.FsNode
+		parentRel string
+		depth     int
+	}
+
+	var frontier []queued
+	frontier = append(frontier, queued{node: domain.FsNode{ID: rootID}, parentRel: "", depth: 0})
+
+	type found struct {
+		node    domain.FsNode
+		relPath string
+	}
+	var results []found
+
+	for len(frontier) > 0 {
+		cur := frontier[0]
+		frontier = frontier[1:]
+
+		if cur.depth >= fsMaxDepth {
+			return nil, fmt.Errorf("fabriq: fs_node %s exceeds max depth %d (cycle?)", rootID, fsMaxDepth)
+		}
+
+		var kids []domain.FsNode
+		err := f.Relational().List(ctx, "fs_node", query.ListQuery{
+			Where: query.Where{query.Eq("parent_id", cur.node.ID)},
+		}, &kids)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, kid := range kids {
+			relPath := cur.parentRel + "/" + kid.Name
+			results = append(results, found{node: kid, relPath: relPath})
+			frontier = append(frontier, queued{node: kid, parentRel: relPath, depth: cur.depth + 1})
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool { return results[i].relPath < results[j].relPath })
+
+	out := make([]domain.FsNode, 0, len(results))
+	for _, r := range results {
+		if includeTrashed || r.node.DeletedAt == nil {
+			out = append(out, r.node)
+		}
+	}
+	return out, nil
 }
