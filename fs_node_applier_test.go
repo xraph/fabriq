@@ -51,11 +51,10 @@ func TestFsNodeGraphProjection(t *testing.T) {
 	}
 }
 
-func TestFsNodeSearchProjectionExcludesPath(t *testing.T) {
+func TestFsNodeSearchProjectionFields(t *testing.T) {
 	reg := fsReg(t)
 	payload, _ := json.Marshal(map[string]any{
 		"id": "n1", "tenant_id": "acme", "name": "report", "content_type": "application/pdf",
-		"path": "/a/b/report",
 	})
 	env := event.Envelope{
 		AggID: "n1", TenantID: "acme", Aggregate: "fs_node",

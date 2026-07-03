@@ -9,9 +9,9 @@ import (
 )
 
 // FsNode is a filesystem catalog node (folder or file) in the tree over the
-// blob plane. parent_id is the adjacency truth; path is a materialized index
-// maintained transactionally on move/rename. File nodes reference a
-// blob_object (blob_id) with denormalized facets.
+// blob plane. parent_id is the only tree truth (pure adjacency) — absolute
+// paths are derived at read time (NodePath / recursive CTE), never stored.
+// File nodes reference a blob_object (blob_id) with denormalized facets.
 //
 // Metadata and MountConfig are JSONB NOT NULL columns. Nil maps must be
 // normalised before any INSERT or UPDATE to avoid a NOT NULL constraint
@@ -28,7 +28,6 @@ type FsNode struct {
 	Version     int64          `grove:"version,notnull"   json:"version"`
 	ParentID    string         `grove:"parent_id"         json:"parentId"` // ""=root
 	Name        string         `grove:"name,notnull"      json:"name"`
-	Path        string         `grove:"path"              json:"path"`
 	NodeType    string         `grove:"node_type,notnull" json:"nodeType"` // "folder" | "file"
 	BlobID      string         `grove:"blob_id"           json:"blobId"`
 	Size        int64          `grove:"size"              json:"size"`

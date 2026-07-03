@@ -86,14 +86,14 @@ func (f *Fabriq) CreateFolder(ctx context.Context, parentID, name string) (FsRef
 	}
 	now := time.Now().UTC()
 	node := &domain.FsNode{
-		ParentID: parentID, Name: name, Path: childPath(parentPath, name),
+		ParentID: parentID, Name: name,
 		NodeType: "folder", Metadata: map[string]any{}, MountConfig: map[string]any{}, CreatedAt: now, UpdatedAt: now,
 	}
 	res, err := f.exec.Exec(ctx, command.Command{Entity: "fs_node", Op: command.OpCreate, Payload: node})
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: CreateFolder: %w", err)
 	}
-	return FsRef{ID: res.AggID, ParentID: parentID, Name: name, Path: node.Path, NodeType: "folder", Version: res.Version}, nil
+	return FsRef{ID: res.AggID, ParentID: parentID, Name: name, Path: childPath(parentPath, name), NodeType: "folder", Version: res.Version}, nil
 }
 
 // CreateFile stores bytes (PutBlob → blob_object) then creates a file node
@@ -114,7 +114,7 @@ func (f *Fabriq) CreateFile(ctx context.Context, parentID, name string, r io.Rea
 	}
 	now := time.Now().UTC()
 	node := &domain.FsNode{
-		ParentID: parentID, Name: name, Path: childPath(parentPath, name), NodeType: "file",
+		ParentID: parentID, Name: name, NodeType: "file",
 		BlobID: blob.ID, Size: blob.Size, ContentType: opts.ContentType, Checksum: blob.Hash,
 		Metadata: map[string]any{}, MountConfig: map[string]any{}, CreatedAt: now, UpdatedAt: now,
 	}
@@ -122,7 +122,7 @@ func (f *Fabriq) CreateFile(ctx context.Context, parentID, name string, r io.Rea
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: CreateFile: create node: %w", err)
 	}
-	return FsRef{ID: res.AggID, ParentID: parentID, Name: name, Path: node.Path, NodeType: "file", Version: res.Version}, nil
+	return FsRef{ID: res.AggID, ParentID: parentID, Name: name, Path: childPath(parentPath, name), NodeType: "file", Version: res.Version}, nil
 }
 
 // GetNode loads a node by id (any state, including trashed).

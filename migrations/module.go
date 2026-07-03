@@ -62,6 +62,7 @@ func Group() *migrate.Group {
 			migration0026CRDTSegments,
 			migration0027APIKey,
 			migration0028APIKeyExpiresAt,
+			migration0029FsNodeDropPath,
 		)
 	})
 	return group

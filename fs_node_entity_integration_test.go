@@ -55,7 +55,7 @@ func TestFsNodeEntityRoundTrip(t *testing.T) {
 	res, err := f.Exec(tctx, command.Command{
 		Entity:  "fs_node",
 		Op:      command.OpCreate,
-		Payload: &domain.FsNode{Name: "docs", Path: "/docs", NodeType: "folder", Metadata: map[string]any{"k": "v"}},
+		Payload: &domain.FsNode{Name: "docs", NodeType: "folder", Metadata: map[string]any{"k": "v"}},
 	})
 	if err != nil {
 		t.Fatalf("create fs_node: %v", err)
@@ -69,7 +69,7 @@ func TestFsNodeEntityRoundTrip(t *testing.T) {
 	if err := f.Relational().Get(tctx, "fs_node", res.AggID, &got); err != nil {
 		t.Fatalf("get fs_node: %v", err)
 	}
-	if got.Name != "docs" || got.Path != "/docs" || got.NodeType != "folder" {
+	if got.Name != "docs" || got.NodeType != "folder" {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
 	if got.Metadata["k"] != "v" {

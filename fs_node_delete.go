@@ -141,6 +141,10 @@ func (f *Fabriq) ReplaceFile(ctx context.Context, id string, r io.Reader, opts C
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: ReplaceFile: put bytes: %w", err)
 	}
+	p, err := f.nodePathOf(ctx, n)
+	if err != nil {
+		return FsRef{}, fmt.Errorf("fabriq: ReplaceFile: %w", err)
+	}
 	n.BlobID = blob.ID
 	n.Size = blob.Size
 	n.ContentType = opts.ContentType
@@ -150,5 +154,5 @@ func (f *Fabriq) ReplaceFile(ctx context.Context, id string, r io.Reader, opts C
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: ReplaceFile: update node: %w", err)
 	}
-	return FsRef{ID: id, ParentID: n.ParentID, Name: n.Name, Path: n.Path, NodeType: "file", Version: res.Version}, nil
+	return FsRef{ID: id, ParentID: n.ParentID, Name: n.Name, Path: p, NodeType: "file", Version: res.Version}, nil
 }
