@@ -264,6 +264,13 @@ func (d *DocStore) Compact(ctx context.Context, docID string) error {
 	if maxSeq == 0 {
 		return nil // nothing newer than the snapshot
 	}
+	// GC tombstones behind a conservative horizon before persisting the
+	// snapshot: list leaf-tombstones drop, set removed-tags drop, text
+	// skeletonizes (addresses always preserved). Merge results only change
+	// for content that has been deleted longer than the horizon window.
+	if horizon := gcHorizon(state); !horizon.IsZero() {
+		state.Compact(horizon)
+	}
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -311,6 +318,100 @@ func (d *DocStore) Compact(ctx context.Context, docID string) error {
 		_, err := tx.NewRaw(`DELETE FROM fabriq_crdt_updates WHERE doc_id = $1 AND seq <= $2`, docID, maxSeq).Exec(ctx)
 		return err
 	})
+}
+
+// gcCompactionWindow is how far behind the newest write the tombstone-GC
+// horizon trails. Ops older than this that still haven't reached the log
+// are beyond the collaborative-editing envelope (clients heal via
+// Sync-from-snapshot; text GC preserves addresses regardless).
+const gcCompactionWindow = time.Hour
+
+// gcHorizon derives the tombstone-GC horizon from a merged state: the
+// newest field write minus the safety window. Zero when the state is
+// empty or too young.
+func gcHorizon(state *crdt.State) crdt.HLC {
+	var latest crdt.HLC
+	for _, fs := range state.Fields {
+		if fs != nil && fs.HLC.After(latest) {
+			latest = fs.HLC
+		}
+	}
+	if latest.IsZero() || latest.Timestamp <= int64(gcCompactionWindow) {
+		return crdt.HLC{}
+	}
+	return crdt.HLC{Timestamp: latest.Timestamp - int64(gcCompactionWindow)}
+}
+
+// CompactDue compacts every unflagged document whose un-compacted update
+// count has reached its entity's CRDTSpec.SnapshotEvery budget. Returns
+// the number of documents compacted. The worker's document-plane loop
+// drives it on the materializer cadence.
+func (d *DocStore) CompactDue(ctx context.Context) (int, error) {
+	type docRow struct {
+		DocID    string `grove:"doc_id"`
+		TenantID string `grove:"tenant_id"`
+		Entity   string `grove:"entity"`
+		LastSeq  int64  `grove:"last_seq"`
+	}
+	var docs []docRow
+	rows, err := d.a.pg.Query(ctx,
+		`SELECT doc_id, tenant_id, entity, last_seq FROM fabriq_crdt_docs WHERE flagged = FALSE`)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var r docRow
+		if err := rows.Scan(&r.DocID, &r.TenantID, &r.Entity, &r.LastSeq); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		docs = append(docs, r)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	compacted := 0
+	for _, doc := range docs {
+		ent, ok := d.a.reg.Get(doc.Entity)
+		if !ok || ent.Spec.CRDT == nil || ent.Spec.CRDT.SnapshotEvery <= 0 {
+			continue
+		}
+		every := int64(ent.Spec.CRDT.SnapshotEvery)
+		if doc.LastSeq < every {
+			continue // cheap precheck: can't be due yet
+		}
+		tctx, err := tenant.WithTenant(ctx, doc.TenantID)
+		if err != nil {
+			return compacted, err
+		}
+		var snapSeq int64
+		err = d.a.inTenantTx(tctx, func(tx *pgdriver.PgTx) error {
+			var snaps []struct {
+				LastSeq int64 `grove:"last_seq"`
+			}
+			if err := tx.NewRaw(`SELECT last_seq FROM fabriq_crdt_snapshots WHERE doc_id = $1`, doc.DocID).
+				Scan(ctx, &snaps); err != nil {
+				return err
+			}
+			if len(snaps) == 1 {
+				snapSeq = snaps[0].LastSeq
+			}
+			return nil
+		})
+		if err != nil {
+			return compacted, err
+		}
+		if doc.LastSeq-snapSeq < every {
+			continue
+		}
+		if err := d.Compact(tctx, doc.DocID); err != nil {
+			return compacted, err
+		}
+		compacted++
+	}
+	return compacted, nil
 }
 
 // sealSegment reads the trimmable updates (prevSeq, maxSeq], encodes them into

@@ -372,7 +372,8 @@ func (e *Extension) gcBlobAll(ctx context.Context) {
 
 // runDocumentPlane is the materializer + compactor: every interval it
 // materializes quiet documents (one ordinary versioned event each) and
-// compacts logs past their SnapshotEvery budget. Leader-elected (1003).
+// compacts logs whose un-compacted update count reached their entity's
+// SnapshotEvery budget. Leader-elected (1003).
 func (e *Extension) runDocumentPlane(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		return
@@ -390,7 +391,9 @@ func (e *Extension) runDocumentPlane(ctx context.Context, interval time.Duration
 			if stores == nil {
 				continue
 			}
-			_, _ = stores.Postgres.Documents().MaterializeQuiet(ctx, nil)
+			docs := stores.Postgres.Documents()
+			_, _ = docs.MaterializeQuiet(ctx, nil)
+			_, _ = docs.CompactDue(ctx)
 		}
 	}
 }
