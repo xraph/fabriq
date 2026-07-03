@@ -62,11 +62,10 @@ func TestCrdtSnapshot_NotConfigured_NoDocumentEntity(t *testing.T) {
 	assertNotConfiguredBody(t, resp)
 }
 
-// TestCrdtSnapshot_NotConfigured_DeferredStore verifies that even when a
-// KindDocument entity IS registered (registry signal true), a Snapshot against
-// the deferred fake store (ErrStoreNotConfigured) still degrades to 501 via the
-// store-level fallback in mapCrdtError.
-func TestCrdtSnapshot_NotConfigured_DeferredStore(t *testing.T) {
+// TestCrdtSnapshot_LiveFakeStore verifies that with a KindDocument entity
+// registered, a Snapshot against the (now live, in-memory) fake store
+// serves an empty document state for an unknown id.
+func TestCrdtSnapshot_LiveFakeStore(t *testing.T) {
 	world := buildDocWorld(t)
 	e := fakeBackedAdminExt(t, world)
 	srv := buildServer(t, e)
@@ -75,11 +74,10 @@ func TestCrdtSnapshot_NotConfigured_DeferredStore(t *testing.T) {
 	resp := get(t, srv, "/admin/crdt/note/abc123")
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusNotImplemented {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, want 501, body = %s", resp.StatusCode, body)
+		t.Fatalf("status = %d, want 200, body = %s", resp.StatusCode, body)
 	}
-	assertNotConfiguredBody(t, resp)
 }
 
 // TestCrdtUpdates_NotConfigured_NoDocumentEntity verifies the update-log route
@@ -100,10 +98,9 @@ func TestCrdtUpdates_NotConfigured_NoDocumentEntity(t *testing.T) {
 	assertNotConfiguredBody(t, resp)
 }
 
-// TestCrdtUpdates_NotConfigured_DeferredStore verifies the update-log route
-// degrades to 501 when the document plane is registered but the store is the
-// deferred fake (Sync → ErrStoreNotConfigured).
-func TestCrdtUpdates_NotConfigured_DeferredStore(t *testing.T) {
+// TestCrdtUpdates_LiveFakeStore verifies the update-log route serves an
+// empty log for an unknown id against the (now live, in-memory) fake store.
+func TestCrdtUpdates_LiveFakeStore(t *testing.T) {
 	world := buildDocWorld(t)
 	e := fakeBackedAdminExt(t, world)
 	srv := buildServer(t, e)
@@ -112,11 +109,10 @@ func TestCrdtUpdates_NotConfigured_DeferredStore(t *testing.T) {
 	resp := get(t, srv, "/admin/crdt/note/abc123/updates")
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusNotImplemented {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, want 501, body = %s", resp.StatusCode, body)
+		t.Fatalf("status = %d, want 200, body = %s", resp.StatusCode, body)
 	}
-	assertNotConfiguredBody(t, resp)
 }
 
 // TestCrdtUpdates_BadLimit verifies the update-log route validates ?limit=
