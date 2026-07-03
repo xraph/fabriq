@@ -73,13 +73,13 @@ func TestDescendantsAdjacencyWalkFallback(t *testing.T) {
 	}
 
 	// TrashNode on the root must soft-delete the whole subtree (root + a + b + c).
-	if err := f.TrashNode(ctx, root.ID); err != nil {
-		t.Fatalf("TrashNode: %v", err)
+	if terr := f.TrashNode(ctx, root.ID); terr != nil {
+		t.Fatalf("TrashNode: %v", terr)
 	}
 	for _, id := range []string{root.ID, a.ID, b.ID, c.ID} {
-		n, err := f.GetNode(ctx, id)
-		if err != nil {
-			t.Fatalf("GetNode(%s) after trash: %v", id, err)
+		n, gerr := f.GetNode(ctx, id)
+		if gerr != nil {
+			t.Fatalf("GetNode(%s) after trash: %v", id, gerr)
 		}
 		if n.DeletedAt == nil {
 			t.Fatalf("node %s: expected DeletedAt set after TrashNode", id)

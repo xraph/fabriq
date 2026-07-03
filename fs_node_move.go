@@ -30,8 +30,8 @@ func (f *Fabriq) RenameNode(ctx context.Context, id, newName string) (FsRef, err
 	if node.IsLocked {
 		return FsRef{}, ErrNodeLocked
 	}
-	if exists, err := f.siblingExists(ctx, node.ParentID, newName); err != nil {
-		return FsRef{}, fmt.Errorf("fabriq: RenameNode: %w", err)
+	if exists, serr := f.siblingExists(ctx, node.ParentID, newName); serr != nil {
+		return FsRef{}, fmt.Errorf("fabriq: RenameNode: %w", serr)
 	} else if exists {
 		return FsRef{}, ErrNodeNameConflict
 	}
