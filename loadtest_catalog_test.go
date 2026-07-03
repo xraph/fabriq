@@ -12,6 +12,26 @@ package fabriq_test
 // FABRIQ_LOADTEST_SECONDS (default 15), FABRIQ_LOADTEST_WORKERS (default 32).
 // The committed defaults are the baseline; smaller values smoke-test the
 // harness.
+//
+// Observed (2026-07-03): the default 500 needs REAL clusters. On two
+// laptop-sized timescaledb-ha containers the run collapsed at ~140
+// databases per cluster — provisioning degraded from ~170ms to seconds
+// per tenant and the maintenance DB stopped accepting connections
+// (Timescale spawns per-database scheduler workers; autovacuum scales
+// with database count). That wall IS the ops guidance — hundreds of
+// databases per cluster, sized for it — so the committed local baseline
+// runs FABRIQ_LOADTEST_TENANTS=200 (100/cluster).
+//
+// Baseline (2026-07-03, M3 Max, 200 tenants / 2 clusters / cap 64 /
+// 32 workers / 15s zipfian):
+//
+//	provision: 47s total (236 ms/tenant, 16-way)
+//	reads:  n=12544 p50=13.1ms p99=97.3ms
+//	writes: n=5729  p50=23.1ms p99=147.3ms
+//	errors: 0 — pool pegged at cap (64 open vs 200 tenants, 3x
+//	        oversubscribed; LRU eviction churn absorbed without a 503)
+//	sweep:  172ms full pass over 200 tenants; fleet drained 1.0s after
+//	        traffic stopped
 
 import (
 	"context"

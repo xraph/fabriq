@@ -32,7 +32,10 @@ routing authority. Projections additionally require `redis`.
 - **Clusters** — ordinary Postgres servers named in `clusterDsns`. Spread
   tenants across **hundreds of databases per cluster, not thousands**:
   autovacuum, backups, and connection memory all scale with database
-  count. Add clusters before a cluster's database count gets silly.
+  count — and on TimescaleDB images, so do per-database scheduler
+  workers (a laptop-sized container degrades past ~100–150 databases;
+  the load harness reproduces this). Add clusters before a cluster's
+  database count gets silly.
   Residency falls out of placement: an EU tenant provisions onto `eu-1`
   and its rows never leave it.
 - **Tenant databases** — created by provisioning, named `fabriq_{tenant}`,
