@@ -139,7 +139,10 @@ func (g *GatewayExtension) Register(app forge.App) error {
 	if err := app.RegisterController(newLiveSSEController(g)); err != nil {
 		return err
 	}
-	return app.RegisterController(newLiveWSController(g))
+	if err := app.RegisterController(newLiveWSController(g)); err != nil {
+		return err
+	}
+	return app.RegisterController(newDocsController(g))
 }
 
 // Start builds the cluster.Gateway over the facade's Redis transport and runs

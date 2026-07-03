@@ -32,6 +32,13 @@ func DocChannelName(tenantID, docID string) string {
 	return fmt.Sprintf("doc:%s:%s", tenantID, docID)
 }
 
+// DocPresenceChannelName derives the RAW awareness channel for one
+// document: docpresence:{tenant}:{docID}. Presence frames are ephemeral —
+// capped stream, tailed from now, never persisted, no delivery guarantees.
+func DocPresenceChannelName(tenantID, docID string) string {
+	return fmt.Sprintf("docpresence:%s:%s", tenantID, docID)
+}
+
 // GraphName derives the per-tenant graph name (FalkorDB key).
 func GraphName(tenantID string) string {
 	return "tenant_" + tenantID
