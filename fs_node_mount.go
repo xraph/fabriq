@@ -13,6 +13,9 @@ import (
 // given mount configuration. The sync engine that consumes the config lives in
 // the seam, not in fabriq.
 func (f *Fabriq) CreateMount(ctx context.Context, parentID, name string, mountConfig map[string]any) (FsRef, error) {
+	if err := validateNodeName(name); err != nil {
+		return FsRef{}, fmt.Errorf("fabriq: CreateMount: %w", err)
+	}
 	if mountConfig == nil {
 		mountConfig = map[string]any{}
 	}

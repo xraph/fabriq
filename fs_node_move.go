@@ -29,6 +29,9 @@ func dirOf(path string) string {
 // RenameNode renames a node in place. One command, one event — descendants
 // are untouched because paths are derived from adjacency at read time.
 func (f *Fabriq) RenameNode(ctx context.Context, id, newName string) (FsRef, error) {
+	if err := validateNodeName(newName); err != nil {
+		return FsRef{}, fmt.Errorf("fabriq: RenameNode: %w", err)
+	}
 	node, err := f.GetNode(ctx, id)
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: RenameNode: %w", err)
@@ -59,6 +62,11 @@ func (f *Fabriq) MoveNode(ctx context.Context, id, newParentID string) (FsRef, e
 	}
 	if node.IsLocked {
 		return FsRef{}, ErrNodeLocked
+	}
+	// Defensive: a legacy row whose name predates validation must be renamed
+	// to an addressable name before it can be re-parented.
+	if err := validateNodeName(node.Name); err != nil {
+		return FsRef{}, fmt.Errorf("fabriq: MoveNode: %w", err)
 	}
 	if newParentID == id {
 		return FsRef{}, fmt.Errorf("fabriq: MoveNode: cannot move %q into its own subtree", id)
