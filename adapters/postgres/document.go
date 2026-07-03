@@ -574,55 +574,11 @@ func (d *DocStore) fold(state *crdt.State, c *crdt.ChangeRecord) error {
 	return nil
 }
 
-// stateValues projects merged field states onto column-keyed values:
-// counters resolve to their total, sets/lists to element arrays, text to
-// its visible string, lww/document to the stored value.
+// stateValues projects merged field states onto column-keyed values (the
+// shared document-plane projection: counter totals, set/list element
+// arrays, text strings, lww/document values).
 func stateValues(state *crdt.State) map[string]any {
-	vals := make(map[string]any, len(state.Fields))
-	for field, fs := range state.Fields {
-		if fs == nil {
-			continue
-		}
-		switch fs.Type {
-		case crdt.TypeCounter:
-			if fs.CounterState != nil {
-				vals[field] = fs.CounterState.Value()
-			}
-		case crdt.TypeSet:
-			if fs.SetState != nil {
-				vals[field] = rawElements(fs.SetState.Elements())
-			}
-		case crdt.TypeList:
-			if fs.ListState != nil {
-				vals[field] = rawElements(fs.ListState.Elements())
-			}
-		case crdt.TypeText:
-			if fs.TextState != nil {
-				vals[field] = fs.TextState.Value()
-			}
-		default:
-			if len(fs.Value) == 0 {
-				continue
-			}
-			var v any
-			if err := json.Unmarshal(fs.Value, &v); err == nil {
-				vals[field] = v
-			}
-		}
-	}
-	return vals
-}
-
-// rawElements decodes a JSON-encoded element list to plain values.
-func rawElements(elements []json.RawMessage) []any {
-	out := make([]any, 0, len(elements))
-	for _, el := range elements {
-		var v any
-		if err := json.Unmarshal(el, &v); err == nil {
-			out = append(out, v)
-		}
-	}
-	return out
+	return document.ProjectValues(state)
 }
 
 // ValidateFunc is the post-merge validation hook: CRDTs converge but do
