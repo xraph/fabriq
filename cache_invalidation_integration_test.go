@@ -40,6 +40,7 @@ func setupCacheE2E(t *testing.T) (*registry.Registry, string, string) {
 	}
 	_ = closeFn()
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	return reg, appDSN, redisAddr
 }

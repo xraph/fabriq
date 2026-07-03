@@ -85,8 +85,10 @@ func TestMigrate_CoreTablesExist(t *testing.T) {
 
 	for _, table := range []string{
 		"fabriq_outbox", "fabriq_projection_state", "fabriq_projection_applied",
-		"sites", "assets", "tags", "tag_readings", "fabriq_embeddings",
-		"fabriq_crdt_updates", "fabriq_crdt_snapshots",
+		"fabriq_embeddings", "fabriq_crdt_updates", "fabriq_crdt_snapshots",
+		// Renamed by 0029 (host-database coexistence).
+		"fabriq_links", "fabriq_blob_objects", "fabriq_blob_cas",
+		"fabriq_fs_nodes", "fabriq_digest_nodes",
 	} {
 		var n int
 		row := db.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_name = $1`, table)
@@ -98,7 +100,40 @@ func TestMigrate_CoreTablesExist(t *testing.T) {
 		}
 	}
 
-	// Timescale hypertable + RLS spot checks.
+	// Demo tables were evicted from the chain (domain.DemoDDL owns them).
+	for _, demo := range []string{"sites", "assets", "tags", "tag_readings"} {
+		var n int
+		row := db.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_name = $1`, demo)
+		if err := row.Scan(&n); err != nil {
+			t.Fatalf("check %s: %v", demo, err)
+		}
+		if n != 0 {
+			t.Errorf("demo table %s must not ship in the default chain", demo)
+		}
+	}
+}
+
+// TestDemoDDL_TablesHypertableAndRLS pins the evicted demo DDL: applying
+// domain.DemoDDL on a migrated database yields the example tables with the
+// standard tenant RLS, and tag_readings becomes a hypertable when the
+// timescaledb extension is available.
+func TestDemoDDL_TablesHypertableAndRLS(t *testing.T) {
+	db := openPG(t)
+	ctx := context.Background()
+
+	orch, err := migrations.NewOrchestrator(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range domain.DemoDDL() {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			t.Fatalf("demo DDL: %v\n%s", err, stmt)
+		}
+	}
+
 	var hyper int
 	if err := db.QueryRow(ctx, `SELECT count(*) FROM timescaledb_information.hypertables WHERE hypertable_name = 'tag_readings'`).Scan(&hyper); err != nil {
 		t.Fatalf("hypertable check: %v", err)
@@ -134,6 +169,14 @@ func TestRegistryConformance(t *testing.T) {
 	reg := registry.New()
 	if err := domain.RegisterAll(reg); err != nil {
 		t.Fatal(err)
+	}
+
+	// The example entity tables are application-owned DDL now (evicted from
+	// the shipped chain like pages); apply them so conformance can diff.
+	for _, stmt := range domain.DemoDDL() {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			t.Fatalf("demo DDL: %v", err)
+		}
 	}
 
 	for _, ent := range reg.All() {

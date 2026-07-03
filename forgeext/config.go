@@ -18,6 +18,11 @@ type Config struct {
 	Fabriq            fabriq.Config
 	RunWorker         bool
 	ReconcileInterval time.Duration
+	// DocCompactInterval is how often the document-plane loop runs the
+	// SnapshotEvery compaction sweep (the sweep scans and aggregates the
+	// whole update-log table, so it is deliberately much slower than the
+	// per-second materializer). Zero falls back to 30s at run time.
+	DocCompactInterval time.Duration
 	// BlobGCGrace protects freshly-created CAS entries and orphan bytes from
 	// collection for this window. Zero falls back to 1h at run time.
 	BlobGCGrace time.Duration
@@ -67,6 +72,13 @@ func WithWorker(on bool) Option { return func(o *Config) { o.RunWorker = on } }
 // reconciles projection state.
 func WithReconcileInterval(d time.Duration) Option {
 	return func(o *Config) { o.ReconcileInterval = d }
+}
+
+// WithDocCompactInterval sets how often the document-plane loop runs the
+// SnapshotEvery compaction sweep (default 30s; integration tests use a
+// fast interval).
+func WithDocCompactInterval(d time.Duration) Option {
+	return func(o *Config) { o.DocCompactInterval = d }
 }
 
 // WithBlobGCGrace sets the grace window before an unreferenced CAS entry or

@@ -22,9 +22,9 @@ type Report struct {
 	OrphansDeleted int      // stored objects with no ledger row, removed
 }
 
-// BlobReconciler heals blob_cas drift and bounds byte storage for ONE tenant
+// BlobReconciler heals fabriq_blob_cas drift and bounds byte storage for ONE tenant
 // per Reconcile call (the caller stamps the tenant into ctx via
-// tenant.WithTenant). It recomputes ref counts from the live blob_objects
+// tenant.WithTenant). It recomputes ref counts from the live fabriq_blob_objects
 // catalog (the command-authoritative truth), garbage-collects
 // unreferenced/unpinned entries past a grace window, flags catalog rows whose
 // bytes are missing, and deletes orphan bytes that no ledger row references.
@@ -151,9 +151,9 @@ func (r *BlobReconciler) truthCounts(ctx context.Context) (map[string]int64, err
 	var rows []truthRow
 	err := r.run.TenantTxRaw(ctx, func(tx *pgdriver.PgTx) error {
 		return tx.NewRaw(`
-			SELECT hash, COUNT(*) AS n FROM blob_objects GROUP BY hash
+			SELECT hash, COUNT(*) AS n FROM fabriq_blob_objects GROUP BY hash
 			UNION ALL
-			SELECT summary_hash AS hash, COUNT(*) AS n FROM digest_nodes
+			SELECT summary_hash AS hash, COUNT(*) AS n FROM fabriq_digest_nodes
 				WHERE summary_hash <> '' GROUP BY summary_hash
 		`).Scan(ctx, &rows)
 	})
@@ -162,7 +162,7 @@ func (r *BlobReconciler) truthCounts(ctx context.Context) (map[string]int64, err
 	}
 	out := make(map[string]int64, len(rows))
 	for _, row := range rows {
-		// Use += not = so that a hash present in both blob_objects AND digest_nodes
+		// Use += not = so that a hash present in both fabriq_blob_objects AND fabriq_digest_nodes
 		// produces the correct combined count rather than silently overwriting one
 		// source with the other (which could drop a still-live reference to zero).
 		out[row.Hash] += row.N
@@ -173,7 +173,7 @@ func (r *BlobReconciler) truthCounts(ctx context.Context) (map[string]int64, err
 func (r *BlobReconciler) ledgerRows(ctx context.Context) ([]ledgerRow, error) {
 	var rows []ledgerRow
 	err := r.run.TenantTxRaw(ctx, func(tx *pgdriver.PgTx) error {
-		return tx.NewRaw(`SELECT hash, bucket, key, size, ref_count, pinned, created_at FROM blob_cas`).Scan(ctx, &rows)
+		return tx.NewRaw(`SELECT hash, bucket, key, size, ref_count, pinned, created_at FROM fabriq_blob_cas`).Scan(ctx, &rows)
 	})
 	if err != nil {
 		return nil, err
@@ -183,14 +183,14 @@ func (r *BlobReconciler) ledgerRows(ctx context.Context) ([]ledgerRow, error) {
 
 func (r *BlobReconciler) setRefCount(ctx context.Context, hash string, n int64) error {
 	return r.run.TenantTxRaw(ctx, func(tx *pgdriver.PgTx) error {
-		_, err := tx.NewRaw(`UPDATE blob_cas SET ref_count = $1 WHERE hash = $2`, n, hash).Exec(ctx)
+		_, err := tx.NewRaw(`UPDATE fabriq_blob_cas SET ref_count = $1 WHERE hash = $2`, n, hash).Exec(ctx)
 		return err
 	})
 }
 
 func (r *BlobReconciler) deleteRow(ctx context.Context, hash string) error {
 	return r.run.TenantTxRaw(ctx, func(tx *pgdriver.PgTx) error {
-		_, err := tx.NewRaw(`DELETE FROM blob_cas WHERE hash = $1`, hash).Exec(ctx)
+		_, err := tx.NewRaw(`DELETE FROM fabriq_blob_cas WHERE hash = $1`, hash).Exec(ctx)
 		return err
 	})
 }

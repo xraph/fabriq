@@ -44,11 +44,11 @@ func (g *fakeGuard) Guard(_ context.Context, in GuardInput) (GuardResult, error)
 	return GuardResult{Text: g.re.ReplaceAllString(in.Text, "[REDACTED]")}, nil
 }
 
-// digestModel is a test-local grove model matching the digest_nodes columns so
+// digestModel is a test-local grove model matching the fabriq_digest_nodes columns so
 // the fake relational store can persist digest rows written via the command
 // plane. It mirrors domain.DigestNode without importing domain (import-cleanliness).
 type digestModel struct {
-	grove.BaseModel `grove:"table:digest_nodes"`
+	grove.BaseModel `grove:"table:fabriq_digest_nodes"`
 
 	ID          string   `grove:"id,pk"`
 	TenantID    string   `grove:"tenant_id,notnull"`

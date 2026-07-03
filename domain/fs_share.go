@@ -9,7 +9,7 @@ import (
 // FsShare is a share-link record for an fs_node. fabriq stores it verbatim; the
 // seam generates the token, hashes the password, and enforces expiry/cap/password.
 type FsShare struct {
-	grove.BaseModel `grove:"table:fs_shares"`
+	grove.BaseModel `grove:"table:fabriq_fs_shares"`
 
 	ID            string     `grove:"id,pk"             json:"id"`
 	TenantID      string     `grove:"tenant_id,notnull" json:"tenantId"`

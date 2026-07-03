@@ -147,7 +147,7 @@ type StorageConfig struct {
 	StorageDriver string `yaml:"storageDriver" json:"storageDriver"`
 	DefaultBucket string `yaml:"defaultBucket" json:"defaultBucket"`
 	// EnableCas gates the content-addressable store layer. When true, Open()
-	// will wire a CASStore backed by the blob_cas ledger (requires a Postgres
+	// will wire a CASStore backed by the fabriq_blob_cas ledger (requires a Postgres
 	// adapter). The open.go wiring that reads this field lands in Phase 3b.
 	EnableCas bool `yaml:"enableCas" json:"enableCas"`
 }

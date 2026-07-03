@@ -10,7 +10,7 @@ import (
 // revoke = delete. Enforcement (effective-permission evaluation) lives in the
 // consuming seam, not in fabriq.
 type FsPermission struct {
-	grove.BaseModel `grove:"table:fs_permissions"`
+	grove.BaseModel `grove:"table:fabriq_fs_permissions"`
 
 	ID            string    `grove:"id,pk"             json:"id"`
 	TenantID      string    `grove:"tenant_id,notnull" json:"tenantId"`

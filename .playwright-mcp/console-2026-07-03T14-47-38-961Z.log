@@ -1,0 +1,107 @@
+[    1520ms] [LOG] [Client Instrumentation Hook] Slow execution detected: 21ms (Note: Code download overhead is not included in this measurement) @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:702
+[    1535ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[    1600ms] [LOG] [HMR] connected @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[    1680ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config.js:0
+[    1704ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:7903/v1/client-config?key=pk_live_7f054efaf38882224a9361710f29e99da3b42a1ef9c77ec70e962ac4214db277:0
+[    1709ms] AuthClientError: Failed to fetch client config
+    at AuthClient2.fetchClientConfig (http://localhost:3330/_next/static/chunks/node_modules__pnpm_04i6jp3._.js:1956:19)
+[    1772ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://us.i.posthog.com/flags/?v=2&config=true&ip=0&_=1783090060479&ver=1.302.2&compression=base64:0
+[    1927ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config?ip=0&_=1783090060686&ver=1.302.2:0
+[    1928ms] [LOG] %c[Vercel Web Analytics]%c Debug mode is enabled by default in development. No requests will be sent to the server. color: rgb(120, 120, 120) color: inherit @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[    1928ms] [LOG] %c[Vercel Web Analytics]%c [view] http://localhost:3330/sign-in?redirect=%2Fworkbench color: rgb(120, 120, 120) color: inherit {o: http://localhost:3330/sign-in?redirect=%2Fworkbench, sv: 0.1.3, sdkn: @vercel/analytics/react, sdkv: 1.6.1, ts: 1783090060888} /_vercel/insights/view @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 1909369ms] [WARNING] [Fast Refresh] performing full reload
+
+Fast Refresh will perform a full reload when you edit a file that's imported by modules outside of the React rendering tree.
+You might have a file which exports a React component but also exports a value that is imported by a non-React component file.
+Consider migrating the non-React component export to a separate file and importing it into both files.
+
+It is also possible the parent component of the component you edited is a class component, which disables Fast Refresh.
+Fast Refresh requires at least one parent function component in your React tree. @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 1914889ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 1914963ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://us.i.posthog.com/flags/?v=2&config=true&ip=0&_=1783091973847&ver=1.302.2&compression=base64:0
+[ 1915089ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config.js:0
+[ 1915171ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config?ip=0&_=1783091974050&ver=1.302.2:0
+[ 1916622ms] [LOG] [HMR] connected @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 1916677ms] [LOG] %c[Vercel Web Analytics]%c Debug mode is enabled by default in development. No requests will be sent to the server. color: rgb(120, 120, 120) color: inherit @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 1916678ms] [LOG] %c[Vercel Web Analytics]%c [view] http://localhost:3330/sign-in?redirect=%2Fworkbench color: rgb(120, 120, 120) color: inherit {o: http://localhost:3330/sign-in?redirect=%2Fworkbench, sv: 0.1.3, sdkn: @vercel/analytics/react, sdkv: 1.6.1, ts: 1783091975638} /_vercel/insights/view @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 1916681ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:7903/v1/client-config?key=pk_live_7f054efaf38882224a9361710f29e99da3b42a1ef9c77ec70e962ac4214db277:0
+[ 1916697ms] AuthClientError: Failed to fetch client config
+    at AuthClient2.fetchClientConfig (http://localhost:3330/_next/static/chunks/node_modules__pnpm_04i6jp3._.js:1956:19)
+[ 1917930ms] [WARNING] [Fast Refresh] performing full reload
+
+Fast Refresh will perform a full reload when you edit a file that's imported by modules outside of the React rendering tree.
+You might have a file which exports a React component but also exports a value that is imported by a non-React component file.
+Consider migrating the non-React component export to a separate file and importing it into both files.
+
+It is also possible the parent component of the component you edited is a class component, which disables Fast Refresh.
+Fast Refresh requires at least one parent function component in your React tree. @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 1918732ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 1918738ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config.js:0
+[ 1918751ms] [LOG] [HMR] connected @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 1918800ms] [LOG] %c[Vercel Web Analytics]%c Debug mode is enabled by default in development. No requests will be sent to the server. color: rgb(120, 120, 120) color: inherit @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 1918801ms] [LOG] %c[Vercel Web Analytics]%c [view] http://localhost:3330/sign-in?redirect=%2Fworkbench color: rgb(120, 120, 120) color: inherit {o: http://localhost:3330/sign-in?redirect=%2Fworkbench, sv: 0.1.3, sdkn: @vercel/analytics/react, sdkv: 1.6.1, ts: 1783091977761} /_vercel/insights/view @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 1918802ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:7903/v1/client-config?key=pk_live_7f054efaf38882224a9361710f29e99da3b42a1ef9c77ec70e962ac4214db277:0
+[ 1918819ms] AuthClientError: Failed to fetch client config
+    at AuthClient2.fetchClientConfig (http://localhost:3330/_next/static/chunks/node_modules__pnpm_04i6jp3._.js:1956:19)
+[ 1918864ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config?ip=0&_=1783091977703&ver=1.302.2:0
+[ 1918894ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://us.i.posthog.com/flags/?v=2&config=true&ip=0&_=1783091977691&ver=1.302.2&compression=base64:0
+[ 2123978ms] [WARNING] [Fast Refresh] performing full reload
+
+Fast Refresh will perform a full reload when you edit a file that's imported by modules outside of the React rendering tree.
+You might have a file which exports a React component but also exports a value that is imported by a non-React component file.
+Consider migrating the non-React component export to a separate file and importing it into both files.
+
+It is also possible the parent component of the component you edited is a class component, which disables Fast Refresh.
+Fast Refresh requires at least one parent function component in your React tree. @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 2125035ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 2125042ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config.js:0
+[ 2125087ms] [LOG] [HMR] connected @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 2125119ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://us.i.posthog.com/flags/?v=2&config=true&ip=0&_=1783092183994&ver=1.302.2&compression=base64:0
+[ 2125132ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config?ip=0&_=1783092184008&ver=1.302.2:0
+[ 2125142ms] [LOG] %c[Vercel Web Analytics]%c Debug mode is enabled by default in development. No requests will be sent to the server. color: rgb(120, 120, 120) color: inherit @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 2125142ms] [LOG] %c[Vercel Web Analytics]%c [view] http://localhost:3330/sign-in?redirect=%2Fworkbench color: rgb(120, 120, 120) color: inherit {o: http://localhost:3330/sign-in?redirect=%2Fworkbench, sv: 0.1.3, sdkn: @vercel/analytics/react, sdkv: 1.6.1, ts: 1783092184103} /_vercel/insights/view @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 2125149ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:7903/v1/client-config?key=pk_live_7f054efaf38882224a9361710f29e99da3b42a1ef9c77ec70e962ac4214db277:0
+[ 2125162ms] AuthClientError: Failed to fetch client config
+    at AuthClient2.fetchClientConfig (http://localhost:3330/_next/static/chunks/node_modules__pnpm_04i6jp3._.js:1956:19)
+[ 2162991ms] [WARNING] [Fast Refresh] performing full reload
+
+Fast Refresh will perform a full reload when you edit a file that's imported by modules outside of the React rendering tree.
+You might have a file which exports a React component but also exports a value that is imported by a non-React component file.
+Consider migrating the non-React component export to a separate file and importing it into both files.
+
+It is also possible the parent component of the component you edited is a class component, which disables Fast Refresh.
+Fast Refresh requires at least one parent function component in your React tree. @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 2163442ms] [WARNING] [Fast Refresh] performing full reload
+
+Fast Refresh will perform a full reload when you edit a file that's imported by modules outside of the React rendering tree.
+You might have a file which exports a React component but also exports a value that is imported by a non-React component file.
+Consider migrating the non-React component export to a separate file and importing it into both files.
+
+It is also possible the parent component of the component you edited is a class component, which disables Fast Refresh.
+Fast Refresh requires at least one parent function component in your React tree. @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 2164322ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 2164340ms] [LOG] [HMR] connected @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 2164390ms] [LOG] %c[Vercel Web Analytics]%c Debug mode is enabled by default in development. No requests will be sent to the server. color: rgb(120, 120, 120) color: inherit @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 2164390ms] [LOG] %c[Vercel Web Analytics]%c [view] http://localhost:3330/sign-in?redirect=%2Fworkbench color: rgb(120, 120, 120) color: inherit {o: http://localhost:3330/sign-in?redirect=%2Fworkbench, sv: 0.1.3, sdkn: @vercel/analytics/react, sdkv: 1.6.1, ts: 1783092223351} /_vercel/insights/view @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 2164392ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:7903/v1/client-config?key=pk_live_7f054efaf38882224a9361710f29e99da3b42a1ef9c77ec70e962ac4214db277:0
+[ 2164408ms] AuthClientError: Failed to fetch client config
+    at AuthClient2.fetchClientConfig (http://localhost:3330/_next/static/chunks/node_modules__pnpm_04i6jp3._.js:1956:19)
+[ 2164404ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config.js:0
+[ 2164407ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://us.i.posthog.com/flags/?v=2&config=true&ip=0&_=1783092223281&ver=1.302.2&compression=base64:0
+[ 2164535ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config?ip=0&_=1783092223365&ver=1.302.2:0
+[ 3320232ms] [ERROR] WebSocket connection to 'ws://localhost:3330/_next/webpack-hmr?id=rzkGFoPooogqZ48C8fv70' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_client_1tb821h._.js:14621
+[ 3321234ms] [ERROR] WebSocket connection to 'ws://localhost:3330/_next/webpack-hmr?id=rzkGFoPooogqZ48C8fv70' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_client_1tb821h._.js:14621
+[ 3322236ms] [ERROR] WebSocket connection to 'ws://localhost:3330/_next/webpack-hmr?id=rzkGFoPooogqZ48C8fv70' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_client_1tb821h._.js:14621
+[ 3323238ms] [ERROR] WebSocket connection to 'ws://localhost:3330/_next/webpack-hmr?id=rzkGFoPooogqZ48C8fv70' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_client_1tb821h._.js:14621
+[ 3324242ms] [ERROR] WebSocket connection to 'ws://localhost:3330/_next/webpack-hmr?id=rzkGFoPooogqZ48C8fv70' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_client_1tb821h._.js:14621
+[ 3342318ms] [LOG] [HMR] connected @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 3350083ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 3350098ms] [LOG] [HMR] connected @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 3350145ms] [LOG] %c[Vercel Web Analytics]%c Debug mode is enabled by default in development. No requests will be sent to the server. color: rgb(120, 120, 120) color: inherit @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 3350145ms] [LOG] %c[Vercel Web Analytics]%c [view] http://localhost:3330/sign-in?redirect=%2Fworkbench color: rgb(120, 120, 120) color: inherit {o: http://localhost:3330/sign-in?redirect=%2Fworkbench, sv: 0.1.3, sdkn: @vercel/analytics/react, sdkv: 1.6.1, ts: 1783093409106} /_vercel/insights/view @ http://localhost:3330/_next/static/chunks/0_fq_next_dist_07835u3._.js:1073
+[ 3350148ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:7903/v1/client-config?key=pk_live_7f054efaf38882224a9361710f29e99da3b42a1ef9c77ec70e962ac4214db277:0
+[ 3350167ms] AuthClientError: Failed to fetch client config
+    at AuthClient2.fetchClientConfig (http://localhost:3330/_next/static/chunks/node_modules__pnpm_04i6jp3._.js:1956:19)
+[ 3350167ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://us.i.posthog.com/flags/?v=2&config=true&ip=0&_=1783093409041&ver=1.302.2&compression=base64:0
+[ 3350210ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config.js:0
+[ 3350289ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://us-assets.i.posthog.com/array/phc_dummy/config?ip=0&_=1783093409171&ver=1.302.2:0

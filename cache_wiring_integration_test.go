@@ -36,6 +36,7 @@ func TestOpenWiresCache(t *testing.T) {
 	}
 	_ = closeFn()
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	_, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
 		Postgres: fabriq.PostgresConfig{DSN: appDSN},

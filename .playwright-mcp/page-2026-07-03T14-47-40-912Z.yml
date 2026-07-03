@@ -1,0 +1,40 @@
+- generic [active] [ref=f6e1]:
+  - generic [ref=f6e2]:
+    - generic [ref=f6e5]:
+      - generic [ref=f6e6]:
+        - generic [ref=f6e7]:
+          - img [ref=f6e8]
+          - text: TwinOS
+        - button "Toggle theme" [ref=f6e10] [cursor=pointer]:
+          - img
+          - generic [ref=f6e11]: Toggle theme
+      - generic [ref=f6e13]:
+        - paragraph [ref=f6e14]: View. Optimize. Automate.
+        - paragraph [ref=f6e15]: The digital twin for enterprise operations.
+    - generic [ref=f6e18]:
+      - generic [ref=f6e19]:
+        - generic [ref=f6e20]: Sign in
+        - generic [ref=f6e21]: Welcome back. Sign in to your account.
+      - generic [ref=f6e24]:
+        - generic [ref=f6e25]:
+          - generic [ref=f6e26]: Email address
+          - textbox "Email address" [ref=f6e27]:
+            - /placeholder: name@example.com
+        - button "Continue" [ref=f6e28] [cursor=pointer]
+      - paragraph [ref=f6e30]:
+        - text: Don't have an account?
+        - link "Sign up" [ref=f6e31] [cursor=pointer]:
+          - /url: /sign-up
+  - region "Notifications alt+T"
+  - generic [ref=f6e36] [cursor=pointer]:
+    - button "Open Next.js Dev Tools" [ref=f6e37]:
+      - img [ref=f6e38]
+    - generic [ref=f6e41]:
+      - button "Open issues overlay" [ref=f6e42]:
+        - generic [ref=f6e43]:
+          - generic [ref=f6e44]: "0"
+          - generic [ref=f6e45]: "1"
+        - generic [ref=f6e46]: Issue
+      - button "Collapse issues badge" [ref=f6e47]:
+        - img [ref=f6e48]
+  - alert [ref=f6e50]

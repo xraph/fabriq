@@ -67,7 +67,7 @@ func RegisterAll(reg *registry.Registry) error {
 			Edges: []registry.EdgeSpec{
 				{Field: "parent_id", Rel: "CHILD_OF", Target: "fs_node"},
 			},
-			Search:    registry.SearchSpec{Index: "fs_nodes", Fields: []string{"name", "content_type"}},
+			Search:    registry.SearchSpec{Index: "fabriq_fs_nodes", Fields: []string{"name", "content_type"}},
 			Subscribe: []registry.Scope{registry.ByID, registry.ByField("parent", "parent_id"), registry.ByTenant},
 			Live: &registry.LiveSpec{
 				Filterable: []string{"parent_id", "node_type", "name", "deleted_at"},

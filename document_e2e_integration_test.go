@@ -66,6 +66,7 @@ func docE2E(t *testing.T) (*fabriq.Fabriq, *fabriq.Stores, *registry.Registry) {
 	// owner before provisioning the app role.
 	fabriqtest.ApplyDDL(t, superDSN, domain.PagesDDL())
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
 		Postgres:      fabriq.PostgresConfig{DSN: appDSN},

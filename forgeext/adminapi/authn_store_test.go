@@ -44,6 +44,7 @@ func newKeyStoreDB(t *testing.T) KeyStore {
 
 	// Connect as the restricted app role (fabriq_api_key is not under RLS, so
 	// the role can read/write it directly — mirrors production auth lookups).
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {

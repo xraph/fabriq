@@ -9,6 +9,7 @@ import (
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/domain"
 	"github.com/xraph/fabriq/fabriqtest"
 	"github.com/xraph/fabriq/migrations"
 )
@@ -70,6 +71,7 @@ func newDynWriteHarness(t testing.TB) *dynWriteHarness {
 
 	// Provision the app role (after migrations so DEFAULT PRIVILEGES apply,
 	// and after EnsureDynamic so the new table is covered by GRANT).
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {

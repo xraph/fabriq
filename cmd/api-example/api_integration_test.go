@@ -47,6 +47,7 @@ func bootAPI(t *testing.T) *server {
 	}
 	_ = closeFn()
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
 		Postgres:      fabriq.PostgresConfig{DSN: appDSN},

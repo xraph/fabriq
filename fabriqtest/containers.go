@@ -216,3 +216,35 @@ func StartRedis(t testing.TB) string {
 	}
 	return ep
 }
+
+// QueryStrings runs a single-column query against dsn and returns the rows
+// as strings — the seam integration tests use for schema-shape assertions
+// (information_schema / pg_catalog checks).
+func QueryStrings(t testing.TB, dsn, sql string, args ...any) []string {
+	t.Helper()
+	ctx := context.Background()
+
+	db := pgdriver.New()
+	if err := db.Open(ctx, dsn); err != nil {
+		t.Fatalf("fabriqtest: open conn for query: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows, err := db.Query(ctx, sql, args...)
+	if err != nil {
+		t.Fatalf("fabriqtest: query: %v\n%s", err, sql)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatalf("fabriqtest: scan: %v", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("fabriqtest: rows: %v", err)
+	}
+	return out
+}

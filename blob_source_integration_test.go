@@ -37,6 +37,7 @@ func openSatEncTest(t *testing.T, withKey bool) (*fabriq.Fabriq, *fabriq.Stores)
 		t.Fatal(err)
 	}
 	_ = owner.Close()
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	cfg := fabriq.Config{Postgres: fabriq.PostgresConfig{DSN: appDSN}}
 	if withKey {
@@ -69,7 +70,7 @@ func TestBlobSourceEncryptedRoundTrip(t *testing.T) {
 
 	// The stored auth_enc column is ciphertext, not the plaintext secret.
 	var enc []byte
-	if err := f.Relational().Query(tctx, &enc, `SELECT auth_enc FROM blob_sources WHERE id = $1`, ref.ID); err != nil {
+	if err := f.Relational().Query(tctx, &enc, `SELECT auth_enc FROM fabriq_blob_sources WHERE id = $1`, ref.ID); err != nil {
 		t.Fatalf("reading auth_enc: %v", err)
 	}
 	if len(enc) == 0 {

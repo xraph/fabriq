@@ -25,6 +25,7 @@ import (
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
+	"github.com/xraph/fabriq/domain"
 	"github.com/xraph/fabriq/fabriqtest"
 	"github.com/xraph/fabriq/migrations"
 )
@@ -100,6 +101,7 @@ func newScopeHarness(t *testing.T) (*postgres.Adapter, *postgres.Adapter, *comma
 	// Provision the app role AFTER migrations + DDL so DEFAULT PRIVILEGES cover
 	// the new table. RLS only constrains non-superusers; the app role is
 	// NOBYPASSRLS so policies actually apply.
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {
@@ -354,6 +356,7 @@ func newPortScopeHarness(t *testing.T) *postgres.Adapter {
 	}
 	_ = owner.Close()
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {

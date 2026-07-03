@@ -89,6 +89,7 @@ func TestDynamicProjection_Graph(t *testing.T) {
 	// Create ds_widgets BEFORE CreateAppRole so DEFAULT PRIVILEGES apply.
 	ensureWidgets(t, superDSN, reg)
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
 		Postgres:      fabriq.PostgresConfig{DSN: appDSN},
@@ -196,6 +197,7 @@ func TestDynamicProjection_Search(t *testing.T) {
 
 	ensureWidgets(t, superDSN, reg)
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
 		Postgres:      fabriq.PostgresConfig{DSN: appDSN},

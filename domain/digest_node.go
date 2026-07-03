@@ -8,7 +8,7 @@ import "github.com/xraph/grove"
 // ContentHash is the Merkle freshness key; SemHash is the SimHash fingerprint
 // (16-hex). The vector lives in the vector plane (entity "digest_node"), not here.
 type DigestNode struct {
-	grove.BaseModel `grove:"table:digest_nodes"`
+	grove.BaseModel `grove:"table:fabriq_digest_nodes"`
 
 	ID         string `grove:"id,pk"             json:"id"`
 	TenantID   string `grove:"tenant_id,notnull" json:"tenantId"`

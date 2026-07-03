@@ -20,7 +20,7 @@ import (
 // which calls hook.RunModelBeforeInsert / RunModelBeforeUpdate on the model
 // prior to executing the statement (adapters/postgres/tx.go ApplyChange).
 type FsNode struct {
-	grove.BaseModel `grove:"table:fs_nodes"`
+	grove.BaseModel `grove:"table:fabriq_fs_nodes"`
 
 	ID          string         `grove:"id,pk"             json:"id"`
 	TenantID    string         `grove:"tenant_id,notnull" json:"tenantId"`

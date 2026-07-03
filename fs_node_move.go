@@ -33,7 +33,7 @@ var fsPathRewriteHook = command.HookFunc(func(ctx context.Context, tx command.Tx
 	// '/%' (not '%') so siblings like "/ax" don't match the prefix "/a".
 	// id <> $3 leaves the moved node itself (already updated by the command).
 	return tx.Exec(ctx,
-		`UPDATE fs_nodes
+		`UPDATE fabriq_fs_nodes
 		    SET path = $1 || substr(path, length($2) + 1), updated_at = now()
 		  WHERE tenant_id = current_setting('app.tenant_id', true)
 		    AND path LIKE $2 || '/%'

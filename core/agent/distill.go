@@ -613,7 +613,7 @@ func digestRowFromVals(m map[string]any) digestRow {
 }
 
 // nonNilStrings returns an empty (non-nil) slice for a nil input so the
-// JSONB NOT NULL columns digest_nodes.child_ids / parent_ids receive '[]'
+// JSONB NOT NULL columns fabriq_digest_nodes.child_ids / parent_ids receive '[]'
 // rather than SQL NULL. Read-back stays []string (asStrings-compatible).
 func nonNilStrings(s []string) []string {
 	if s == nil {

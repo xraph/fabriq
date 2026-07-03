@@ -45,6 +45,7 @@ func TestCASStoreDedup(t *testing.T) {
 	_ = owner.Close()
 
 	// Open as the restricted app role so RLS actually applies.
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	pg, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {
@@ -52,7 +53,7 @@ func TestCASStoreDedup(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = pg.Close() })
 
-	// Build the CAS index over blob_cas.
+	// Build the CAS index over fabriq_blob_cas.
 	idx := trovestore.NewCASIndex(pg)
 
 	// Set up an in-memory trove driver and ensure the bucket exists.

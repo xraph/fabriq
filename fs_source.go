@@ -143,7 +143,7 @@ func (f *Fabriq) GetSource(ctx context.Context, id string) (BlobSourceView, erro
 	return toSourceView(s, auth), nil
 }
 
-// ListSources reads and decrypts all of the tenant's blob_sources.
+// ListSources reads and decrypts all of the tenant's fabriq_blob_sources.
 func (f *Fabriq) ListSources(ctx context.Context) ([]BlobSourceView, error) {
 	var rows []domain.BlobSource
 	if err := f.Relational().List(ctx, "blob_source", query.ListQuery{OrderBy: "name ASC"}, &rows); err != nil {

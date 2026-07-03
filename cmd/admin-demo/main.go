@@ -178,7 +178,7 @@ func run() error {
 	}
 	// Register the file-plane entities (blob_object + fs_node) so the command
 	// executor knows their shape; their physical tables come from fabriq's
-	// migrations (fs_nodes / blob_objects / blob_cas), already present in the
+	// migrations (fabriq_fs_nodes / fabriq_blob_objects / fabriq_blob_cas), already present in the
 	// demo Postgres.
 	for _, spec := range fileSeedSpecs() {
 		if err := reg.Register(spec); err != nil {
@@ -188,7 +188,7 @@ func run() error {
 	// Register the typed digest_node entity so (a) the context-distillation tree
 	// can be built and read (the Distiller writes nodes; the agent Toolkit's
 	// Map/Digest read them) and (b) the adminapi distill capability flips to true.
-	// Its physical table (digest_nodes) comes from fabriq's migrations (0022-0024),
+	// Its physical table (fabriq_digest_nodes) comes from fabriq's migrations (0022-0024),
 	// run by fabriq.Open — no EnsureDynamic needed (it is a typed grove model).
 	if err := reg.Register(digestNodeSpec()); err != nil {
 		return err
@@ -217,7 +217,7 @@ func run() error {
 	// (file:// here — see blobDSN above) and DefaultBucket is the bucket all keys
 	// live under (created idempotently by the adapter on Open). EnableCas wires
 	// the content-addressable store the file-plane write path (CreateFile →
-	// PutBlob) and read path (GetBlob) require; it is backed by the blob_cas
+	// PutBlob) and read path (GetBlob) require; it is backed by the fabriq_blob_cas
 	// ledger in the primary Postgres shard. With both set, f.Blob() is wired so
 	// the adminapi capability probe reports files:true and the file endpoints
 	// serve real bytes.

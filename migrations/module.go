@@ -62,6 +62,7 @@ func Group() *migrate.Group {
 			migration0026CRDTSegments,
 			migration0027APIKey,
 			migration0028APIKeyExpiresAt,
+			migration0029NamespaceRename,
 		)
 	})
 	return group
@@ -87,4 +88,21 @@ func execAll(ctx context.Context, exec migrate.Executor, stmts []string) error {
 		}
 	}
 	return nil
+}
+
+// extensionAvailable reports whether a Postgres extension can be installed
+// in this database (pg_available_extensions).
+func extensionAvailable(ctx context.Context, exec migrate.Executor, name string) (bool, error) {
+	rows, err := exec.Query(ctx, `SELECT count(*) FROM pg_available_extensions WHERE name = $1`, name)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	var n int
+	if rows.Next() {
+		if err := rows.Scan(&n); err != nil {
+			return false, err
+		}
+	}
+	return n > 0, rows.Err()
 }
