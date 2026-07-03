@@ -37,8 +37,9 @@ var (
 	ErrNodeLocked = errors.New("fabriq: fs_node is locked")
 )
 
-// childPath builds a node's materialized path. Root nodes (parentPath == "")
-// become "/name"; deeper nodes become "parentPath/name".
+// childPath builds the path echoed on FsRef — nothing persists it. Root
+// nodes (parentPath == "") become "/name"; deeper nodes become
+// "parentPath/name".
 func childPath(parentPath, name string) string {
 	return parentPath + "/" + name
 }
