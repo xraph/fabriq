@@ -112,6 +112,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 			Documents:   a.Documents(),
 			Maintenance: postgres.NewMaintenance(a, reg, pub),
 			Projection:  a.ProjectionState(),
+			Replay:      a,
 		}, a.Close, nil
 	}
 

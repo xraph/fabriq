@@ -18,6 +18,7 @@ import (
 
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
+	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/sweep"
@@ -47,6 +48,9 @@ type Shard struct {
 	// track). Static deployments leave it nil (the worker plane holds
 	// concrete adapters); catalog mode fills it per tenant database.
 	Projection ProjectionStateStore
+	// Replay is the shard's event-truth surface for rebuilds/reconcile.
+	// Static deployments leave it nil; catalog mode fills it per tenant DB.
+	Replay ReplaySource
 }
 
 // ProjectionStateStore is the per-shard projection bookkeeping the engines,
@@ -58,6 +62,18 @@ type ProjectionStateStore interface {
 	SetApplied(ctx context.Context, tenantID, proj, aggregate, aggID string, version int64) error
 	// Tenants lists every tenant this shard has bookkeeping for.
 	Tenants(ctx context.Context) ([]string, error)
+}
+
+// ReplaySource is the shard's event-truth surface for blue-green rebuilds
+// and the drift reconciler: snapshot the tenant's aggregates as events,
+// read their current versions, and republish a repair event onto the
+// tenant's outbox. Satisfied by the Postgres adapter; static deployments
+// leave Shard.Replay nil (the worker plane routes via its concrete
+// adapter map), catalog mode fills it per tenant database.
+type ReplaySource interface {
+	SnapshotEntities(ctx context.Context, tenantID string, fn func(env event.Envelope) error) error
+	AggregateVersions(ctx context.Context, tenantID, entity string) (map[string]int64, error)
+	Repair(ctx context.Context, tenantID string, d projection.Drift) error
 }
 
 // Directory resolves a tenant to its shard id. Implementations range from a
