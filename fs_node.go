@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/command"
-	fabriqerr "github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/domain"
@@ -44,8 +43,9 @@ func childPath(parentPath, name string) string {
 	return parentPath + "/" + name
 }
 
-// parentContext loads the parent's path and validates it is a container.
-// For root creation (parentID == "") it returns "" with no parent lookup.
+// parentContext validates parentID is a folder and returns its absolute
+// path (computed from the adjacency chain). For root creation
+// (parentID == "") it returns "" with no parent lookup.
 func (f *Fabriq) parentContext(ctx context.Context, parentID string) (parentPath string, err error) {
 	if parentID == "" {
 		return "", nil
@@ -57,7 +57,7 @@ func (f *Fabriq) parentContext(ctx context.Context, parentID string) (parentPath
 	if parent.NodeType != "folder" {
 		return "", ErrNotContainer
 	}
-	return parent.Path, nil
+	return f.nodePathOf(ctx, parent)
 }
 
 // siblingExists reports whether a live (non-trashed) sibling already uses name.
@@ -134,22 +134,6 @@ func (f *Fabriq) GetNode(ctx context.Context, id string) (domain.FsNode, error) 
 	return n, nil
 }
 
-// GetNodeByPath resolves a live node by its materialized path.
-func (f *Fabriq) GetNodeByPath(ctx context.Context, path string) (domain.FsNode, error) {
-	var rows []domain.FsNode
-	err := f.Relational().List(ctx, "fs_node", query.ListQuery{
-		Where: query.Where{query.Eq("path", path), query.IsNull("deleted_at")},
-		Limit: 1,
-	}, &rows)
-	if err != nil {
-		return domain.FsNode{}, fmt.Errorf("fabriq: GetNodeByPath: %w", err)
-	}
-	if len(rows) == 0 {
-		return domain.FsNode{}, fmt.Errorf("fabriq: GetNodeByPath %q: %w", path, fabriqerr.ErrNotFound)
-	}
-	return rows[0], nil
-}
-
 // ListChildren returns the live children of parentID, ordered by name.
 func (f *Fabriq) ListChildren(ctx context.Context, parentID string, limit, offset int) ([]domain.FsNode, error) {
 	var rows []domain.FsNode
@@ -172,16 +156,12 @@ func (f *Fabriq) Ancestors(ctx context.Context, id string) ([]domain.FsNode, err
 	if err != nil {
 		return nil, fmt.Errorf("fabriq: Ancestors: %w", err)
 	}
-	var chain []domain.FsNode
-	for node.ParentID != "" {
-		parent, err := f.GetNode(ctx, node.ParentID)
-		if err != nil {
-			return nil, fmt.Errorf("fabriq: Ancestors: %w", err)
-		}
-		chain = append(chain, parent)
-		node = parent
+	chain, err := f.chainToRoot(ctx, node)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: Ancestors: %w", err)
 	}
-	// chain is leaf→root; reverse to root→leaf.
+	// chain is [node, parent, ..., root]; drop node, reverse to root→parent.
+	chain = chain[1:]
 	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
 		chain[i], chain[j] = chain[j], chain[i]
 	}
