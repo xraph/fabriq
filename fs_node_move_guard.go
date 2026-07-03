@@ -52,15 +52,15 @@ BEGIN
 			-- constraint violation instead of an opaque internal error.
 			RAISE EXCEPTION USING
 				ERRCODE = 'check_violation',
-				CONSTRAINT = 'fs_nodes_acyclic',
-				TABLE = 'fs_nodes',
+				CONSTRAINT = 'fabriq_fs_nodes_acyclic',
+				TABLE = 'fabriq_fs_nodes',
 				MESSAGE = format('fabriq: fs_node move would create a cycle: new parent chain reaches %%s', moved);
 		END IF;
 		hops := hops + 1;
 		IF hops > %d THEN
 			RAISE EXCEPTION 'fabriq: fs_node ancestry exceeds max depth %d (cycle?)';
 		END IF;
-		SELECT parent_id INTO cur FROM fs_nodes WHERE id = cur;
+		SELECT parent_id INTO cur FROM fabriq_fs_nodes WHERE id = cur;
 	END LOOP;
 END $$`, fsMaxDepth, fsMaxDepth)
 
@@ -100,7 +100,7 @@ func fsMoveCycleWalk(ctx context.Context, rel query.RelationalQuerier, g *fsMove
 			return fabriqerr.New(fabriqerr.CodeConstraintViolation,
 				"fs_node move would create a cycle.",
 				fabriqerr.WithEntity("fs_node", g.movedID),
-				fabriqerr.WithMeta(fabriqerr.Meta{Constraint: "fs_nodes_acyclic", Table: "fs_nodes"}))
+				fabriqerr.WithMeta(fabriqerr.Meta{Constraint: "fabriq_fs_nodes_acyclic", Table: "fabriq_fs_nodes"}))
 		}
 		if hops > fsMaxDepth {
 			return fmt.Errorf("fabriq: fs_node ancestry exceeds max depth %d (cycle?)", fsMaxDepth)
