@@ -38,6 +38,7 @@ func TestExtension_Lifecycle_DI(t *testing.T) {
 	_ = closeFn()
 
 	// Create restricted app role so RLS applies.
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 
 	// Build registry with demo domain.

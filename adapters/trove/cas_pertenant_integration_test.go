@@ -43,6 +43,7 @@ func migrateAppCAS(t *testing.T) (*postgres.Adapter, *trovestore.CASStore) {
 	}
 	_ = owner.Close()
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	pg, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {

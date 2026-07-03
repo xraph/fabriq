@@ -63,6 +63,7 @@ func newVectorHarness(t *testing.T) *postgres.Adapter {
 	}
 
 	// App-role adapter (RLS actually applies — superusers bypass it).
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg, postgres.WithGuardedTables(domain.ReadingsSeries))
 	if err != nil {

@@ -67,6 +67,7 @@ func newDocScopeHarness(t *testing.T) (*postgres.Adapter, *postgres.Adapter) {
 	// migrations (host-collision hazard); create it as owner before the app role.
 	fabriqtest.ApplyDDL(t, superDSN, domain.PagesDDL())
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {
@@ -346,6 +347,7 @@ func newDocMaterializeScopeHarness(t *testing.T) (*postgres.Adapter, *postgres.A
 		}
 	}
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {

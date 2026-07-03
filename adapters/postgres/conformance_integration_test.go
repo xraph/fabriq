@@ -68,6 +68,7 @@ func newPGConformanceBackend(t *testing.T) conformance.Backend {
 	}
 	_ = superA.Close()
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg, postgres.WithGuardedTables(domain.ReadingsSeries))
 	if err != nil {

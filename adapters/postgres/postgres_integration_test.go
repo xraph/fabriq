@@ -53,6 +53,7 @@ func newHarness(t testing.TB) *harness {
 
 	// ...the adapter under test connects as the restricted app role, so
 	// RLS actually constrains it (it never constrains superusers).
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg, postgres.WithGuardedTables(domain.ReadingsSeries))
 	if err != nil {

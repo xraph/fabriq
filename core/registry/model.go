@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strings"
 
 	"github.com/xraph/grove/schema"
 )
@@ -213,7 +214,7 @@ func (b *Binding) Populate(model any, vals map[string]any) error {
 
 // bind compiles the spec into a Binding. For dynamic entities it routes to
 // bindDynamic; for Go-model entities it uses reflection via grove/schema.
-func bind(spec EntitySpec) (*Binding, error) {
+func bind(spec EntitySpec, tablePrefix string) (*Binding, error) {
 	if spec.Schema != nil {
 		if spec.Model != nil {
 			return nil, fmt.Errorf("fabriq: entity %q: Model and Schema are mutually exclusive", spec.Name)
@@ -232,7 +233,7 @@ func bind(spec EntitySpec) (*Binding, error) {
 	}
 
 	b := &Binding{
-		Table:     table.Name,
+		Table:     prefixedTable(tablePrefix, table.Name),
 		modelType: table.ModelType,
 		fields:    make(map[string]*schema.Field, len(table.Fields)),
 	}
@@ -318,4 +319,15 @@ func bindDynamic(spec EntitySpec) (*Binding, error) {
 
 	b.PK, b.TenantColumn, b.VersionColumn = ColumnID, ColumnTenant, ColumnVersion
 	return b, nil
+}
+
+// prefixedTable applies a registry table prefix to a static entity
+// table. fabriq_* infra and ds_* dynamic tables are already namespaces
+// and pass through unchanged.
+func prefixedTable(prefix, name string) string {
+	if prefix == "" ||
+		strings.HasPrefix(name, "fabriq_") || strings.HasPrefix(name, "ds_") {
+		return name
+	}
+	return prefix + name
 }

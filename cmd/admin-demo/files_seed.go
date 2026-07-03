@@ -24,12 +24,12 @@ const (
 // fileSeedSpecs returns the minimal registry specs for the file plane:
 // blob_object (the byte-plane catalog row CreateFile writes) and fs_node (the
 // tree node). Models come from fabriq's domain package so the physical columns
-// match the fabriq migrations that create the fs_nodes / blob_objects tables.
+// match the fabriq migrations that create the fabriq_fs_nodes / fabriq_blob_objects tables.
 //
 // Unlike domain.RegisterAll, these omit GraphNode/Search/Live specs: the demo
 // runs no projection worker for the file plane, so the command-plane shape is
 // all that is needed, and omitting the projections keeps the demo from
-// requiring an fs_nodes ES index or an FsNode graph label.
+// requiring an fabriq_fs_nodes ES index or an FsNode graph label.
 func fileSeedSpecs() []registry.EntitySpec {
 	return []registry.EntitySpec{
 		{

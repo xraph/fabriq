@@ -26,6 +26,12 @@ postgres:
 #   - id: "shard-b"
 #     dsn: "postgres://fabriq_app:...@pg-b:5432/fabriq?sslmode=require"
 
+# Pin specific tenants to specific shards (residency / high-value tenants),
+# overriding hash placement. Requires `shards`; every pin must name a
+# configured shard id. Unpinned tenants keep hashing.
+# shardPins:
+#   acme-corp: "shard-b"
+
 # Redis — event fan-out (required for the relay, projections, subscriptions).
 redis:
   addr: "localhost:6379"

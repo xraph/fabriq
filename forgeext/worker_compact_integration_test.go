@@ -18,6 +18,7 @@ import (
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
+	"github.com/xraph/fabriq/domain"
 	"github.com/xraph/fabriq/fabriqtest"
 	"github.com/xraph/fabriq/forgeext"
 	"github.com/xraph/fabriq/migrations"
@@ -74,6 +75,7 @@ func TestWorker_DocumentPlaneCompacts(t *testing.T) {
 		t.Fatalf("EnsureDynamic: %v", err)
 	}
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 
 	ext := forgeext.New(reg,
@@ -87,6 +89,9 @@ func TestWorker_DocumentPlaneCompacts(t *testing.T) {
 			Documents: fabriq.DocumentsConfig{ArchiveHistory: true},
 		}),
 		forgeext.WithWorker(true),
+		// The production compaction cadence is 30s; the test drives it fast
+		// so the sweep fires well inside the wait deadline.
+		forgeext.WithDocCompactInterval(2*time.Second),
 	)
 
 	app := forge.NewApp(forge.AppConfig{

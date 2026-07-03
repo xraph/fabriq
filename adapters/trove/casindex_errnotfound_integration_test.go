@@ -38,6 +38,7 @@ func migrateAppIndex(t *testing.T) *trovestore.CASIndex {
 		t.Fatalf("migrate: %v", err)
 	}
 	_ = owner.Close()
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	pg, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {

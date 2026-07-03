@@ -6,7 +6,7 @@ import "github.com/xraph/grove"
 // credentials are stored ONLY as ciphertext (auth_enc); the plaintext map never
 // touches a column.
 type BlobSource struct {
-	grove.BaseModel `grove:"table:blob_sources"`
+	grove.BaseModel `grove:"table:fabriq_blob_sources"`
 
 	ID          string            `grove:"id,pk"             json:"id"`
 	TenantID    string            `grove:"tenant_id,notnull" json:"tenantId"`

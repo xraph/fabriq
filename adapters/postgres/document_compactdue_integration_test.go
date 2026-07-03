@@ -27,6 +27,7 @@ import (
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
+	"github.com/xraph/fabriq/domain"
 	"github.com/xraph/fabriq/fabriqtest"
 	"github.com/xraph/fabriq/migrations"
 
@@ -93,6 +94,7 @@ func newCompactDueHarness(t *testing.T) (*postgres.Adapter, *postgres.Adapter) {
 		}
 	}
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	a, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {

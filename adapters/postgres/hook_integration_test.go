@@ -70,6 +70,7 @@ func newHookHarness(t testing.TB) *hookHarness {
 		}
 	}
 
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	app, err := postgres.Open(ctx, appDSN, reg, postgres.WithGuardedTables(domain.ReadingsSeries))
 	if err != nil {

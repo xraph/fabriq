@@ -40,6 +40,7 @@ func openFsTestWithCAS(t *testing.T) *fabriq.Fabriq {
 		t.Fatalf("migrate: %v", err)
 	}
 	_ = owner.Close()
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	f, stores, openErr := fabriq.Open(ctx, reg, fabriq.Config{
 		Postgres: fabriq.PostgresConfig{DSN: appDSN},

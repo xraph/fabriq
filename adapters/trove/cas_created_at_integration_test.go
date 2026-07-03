@@ -34,7 +34,7 @@ func TestBlobCASCreatedAtDefault(t *testing.T) {
 	}
 	var rows []row
 	err = pg.TenantTxRaw(tctx, func(tx *pgdriver.PgTx) error {
-		return tx.NewRaw(`SELECT created_at FROM blob_cas WHERE hash = $1`, "h").Scan(ctx, &rows)
+		return tx.NewRaw(`SELECT created_at FROM fabriq_blob_cas WHERE hash = $1`, "h").Scan(ctx, &rows)
 	})
 	if err != nil {
 		t.Fatalf("select created_at: %v", err)

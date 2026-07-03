@@ -32,6 +32,7 @@ func TestOpenWiresBlobStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = closeFn()
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 
 	f, _, err := fabriq.Open(ctx, reg, fabriq.Config{

@@ -37,6 +37,7 @@ func openFsTest(t *testing.T) (*fabriq.Fabriq, *fabriq.Stores, *registry.Registr
 		t.Fatalf("migrate: %v", err)
 	}
 	_ = owner.Close()
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{Postgres: fabriq.PostgresConfig{DSN: appDSN}})
 	if err != nil {

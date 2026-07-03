@@ -9,7 +9,7 @@ import (
 // FsBookmark is a user's bookmark of an fs_node (a favourite), with a per-user
 // sort order. Unique per (tenant, user, node).
 type FsBookmark struct {
-	grove.BaseModel `grove:"table:fs_bookmarks"`
+	grove.BaseModel `grove:"table:fabriq_fs_bookmarks"`
 
 	ID        string    `grove:"id,pk"             json:"id"`
 	TenantID  string    `grove:"tenant_id,notnull" json:"tenantId"`

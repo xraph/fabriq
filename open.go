@@ -94,7 +94,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		set = shard.Single(shardList[0])
 	} else {
 		var serr error
-		set, serr = shard.New(shard.Cached(shard.HashDirectory(ids...), 30*time.Second), shardList...)
+		set, serr = shard.New(shard.Cached(shardDirectory(ids, cfg.ShardPins), 30*time.Second), shardList...)
 		if serr != nil {
 			closeDialed()
 			return nil, nil, serr
@@ -281,6 +281,18 @@ func validateArchiveConfig(cfg Config, reg *registry.Registry) error {
 		return fmt.Errorf("fabriq: Documents.ArchiveHistory requires Storage to be configured (no storage driver set)")
 	}
 	return nil
+}
+
+// shardDirectory builds the tenant→shard directory for a multi-shard set:
+// hash placement, with config-pinned tenants (Config.ShardPins) overriding.
+// Validate has already checked every pin against the configured shard ids, so
+// the pins are trusted here. The caller keeps the Cached wrapper outermost.
+func shardDirectory(ids []string, pins map[string]string) shard.Directory {
+	dir := shard.HashDirectory(ids...)
+	if len(pins) > 0 {
+		dir = shard.PinnedDirectory(pins, dir)
+	}
+	return dir
 }
 
 // Stores exposes the opened adapters for worker-plane wiring (relay,

@@ -59,7 +59,10 @@ func TestExtension_MigratableExtension(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	for _, table := range []string{"fabriq_outbox", "sites"} {
+	// fabriq_links is one of the 0029-renamed infra tables — asserting it
+	// (rather than a demo table; those were evicted to domain.DemoDDL)
+	// proves the chain ran through the namespace rename.
+	for _, table := range []string{"fabriq_outbox", "fabriq_links"} {
 		var n int
 		if err := db.QueryRow(ctx,
 			`SELECT count(*) FROM information_schema.tables

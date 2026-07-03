@@ -8,6 +8,7 @@ import (
 
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/domain"
 	"github.com/xraph/fabriq/fabriqtest"
 	"github.com/xraph/fabriq/migrations"
 )
@@ -152,6 +153,7 @@ func TestDynamicDDL_EnsureDynamic(t *testing.T) {
 
 	// --- verify RLS is enforced by the app role ---
 	// Provision the app role (after migrations so DEFAULT PRIVILEGES apply).
+	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 	app, err := postgres.Open(ctx, appDSN, reg)
 	if err != nil {
