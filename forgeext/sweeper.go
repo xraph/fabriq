@@ -53,6 +53,38 @@ func (e *Extension) runCatalogSweeper() error {
 		supervise(runCtx, logger, "sweeper", engine.Run)
 	}()
 
+	// Projection consumers are unchanged from the static plane: consumer
+	// groups on the shared stream scale by replica count, no election —
+	// the sweeper's relays feed them and the bookkeeping routes per tenant.
+	consumer := consumerName()
+	e.mu.Lock()
+	fab := e.fab
+	e.mu.Unlock()
+	if stores.Falkor != nil {
+		gengine, err := stores.GraphEngine(e.reg, fab.Upcasters())
+		if err != nil {
+			cancel()
+			return err
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "proj:graph", func(c context.Context) error { return gengine.Run(c, consumer) })
+		}()
+	}
+	if stores.Elastic != nil {
+		sengine, err := stores.SearchEngine(e.reg, fab.Upcasters())
+		if err != nil {
+			cancel()
+			return err
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "proj:search", func(c context.Context) error { return sengine.Run(c, consumer) })
+		}()
+	}
+
 	// The wake subscription turns write-path nudges into immediate passes.
 	// Losing it is safe — the scan cadence still sweeps everyone.
 	if stores.Redis != nil {

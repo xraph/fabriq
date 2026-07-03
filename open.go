@@ -458,8 +458,8 @@ func cachedState(repo projection.StateRepo, proj string) func(ctx context.Contex
 // sink, with projection_state bookkeeping and rebuild-aware dual targets.
 // Run one per worker replica (consumer groups scale without election).
 func (s *Stores) GraphEngine(reg *registry.Registry, upcasters *event.UpcasterChain) (*projection.Engine, error) {
-	if s.Redis == nil || s.Falkor == nil || s.Postgres == nil {
-		return nil, fmt.Errorf("fabriq: graph engine needs postgres, redis and falkordb configured")
+	if s.Redis == nil || s.Falkor == nil || (s.Postgres == nil && s.router == nil) {
+		return nil, fmt.Errorf("fabriq: graph engine needs postgres (or a tenant catalog), redis and falkordb configured")
 	}
 	repo := s.state
 	stateFor := cachedState(repo, "graph")
@@ -507,8 +507,8 @@ func (s *Stores) GraphRebuilder(reg *registry.Registry) (*projection.Rebuilder, 
 // group -> registry-derived applier -> Elasticsearch sink with external
 // version gating. Run one per worker replica.
 func (s *Stores) SearchEngine(reg *registry.Registry, upcasters *event.UpcasterChain) (*projection.Engine, error) {
-	if s.Redis == nil || s.Elastic == nil || s.Postgres == nil {
-		return nil, fmt.Errorf("fabriq: search engine needs postgres, redis and elasticsearch configured")
+	if s.Redis == nil || s.Elastic == nil || (s.Postgres == nil && s.router == nil) {
+		return nil, fmt.Errorf("fabriq: search engine needs postgres (or a tenant catalog), redis and elasticsearch configured")
 	}
 	repo := s.state
 	stateFor := cachedState(repo, "search")

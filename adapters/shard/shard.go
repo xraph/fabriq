@@ -18,6 +18,7 @@ import (
 
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
+	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/sweep"
 	"github.com/xraph/fabriq/core/tenant"
@@ -41,6 +42,22 @@ type Shard struct {
 	// catalog-mode sweeper. Static deployments leave it nil (the worker
 	// plane runs its own boot-time loops).
 	Maintenance sweep.Maintainer
+	// Projection is the shard's projection bookkeeping surface
+	// (projection_applied/_state stay co-located with the aggregates they
+	// track). Static deployments leave it nil (the worker plane holds
+	// concrete adapters); catalog mode fills it per tenant database.
+	Projection ProjectionStateStore
+}
+
+// ProjectionStateStore is the per-shard projection bookkeeping the engines,
+// rebuilder and WaitForProjection route to (satisfied by the Postgres
+// adapter's StateRepo).
+type ProjectionStateStore interface {
+	projection.StateRepo
+	// SetApplied records the applied version (projection.AppliedRecorder).
+	SetApplied(ctx context.Context, tenantID, proj, aggregate, aggID string, version int64) error
+	// Tenants lists every tenant this shard has bookkeeping for.
+	Tenants(ctx context.Context) ([]string, error)
 }
 
 // Directory resolves a tenant to its shard id. Implementations range from a

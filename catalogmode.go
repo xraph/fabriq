@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/xraph/fabriq/adapters/elastic"
+	"github.com/xraph/fabriq/adapters/falkordb"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
 	"github.com/xraph/fabriq/adapters/shard"
@@ -22,11 +24,17 @@ import (
 // worker plane is the catalog sweeper (forgeext), fed by Stores.TenantSweeper
 // and woken by the write path's Redis nudges.
 //
+// Projections (graph/search) serve too: the sinks are shared, the
+// bookkeeping routes per tenant, the sweeper relays every tenant's outbox
+// into the shared stream the engines consume.
+//
 // v1 serving scope (each gap fails fast in validateCatalogMode and is
 // recorded in the spec's deviation log):
-//   - projections (graph/search) and live queries wait for routed
-//     projection bookkeeping;
-//   - document history archiving (blob offload) is not wired yet.
+//   - document history archiving (blob offload) is not wired yet;
+//   - live queries return the same typed not-configured error as static
+//     multi-shard deployments (routed live stores are a later phase);
+//   - blue-green rebuilds and the drift reconciler stay static-mode-only
+//     (they need routed snapshot/truth surfaces).
 func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Option) (*Fabriq, *Stores, error) {
 	if err := validateCatalogMode(cfg); err != nil {
 		return nil, nil, err
@@ -88,6 +96,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 			Spatial:     postgres.NewSpatialAdapter(a),
 			Documents:   a.Documents(),
 			Maintenance: postgres.NewMaintenance(a, reg, pub),
+			Projection:  a.ProjectionState(),
 		}, a.Close, nil
 	}
 
@@ -106,9 +115,36 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		Vector:     shard.NewVector(dset),
 		Spatial:    shard.NewSpatial(dset),
 		Documents:  docRouter,
-		// ProjectionState reads route like everything else once routed
-		// projection bookkeeping lands; until then the not-configured
-		// default applies.
+		// Projection bookkeeping routes on its tenant argument to the
+		// tenant's own database (WaitForProjection, engine state).
+		ProjectionState: stores.state,
+	}
+
+	// Projection sinks are SHARED infrastructure (one graph store / search
+	// cluster, tenant-scoped by naming) — only the bookkeeping is
+	// per-tenant. Hydration and live-target resolution take routed ports,
+	// so the identical wiring serves 1 database or 10k.
+	if cfg.FalkorDB.Addr != "" {
+		fk, ferr := falkordb.Open(ctx, falkordb.Config{
+			Addr: cfg.FalkorDB.Addr, Username: cfg.FalkorDB.Username, Password: cfg.FalkorDB.Password,
+		}, reg, ports.Relational, falkordb.WithLiveTargetResolver(liveGraphResolver(stores.state)))
+		if ferr != nil {
+			_ = stores.Close()
+			return nil, nil, ferr
+		}
+		stores.Falkor = fk
+		ports.Graph = fk
+	}
+	if len(cfg.Elasticsearch.Addrs) > 0 {
+		es, eerr := elastic.Open(ctx, elastic.Config{
+			Addrs: cfg.Elasticsearch.Addrs, Username: cfg.Elasticsearch.Username, Password: cfg.Elasticsearch.Password,
+		}, reg, elastic.WithModelVersionResolver(liveSearchModelVersion(stores.state)))
+		if eerr != nil {
+			_ = stores.Close()
+			return nil, nil, eerr
+		}
+		stores.Elastic = es
+		ports.Search = es
 	}
 
 	allOpts := append(cfg.Options(), opts...)
@@ -160,11 +196,11 @@ func (s *nudgingStore) InTenantTx(ctx context.Context, fn func(ctx context.Conte
 // honor yet — failing fast beats silently-dead subsystems.
 func validateCatalogMode(cfg Config) error {
 	var missing []string
-	if cfg.Projections.Graph || cfg.Projections.Search {
-		missing = append(missing, "projections (graph/search need routed projection bookkeeping)")
-	}
 	if cfg.Documents.ArchiveHistory {
 		missing = append(missing, "document history archiving")
+	}
+	if (cfg.Projections.Graph || cfg.Projections.Search) && cfg.Redis.Addr == "" {
+		missing = append(missing, "projections without Redis (the sweeper relays through it)")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("fabriq: catalog mode does not support %s yet", strings.Join(missing, ", "))
