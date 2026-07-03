@@ -77,6 +77,10 @@ func (s spatialStub) Delete(_ context.Context, entity, _ string) error {
 	s.parent.calls = append(s.parent.calls, "SpatialDelete:"+entity)
 	return nil
 }
+func (s spatialStub) Get(_ context.Context, entity, _ string) (query.Geometry, map[string]any, bool, error) {
+	s.parent.calls = append(s.parent.calls, "SpatialGet:"+entity)
+	return query.Geometry{}, nil, false, nil
+}
 
 // vectorStub implements query.VectorQuerier, recording into its parent's log.
 // A separate type is required because stub.Get already has the RelationalQuerier
