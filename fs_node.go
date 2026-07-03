@@ -168,17 +168,13 @@ func (f *Fabriq) Ancestors(ctx context.Context, id string) ([]domain.FsNode, err
 	return chain, nil
 }
 
-// Descendants returns all live nodes under id (by path prefix), ordered by path.
+// Descendants returns all live nodes under id (recursive CTE over
+// parent_id), ordered by their derived path.
 func (f *Fabriq) Descendants(ctx context.Context, id string) ([]domain.FsNode, error) {
-	node, err := f.GetNode(ctx, id)
-	if err != nil {
+	if _, err := f.GetNode(ctx, id); err != nil {
 		return nil, fmt.Errorf("fabriq: Descendants: %w", err)
 	}
-	var rows []domain.FsNode
-	err = f.Relational().List(ctx, "fs_node", query.ListQuery{
-		Where:   query.Where{query.Like("path", node.Path+"/%"), query.IsNull("deleted_at")},
-		OrderBy: "path ASC",
-	}, &rows)
+	rows, err := f.descendantNodes(ctx, id, false)
 	if err != nil {
 		return nil, fmt.Errorf("fabriq: Descendants: %w", err)
 	}

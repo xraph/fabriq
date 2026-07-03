@@ -7,17 +7,13 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/command"
-	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/domain"
 )
 
-// subtree returns node plus all its descendants (by path prefix), live or
-// trashed. Order is unspecified.
+// subtree returns node plus all its descendants (adjacency CTE), live or
+// trashed, in path order.
 func (f *Fabriq) subtree(ctx context.Context, node domain.FsNode) ([]domain.FsNode, error) {
-	var desc []domain.FsNode
-	err := f.Relational().List(ctx, "fs_node", query.ListQuery{
-		Where: query.Where{query.Like("path", node.Path+"/%")},
-	}, &desc)
+	desc, err := f.descendantNodes(ctx, node.ID, true)
 	if err != nil {
 		return nil, err
 	}

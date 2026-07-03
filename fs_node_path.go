@@ -103,3 +103,35 @@ func (f *Fabriq) GetNodeByPath(ctx context.Context, path string) (domain.FsNode,
 	}
 	return node, nil
 }
+
+// descendantNodes returns every node under rootID (root excluded) in
+// depth-first path order, via one recursive CTE. The recursion is NOT
+// filtered by deleted_at — a live grandchild under a trashed folder is
+// still found (matches the old path-prefix semantics); includeTrashed
+// only controls the final result filter. Tenant scoping rides on the
+// RelationalQuerier.Query tenant guard (RLS).
+func (f *Fabriq) descendantNodes(ctx context.Context, rootID string, includeTrashed bool) ([]domain.FsNode, error) {
+	var rows []domain.FsNode
+	err := f.Relational().Query(ctx, &rows, `
+		WITH RECURSIVE sub (id, rel_path, depth) AS (
+			SELECT n.id, ''::text, 0
+			  FROM fs_nodes n
+			 WHERE n.id = $1
+			UNION ALL
+			SELECT c.id, sub.rel_path || '/' || c.name, sub.depth + 1
+			  FROM fs_nodes c
+			  JOIN sub ON c.parent_id = sub.id
+			 WHERE sub.depth < $3
+		)
+		SELECT f.*
+		  FROM fs_nodes f
+		  JOIN sub ON sub.id = f.id
+		 WHERE f.id <> $1
+		   AND ($2::boolean OR f.deleted_at IS NULL)
+		 ORDER BY sub.rel_path`,
+		rootID, includeTrashed, fsMaxDepth)
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
