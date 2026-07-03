@@ -303,3 +303,37 @@ func TestSpatial_RLSTenantIsolation(t *testing.T) {
 		t.Errorf("t2-pt missing from t2 results: %+v", t2Got)
 	}
 }
+
+// TestSpatialAdapter_GetAndFilter verifies Get round-trips geometry+meta (and
+// reports ok=false for a missing id), and that Within's Filter narrows
+// results to rows whose meta matches every k=v predicate.
+func TestSpatialAdapter_GetAndFilter(t *testing.T) {
+	s := newSpatialHarness(t)
+	ctx := spatialCtx(t, "acme")
+	up := func(id, wkt, tag string) {
+		if err := s.Upsert(ctx, "equipment", id, query.Geometry{WKT: wkt, SRID: 4326}, map[string]any{"tag": tag}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	up("pump1", "POINT(-122.42 37.77)", "pump")
+	up("valve1", "POINT(-122.4201 37.7701)", "valve")
+
+	geom, meta, ok, err := s.Get(ctx, "equipment", "pump1")
+	if err != nil || !ok || geom.SRID != 4326 || meta["tag"] != "pump" {
+		t.Fatalf("Get pump1: geom=%+v meta=%+v ok=%v err=%v", geom, meta, ok, err)
+	}
+	if _, _, ok, _ := s.Get(ctx, "equipment", "missing"); ok {
+		t.Fatal("missing id must be ok=false")
+	}
+
+	var got []query.SpatialMatch
+	if err := s.Within(ctx, query.SpatialQuery{
+		Entity: "equipment", Center: query.Geometry{WKT: "POINT(-122.42 37.77)", SRID: 4326},
+		RadiusM: 5000, K: 10, Filter: map[string]string{"tag": "pump"},
+	}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "pump1" {
+		t.Fatalf("filtered within want [pump1], got %#v", got)
+	}
+}

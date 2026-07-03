@@ -133,26 +133,33 @@ func (s *SpatialAdapter) Within(ctx context.Context, q query.SpatialQuery, into 
 	// metric. For SRID 4326 dist is geography metres; otherwise planar metres in
 	// the geometry's own units. (Ordering by dist rather than the KNN operator
 	// `<->` avoids degree-vs-metre disagreement across latitudes for 4326.)
-	var sql string
+	distExpr := "ST_Distance(geom, c)"
+	dwithin := "ST_DWithin(geom, c, $5)"
 	if q.Center.SRID == 4326 {
-		sql = `SELECT id, ST_Distance(geom::geography, c::geography) AS dist, meta::text AS meta
-			FROM fabriq_geometries, (SELECT ST_GeomFromText($1, $2) AS c) cc
-			WHERE tenant_id = $3 AND entity = $4
-			  AND ST_DWithin(geom::geography, c::geography, $5)
-			ORDER BY dist ASC
-			LIMIT $6`
-	} else {
-		sql = `SELECT id, ST_Distance(geom, c) AS dist, meta::text AS meta
-			FROM fabriq_geometries, (SELECT ST_GeomFromText($1, $2) AS c) cc
-			WHERE tenant_id = $3 AND entity = $4
-			  AND ST_DWithin(geom, c, $5)
-			ORDER BY dist ASC
-			LIMIT $6`
+		distExpr = "ST_Distance(geom::geography, c::geography)"
+		dwithin = "ST_DWithin(geom::geography, c::geography, $5)"
 	}
+	args := []any{q.Center.WKT, q.Center.SRID, "", q.Entity, q.RadiusM, k}
+	filterClause := ""
+	if len(q.Filter) > 0 {
+		fj, err := json.Marshal(q.Filter)
+		if err != nil {
+			return err
+		}
+		filterClause = " AND meta @> $7::jsonb"
+		args = append(args, string(fj))
+	}
+	sql := fmt.Sprintf(`SELECT id, %s AS dist, meta::text AS meta
+		FROM fabriq_geometries, (SELECT ST_GeomFromText($1, $2) AS c) cc
+		WHERE tenant_id = $3 AND entity = $4
+		  AND %s%s
+		ORDER BY dist ASC
+		LIMIT $6`, distExpr, dwithin, filterClause)
 	return s.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		tid, _ := tenant.FromContext(ctx)
+		args[2] = tid
 		var rows []geoRow
-		if err := tx.NewRaw(sql, q.Center.WKT, q.Center.SRID, tid, q.Entity, q.RadiusM, k).Scan(ctx, &rows); err != nil {
+		if err := tx.NewRaw(sql, args...).Scan(ctx, &rows); err != nil {
 			return fmt.Errorf("fabriq: within %s: %w", q.Entity, err)
 		}
 		for _, r := range rows {

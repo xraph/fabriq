@@ -1368,6 +1368,9 @@ func (f *FakeSpatial) Within(ctx context.Context, q query.SpatialQuery, into any
 		if math.IsNaN(e.x) {
 			continue
 		}
+		if !metaMatchesFilter(e.meta, q.Filter) {
+			continue
+		}
 		var d float64
 		if q.Center.SRID == 4326 {
 			d = haversineM(cy, cx, e.y, e.x) // lat=y, lon=x
@@ -1421,6 +1424,18 @@ func parseWKTPoint(wkt string) (x, y, z float64, ok bool) {
 		}
 	}
 	return xf, yf, zf, true
+}
+
+// metaMatchesFilter reports whether meta satisfies every k=v in filter
+// (stringified equality). An empty/nil filter always matches.
+func metaMatchesFilter(meta map[string]any, filter map[string]string) bool {
+	for k, v := range filter {
+		mv, ok := meta[k]
+		if !ok || fmt.Sprintf("%v", mv) != v {
+			return false
+		}
+	}
+	return true
 }
 
 // haversineM returns great-circle distance in metres between two lat/lon points.

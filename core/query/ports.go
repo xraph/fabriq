@@ -244,6 +244,9 @@ type SpatialQuery struct {
 	Center  Geometry
 	RadiusM float64 // radius in metres
 	K       int     // cap; <=0 → adapter default
+	// Filter is an AND-ed set of equality predicates evaluated against the
+	// stored geometry meta (JSONB). Empty → no filter. e.g. {"tag":"pump"}.
+	Filter map[string]string
 }
 
 // SpatialMatch is one nearest-neighbour hit, nearest first.

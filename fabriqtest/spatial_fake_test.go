@@ -73,3 +73,29 @@ func TestFakeSpatial_Get(t *testing.T) {
 		t.Fatalf("missing id want ok=false nil err, got ok=%v err=%v", ok, err)
 	}
 }
+
+func TestFakeSpatial_WithinFilter(t *testing.T) {
+	f := &FakeSpatial{data: map[string]map[string]map[string]geoEntry{}}
+	ctx, _ := tenant.WithTenant(context.Background(), "acme")
+	up := func(id, wkt, tag string) {
+		if err := f.Upsert(ctx, "equipment", id, query.Geometry{WKT: wkt, SRID: 0}, map[string]any{"tag": tag}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	up("pump-near", "POINT (1 0)", "pump")   // dist 1
+	up("valve-near", "POINT (2 0)", "valve") // dist 2
+	up("pump-far", "POINT (5 0)", "pump")    // dist 5
+
+	var got []query.SpatialMatch
+	if err := f.Within(ctx, query.SpatialQuery{
+		Entity: "equipment",
+		Center: query.Geometry{WKT: "POINT (0 0)", SRID: 0},
+		RadiusM: 100, K: 10,
+		Filter: map[string]string{"tag": "pump"},
+	}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "pump-near" || got[1].ID != "pump-far" {
+		t.Fatalf("want [pump-near,pump-far], got %#v", got)
+	}
+}
