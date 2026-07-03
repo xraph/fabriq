@@ -685,10 +685,9 @@ func (d *DocStore) loadSegment(ctx context.Context, blobKey string) ([]document.
 // returning the state, the highest log seq folded (0 if none), and how
 // many log rows were folded (the compaction race guard compares it
 // against a recount under the exclusive doc lock).
-func (d *DocStore) mergedState(ctx context.Context, docID string) (*crdt.State, int64, int64, error) {
-	state := crdt.NewState("fabriq_docs", docID)
-	var maxSeq, folded int64
-	err := d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+func (d *DocStore) mergedState(ctx context.Context, docID string) (state *crdt.State, maxSeq, folded int64, outErr error) {
+	state = crdt.NewState("fabriq_docs", docID)
+	outErr = d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		var snaps []struct {
 			LastSeq  int64  `grove:"last_seq"`
 			Snapshot []byte `grove:"snapshot"`
@@ -725,7 +724,7 @@ func (d *DocStore) mergedState(ctx context.Context, docID string) (*crdt.State, 
 		}
 		return nil
 	})
-	return state, maxSeq, folded, err
+	return state, maxSeq, folded, outErr
 }
 
 // fold applies one change record onto the state via the shared

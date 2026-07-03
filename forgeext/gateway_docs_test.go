@@ -73,7 +73,7 @@ func postJSON(t *testing.T, url string, body any) *http.Response {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.Post(url, "application/json", strings.NewReader(string(raw))) //nolint:noctx // test helper
+	resp, err := http.Post(url, "application/json", strings.NewReader(string(raw)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestGatewayDocs_SubscribeStreamsSyncAndPresence(t *testing.T) {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
 		srv.URL+"/api/v1/live/docs/subscribe?id=note/1&presence=1", nil)
-	resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // closed by ctx cancel
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

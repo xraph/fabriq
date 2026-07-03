@@ -56,14 +56,14 @@ func (c *docsController) resolveFacade() (docFacade, error) {
 	}
 	f := c.ext.fab.Fabriq()
 	if f == nil {
-		return nil, forge.InternalError(errNotStarted{})
+		return nil, forge.InternalError(notStartedError{})
 	}
 	return f, nil
 }
 
-type errNotStarted struct{}
+type notStartedError struct{}
 
-func (errNotStarted) Error() string { return "fabriq-gateway: fabriq facade not started" }
+func (notStartedError) Error() string { return "fabriq-gateway: fabriq facade not started" }
 
 // docError maps a document-plane failure onto the right HTTP status
 // without leaking internals across the trust boundary: fabriqerr codes
@@ -133,8 +133,8 @@ func (c *docsController) Update(ctx forge.Context) error {
 		return err
 	}
 	var req docUpdateRequest
-	if err := json.NewDecoder(ctx.Request().Body).Decode(&req); err != nil {
-		return forge.BadRequest("invalid update request: " + err.Error())
+	if decErr := json.NewDecoder(ctx.Request().Body).Decode(&req); decErr != nil {
+		return forge.BadRequest("invalid update request: " + decErr.Error())
 	}
 	if req.DocID == "" || len(req.Update) == 0 {
 		return forge.BadRequest("docId and update are required")
@@ -158,8 +158,8 @@ func (c *docsController) Sync(ctx forge.Context) error {
 		return err
 	}
 	var req docSyncRequest
-	if err := json.NewDecoder(ctx.Request().Body).Decode(&req); err != nil {
-		return forge.BadRequest("invalid sync request: " + err.Error())
+	if decErr := json.NewDecoder(ctx.Request().Body).Decode(&req); decErr != nil {
+		return forge.BadRequest("invalid sync request: " + decErr.Error())
 	}
 	if req.DocID == "" {
 		return forge.BadRequest("docId is required")
@@ -187,8 +187,8 @@ func (c *docsController) Presence(ctx forge.Context) error {
 		return err
 	}
 	var req docPresenceRequest
-	if err := json.NewDecoder(ctx.Request().Body).Decode(&req); err != nil {
-		return forge.BadRequest("invalid presence request: " + err.Error())
+	if decErr := json.NewDecoder(ctx.Request().Body).Decode(&req); decErr != nil {
+		return forge.BadRequest("invalid presence request: " + decErr.Error())
 	}
 	if req.DocID == "" || req.Node == "" {
 		return forge.BadRequest("docId and node are required")

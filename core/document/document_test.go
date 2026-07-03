@@ -48,9 +48,12 @@ type syncReply struct {
 	Updates  []json.RawMessage `json:"updates"`
 }
 
-func doSync(t *testing.T, store document.Store, docID string, v []byte) syncReply {
+// testDocID is the fixture document these contract tests exercise.
+const testDocID = "note/01"
+
+func doSync(t *testing.T, store document.Store, v []byte) syncReply {
 	t.Helper()
-	raw, err := store.Sync(context.Background(), docID, v)
+	raw, err := store.Sync(context.Background(), testDocID, v)
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -61,10 +64,11 @@ func doSync(t *testing.T, store document.Store, docID string, v []byte) syncRepl
 	return reply
 }
 
-func lwwUpdate(t *testing.T, field, value string, ts int64) []byte {
+// lwwUpdate encodes a single LWW write to the "title" field.
+func lwwUpdate(t *testing.T, value string, ts int64) []byte {
 	t.Helper()
 	return encodeUpdate(t, crdt.ChangeRecord{
-		Field: field, CRDTType: crdt.TypeLWW,
+		Field: "title", CRDTType: crdt.TypeLWW,
 		HLC: hlcAt(ts, "a"), NodeID: "a",
 		Value: json.RawMessage(`"` + value + `"`),
 	})
@@ -73,12 +77,12 @@ func lwwUpdate(t *testing.T, field, value string, ts int64) []byte {
 func TestApplyUpdate_AppendsToLog(t *testing.T) {
 	store := &fabriqtest.FakeDocumentStore{}
 	ctx := context.Background()
-	docID := "note/01"
+	docID := testDocID
 
-	if err := store.ApplyUpdate(ctx, docID, lwwUpdate(t, "title", "one", 1)); err != nil {
+	if err := store.ApplyUpdate(ctx, docID, lwwUpdate(t, "one", 1)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ApplyUpdate(ctx, docID, lwwUpdate(t, "title", "two", 2)); err != nil {
+	if err := store.ApplyUpdate(ctx, docID, lwwUpdate(t, "two", 2)); err != nil {
 		t.Fatal(err)
 	}
 	// Garbage is rejected.
@@ -89,7 +93,7 @@ func TestApplyUpdate_AppendsToLog(t *testing.T) {
 		t.Fatal("empty update must be rejected")
 	}
 
-	reply := doSync(t, store, docID, nil)
+	reply := doSync(t, store, nil)
 	if len(reply.Updates) != 2 {
 		t.Fatalf("updates = %d, want 2", len(reply.Updates))
 	}
@@ -101,20 +105,20 @@ func TestApplyUpdate_AppendsToLog(t *testing.T) {
 func TestSync_ReturnsMissingUpdates(t *testing.T) {
 	store := &fabriqtest.FakeDocumentStore{}
 	ctx := context.Background()
-	docID := "note/01"
+	docID := testDocID
 	for i := int64(1); i <= 3; i++ {
-		if err := store.ApplyUpdate(ctx, docID, lwwUpdate(t, "title", "v", i)); err != nil {
+		if err := store.ApplyUpdate(ctx, docID, lwwUpdate(t, "v", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// A client at seq 1 receives exactly updates 2 and 3.
-	reply := doSync(t, store, docID, vector(1))
+	reply := doSync(t, store, vector(1))
 	if len(reply.Updates) != 2 || reply.Seq != 3 {
 		t.Fatalf("reply = %+v", reply)
 	}
 	// A caught-up client receives nothing.
-	reply = doSync(t, store, docID, vector(3))
+	reply = doSync(t, store, vector(3))
 	if len(reply.Updates) != 0 || reply.Seq != 3 {
 		t.Fatalf("caught-up reply = %+v", reply)
 	}
@@ -123,7 +127,7 @@ func TestSync_ReturnsMissingUpdates(t *testing.T) {
 func TestCompact_FoldsLogIntoSnapshot(t *testing.T) {
 	store := &fabriqtest.FakeDocumentStore{}
 	ctx := context.Background()
-	docID := "note/01"
+	docID := testDocID
 
 	txt := crdt.NewTextState()
 	op, err := txt.Insert(crdt.TextRef{}, "hello", "a", hlcAt(5, "a"))
@@ -131,7 +135,7 @@ func TestCompact_FoldsLogIntoSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	updates := [][]byte{
-		lwwUpdate(t, "title", "doc", 1),
+		lwwUpdate(t, "doc", 1),
 		encodeUpdate(t, crdt.ChangeRecord{
 			Field: "views", CRDTType: crdt.TypeCounter, HLC: hlcAt(2, "a"), NodeID: "a",
 			CounterDelta: &crdt.CounterDelta{Increment: 4},
@@ -141,8 +145,8 @@ func TestCompact_FoldsLogIntoSnapshot(t *testing.T) {
 		}),
 	}
 	for _, u := range updates {
-		if err := store.ApplyUpdate(ctx, docID, u); err != nil {
-			t.Fatal(err)
+		if aerr := store.ApplyUpdate(ctx, docID, u); aerr != nil {
+			t.Fatal(aerr)
 		}
 	}
 
@@ -151,8 +155,8 @@ func TestCompact_FoldsLogIntoSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.Compact(ctx, docID); err != nil {
-		t.Fatal(err)
+	if cerr := store.Compact(ctx, docID); cerr != nil {
+		t.Fatal(cerr)
 	}
 
 	// Compaction changes storage shape, never merge results.
@@ -172,7 +176,7 @@ func TestCompact_FoldsLogIntoSnapshot(t *testing.T) {
 	}
 
 	// A from-scratch client now heals via snapshot + empty tail...
-	reply := doSync(t, store, docID, nil)
+	reply := doSync(t, store, nil)
 	if len(reply.Snapshot) == 0 {
 		t.Fatal("post-compaction sync must carry the snapshot")
 	}
@@ -180,10 +184,10 @@ func TestCompact_FoldsLogIntoSnapshot(t *testing.T) {
 		t.Fatalf("post-compaction reply = %+v", reply)
 	}
 	// ...and post-compaction updates ride the tail as usual.
-	if err := store.ApplyUpdate(ctx, docID, lwwUpdate(t, "title", "doc2", 9)); err != nil {
+	if err := store.ApplyUpdate(ctx, docID, lwwUpdate(t, "doc2", 9)); err != nil {
 		t.Fatal(err)
 	}
-	reply = doSync(t, store, docID, vector(3))
+	reply = doSync(t, store, vector(3))
 	if len(reply.Snapshot) != 0 || len(reply.Updates) != 1 || reply.Seq != 4 {
 		t.Fatalf("tail reply = %+v", reply)
 	}
@@ -192,7 +196,7 @@ func TestCompact_FoldsLogIntoSnapshot(t *testing.T) {
 func TestSnapshot_RichTypesProject(t *testing.T) {
 	store := &fabriqtest.FakeDocumentStore{}
 	ctx := context.Background()
-	docID := "note/01"
+	docID := testDocID
 
 	if err := store.ApplyUpdate(ctx, docID, encodeUpdate(t,
 		crdt.ChangeRecord{
