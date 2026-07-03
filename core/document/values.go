@@ -17,23 +17,19 @@ func ProjectValues(state *crdt.State) map[string]any {
 		if fs == nil {
 			continue
 		}
-		switch fs.Type {
-		case crdt.TypeCounter:
-			if fs.CounterState != nil {
-				vals[field] = fs.CounterState.Value()
-			}
-		case crdt.TypeSet:
-			if fs.SetState != nil {
-				vals[field] = decodeElements(fs.SetState.Elements())
-			}
-		case crdt.TypeList:
-			if fs.ListState != nil {
-				vals[field] = decodeElements(fs.ListState.Elements())
-			}
-		case crdt.TypeText:
-			if fs.TextState != nil {
-				vals[field] = fs.TextState.Value()
-			}
+		// Typed states project structurally; fields whose typed state is
+		// absent (snapshots written by the pre-ApplyChange lossy fold hold
+		// Value-only counter/set/list states) fall back to the stored
+		// resolved value rather than silently vanishing from the row.
+		switch {
+		case fs.Type == crdt.TypeCounter && fs.CounterState != nil:
+			vals[field] = fs.CounterState.Value()
+		case fs.Type == crdt.TypeSet && fs.SetState != nil:
+			vals[field] = decodeElements(fs.SetState.Elements())
+		case fs.Type == crdt.TypeList && fs.ListState != nil:
+			vals[field] = decodeElements(fs.ListState.Elements())
+		case fs.Type == crdt.TypeText && fs.TextState != nil:
+			vals[field] = fs.TextState.Value()
 		default:
 			if len(fs.Value) == 0 {
 				continue

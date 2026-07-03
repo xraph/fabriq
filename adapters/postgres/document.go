@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -108,6 +109,11 @@ func (d *DocStore) ApplyUpdateWithSeq(ctx context.Context, docID string, update 
 	if uerr := json.Unmarshal(update, &changes); uerr != nil || len(changes) == 0 {
 		return 0, fmt.Errorf("fabriq: update for %s is not a non-empty []ChangeRecord: %w", docID, uerr)
 	}
+	// Structural validation BEFORE the durable append: malformed payloads
+	// are rejected at the door instead of degrading every future fold.
+	if verr := document.ValidateUpdate(d.merge, changes); verr != nil {
+		return 0, fmt.Errorf("fabriq: invalid update for %s: %w", docID, verr)
+	}
 	tid, err := tenant.Require(ctx)
 	if err != nil {
 		return 0, err
@@ -118,6 +124,13 @@ func (d *DocStore) ApplyUpdateWithSeq(ctx context.Context, docID string, update 
 	scope := tenant.ScopeOrEmpty(ctx)
 	var seq int64
 	err = d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		// Shared per-doc advisory lock: compaction takes the exclusive
+		// side, so a snapshot can never be stamped past an in-flight
+		// append's seq (which would make that update permanently
+		// invisible to seq-filtered readers).
+		if _, lockErr := tx.NewRaw(`SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 7))`, docID).Exec(ctx); lockErr != nil {
+			return lockErr
+		}
 		var seqs []updateRow
 		if insErr := tx.NewRaw(
 			`INSERT INTO fabriq_crdt_updates (doc_id, tenant_id, update_data, scope_id) VALUES ($1, $2, $3, NULLIF($4, '')) RETURNING seq, update_data`,
@@ -216,7 +229,7 @@ func (d *DocStore) Snapshot(ctx context.Context, docID string) (document.Materia
 	if err != nil {
 		return document.Materialized{}, err
 	}
-	state, _, err := d.mergedState(ctx, docID)
+	state, _, _, err := d.mergedState(ctx, docID)
 	if err != nil {
 		return document.Materialized{}, err
 	}
@@ -257,7 +270,7 @@ func (d *DocStore) Compact(ctx context.Context, docID string) error {
 	if err != nil {
 		return err
 	}
-	state, maxSeq, err := d.mergedState(ctx, docID)
+	state, maxSeq, folded, err := d.mergedState(ctx, docID)
 	if err != nil {
 		return err
 	}
@@ -295,6 +308,30 @@ func (d *DocStore) Compact(ctx context.Context, docID string) error {
 	}
 
 	return d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		// Exclusive per-doc advisory lock (appends hold the shared side),
+		// then recount: an append with a LOWER bigserial seq can commit
+		// between the fold read and this transaction — stamping last_seq
+		// past it would make that update permanently invisible to
+		// seq-filtered readers. On mismatch, abort quietly; the next sweep
+		// sees a consistent view.
+		if _, lockErr := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended($1, 7))`, docID).Exec(ctx); lockErr != nil {
+			return lockErr
+		}
+		var counts []struct {
+			N int64 `grove:"n"`
+		}
+		// Recount over the exact range the fold read: (snapshot floor,
+		// maxSeq]. The snapshot row still carries the fold-time floor —
+		// compactions are serialized by the leader election + this lock.
+		if cErr := tx.NewRaw(`SELECT count(*) AS n FROM fabriq_crdt_updates
+			WHERE doc_id = $1 AND seq <= $2
+			  AND seq > COALESCE((SELECT last_seq FROM fabriq_crdt_snapshots WHERE doc_id = $1), 0)`,
+			docID, maxSeq).Scan(ctx, &counts); cErr != nil {
+			return cErr
+		}
+		if len(counts) == 1 && counts[0].N != folded {
+			return nil // racing append landed below maxSeq; retry next sweep
+		}
 		// The snapshot inherits the doc's recorded scope (from the bookkeeping
 		// row) rather than the caller's ctx scope: compaction may run from an
 		// unscoped worker/admin context, and a snapshot stamped NULL there would
@@ -335,6 +372,12 @@ func gcHorizon(state *crdt.State) crdt.HLC {
 		if fs != nil && fs.HLC.After(latest) {
 			latest = fs.HLC
 		}
+	}
+	// Clamp to the server wall clock: HLC maxes propagate on merge, so one
+	// future-skewed client would otherwise drag the horizon ahead of every
+	// legitimate in-flight op and collapse the safety window.
+	if now := time.Now().UnixNano(); latest.Timestamp > now {
+		latest.Timestamp = now
 	}
 	if latest.IsZero() || latest.Timestamp <= int64(gcCompactionWindow) {
 		return crdt.HLC{}
@@ -397,7 +440,9 @@ func (d *DocStore) CompactDue(ctx context.Context) (int, error) {
 				return e
 			}
 			for _, r := range rs {
-				counts[r.DocID] = r.N
+				// Keyed per tenant: doc ids are caller-supplied, so the
+				// same id under two tenants must not share a budget count.
+				counts[doc.TenantID+"\x00"+r.DocID] = r.N
 			}
 			return nil
 		})
@@ -407,12 +452,13 @@ func (d *DocStore) CompactDue(ctx context.Context) (int, error) {
 	}
 
 	compacted := 0
+	var sweepErr error
 	for _, doc := range docs {
 		ent, ok := d.a.reg.Get(doc.Entity)
 		if !ok || ent.Spec.CRDT == nil || ent.Spec.CRDT.SnapshotEvery <= 0 {
 			continue
 		}
-		if counts[doc.DocID] < int64(ent.Spec.CRDT.SnapshotEvery) {
+		if counts[doc.TenantID+"\x00"+doc.DocID] < int64(ent.Spec.CRDT.SnapshotEvery) {
 			continue
 		}
 		tctx, terr := tenant.WithTenant(ctx, doc.TenantID)
@@ -420,11 +466,14 @@ func (d *DocStore) CompactDue(ctx context.Context) (int, error) {
 			return compacted, terr
 		}
 		if cerr := d.Compact(tctx, doc.DocID); cerr != nil {
-			return compacted, cerr
+			// A poisoned or transiently failing doc must not starve the
+			// rest of the fleet: remember the failure, keep sweeping.
+			sweepErr = cerr
+			continue
 		}
 		compacted++
 	}
-	return compacted, nil
+	return compacted, sweepErr
 }
 
 // sealSegment reads the trimmable updates (prevSeq, maxSeq], encodes them into
@@ -633,10 +682,12 @@ func (d *DocStore) loadSegment(ctx context.Context, blobKey string) ([]document.
 }
 
 // mergedState folds snapshot + log tail through grove's merge engine,
-// returning the state and the highest log seq folded (0 if none).
-func (d *DocStore) mergedState(ctx context.Context, docID string) (*crdt.State, int64, error) {
+// returning the state, the highest log seq folded (0 if none), and how
+// many log rows were folded (the compaction race guard compares it
+// against a recount under the exclusive doc lock).
+func (d *DocStore) mergedState(ctx context.Context, docID string) (*crdt.State, int64, int64, error) {
 	state := crdt.NewState("fabriq_docs", docID)
-	var maxSeq int64
+	var maxSeq, folded int64
 	err := d.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
 		var snaps []struct {
 			LastSeq  int64  `grove:"last_seq"`
@@ -670,21 +721,19 @@ func (d *DocStore) mergedState(ctx context.Context, docID string) (*crdt.State, 
 				}
 			}
 			maxSeq = r.Seq
+			folded++
 		}
 		return nil
 	})
-	return state, maxSeq, err
+	return state, maxSeq, folded, err
 }
 
-// fold applies one change record onto the state via grove's canonical op
-// application: type-specific payloads (counter deltas, set/list/text ops,
-// document path writes, full-state carriers) all merge losslessly.
+// fold applies one change record onto the state via the shared
+// document-plane fold: grove's canonical op application, degrading to the
+// legacy value-level merge (never an error — a durably-appended record
+// must never poison the document).
 func (d *DocStore) fold(state *crdt.State, c *crdt.ChangeRecord) error {
-	merged, err := crdt.ApplyChange(d.merge, state.Fields[c.Field], c)
-	if err != nil {
-		return fmt.Errorf("fabriq: apply field %q: %w", c.Field, err)
-	}
-	state.Fields[c.Field] = merged
+	document.FoldChange(d.merge, state, c)
 	return nil
 }
 
@@ -772,7 +821,7 @@ func (d *DocStore) materializeOne(ctx context.Context, tenantID, scope, docID st
 	if err != nil {
 		return false, err
 	}
-	state, maxSeq, err := d.mergedState(tctx, docID)
+	state, maxSeq, folded, err := d.mergedState(tctx, docID)
 	if err != nil {
 		return false, err
 	}
@@ -808,6 +857,26 @@ func (d *DocStore) materializeOne(ctx context.Context, tenantID, scope, docID st
 	// command primitives; the raw watermark update rides the same PgTx
 	// (the bookkeeping table has no RLS, so any tx may write it).
 	err = d.a.inTenantTx(tctx, func(ptx *pgdriver.PgTx) error {
+		// Same append-race guard as Compact: an append with a lower
+		// bigserial seq committing between the fold read and this tx would
+		// be stamped under the watermark and never materialize. Exclusive
+		// doc lock + recount; on mismatch skip this round (next tick sees
+		// a consistent view).
+		if _, lockErr := ptx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended($1, 7))`, docID).Exec(tctx); lockErr != nil {
+			return lockErr
+		}
+		var counts []struct {
+			N int64 `grove:"n"`
+		}
+		if cErr := ptx.NewRaw(`SELECT count(*) AS n FROM fabriq_crdt_updates
+			WHERE doc_id = $1 AND seq <= $2
+			  AND seq > COALESCE((SELECT last_seq FROM fabriq_crdt_snapshots WHERE doc_id = $1), 0)`,
+			docID, maxSeq).Scan(tctx, &counts); cErr != nil {
+			return cErr
+		}
+		if len(counts) == 1 && counts[0].N != folded {
+			return errMaterializeRace
+		}
 		var tx command.Tx = &storeTx{ptx: ptx}
 		txCtx := tctx
 		current, cvErr := tx.CurrentVersion(txCtx, ent, docID)
@@ -854,5 +923,12 @@ func (d *DocStore) materializeOne(ctx context.Context, tenantID, scope, docID st
 			`UPDATE fabriq_crdt_docs SET last_seq_materialized = $2 WHERE doc_id = $1`, docID, maxSeq).Exec(txCtx)
 		return wmErr
 	})
+	if errors.Is(err, errMaterializeRace) {
+		return false, nil // racing append; retry next tick
+	}
 	return err == nil, err
 }
+
+// errMaterializeRace aborts a materialization whose fold raced a
+// lower-seq append; the sweep retries with a consistent view.
+var errMaterializeRace = errors.New("fabriq: materialize raced an append")

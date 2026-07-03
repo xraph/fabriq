@@ -1074,6 +1074,9 @@ func (f *FakeDocumentStore) ApplyUpdate(_ context.Context, docID string, update 
 	if err := json.Unmarshal(update, &changes); err != nil || len(changes) == 0 {
 		return fmt.Errorf("fabriq: update for %s is not a non-empty []ChangeRecord: %w", docID, err)
 	}
+	if err := document.ValidateUpdate(crdt.NewMergeEngine(), changes); err != nil {
+		return fmt.Errorf("fabriq: invalid update for %s: %w", docID, err)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d := f.doc(docID)
@@ -1140,11 +1143,9 @@ func (d *fakeDoc) mergedStateLocked(docID string) (*crdt.State, error) {
 			return nil, fmt.Errorf("fabriq: corrupt update %d for %s: %w", u.seq, docID, err)
 		}
 		for i := range changes {
-			merged, err := crdt.ApplyChange(engine, state.Fields[changes[i].Field], &changes[i])
-			if err != nil {
-				return nil, err
-			}
-			state.Fields[changes[i].Field] = merged
+			// The shared document-plane fold — identical degradation
+			// semantics to the postgres adapter (contract parity).
+			document.FoldChange(engine, state, &changes[i])
 		}
 	}
 	return state, nil

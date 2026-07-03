@@ -65,27 +65,9 @@ func (s *syncingDocStore) ApplyUpdate(ctx context.Context, docID string, update 
 // the update blobs; Version is the log seq — a gap means "call
 // Document().Sync and resume".
 func (f *Fabriq) SubscribeDocument(ctx context.Context, docID string) (<-chan query.Delta, error) {
-	tid, err := tenant.Require(ctx)
+	tid, _, err := f.validateDocAccess(ctx, docID)
 	if err != nil {
 		return nil, err
-	}
-	entity, _, ok := strings.Cut(docID, "/")
-	if !ok {
-		return nil, fmt.Errorf("fabriq: document id %q must be <entity>/<id>", docID)
-	}
-	ent, found := f.reg.Get(entity)
-	if !found || ent.Spec.Kind != registry.KindDocument {
-		return nil, fmt.Errorf("fabriq: %q is not a registered document entity", entity)
-	}
-	if f.settings.docAuthz != nil {
-		if authzErr := f.settings.docAuthz(ctx, docID); authzErr != nil {
-			return nil, authzErr
-		}
-	}
-	if f.settings.authz != nil {
-		if authzErr := f.settings.authz(ctx, query.SubscribeScope{Entity: entity, Scope: "doc", ID: docID}); authzErr != nil {
-			return nil, authzErr
-		}
 	}
 	ch, _, err := f.hub.SubscribeRaw(ctx, registry.DocChannelName(tid, docID), f.settings.subscribeBuffer)
 	return ch, err

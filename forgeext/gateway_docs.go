@@ -3,14 +3,18 @@ package forgeext
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq/core/document"
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/subscribe"
+	"github.com/xraph/fabriq/gateway"
 )
 
 // docFacade is the slice of the fabriq facade the document endpoints
@@ -61,6 +65,34 @@ type errNotStarted struct{}
 
 func (errNotStarted) Error() string { return "fabriq-gateway: fabriq facade not started" }
 
+// docError maps a document-plane failure onto the right HTTP status
+// without leaking internals across the trust boundary: fabriqerr codes
+// classify (unauthorized→401, permission_denied→403, invalid_input→400,
+// not_found→404); anything unclassified is a 500 with a generic message.
+func docError(op string, err error) error {
+	var fe *fabriqerr.Error
+	if errors.As(err, &fe) {
+		msg := fabriqerr.SafeMessage(fe.Code)
+		switch fe.Code {
+		case fabriqerr.CodeUnauthorized:
+			return forge.Unauthorized(msg)
+		case fabriqerr.CodePermissionDenied:
+			return forge.Forbidden(msg)
+		case fabriqerr.CodeNotFound:
+			return forge.NotFound(msg)
+		case fabriqerr.CodeInvalidInput, fabriqerr.CodeSchemaMismatch, fabriqerr.CodeConstraintViolation:
+			return forge.BadRequest(msg)
+		}
+		return forge.InternalError(errors.New(op + " failed"))
+	}
+	// Facade-level validation errors (bad doc ids, unregistered entities,
+	// malformed updates) are prefixed "fabriq:" and safe to echo.
+	if msg := err.Error(); len(msg) < 200 && strings.HasPrefix(msg, "fabriq:") {
+		return forge.BadRequest(msg)
+	}
+	return forge.InternalError(errors.New(op + " failed"))
+}
+
 func (c *docsController) Routes(r forge.Router) error {
 	base := c.ext.cfg.BasePath + "/docs"
 	post := func(name, summary string) []forge.RouteOption {
@@ -108,7 +140,7 @@ func (c *docsController) Update(ctx forge.Context) error {
 		return forge.BadRequest("docId and update are required")
 	}
 	if err := f.Document().ApplyUpdate(ctx.Request().Context(), req.DocID, req.Update); err != nil {
-		return forge.BadRequest("apply failed: " + err.Error())
+		return docError("apply", err)
 	}
 	return ctx.JSON(http.StatusAccepted, map[string]string{"status": "applied"})
 }
@@ -134,7 +166,7 @@ func (c *docsController) Sync(ctx forge.Context) error {
 	}
 	payload, err := f.Document().Sync(ctx.Request().Context(), req.DocID, req.StateVector)
 	if err != nil {
-		return forge.BadRequest("sync failed: " + err.Error())
+		return docError("sync", err)
 	}
 	ctx.Response().Header().Set("Content-Type", "application/json")
 	_, werr := ctx.Response().Write(payload)
@@ -162,7 +194,7 @@ func (c *docsController) Presence(ctx forge.Context) error {
 		return forge.BadRequest("docId and node are required")
 	}
 	if err := f.PublishDocumentPresence(ctx.Request().Context(), req.DocID, req.Node, req.Data); err != nil {
-		return forge.BadRequest("presence failed: " + err.Error())
+		return docError("presence", err)
 	}
 	return ctx.JSON(http.StatusAccepted, map[string]string{"status": "published"})
 }
@@ -184,13 +216,13 @@ func (c *docsController) Subscribe(ctx forge.Context) error {
 
 	frames, err := f.SubscribeDocument(reqCtx, docID)
 	if err != nil {
-		return forge.BadRequest("subscribe failed: " + err.Error())
+		return docError("subscribe", err)
 	}
 	var presence <-chan query.Delta
 	if r.URL.Query().Get("presence") != "" {
 		presence, err = f.SubscribeDocumentPresence(reqCtx, docID)
 		if err != nil {
-			return forge.BadRequest("presence subscribe failed: " + err.Error())
+			return docError("presence subscribe", err)
 		}
 	}
 
@@ -198,14 +230,25 @@ func (c *docsController) Subscribe(ctx forge.Context) error {
 	if err != nil {
 		return forge.InternalError(err)
 	}
-	return serveDocSSE(reqCtx, sse, frames, presence, c.ext.cfg.SSE.HeartbeatInterval)
+	return serveDocSSE(reqCtx, sse, frames, presence, c.ext.cfg.SSE)
 }
 
 // serveDocSSE pumps sync + presence frames until the client disconnects or
-// a source closes, with periodic heartbeats.
-func serveDocSSE(ctx context.Context, sink *subscribe.SSEWriter, frames, presence <-chan query.Delta, heartbeat time.Duration) error {
+// a source closes, with periodic heartbeats. Every write is bounded by
+// the gateway write timeout (parity with gateway.ServeSSE): a stalled
+// client tears the connection down instead of wedging the goroutine and
+// its hub subscriptions.
+func serveDocSSE(ctx context.Context, sink *subscribe.SSEWriter, frames, presence <-chan query.Delta, opts gateway.SSEOptions) error {
+	heartbeat := opts.HeartbeatInterval
 	if heartbeat <= 0 {
 		heartbeat = 25 * time.Second
+	}
+	writeTimeout := opts.WriteTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = 30 * time.Second
+	}
+	arm := func() {
+		_ = sink.SetWriteDeadline(time.Now().Add(writeTimeout))
 	}
 	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
@@ -217,6 +260,7 @@ func serveDocSSE(ctx context.Context, sink *subscribe.SSEWriter, frames, presenc
 			if !ok {
 				return nil
 			}
+			arm()
 			if err := sink.WriteEvent(d.StreamID, "sync", d); err != nil {
 				return err
 			}
@@ -225,10 +269,12 @@ func serveDocSSE(ctx context.Context, sink *subscribe.SSEWriter, frames, presenc
 				presence = nil // sync frames keep flowing
 				continue
 			}
+			arm()
 			if err := sink.WriteEvent(d.StreamID, "presence", d); err != nil {
 				return err
 			}
 		case <-ticker.C:
+			arm()
 			if err := sink.Heartbeat(); err != nil {
 				return err
 			}
