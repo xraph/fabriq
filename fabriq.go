@@ -97,8 +97,7 @@ func New(reg *registry.Registry, ports Ports, opts ...Option) (*Fabriq, error) {
 		opt(&s)
 	}
 
-	execOpts := append([]command.ExecutorOption{command.WithHooks(fsPathRewriteHook)}, s.executorOptions...)
-	exec, err := command.NewExecutor(reg, ports.Store, execOpts...)
+	exec, err := command.NewExecutor(reg, ports.Store, s.executorOptions...)
 	if err != nil {
 		return nil, err
 	}

@@ -7,17 +7,13 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/command"
-	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/domain"
 )
 
-// subtree returns node plus all its descendants (by path prefix), live or
-// trashed. Order is unspecified.
+// subtree returns node plus all its descendants (adjacency CTE), live or
+// trashed, in path order.
 func (f *Fabriq) subtree(ctx context.Context, node domain.FsNode) ([]domain.FsNode, error) {
-	var desc []domain.FsNode
-	err := f.Relational().List(ctx, "fs_node", query.ListQuery{
-		Where: query.Where{query.Like("path", node.Path+"/%")},
-	}, &desc)
+	desc, err := f.descendantNodes(ctx, node.ID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +141,10 @@ func (f *Fabriq) ReplaceFile(ctx context.Context, id string, r io.Reader, opts C
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: ReplaceFile: put bytes: %w", err)
 	}
+	p, err := f.nodePathOf(ctx, n)
+	if err != nil {
+		return FsRef{}, fmt.Errorf("fabriq: ReplaceFile: %w", err)
+	}
 	n.BlobID = blob.ID
 	n.Size = blob.Size
 	n.ContentType = opts.ContentType
@@ -154,5 +154,5 @@ func (f *Fabriq) ReplaceFile(ctx context.Context, id string, r io.Reader, opts C
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: ReplaceFile: update node: %w", err)
 	}
-	return FsRef{ID: id, ParentID: n.ParentID, Name: n.Name, Path: n.Path, NodeType: "file", Version: res.Version}, nil
+	return FsRef{ID: id, ParentID: n.ParentID, Name: n.Name, Path: p, NodeType: "file", Version: res.Version}, nil
 }

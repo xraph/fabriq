@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/command"
-	fabriqerr "github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/domain"
@@ -38,14 +37,16 @@ var (
 	ErrNodeLocked = errors.New("fabriq: fs_node is locked")
 )
 
-// childPath builds a node's materialized path. Root nodes (parentPath == "")
-// become "/name"; deeper nodes become "parentPath/name".
+// childPath builds the path echoed on FsRef — nothing persists it. Root
+// nodes (parentPath == "") become "/name"; deeper nodes become
+// "parentPath/name".
 func childPath(parentPath, name string) string {
 	return parentPath + "/" + name
 }
 
-// parentContext loads the parent's path and validates it is a container.
-// For root creation (parentID == "") it returns "" with no parent lookup.
+// parentContext validates parentID is a folder and returns its absolute
+// path (computed from the adjacency chain). For root creation
+// (parentID == "") it returns "" with no parent lookup.
 func (f *Fabriq) parentContext(ctx context.Context, parentID string) (parentPath string, err error) {
 	if parentID == "" {
 		return "", nil
@@ -57,7 +58,7 @@ func (f *Fabriq) parentContext(ctx context.Context, parentID string) (parentPath
 	if parent.NodeType != "folder" {
 		return "", ErrNotContainer
 	}
-	return parent.Path, nil
+	return f.nodePathOf(ctx, parent)
 }
 
 // siblingExists reports whether a live (non-trashed) sibling already uses name.
@@ -86,14 +87,14 @@ func (f *Fabriq) CreateFolder(ctx context.Context, parentID, name string) (FsRef
 	}
 	now := time.Now().UTC()
 	node := &domain.FsNode{
-		ParentID: parentID, Name: name, Path: childPath(parentPath, name),
+		ParentID: parentID, Name: name,
 		NodeType: "folder", Metadata: map[string]any{}, MountConfig: map[string]any{}, CreatedAt: now, UpdatedAt: now,
 	}
 	res, err := f.exec.Exec(ctx, command.Command{Entity: "fs_node", Op: command.OpCreate, Payload: node})
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: CreateFolder: %w", err)
 	}
-	return FsRef{ID: res.AggID, ParentID: parentID, Name: name, Path: node.Path, NodeType: "folder", Version: res.Version}, nil
+	return FsRef{ID: res.AggID, ParentID: parentID, Name: name, Path: childPath(parentPath, name), NodeType: "folder", Version: res.Version}, nil
 }
 
 // CreateFile stores bytes (PutBlob → blob_object) then creates a file node
@@ -114,7 +115,7 @@ func (f *Fabriq) CreateFile(ctx context.Context, parentID, name string, r io.Rea
 	}
 	now := time.Now().UTC()
 	node := &domain.FsNode{
-		ParentID: parentID, Name: name, Path: childPath(parentPath, name), NodeType: "file",
+		ParentID: parentID, Name: name, NodeType: "file",
 		BlobID: blob.ID, Size: blob.Size, ContentType: opts.ContentType, Checksum: blob.Hash,
 		Metadata: map[string]any{}, MountConfig: map[string]any{}, CreatedAt: now, UpdatedAt: now,
 	}
@@ -122,7 +123,7 @@ func (f *Fabriq) CreateFile(ctx context.Context, parentID, name string, r io.Rea
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: CreateFile: create node: %w", err)
 	}
-	return FsRef{ID: res.AggID, ParentID: parentID, Name: name, Path: node.Path, NodeType: "file", Version: res.Version}, nil
+	return FsRef{ID: res.AggID, ParentID: parentID, Name: name, Path: childPath(parentPath, name), NodeType: "file", Version: res.Version}, nil
 }
 
 // GetNode loads a node by id (any state, including trashed).
@@ -132,22 +133,6 @@ func (f *Fabriq) GetNode(ctx context.Context, id string) (domain.FsNode, error) 
 		return domain.FsNode{}, fmt.Errorf("fabriq: GetNode: %w", err)
 	}
 	return n, nil
-}
-
-// GetNodeByPath resolves a live node by its materialized path.
-func (f *Fabriq) GetNodeByPath(ctx context.Context, path string) (domain.FsNode, error) {
-	var rows []domain.FsNode
-	err := f.Relational().List(ctx, "fs_node", query.ListQuery{
-		Where: query.Where{query.Eq("path", path), query.IsNull("deleted_at")},
-		Limit: 1,
-	}, &rows)
-	if err != nil {
-		return domain.FsNode{}, fmt.Errorf("fabriq: GetNodeByPath: %w", err)
-	}
-	if len(rows) == 0 {
-		return domain.FsNode{}, fmt.Errorf("fabriq: GetNodeByPath %q: %w", path, fabriqerr.ErrNotFound)
-	}
-	return rows[0], nil
 }
 
 // ListChildren returns the live children of parentID, ordered by name.
@@ -172,33 +157,25 @@ func (f *Fabriq) Ancestors(ctx context.Context, id string) ([]domain.FsNode, err
 	if err != nil {
 		return nil, fmt.Errorf("fabriq: Ancestors: %w", err)
 	}
-	var chain []domain.FsNode
-	for node.ParentID != "" {
-		parent, err := f.GetNode(ctx, node.ParentID)
-		if err != nil {
-			return nil, fmt.Errorf("fabriq: Ancestors: %w", err)
-		}
-		chain = append(chain, parent)
-		node = parent
+	chain, err := f.chainToRoot(ctx, node)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: Ancestors: %w", err)
 	}
-	// chain is leaf→root; reverse to root→leaf.
+	// chain is [node, parent, ..., root]; drop node, reverse to root→parent.
+	chain = chain[1:]
 	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
 		chain[i], chain[j] = chain[j], chain[i]
 	}
 	return chain, nil
 }
 
-// Descendants returns all live nodes under id (by path prefix), ordered by path.
+// Descendants returns all live nodes under id (recursive CTE over
+// parent_id), ordered by their derived path.
 func (f *Fabriq) Descendants(ctx context.Context, id string) ([]domain.FsNode, error) {
-	node, err := f.GetNode(ctx, id)
-	if err != nil {
+	if _, err := f.GetNode(ctx, id); err != nil {
 		return nil, fmt.Errorf("fabriq: Descendants: %w", err)
 	}
-	var rows []domain.FsNode
-	err = f.Relational().List(ctx, "fs_node", query.ListQuery{
-		Where:   query.Where{query.Like("path", node.Path+"/%"), query.IsNull("deleted_at")},
-		OrderBy: "path ASC",
-	}, &rows)
+	rows, err := f.descendantNodes(ctx, id, false)
 	if err != nil {
 		return nil, fmt.Errorf("fabriq: Descendants: %w", err)
 	}

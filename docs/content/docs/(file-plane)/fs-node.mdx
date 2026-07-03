@@ -1,6 +1,6 @@
 ---
 title: fs_node
-description: The filesystem tree entity — adjacency-list folders and files backed by blob_objects, with a transactionally maintained materialized path, graph CHILD_OF projection, soft-delete subtree ops, write-lock, and a live-query facade for folder children.
+description: The filesystem tree entity — pure-adjacency folders and files backed by blob_objects, with read-time derived paths, graph CHILD_OF projection, soft-delete subtree ops, write-lock, and a live-query facade for folder children.
 ---
 
 `fs_node` is fabriq's filesystem catalog: a folder/file tree where every node is a first-class aggregate in `package fabriq`, [tenant-scoped](/docs/tenancy) at the database level through RLS and structural stamping. Folders group other nodes; file nodes reference a `blob_object` 1:1 and carry denormalized size, content type, and checksum. A third type, `mount`, appears when a remote source is grafted into the tree — see [fs-satellites](/docs/fs-satellites).
@@ -15,7 +15,6 @@ type FsNode struct {
     Version     int64          `json:"version"`
     ParentID    string         `json:"parentId"`   // ""  = root
     Name        string         `json:"name"`
-    Path        string         `json:"path"`       // materialized index, e.g. "/docs/reports/q1"
     NodeType    string         `json:"nodeType"`   // "folder" | "file" | "mount"
     BlobID      string         `json:"blobId"`     // file nodes only
     Size        int64          `json:"size"`
@@ -32,7 +31,7 @@ type FsNode struct {
 }
 ```
 
-**Indexing strategy.** `parent_id` is the adjacency truth. `path` is a materialized prefix index — maintained transactionally inside every move/rename command — used by `GetNodeByPath` and `Descendants`. A partial unique index on `(tenant_id, parent_id, name) WHERE deleted_at IS NULL` enforces sibling-name uniqueness at the database level. `name` and `content_type` are search-indexed (not `path`) via the [search projection](/docs/search). Arbitrary-depth traversal is available via the graph `CHILD_OF` self-edge (see [graph](/docs/graph)).
+**Indexing strategy.** `parent_id` is the *only* persisted tree truth — pure adjacency, no materialized path column. Paths are derived at read time: `NodePath` walks the parent chain (O(depth) point reads), `GetNodeByPath` descends one segment at a time on the `(tenant_id, parent_id, name)` unique index, and `Descendants` runs a recursive CTE over `parent_id`. That same unique index enforces sibling-name uniqueness at the database level (`WHERE deleted_at IS NULL`, partial). `name` and `content_type` are search-indexed via the [search projection](/docs/search). Arbitrary-depth traversal is also available via the graph `CHILD_OF` self-edge (see [graph](/docs/graph)). See ADR 0010 for why the materialized path column was dropped.
 
 ### FsRef
 
@@ -48,6 +47,8 @@ type FsRef struct {
     Version  int64  `json:"version"`
 }
 ```
+
+`Path` is computed at call time from the write itself (root path + name); nothing persists it — `domain.FsNode` carries no `Path` field.
 
 ### Errors
 
@@ -108,7 +109,7 @@ ref, err := f.CreateFile(ctx, parentID, "q1.pdf", r, fabriq.CreateFileOpts{
 
 ### RenameNode
 
-Renames a node in place. Computes the new path from the existing parent path and `newName`, then issues a single `OpUpdate` on the node. The `fsPathRewriteHook` runs inside that command's transaction and bulk-rewrites all descendant paths in one `UPDATE` statement — the move and every descendant path rewrite are atomic. Returns `ErrNodeLocked` if the node is locked; `ErrNodeNameConflict` if a live sibling already has `newName`.
+Renames a node in place: a single `OpUpdate` on the node's `name`, nothing else. Descendants are untouched — their derived paths change implicitly the next time anything reads them, because `parent_id` (the only tree truth) didn't move. Returns `ErrNodeLocked` if the node is locked; `ErrNodeNameConflict` if a live sibling already has `newName`.
 
 ```go
 ref, err := f.RenameNode(ctx, nodeID, "q1-final.pdf")
@@ -116,18 +117,18 @@ ref, err := f.RenameNode(ctx, nodeID, "q1-final.pdf")
 
 ### MoveNode
 
-Re-parents a node under `newParentID`. Path rewrite behavior is identical to `RenameNode` — single event for the moved node, bulk in-tx rewrite for all descendants. Guards:
+Re-parents a node under `newParentID`: a single `OpUpdate` on the node's `parent_id`, zero descendant writes. Guards:
 
 - `ErrNotContainer` if `newParentID` is not a folder
 - `ErrNodeNameConflict` if a live sibling at the destination already has the same name
-- cycle guard: moving a node into its own subtree is rejected with an explicit error
+- cycle guard: moving a node into its own subtree is rejected with an explicit error (a single walk of the new parent's ancestor chain both checks the cycle and derives the echoed `FsRef.Path`)
 
 ```go
 ref, err := f.MoveNode(ctx, nodeID, destFolderID)
 ```
 
 <Callout type="info">
-Both `RenameNode` and `MoveNode` emit exactly **one event** for the moved node. Descendant path rewrites happen in the same transaction via a single bulk `UPDATE` on `fs_nodes` — they do not emit individual events and do not bump descendant versions.
+Both `RenameNode` and `MoveNode` emit exactly **one event**, for the moved node only. Descendants emit **no events** on a move or rename — there is nothing to rewrite, since paths are derived from `parent_id` at read time rather than stored. A consumer that cares about descendants must treat a parent move as a subtree-scoped change (re-derive paths on read, or reconcile by prefix) rather than expecting per-descendant events. See ADR 0010.
 </Callout>
 
 ### TrashNode
@@ -187,9 +188,18 @@ Loads any node by ID regardless of `deleted_at` state.
 node, err := f.GetNode(ctx, nodeID)
 ```
 
+### NodePath
+
+Derives a node's absolute path by walking the `parent_id` chain to the root — O(depth) point reads, nothing stored. This is the read-time replacement for the old materialized `path` column.
+
+```go
+p, err := f.NodePath(ctx, nodeID)
+// p == "/docs/reports/q1.pdf"
+```
+
 ### GetNodeByPath
 
-Resolves a **live** (non-trashed) node by its materialized path. Returns `fabriqerr.ErrNotFound` if no live node matches.
+Resolves a **live** (non-trashed) node by descending the tree one segment at a time on the `(tenant_id, parent_id, name)` unique index — O(depth) point reads, no materialized path to match against. Returns `fabriqerr.ErrNotFound` if no live node matches.
 
 ```go
 node, err := f.GetNodeByPath(ctx, "/docs/reports/q1.pdf")
@@ -214,7 +224,7 @@ crumbs, err := f.Ancestors(ctx, nodeID)
 
 ### Descendants
 
-Returns all live nodes whose `path` has the target node's path as a prefix (`path LIKE '<node.Path>/%'`), ordered by `path ASC`. This is the efficient flat enumeration for bulk operations; arbitrary-depth graph traversal is also available via the `CHILD_OF` edge — see [graph](/docs/graph).
+Returns all live nodes under the target node, ordered by their derived path. SQL backends run one recursive CTE over `parent_id` through the tenant-guarded raw-SQL escape hatch (`RelationalQuerier.Query`); backends that report `fabriqerr.ErrRawSQLUnsupported` (e.g. the in-memory fakes used in unit tests) fall back to a portable adjacency walk — breadth-first over `parent_id` via `List` — with identical semantics: the walk isn't filtered by `deleted_at` (a live grandchild under a trashed folder is still found), only the final result set is; ordering is byte-wise (`COLLATE "C"`) on both paths. One documented divergence: past the `fsMaxDepth` (512) backstop, the CTE silently truncates the subtree while the portable walk returns an error — unobservable at real filesystem depths. Arbitrary-depth graph traversal is also available via the `CHILD_OF` edge — see [graph](/docs/graph). See ADR 0010 for the full rationale.
 
 ```go
 all, err := f.Descendants(ctx, folderID)

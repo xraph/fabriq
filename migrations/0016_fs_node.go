@@ -9,7 +9,7 @@ import (
 var migration0016FsNode = &migrate.Migration{
 	Name:    "fs_node",
 	Version: "202606180016",
-	Comment: "fs_node filesystem tree: adjacency + materialized path + scope RLS",
+	Comment: "fs_node filesystem tree: adjacency + materialized path + scope RLS (path column dropped in 0029)",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
 		stmts := append([]string{
 			`CREATE TABLE IF NOT EXISTS fs_nodes (

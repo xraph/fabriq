@@ -26,6 +26,11 @@ var (
 	// ErrQueryTimeout is returned when a query exceeds its time budget — the
 	// statement_timeout fires (pg SQLSTATE 57014) or the context deadline is hit.
 	ErrQueryTimeout = errors.New("fabriq: query exceeded the time limit")
+
+	// ErrRawSQLUnsupported is returned by RelationalQuerier.Query on backends
+	// that have no raw-SQL escape hatch (e.g. the in-memory test fake).
+	// Callers may fall back to portable reads built from List/Get instead.
+	ErrRawSQLUnsupported = errors.New("fabriq: relational backend does not execute raw SQL")
 )
 
 // VersionConflictError reports an optimistic-concurrency failure.

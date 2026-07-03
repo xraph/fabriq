@@ -12,7 +12,7 @@ import (
 	"github.com/xraph/fabriq/core/tenant"
 )
 
-func TestFsRenameRewritesDescendantPaths(t *testing.T) {
+func TestFsRenameDerivedPaths(t *testing.T) {
 	ctx := context.Background()
 	f := openFsTestWithCAS(t)
 	tctx := tenant.MustWithTenant(ctx, "acme")
@@ -20,58 +20,66 @@ func TestFsRenameRewritesDescendantPaths(t *testing.T) {
 	a, _ := f.CreateFolder(tctx, "", "a")
 	b, _ := f.CreateFolder(tctx, a.ID, "b")
 	_, _ = f.CreateFile(tctx, b.ID, "f.txt", bytes.NewReader([]byte("x")), fabriq.CreateFileOpts{})
-	// Sibling whose name shares a prefix with "a" must NOT be rewritten.
 	ax, _ := f.CreateFolder(tctx, "", "ax")
 
 	if _, err := f.RenameNode(tctx, a.ID, "a2"); err != nil {
 		t.Fatalf("RenameNode: %v", err)
 	}
 
-	// Descendant paths rewritten under the new prefix.
-	bn, err := f.GetNode(tctx, b.ID)
-	if err != nil || bn.Path != "/a2/b" {
-		t.Fatalf("b path = %q err=%v, want /a2/b", bn.Path, err)
+	if p, err := f.NodePath(tctx, b.ID); err != nil || p != "/a2/b" {
+		t.Fatalf("b path = %q err=%v, want /a2/b", p, err)
 	}
-	fn, _ := f.GetNodeByPath(tctx, "/a2/b/f.txt")
-	if fn.Name != "f.txt" {
-		t.Fatalf("file not found at /a2/b/f.txt")
+	if fn, err := f.GetNodeByPath(tctx, "/a2/b/f.txt"); err != nil || fn.Name != "f.txt" {
+		t.Fatalf("file not found at /a2/b/f.txt: %v", err)
 	}
-	// Prefix-sibling untouched.
-	axn, _ := f.GetNode(tctx, ax.ID)
-	if axn.Path != "/ax" {
-		t.Fatalf("prefix sibling clobbered: %q", axn.Path)
+	if p, _ := f.NodePath(tctx, ax.ID); p != "/ax" {
+		t.Fatalf("prefix sibling moved: %q", p)
 	}
 }
 
-func TestFsMoveReparentsAndRewrites(t *testing.T) {
+// TestFsMoveIsSingleWrite proves the new write model: moving a subtree
+// touches only the moved node — descendants keep their version and
+// updated_at (no bulk rewrite, no per-row commands).
+func TestFsMoveIsSingleWrite(t *testing.T) {
 	ctx := context.Background()
 	f := openFsTestWithCAS(t)
 	tctx := tenant.MustWithTenant(ctx, "acme")
 
 	src, _ := f.CreateFolder(tctx, "", "src")
 	dst, _ := f.CreateFolder(tctx, "", "dst")
-	mid, _ := f.CreateFolder(tctx, src.ID, "mid")
-	_, _ = f.CreateFile(tctx, mid.ID, "leaf.txt", bytes.NewReader([]byte("y")), fabriq.CreateFileOpts{})
+	child, _ := f.CreateFolder(tctx, src.ID, "child")
+	leaf, _ := f.CreateFile(tctx, child.ID, "leaf.txt", bytes.NewReader([]byte("x")), fabriq.CreateFileOpts{})
 
-	if _, err := f.MoveNode(tctx, mid.ID, dst.ID); err != nil {
+	childBefore, _ := f.GetNode(tctx, child.ID)
+	leafBefore, _ := f.GetNode(tctx, leaf.ID)
+
+	if _, err := f.MoveNode(tctx, src.ID, dst.ID); err != nil {
 		t.Fatalf("MoveNode: %v", err)
 	}
-	moved, _ := f.GetNode(tctx, mid.ID)
-	if moved.ParentID != dst.ID || moved.Path != "/dst/mid" {
-		t.Fatalf("moved = %+v", moved)
+
+	if p, _ := f.NodePath(tctx, leaf.ID); p != "/dst/src/child/leaf.txt" {
+		t.Fatalf("leaf path = %q, want /dst/src/child/leaf.txt", p)
 	}
-	leaf, _ := f.GetNodeByPath(tctx, "/dst/mid/leaf.txt")
-	if leaf.Name != "leaf.txt" {
-		t.Fatalf("leaf not at new path")
+	childAfter, _ := f.GetNode(tctx, child.ID)
+	leafAfter, _ := f.GetNode(tctx, leaf.ID)
+	if childAfter.Version != childBefore.Version || leafAfter.Version != leafBefore.Version {
+		t.Fatalf("descendant versions changed on move: child %d→%d leaf %d→%d",
+			childBefore.Version, childAfter.Version, leafBefore.Version, leafAfter.Version)
+	}
+	if !childAfter.UpdatedAt.Equal(childBefore.UpdatedAt) {
+		t.Fatal("descendant updated_at changed on move")
 	}
 
-	// Cycle: cannot move a node into its own subtree.
-	if _, err := f.MoveNode(tctx, dst.ID, mid.ID); err == nil {
-		t.Fatal("moving dst into its descendant mid should fail")
+	// Cycle guard still holds without the path prefix check.
+	if _, err := f.MoveNode(tctx, dst.ID, child.ID); err == nil {
+		t.Fatal("moving a folder into its own subtree must fail")
 	}
-	// Name collision under destination.
-	_, _ = f.CreateFolder(tctx, dst.ID, "src")
-	if _, err := f.MoveNode(tctx, src.ID, dst.ID); !errors.Is(err, fabriq.ErrNodeNameConflict) {
-		t.Fatalf("move collision = %v, want ErrNodeNameConflict", err)
+	if _, err := f.MoveNode(tctx, dst.ID, dst.ID); err == nil {
+		t.Fatal("moving a folder into itself must fail")
+	}
+	// Name conflict at destination still rejected.
+	src2, _ := f.CreateFolder(tctx, "", "src")
+	if _, err := f.MoveNode(tctx, src2.ID, dst.ID); !errors.Is(err, fabriq.ErrNodeNameConflict) {
+		t.Fatalf("sibling conflict err = %v, want ErrNodeNameConflict", err)
 	}
 }

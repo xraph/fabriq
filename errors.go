@@ -35,6 +35,11 @@ var (
 	// ErrStoreNotConfigured is returned by capability ports whose backing
 	// store was not configured on Open (e.g. Graph() without FalkorDB).
 	ErrStoreNotConfigured = fabriqerr.ErrStoreNotConfigured
+
+	// ErrRawSQLUnsupported is returned by RelationalQuerier.Query on backends
+	// that have no raw-SQL escape hatch (e.g. the in-memory test fake).
+	// Callers may fall back to portable reads built from List/Get instead.
+	ErrRawSQLUnsupported = fabriqerr.ErrRawSQLUnsupported
 )
 
 // VersionConflictError reports an optimistic-concurrency failure.

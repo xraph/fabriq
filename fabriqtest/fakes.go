@@ -431,9 +431,11 @@ func (r *FakeRelational) List(ctx context.Context, entity string, q query.ListQu
 }
 
 // Query is unsupported in the fake — raw SQL belongs to integration tests
-// against the real adapter.
+// against the real adapter. Callers may detect this via errors.Is(err,
+// fabriqerr.ErrRawSQLUnsupported) and fall back to a portable List/Get-based
+// read.
 func (r *FakeRelational) Query(context.Context, any, string, ...any) error {
-	return fmt.Errorf("fabriq: FakeRelational does not execute raw SQL; use the postgres adapter integration harness")
+	return fmt.Errorf("fabriqtest: %w", fabriqerr.ErrRawSQLUnsupported)
 }
 
 func sliceTarget(into any, ent *registry.Entity) (reflect.Value, bool, reflect.Type, error) {

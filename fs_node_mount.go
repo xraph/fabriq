@@ -27,14 +27,14 @@ func (f *Fabriq) CreateMount(ctx context.Context, parentID, name string, mountCo
 	}
 	now := time.Now().UTC()
 	node := &domain.FsNode{
-		ParentID: parentID, Name: name, Path: childPath(parentPath, name), NodeType: "mount",
+		ParentID: parentID, Name: name, NodeType: "mount",
 		MountConfig: mountConfig, Metadata: map[string]any{}, CreatedAt: now, UpdatedAt: now,
 	}
 	res, err := f.exec.Exec(ctx, command.Command{Entity: "fs_node", Op: command.OpCreate, Payload: node})
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: CreateMount: %w", err)
 	}
-	return FsRef{ID: res.AggID, ParentID: parentID, Name: name, Path: node.Path, NodeType: "mount", Version: res.Version}, nil
+	return FsRef{ID: res.AggID, ParentID: parentID, Name: name, Path: childPath(parentPath, name), NodeType: "mount", Version: res.Version}, nil
 }
 
 // ResolveMount returns a mount node's configuration.
@@ -58,11 +58,15 @@ func (f *Fabriq) UpdateMount(ctx context.Context, id string, mountConfig map[str
 	if n.NodeType != "mount" {
 		return FsRef{}, fmt.Errorf("fabriq: UpdateMount: %q is not a mount", id)
 	}
+	p, err := f.nodePathOf(ctx, n)
+	if err != nil {
+		return FsRef{}, fmt.Errorf("fabriq: UpdateMount: %w", err)
+	}
 	n.MountConfig = mountConfig
 	n.UpdatedAt = time.Now().UTC()
 	res, err := f.exec.Exec(ctx, command.Command{Entity: "fs_node", Op: command.OpUpdate, AggID: id, Payload: &n})
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: UpdateMount: %w", err)
 	}
-	return FsRef{ID: id, ParentID: n.ParentID, Name: n.Name, Path: n.Path, NodeType: "mount", Version: res.Version}, nil
+	return FsRef{ID: id, ParentID: n.ParentID, Name: n.Name, Path: p, NodeType: "mount", Version: res.Version}, nil
 }
