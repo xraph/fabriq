@@ -10,6 +10,12 @@ import (
 	"github.com/xraph/fabriq/domain"
 )
 
+// fsMoveBarrierKey carries a test-only rendezvous func, invoked after
+// MoveNode's pre-command ancestry guard and before the command executes. It
+// exists so tests can force the guard/command interleaving of two concurrent
+// moves; production contexts never carry it.
+type fsMoveBarrierKey struct{}
+
 // dirOf returns the parent-path portion of a node path ("/a/b/c" -> "/a/b",
 // "/a" -> "").
 func dirOf(path string) string {
@@ -89,6 +95,17 @@ func (f *Fabriq) MoveNode(ctx context.Context, id, newParentID string) (FsRef, e
 		return FsRef{}, fmt.Errorf("fabriq: MoveNode: %w", err)
 	} else if exists {
 		return FsRef{}, ErrNodeNameConflict
+	}
+	if fn, ok := ctx.Value(fsMoveBarrierKey{}).(func()); ok && fn != nil {
+		fn()
+	}
+	// The walk above ran before the command's transaction, so a concurrent
+	// move can invalidate it (a under b ∥ b under a both pass). Hand the pair
+	// to fsMoveCycleGuardHook, which re-validates inside the transaction.
+	// Moves to root (newParentID == "") skip it: they cannot create a cycle,
+	// and staying guard-free keeps them usable as the corruption-repair path.
+	if newParentID != "" {
+		ctx = context.WithValue(ctx, fsMoveGuardKey{}, &fsMoveGuard{movedID: id, newParentID: newParentID})
 	}
 	return f.applyMove(ctx, &node, newParentID, node.Name, childPath(newParentPath, node.Name))
 }

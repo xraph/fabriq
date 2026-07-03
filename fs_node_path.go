@@ -12,9 +12,11 @@ import (
 	"github.com/xraph/fabriq/domain"
 )
 
-// fsMaxDepth bounds every parent-chain walk and the descendant CTE. The move
-// cycle guard makes real cycles impossible; this is the defensive backstop so
-// corrupt data degrades to an error instead of an infinite loop.
+// fsMaxDepth bounds every parent-chain walk and the descendant CTE. Moves are
+// cycle-guarded in-transaction (fsMoveCycleGuardHook), but stale full-row
+// updates from non-move writers can still race a move, so this is the
+// defensive backstop that degrades corrupt data to an error instead of an
+// infinite loop.
 const fsMaxDepth = 512
 
 // splitFsPath validates an absolute fs path and returns its segments.
