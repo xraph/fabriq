@@ -9,7 +9,7 @@ package postgres_test
 //   - the default migration chain creates NO demo tables (sites, assets,
 //     tags, tag_readings moved to domain.DemoDDL, applied by harnesses);
 //   - every fabriq-owned table is namespaced (fabriq_* or ds_*);
-//   - migration 0029 renames the previously-unprefixed infra tables and
+//   - migration 0030 renames the previously-unprefixed infra tables and
 //     isolation survives the rename (RLS policies follow renames; the
 //     grove-hook backstop guards the new names).
 
@@ -91,7 +91,7 @@ func TestDefaultMigrations_AllTablesNamespaced(t *testing.T) {
 	}
 }
 
-func TestMigration0029_RenamesInfraTables(t *testing.T) {
+func TestMigration0030_RenamesInfraTables(t *testing.T) {
 	dsn := migrateFresh(t)
 	tables := listTables(t, dsn)
 	renamed := []string{
@@ -110,7 +110,7 @@ func TestMigration0029_RenamesInfraTables(t *testing.T) {
 	}
 }
 
-func TestMigration0029_RLSFollowsRename(t *testing.T) {
+func TestMigration0030_RLSFollowsRename(t *testing.T) {
 	dsn := migrateFresh(t)
 	// The renamed tables that carried FORCE RLS before the rename
 	// (fabriq_blob_objects, fabriq_blob_cas, links, fabriq_digest_nodes; the fs_* tables and

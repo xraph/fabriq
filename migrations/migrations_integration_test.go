@@ -86,7 +86,7 @@ func TestMigrate_CoreTablesExist(t *testing.T) {
 	for _, table := range []string{
 		"fabriq_outbox", "fabriq_projection_state", "fabriq_projection_applied",
 		"fabriq_embeddings", "fabriq_crdt_updates", "fabriq_crdt_snapshots",
-		// Renamed by 0029 (host-database coexistence).
+		// Renamed by 0030 (host-database coexistence).
 		"fabriq_links", "fabriq_blob_objects", "fabriq_blob_cas",
 		"fabriq_fs_nodes", "fabriq_digest_nodes",
 	} {
