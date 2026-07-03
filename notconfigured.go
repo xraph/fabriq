@@ -74,6 +74,9 @@ func (notConfiguredSpatial) Upsert(context.Context, string, string, query.Geomet
 func (notConfiguredSpatial) Within(context.Context, query.SpatialQuery, any) error {
 	return errPort("spatial")
 }
+func (notConfiguredSpatial) Get(context.Context, string, string) (query.Geometry, map[string]any, bool, error) {
+	return query.Geometry{}, nil, false, errPort("spatial")
+}
 func (notConfiguredSpatial) Delete(context.Context, string, string) error {
 	return errPort("spatial")
 }

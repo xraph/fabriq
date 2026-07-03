@@ -45,3 +45,31 @@ func TestFakeSpatial_Delete(t *testing.T) {
 		t.Fatalf("deleted geometry must not match, got %#v", got)
 	}
 }
+
+func TestFakeSpatial_Get(t *testing.T) {
+	f := &FakeSpatial{data: map[string]map[string]map[string]geoEntry{}}
+	ctx, _ := tenant.WithTenant(context.Background(), "acme")
+	if err := f.Upsert(ctx, "site", "s1", query.Geometry{WKT: "POINT (-122.42 37.77)", SRID: 4326}, map[string]any{"name": "Plant A"}); err != nil {
+		t.Fatal(err)
+	}
+	geom, meta, ok, err := f.Get(ctx, "site", "s1")
+	if err != nil || !ok {
+		t.Fatalf("want ok, got ok=%v err=%v", ok, err)
+	}
+	if geom.SRID != 4326 || meta["name"] != "Plant A" {
+		t.Fatalf("unexpected geom/meta: %+v %+v", geom, meta)
+	}
+	// A point must round-trip through Within as a valid center.
+	var got []query.SpatialMatch
+	if err := f.Within(ctx, query.SpatialQuery{Entity: "site", Center: geom, RadiusM: 1000, K: 5}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "s1" {
+		t.Fatalf("want [s1], got %#v", got)
+	}
+	// Missing id → ok=false, nil error.
+	_, _, ok, err = f.Get(ctx, "site", "nope")
+	if err != nil || ok {
+		t.Fatalf("missing id want ok=false nil err, got ok=%v err=%v", ok, err)
+	}
+}

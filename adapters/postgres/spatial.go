@@ -67,6 +67,45 @@ func (s *SpatialAdapter) Delete(ctx context.Context, entity, id string) error {
 	})
 }
 
+// Get implements query.SpatialQuerier: fetch the stored geometry (as WKT) and
+// meta for (tenant, entity, id). ok=false (nil error) when the id has no row.
+func (s *SpatialAdapter) Get(ctx context.Context, entity, id string) (query.Geometry, map[string]any, bool, error) {
+	if _, err := tenant.Require(ctx); err != nil {
+		return query.Geometry{}, nil, false, err
+	}
+	var geom query.Geometry
+	var meta map[string]any
+	var found bool
+	err := s.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		tid, _ := tenant.FromContext(ctx)
+		const sql = `SELECT ST_AsText(geom) AS wkt, srid, meta::text AS meta
+			FROM fabriq_geometries WHERE tenant_id=$1 AND entity=$2 AND id=$3`
+		var rows []struct {
+			WKT  string `grove:"wkt"`
+			SRID int    `grove:"srid"`
+			Meta string `grove:"meta"`
+		}
+		if err := tx.NewRaw(sql, tid, entity, id).Scan(ctx, &rows); err != nil {
+			return fmt.Errorf("fabriq: get geometry %s/%s: %w", entity, id, err)
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		found = true
+		geom = query.Geometry{WKT: rows[0].WKT, SRID: rows[0].SRID}
+		if rows[0].Meta != "" && rows[0].Meta != "{}" {
+			if err := json.Unmarshal([]byte(rows[0].Meta), &meta); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return query.Geometry{}, nil, false, err
+	}
+	return geom, meta, found, nil
+}
+
 // geoRow is the scan target for Within.
 type geoRow struct {
 	ID   string  `grove:"id"`

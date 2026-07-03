@@ -223,6 +223,9 @@ type SpatialQuerier interface {
 	// Within returns entities whose geometry lies within q.RadiusM of q.Center,
 	// nearest-first, scanned into *[]SpatialMatch.
 	Within(ctx context.Context, q SpatialQuery, into any) error
+	// Get returns the stored geometry and meta for (tenant, entity, id).
+	// ok is false (with a nil error) when no geometry exists for the id.
+	Get(ctx context.Context, entity, id string) (geom Geometry, meta map[string]any, ok bool, err error)
 	// Delete removes the geometry for (tenant, entity, id).
 	Delete(ctx context.Context, entity, id string) error
 }
