@@ -51,9 +51,9 @@ func evalCond(vals map[string]any, c query.Cond) (bool, error) {
 	v, present := vals[c.Column]
 	switch c.Op {
 	case query.OpIsNull:
-		return !present || v == nil, nil
+		return !present || isNullVal(v), nil
 	case query.OpIsNotNull:
-		return present && v != nil, nil
+		return present && !isNullVal(v), nil
 	case query.OpEq:
 		return valuesEqual(v, c.Value), nil
 	case query.OpNe:
@@ -83,6 +83,22 @@ func evalCond(vals map[string]any, c query.Cond) (bool, error) {
 		}
 	default:
 		return false, fmt.Errorf("fabriq: fake List cannot evaluate operator %q", c.Op)
+	}
+}
+
+// isNullVal reports whether a stored value is SQL NULL. Rows hold model
+// fields boxed via reflect .Interface(), so a nil *time.Time (etc.) arrives
+// as a typed-nil interface that `v == nil` misses — those columns are NULL
+// on the SQL backends and must be NULL here too.
+func isNullVal(v any) bool {
+	if v == nil {
+		return true
+	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice:
+		return rv.IsNil()
+	default:
+		return false
 	}
 }
 
