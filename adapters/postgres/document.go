@@ -342,26 +342,29 @@ func gcHorizon(state *crdt.State) crdt.HLC {
 	return crdt.HLC{Timestamp: latest.Timestamp - int64(gcCompactionWindow)}
 }
 
-// CompactDue compacts every unflagged document whose un-compacted update
-// count has reached its entity's CRDTSpec.SnapshotEvery budget. Returns
-// the number of documents compacted. The worker's document-plane loop
-// drives it on the materializer cadence.
+// CompactDue compacts every unflagged document whose un-compacted update log
+// has reached its entity's CRDTSpec.SnapshotEvery budget (<= 0 disables
+// scheduled compaction for the entity). The budget is measured as physical
+// per-doc log rows — seq is a table-wide identity, so watermark arithmetic
+// cannot stand in for a count. Like MaterializeQuiet this runs from a
+// tenant-less worker context: the bookkeeping table is scanned across tenants
+// and the RLS'd log is counted through per-tenant transactions. Flagged docs
+// are skipped — their raw update log is the evidence an operator resolves
+// them with. Returns the number of documents compacted.
 func (d *DocStore) CompactDue(ctx context.Context) (int, error) {
 	type docRow struct {
-		DocID    string `grove:"doc_id"`
-		TenantID string `grove:"tenant_id"`
-		Entity   string `grove:"entity"`
-		LastSeq  int64  `grove:"last_seq"`
+		DocID    string
+		TenantID string
+		Entity   string
 	}
 	var docs []docRow
-	rows, err := d.a.pg.Query(ctx,
-		`SELECT doc_id, tenant_id, entity, last_seq FROM fabriq_crdt_docs WHERE flagged = FALSE`)
+	rows, err := d.a.pg.Query(ctx, `SELECT doc_id, tenant_id, entity FROM fabriq_crdt_docs WHERE flagged = FALSE`)
 	if err != nil {
 		return 0, err
 	}
 	for rows.Next() {
 		var r docRow
-		if err := rows.Scan(&r.DocID, &r.TenantID, &r.Entity, &r.LastSeq); err != nil {
+		if err := rows.Scan(&r.DocID, &r.TenantID, &r.Entity); err != nil {
 			_ = rows.Close()
 			return 0, err
 		}
@@ -372,42 +375,52 @@ func (d *DocStore) CompactDue(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
+	// One GROUP BY count per tenant rather than one query per doc; an
+	// unscoped tenant read sees every scope, so scoped docs are counted too.
+	counts := make(map[string]int64, len(docs))
+	counted := make(map[string]bool)
+	for _, doc := range docs {
+		if counted[doc.TenantID] {
+			continue
+		}
+		counted[doc.TenantID] = true
+		tctx, terr := tenant.WithTenant(ctx, doc.TenantID)
+		if terr != nil {
+			return 0, terr
+		}
+		cerr := d.a.inTenantTx(tctx, func(tx *pgdriver.PgTx) error {
+			var rs []struct {
+				DocID string `grove:"doc_id"`
+				N     int64  `grove:"n"`
+			}
+			if e := tx.NewRaw(`SELECT doc_id, count(*) AS n FROM fabriq_crdt_updates GROUP BY doc_id`).Scan(tctx, &rs); e != nil {
+				return e
+			}
+			for _, r := range rs {
+				counts[r.DocID] = r.N
+			}
+			return nil
+		})
+		if cerr != nil {
+			return 0, cerr
+		}
+	}
+
 	compacted := 0
 	for _, doc := range docs {
 		ent, ok := d.a.reg.Get(doc.Entity)
 		if !ok || ent.Spec.CRDT == nil || ent.Spec.CRDT.SnapshotEvery <= 0 {
 			continue
 		}
-		every := int64(ent.Spec.CRDT.SnapshotEvery)
-		if doc.LastSeq < every {
-			continue // cheap precheck: can't be due yet
-		}
-		tctx, err := tenant.WithTenant(ctx, doc.TenantID)
-		if err != nil {
-			return compacted, err
-		}
-		var snapSeq int64
-		err = d.a.inTenantTx(tctx, func(tx *pgdriver.PgTx) error {
-			var snaps []struct {
-				LastSeq int64 `grove:"last_seq"`
-			}
-			if err := tx.NewRaw(`SELECT last_seq FROM fabriq_crdt_snapshots WHERE doc_id = $1`, doc.DocID).
-				Scan(ctx, &snaps); err != nil {
-				return err
-			}
-			if len(snaps) == 1 {
-				snapSeq = snaps[0].LastSeq
-			}
-			return nil
-		})
-		if err != nil {
-			return compacted, err
-		}
-		if doc.LastSeq-snapSeq < every {
+		if counts[doc.DocID] < int64(ent.Spec.CRDT.SnapshotEvery) {
 			continue
 		}
-		if err := d.Compact(tctx, doc.DocID); err != nil {
-			return compacted, err
+		tctx, terr := tenant.WithTenant(ctx, doc.TenantID)
+		if terr != nil {
+			return compacted, terr
+		}
+		if cerr := d.Compact(tctx, doc.DocID); cerr != nil {
+			return compacted, cerr
 		}
 		compacted++
 	}
