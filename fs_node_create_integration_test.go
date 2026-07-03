@@ -10,6 +10,7 @@ import (
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/adapters/postgres"
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/domain"
@@ -110,5 +111,53 @@ func TestFsCreateAndRead(t *testing.T) {
 	// Cannot create under a file.
 	if _, err := f.CreateFolder(tctx, file.ID, "nope"); !errors.Is(err, fabriq.ErrNotContainer) {
 		t.Fatalf("child-under-file = %v, want ErrNotContainer", err)
+	}
+}
+
+// TestFsNodeNameValidation verifies the facade rejects unaddressable node
+// names (empty, containing "/", "." and "..") against the real command plane:
+// creates and renames fail with a structured invalid_input error and nothing
+// is written.
+func TestFsNodeNameValidation(t *testing.T) {
+	ctx := context.Background()
+	f := openFsTestWithCAS(t)
+	tctx := tenant.MustWithTenant(ctx, "acme")
+
+	wantInvalid := func(op string, err error) {
+		t.Helper()
+		var fe *fabriqerr.Error
+		if err == nil || !errors.As(err, &fe) || fe.Code != fabriqerr.CodeInvalidInput {
+			t.Fatalf("%s: got %v, want *fabriqerr.Error with CodeInvalidInput", op, err)
+		}
+	}
+
+	for _, name := range []string{"", "a/b", ".", ".."} {
+		_, err := f.CreateFolder(tctx, "", name)
+		wantInvalid("CreateFolder("+name+")", err)
+		_, err = f.CreateFile(tctx, "", name, bytes.NewReader([]byte("x")), fabriq.CreateFileOpts{})
+		wantInvalid("CreateFile("+name+")", err)
+		_, err = f.CreateMount(tctx, "", name, nil)
+		wantInvalid("CreateMount("+name+")", err)
+	}
+
+	// Nothing leaked into the root from the rejected creates.
+	kids, err := f.ListChildren(tctx, "", 100, 0)
+	if err != nil {
+		t.Fatalf("ListChildren: %v", err)
+	}
+	if len(kids) != 0 {
+		t.Fatalf("rejected creates leaked nodes: %+v", kids)
+	}
+
+	folder, err := f.CreateFolder(tctx, "", "ok")
+	if err != nil {
+		t.Fatalf("CreateFolder(ok): %v", err)
+	}
+	_, err = f.RenameNode(tctx, folder.ID, "a/b")
+	wantInvalid("RenameNode(->a/b)", err)
+
+	// The rejected rename left the node addressable by its original path.
+	if _, err := f.GetNodeByPath(tctx, "/ok"); err != nil {
+		t.Fatalf("GetNodeByPath(/ok) after rejected rename: %v", err)
 	}
 }

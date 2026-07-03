@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/domain"
@@ -61,6 +63,25 @@ func (f *Fabriq) parentContext(ctx context.Context, parentID string) (parentPath
 	return f.nodePathOf(ctx, parent)
 }
 
+// validateNodeName rejects names that would break path derivation: since
+// GetNodeByPath resolves by splitting on "/", a name containing a separator
+// (or the traversal names "." / "..") would be permanently path-unaddressable
+// and make derived paths ambiguous.
+func validateNodeName(name string) error {
+	var reason string
+	switch {
+	case name == "":
+		reason = "Node name must not be empty."
+	case strings.Contains(name, "/"):
+		reason = fmt.Sprintf("Node name %q must not contain %q.", name, "/")
+	case name == "." || name == "..":
+		reason = fmt.Sprintf("Node name %q is reserved.", name)
+	default:
+		return nil
+	}
+	return fabriqerr.New(fabriqerr.CodeInvalidInput, reason, fabriqerr.WithEntity("fs_node", ""))
+}
+
 // siblingExists reports whether a live (non-trashed) sibling already uses name.
 func (f *Fabriq) siblingExists(ctx context.Context, parentID, name string) (bool, error) {
 	var rows []domain.FsNode
@@ -76,6 +97,9 @@ func (f *Fabriq) siblingExists(ctx context.Context, parentID, name string) (bool
 
 // CreateFolder creates a folder node under parentID ("" = root). One event.
 func (f *Fabriq) CreateFolder(ctx context.Context, parentID, name string) (FsRef, error) {
+	if err := validateNodeName(name); err != nil {
+		return FsRef{}, fmt.Errorf("fabriq: CreateFolder: %w", err)
+	}
 	parentPath, err := f.parentContext(ctx, parentID)
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: CreateFolder: %w", err)
@@ -100,6 +124,9 @@ func (f *Fabriq) CreateFolder(ctx context.Context, parentID, name string) (FsRef
 // CreateFile stores bytes (PutBlob → blob_object) then creates a file node
 // referencing it (1:1), with denormalized facets. One blob event + one node event.
 func (f *Fabriq) CreateFile(ctx context.Context, parentID, name string, r io.Reader, opts CreateFileOpts) (FsRef, error) {
+	if err := validateNodeName(name); err != nil {
+		return FsRef{}, fmt.Errorf("fabriq: CreateFile: %w", err)
+	}
 	parentPath, err := f.parentContext(ctx, parentID)
 	if err != nil {
 		return FsRef{}, fmt.Errorf("fabriq: CreateFile: %w", err)
