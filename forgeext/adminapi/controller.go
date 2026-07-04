@@ -6,6 +6,7 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/fabriq/core/provision"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/tenant"
 )
@@ -44,12 +45,13 @@ type entityListResponse struct {
 
 // adminController registers all admin HTTP routes.
 type adminController struct {
-	ext  *Extension
-	jobs *migrationJobs // async migration-run registry (single-flight)
+	ext        *Extension
+	jobs       *migrationJobs // async migration-run registry (single-flight)
+	tenantJobs *tenantJobs    // async tenant provision/migrate-all registry
 }
 
 func newAdminController(e *Extension) *adminController {
-	return &adminController{ext: e, jobs: newMigrationJobs()}
+	return &adminController{ext: e, jobs: newMigrationJobs(), tenantJobs: newTenantJobs()}
 }
 
 func (c *adminController) Name() string { return "fabriq:admin" }
@@ -193,6 +195,10 @@ func (c *adminController) Routes(r forge.Router) error {
 		return err
 	}
 
+	if err := c.registerTenantRoutes(r); err != nil {
+		return err
+	}
+
 	if c.ext.cfg.KeyStore != nil {
 		if err := c.registerKeyRoutes(r); err != nil {
 			return err
@@ -219,11 +225,42 @@ func (c *adminController) requireSchemaAdmin(ctx forge.Context) error {
 	return nil
 }
 
+// requireTenantsAdmin gates the tenant-management endpoints. It checks the
+// tenants.admin capability opt-in first (403 when off), then resolves the
+// catalog-mode Provisioner (400 when the deployment isn't catalog mode, or
+// when parent is absent — e.g. unit tests built directly against a bare
+// Extension without a started forgeext.Extension).
+//
+// The returned error is a real forge.IHTTPError (not the result of an
+// eager ctx.JSON write) so that callers' `if err != nil { return err }`
+// early-return actually short-circuits: go-utils' Ctx.JSON returns nil on a
+// successful write regardless of status code, so returning its result
+// directly here would let gate failures silently fall through as err == nil
+// — harmless for a handler that does nothing else afterward, but fatal for
+// handlers (like the async tenant job starters) that go on to dereference
+// the (nil) *provision.Provisioner.
+func (c *adminController) requireTenantsAdmin(_ forge.Context) (*provision.Provisioner, error) {
+	if !c.ext.cfg.TenantsAdmin {
+		return nil, forge.Forbidden("tenant admin not enabled (host must opt in via WithTenantsAdmin)")
+	}
+	if c.ext.parent == nil {
+		return nil, forge.BadRequest("tenant management requires catalog mode (db-per-tenant)")
+	}
+	p := c.ext.parent.Provisioner()
+	if p == nil {
+		return nil, forge.BadRequest("tenant management requires catalog mode (db-per-tenant)")
+	}
+	return p, nil
+}
+
 // handleMeta serves GET {BasePath}/meta.
 func (c *adminController) handleMeta(ctx forge.Context) error {
 	caps := capabilities
 	if c.ext.cfg.SchemaAdmin {
 		caps = append(append([]string(nil), capabilities...), "schema.admin")
+	}
+	if c.ext.cfg.TenantsAdmin {
+		caps = append(append([]string(nil), caps...), "tenants.admin")
 	}
 	resp := metaResponse{
 		Name:         "fabriq-admin-api",

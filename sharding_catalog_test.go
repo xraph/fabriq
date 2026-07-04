@@ -10,6 +10,7 @@ import (
 
 	"github.com/xraph/fabriq/adapters/shard"
 	"github.com/xraph/fabriq/core/catalog"
+	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/fabriqtest"
 )
@@ -118,5 +119,59 @@ func TestAllTenants_CatalogModeListsActiveEntries(t *testing.T) {
 	}
 	if len(tenants) != 2 || tenants[0] != "acme" || tenants[1] != "globex" {
 		t.Fatalf("tenants = %v, want [acme globex]", tenants)
+	}
+}
+
+// fakeReplay records which tenant's replay surface was used.
+type fakeReplay struct {
+	shardID  string
+	versions map[string]int64
+	repaired []string
+}
+
+func (f *fakeReplay) SnapshotEntities(_ context.Context, _ string, fn func(event.Envelope) error) error {
+	return fn(event.Envelope{Aggregate: "cmwidget", AggID: f.shardID})
+}
+func (f *fakeReplay) AggregateVersions(_ context.Context, _, _ string) (map[string]int64, error) {
+	return f.versions, nil
+}
+func (f *fakeReplay) Repair(_ context.Context, _ string, d projection.Drift) error {
+	f.repaired = append(f.repaired, d.AggID)
+	return nil
+}
+
+type fakeReplayRouter struct {
+	stores map[string]*fakeReplay
+	held   int
+}
+
+func (r *fakeReplayRouter) Acquire(context.Context) (shard.Shard, func(), error) {
+	panic("worker routing must use AcquireFor")
+}
+func (r *fakeReplayRouter) AcquireFor(_ context.Context, tenantID string) (shard.Shard, func(), error) {
+	rs := r.stores[tenantID]
+	r.held++
+	return shard.Shard{ID: rs.shardID, Replay: rs}, func() { r.held-- }, nil
+}
+
+func TestReplaySource_RoutesPerTenant(t *testing.T) {
+	ctx := context.Background()
+	acme := &fakeReplay{shardID: "c1/fabriq_acme", versions: map[string]int64{"a1": 5}}
+	globex := &fakeReplay{shardID: "c1/fabriq_globex", versions: map[string]int64{"b1": 9}}
+	router := &fakeReplayRouter{stores: map[string]*fakeReplay{"acme": acme, "globex": globex}}
+	stores := &Stores{router: router}
+
+	v, err := stores.truthVersions(ctx, "globex", "cmwidget")
+	if err != nil || v["b1"] != 9 {
+		t.Fatalf("truthVersions = %v (%v), want globex's versions", v, err)
+	}
+	if err := stores.repair(ctx, "acme", projection.Drift{Entity: "cmwidget", AggID: "a1", TruthVersion: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if len(acme.repaired) != 1 || acme.repaired[0] != "a1" || len(globex.repaired) != 0 {
+		t.Fatalf("repair routed wrong: acme=%v globex=%v", acme.repaired, globex.repaired)
+	}
+	if router.held != 0 {
+		t.Fatalf("%d shard acquisitions never released", router.held)
 	}
 }

@@ -58,6 +58,12 @@ type config struct {
 	// execution and ad-hoc DDL). Default false: those endpoints 403 until the
 	// host opts in via WithSchemaAdmin. Read-only status/drift stay available.
 	SchemaAdmin bool
+	// TenantsAdmin enables the tenant-management endpoints (list/get plus the
+	// suspend/resume lifecycle) — the HTTP twin of the `fabriq tenant` CLI.
+	// Default false: those endpoints 403 until the host opts in via
+	// WithTenantsAdmin. Even when enabled, the endpoints only function in
+	// catalog mode (db-per-tenant) — see requireTenantsAdmin.
+	TenantsAdmin bool
 	// KeyStore is the instance-global API key store. When non-nil, per-tenant
 	// API-key auth is enabled: the /admin/keys issue/list/revoke routes are
 	// registered (see registerKeyRoutes). Set it via WithAuth. Note: this option
@@ -111,6 +117,12 @@ func WithWritePolicy(p agent.WritePolicy) Option {
 // back static migrations and executing ad-hoc DDL. These are instance-global,
 // schema-owner operations; leave OFF unless the host guards the admin API.
 func WithSchemaAdmin() Option { return func(c *config) { c.SchemaAdmin = true } }
+
+// WithTenantsAdmin enables the tenant-management endpoints — list/get plus the
+// suspend/resume lifecycle (the HTTP twin of the `fabriq tenant` CLI). These
+// are instance-global, catalog-mode-only operations; leave OFF unless the host
+// guards the admin API and runs db-per-tenant.
+func WithTenantsAdmin() Option { return func(c *config) { c.TenantsAdmin = true } }
 
 // WithAuth sets the instance-global API key store, enabling the /admin/keys
 // issue/list/revoke management routes (registered only when the store is

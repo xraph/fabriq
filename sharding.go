@@ -98,25 +98,46 @@ func allTenantsFromCatalog(ctx context.Context, cat catalog.Catalog) ([]string, 
 	}
 }
 
-// truthVersions is the reconciler's TruthVersions, routed to the tenant's
-// shard.
-func (s *Stores) truthVersions(ctx context.Context, tenantID, entity string) (map[string]int64, error) {
+// withReplay runs fn against the tenant's event-truth surface — the
+// static shardPG adapter, or (catalog mode) the tenant's pooled shard,
+// held for exactly the call so the pool cannot evict it mid-operation.
+func (s *Stores) withReplay(ctx context.Context, tenantID string, fn func(rs shard.ReplaySource) error) error {
+	if s.router != nil {
+		sh, release, err := s.router.AcquireFor(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		defer release()
+		if sh.Replay == nil {
+			return fmt.Errorf("fabriq: shard %q has no replay surface", sh.ID)
+		}
+		return fn(sh.Replay)
+	}
 	pg, err := s.shardForTenant(ctx, tenantID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return pg.AggregateVersions(ctx, tenantID, entity)
+	return fn(pg) // *postgres.Adapter satisfies shard.ReplaySource
+}
+
+// truthVersions is the reconciler's TruthVersions, routed to the tenant's
+// shard.
+func (s *Stores) truthVersions(ctx context.Context, tenantID, entity string) (out map[string]int64, err error) {
+	err = s.withReplay(ctx, tenantID, func(rs shard.ReplaySource) error {
+		var ferr error
+		out, ferr = rs.AggregateVersions(ctx, tenantID, entity)
+		return ferr
+	})
+	return out, err
 }
 
 // repair is the reconciler's RepairFunc, routed to the tenant's shard (the
 // synthetic event lands on that shard's outbox, where its relay republishes
 // it).
 func (s *Stores) repair(ctx context.Context, tenantID string, d projection.Drift) error {
-	pg, err := s.shardForTenant(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	return pg.Repair(ctx, tenantID, d)
+	return s.withReplay(ctx, tenantID, func(rs shard.ReplaySource) error {
+		return rs.Repair(ctx, tenantID, d)
+	})
 }
 
 // routingState is the projection.StateRepo seen by the engines, rebuilder
@@ -190,9 +211,7 @@ type routingSnapshot struct{ stores *Stores }
 var _ projection.Snapshotter = routingSnapshot{}
 
 func (r routingSnapshot) SnapshotEntities(ctx context.Context, tenantID string, fn func(env event.Envelope) error) error {
-	pg, err := r.stores.shardForTenant(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	return pg.SnapshotEntities(ctx, tenantID, fn)
+	return r.stores.withReplay(ctx, tenantID, func(rs shard.ReplaySource) error {
+		return rs.SnapshotEntities(ctx, tenantID, fn)
+	})
 }

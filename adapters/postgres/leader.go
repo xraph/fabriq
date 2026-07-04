@@ -18,12 +18,16 @@ import (
 // fabriq-worker can therefore run any number of replicas: exactly one
 // holds each role.
 type Elector struct {
-	pg interface {
-		AcquireConn(ctx context.Context) (driver.DedicatedConn, error)
-	}
+	pg        connAcquirer
 	key       int64
 	retry     time.Duration
 	heartbeat time.Duration
+}
+
+// connAcquirer is the minimal surface an elector needs: a dedicated pooled
+// connection to hold the session-level advisory lock.
+type connAcquirer interface {
+	AcquireConn(ctx context.Context) (driver.DedicatedConn, error)
 }
 
 // ElectorOption tunes the elector.
@@ -49,14 +53,18 @@ func WithElectorHeartbeat(d time.Duration) ElectorOption {
 	}
 }
 
-// NewElector builds an elector for an advisory lock key. Pick one key per
-// role (e.g. relay, reconciler) and keep them stable across versions.
-func NewElector(a *Adapter, key int64, opts ...ElectorOption) *Elector {
-	e := &Elector{pg: a.pg, key: key, retry: 5 * time.Second, heartbeat: 5 * time.Second}
+func newElector(pg connAcquirer, key int64, opts ...ElectorOption) *Elector {
+	e := &Elector{pg: pg, key: key, retry: 5 * time.Second, heartbeat: 5 * time.Second}
 	for _, opt := range opts {
 		opt(e)
 	}
 	return e
+}
+
+// NewElector builds an elector for an advisory lock key. Pick one key per
+// role (e.g. relay, reconciler) and keep them stable across versions.
+func NewElector(a *Adapter, key int64, opts ...ElectorOption) *Elector {
+	return newElector(a.pg, key, opts...)
 }
 
 // Run keeps trying to lead until ctx ends. While leading it runs lead with

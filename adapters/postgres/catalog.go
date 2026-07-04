@@ -43,6 +43,14 @@ func OpenCatalog(ctx context.Context, dsn string) (*CatalogStore, error) {
 // Close releases the control connection pool.
 func (s *CatalogStore) Close() error { return s.db.Close() }
 
+// Elector builds a leader elector on the CATALOG control database — the
+// coordination point for catalog-mode singletons (the drift reconciler),
+// which have no primary shard to elect on. Pick one key per role and keep
+// it stable across versions.
+func (s *CatalogStore) Elector(key int64, opts ...ElectorOption) *Elector {
+	return newElector(s.db, key, opts...)
+}
+
 func (s *CatalogStore) ensureSchema(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS fabriq_tenant_catalog (

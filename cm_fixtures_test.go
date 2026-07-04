@@ -35,12 +35,28 @@ func cmRegistry(t *testing.T) *registry.Registry {
 	if err := reg.Register(registry.EntitySpec{
 		Name: "cmwidget", Kind: registry.KindAggregate, Model: (*cmWidget)(nil),
 		Search: registry.SearchSpec{Index: "cmwidgets", Fields: []string{"name"}},
+		Live:   &registry.LiveSpec{},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := reg.Register(registry.EntitySpec{
 		Name: "cmnote", Kind: registry.KindDocument, Model: (*cmNote)(nil),
 		CRDT: &registry.CRDTSpec{Engine: "grove-crdt", SnapshotEvery: 64, QuietWindow: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
+func cmRegistryArchive(t *testing.T) *registry.Registry {
+	t.Helper()
+	reg := registry.New()
+	if err := reg.Register(registry.EntitySpec{
+		Name: "cmnote", Kind: registry.KindDocument, Model: (*cmNote)(nil),
+		CRDT: &registry.CRDTSpec{Engine: "grove-crdt", SnapshotEvery: 2, QuietWindow: 0},
 	}); err != nil {
 		t.Fatal(err)
 	}
