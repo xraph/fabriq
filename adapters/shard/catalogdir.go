@@ -87,10 +87,10 @@ func (d *catalogDirectory) Shard(ctx context.Context, tenantID string) (string, 
 	id, resolveErr := d.resolve(ctx, tenantID)
 
 	// Cache the answer either way — but only cache ERRORS that are stable
-	// catalog answers (not-found / not-active). Transport failures against
-	// the control database must not be pinned for a TTL: cached routes keep
-	// serving, unknowns retry on the next request.
-	if resolveErr == nil || isCatalogAnswer(resolveErr) {
+	// catalog answers (not-found / not-active) AND not degraded (a replica-
+	// sourced answer served while the primary was unreachable; H3). Transport
+	// failures and degraded answers must not be pinned for a TTL.
+	if resolveErr == nil || (isCatalogAnswer(resolveErr) && !catalog.IsDegraded(resolveErr)) {
 		d.mu.Lock()
 		d.cache[tenantID] = catalogCacheEntry{id: id, err: resolveErr, exp: d.now().Add(d.ttl)}
 		d.mu.Unlock()
