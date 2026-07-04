@@ -499,8 +499,8 @@ func (s *Stores) GraphEngine(reg *registry.Registry, upcasters *event.UpcasterCh
 // GraphRebuilder assembles the blue-green rebuilder for the graph
 // projection (used by `fabriq rebuild` and tests).
 func (s *Stores) GraphRebuilder(reg *registry.Registry) (*projection.Rebuilder, error) {
-	if s.Falkor == nil || s.Postgres == nil {
-		return nil, fmt.Errorf("fabriq: graph rebuilder needs postgres and falkordb configured")
+	if s.Falkor == nil || (s.Postgres == nil && s.router == nil) {
+		return nil, fmt.Errorf("fabriq: graph rebuilder needs postgres (or a tenant catalog) and falkordb configured")
 	}
 	return &projection.Rebuilder{
 		Projection: "graph",
@@ -547,8 +547,8 @@ func (s *Stores) SearchEngine(reg *registry.Registry, upcasters *event.UpcasterC
 // SearchRebuilder assembles the blue-green rebuilder for the search
 // projection; the alias swap rides the flip (OnFlip).
 func (s *Stores) SearchRebuilder(reg *registry.Registry) (*projection.Rebuilder, error) {
-	if s.Elastic == nil || s.Postgres == nil {
-		return nil, fmt.Errorf("fabriq: search rebuilder needs postgres and elasticsearch configured")
+	if s.Elastic == nil || (s.Postgres == nil && s.router == nil) {
+		return nil, fmt.Errorf("fabriq: search rebuilder needs postgres (or a tenant catalog) and elasticsearch configured")
 	}
 	return &projection.Rebuilder{
 		Projection: "search",
