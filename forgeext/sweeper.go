@@ -7,6 +7,7 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/sweep"
 	"github.com/xraph/fabriq/internal/metrics"
 	"github.com/xraph/fabriq/migrations"
@@ -141,6 +142,25 @@ func (e *Extension) runCatalogSweeper() error {
 			defer wg.Done()
 			supervise(runCtx, logger, "sweeper:wake", func(c context.Context) error {
 				return stores.Redis.SubscribeWakes(c, engine.Wake, nil)
+			})
+		}()
+	}
+
+	// Drift reconciler: leader-elected on the CATALOG control DB (no
+	// primary shard exists to elect on). One scanner across replicas
+	// iterates AllTenants and reconciles each tenant's projections against
+	// the shared sinks. Same lock key as the static worker's reconciler.
+	reconcileInterval := e.cfg.ReconcileInterval
+	if reconcileInterval > 0 && (stores.Falkor != nil || stores.Elastic != nil) {
+		reconElector := stores.Catalog.Elector(postgres.LockKeyReconciler)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "reconciler", func(c context.Context) error {
+				return reconElector.Run(c, func(leadCtx context.Context) error {
+					e.runReconciler(leadCtx, reconcileInterval)
+					return leadCtx.Err()
+				})
 			})
 		}()
 	}

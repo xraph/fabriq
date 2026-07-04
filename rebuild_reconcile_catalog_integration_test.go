@@ -136,3 +136,56 @@ func TestCatalogMode_SearchRebuild(t *testing.T) {
 		t.Fatalf("globex must not see acme's rebuilt row: %v", gCross)
 	}
 }
+
+func TestCatalogMode_SearchReconcilerRepairsDrift(t *testing.T) {
+	ctx, f, stores, tenantDSNs := openCatalogSearchFixture(t)
+	reg := f.Registry()
+
+	runCtx, stop := context.WithCancel(ctx)
+	t.Cleanup(stop)
+	sw := sweep.New(stores.Catalog, stores.TenantSweeper(), sweep.Config{
+		ScanInterval: 100 * time.Millisecond, MinVersion: migrations.HeadVersion(),
+	})
+	go func() { _ = sw.Run(runCtx) }()
+	engine, err := stores.SearchEngine(reg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = engine.Run(runCtx, "recon-e2e") }()
+
+	acmeCtx, _ := tenant.WithTenant(ctx, "acme")
+	res, err := f.Exec(acmeCtx, command.Command{
+		Entity: "cmwidget", Op: command.OpCreate, Payload: &cmWidget{Name: "drifter"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(acmeCtx, 60*time.Second)
+	if err := f.WaitForProjection(waitCtx, "search", "cmwidget", res.AggID, 1); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	cancel()
+
+	// Simulate projection drift: bump the aggregate version directly in
+	// acme's OWN database WITHOUT emitting an event, so ES is now stale.
+	fabriqtest.ApplyDDL(t, tenantDSNs["acme"], []string{
+		`UPDATE cm_widgets SET version = version + 1, name = 'repaired' WHERE id = '` + res.AggID + `'`,
+	})
+
+	// The reconciler compares truth (acme's DB) vs projected (shared ES) and
+	// republishes a repair event onto acme's outbox; the sweeper relays it
+	// and the engine re-applies.
+	rec, err := stores.SearchReconciler(reg)
+	if err != nil {
+		t.Fatalf("SearchReconciler must build in catalog mode: %v", err)
+	}
+	if _, err := rec.Reconcile(ctx, "acme", true); err != nil {
+		t.Fatalf("Reconcile(acme): %v", err)
+	}
+	waitCtx2, cancel2 := context.WithTimeout(acmeCtx, 60*time.Second)
+	defer cancel2()
+	if err := f.WaitForProjection(waitCtx2, "search", "cmwidget", res.AggID, 2); err != nil {
+		t.Fatalf("drift not repaired to v2: %v", err)
+	}
+}

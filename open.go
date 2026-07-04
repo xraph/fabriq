@@ -565,8 +565,8 @@ func (s *Stores) SearchRebuilder(reg *registry.Registry) (*projection.Rebuilder,
 // GraphReconciler assembles drift detection + repair for the graph
 // projection.
 func (s *Stores) GraphReconciler(reg *registry.Registry) (*projection.Reconciler, error) {
-	if s.Falkor == nil || s.Postgres == nil {
-		return nil, fmt.Errorf("fabriq: graph reconciler needs postgres and falkordb configured")
+	if s.Falkor == nil || (s.Postgres == nil && s.router == nil) {
+		return nil, fmt.Errorf("fabriq: graph reconciler needs postgres (or a tenant catalog) and falkordb configured")
 	}
 	return &projection.Reconciler{
 		Projection: "graph",
@@ -581,8 +581,8 @@ func (s *Stores) GraphReconciler(reg *registry.Registry) (*projection.Reconciler
 // SearchReconciler assembles drift detection + repair for the search
 // projection.
 func (s *Stores) SearchReconciler(reg *registry.Registry) (*projection.Reconciler, error) {
-	if s.Elastic == nil || s.Postgres == nil {
-		return nil, fmt.Errorf("fabriq: search reconciler needs postgres and elasticsearch configured")
+	if s.Elastic == nil || (s.Postgres == nil && s.router == nil) {
+		return nil, fmt.Errorf("fabriq: search reconciler needs postgres (or a tenant catalog) and elasticsearch configured")
 	}
 	return &projection.Reconciler{
 		Projection: "search",
