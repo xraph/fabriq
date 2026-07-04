@@ -137,6 +137,26 @@ Provision and migrate-all run as background jobs (HTTP returns `202` with a
 job-status routes are unguarded beyond the unguessable job id (parity with
 the migrations job API).
 
+### Connection info
+
+`WithConnectionsRead()` enables a **read-only** topology surface under the
+`connections.read` capability — deliberately separate from the mutating
+`tenants.admin`, so a dashboard viewer can inspect the fleet without gaining
+provision/suspend rights:
+
+| Method + path | Effect |
+| --- | --- |
+| `GET {base}/connections` | Configured Postgres clusters + Redis/FalkorDB/Elasticsearch/blob, with pool occupancy and a bounded health probe per connection |
+| `GET {base}/tenants/:id/connection` | One tenant's dedicated database (the same `TenantDSN` the router dials), redacted + health-probed |
+
+Each entry reports host, port, database, username, SSL mode, cluster id, and
+reachability (`{reachable, latencyMs, error}`); catalog mode adds pool
+occupancy (`open`/`held` vs `cap`). **Secrets are redacted server-side**:
+passwords and any secret query params are parsed out of every DSN before
+serialization and never sent — a configured password surfaces only as a fixed
+masked placeholder, never its value. The health probe is bounded so a dead
+store cannot wedge the request; `/tenants/:id/connection` is catalog-mode only.
+
 ## Connections and PgBouncer
 
 fabriq's own pools are already bounded: `maxActiveShards` × per-shard pool

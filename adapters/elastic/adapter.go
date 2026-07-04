@@ -89,6 +89,20 @@ func Open(_ context.Context, cfg Config, reg *registry.Registry, opts ...Option)
 	return a, nil
 }
 
+// Ping reports Elasticsearch reachability via the cluster Info API, bounded by
+// ctx. It backs the adminapi connection-info health probe.
+func (a *Adapter) Ping(ctx context.Context) error {
+	res, err := a.es.Info(a.es.Info.WithContext(ctx))
+	if err != nil {
+		return fmt.Errorf("fabriq: elasticsearch ping: %w", err)
+	}
+	defer drainAndClose(res.Body)
+	if res.IsError() {
+		return translateESResponse("elasticsearch ping", res.StatusCode, res.String())
+	}
+	return nil
+}
+
 // drainAndClose consumes a response body so the connection is reusable.
 func drainAndClose(body io.ReadCloser) {
 	_, _ = io.Copy(io.Discard, body)

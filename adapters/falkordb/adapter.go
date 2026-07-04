@@ -77,6 +77,10 @@ func Open(ctx context.Context, cfg Config, reg *registry.Registry, rel query.Rel
 	return a, nil
 }
 
+// Ping reports FalkorDB reachability, bounded by ctx. It backs the adminapi
+// connection-info health probe.
+func (a *Adapter) Ping(ctx context.Context) error { return a.client.Ping(ctx).Err() }
+
 // Close releases the client.
 func (a *Adapter) Close() error { return a.client.Close() }
 

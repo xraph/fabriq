@@ -185,6 +185,17 @@ func (e *Extension) Stores() *fabriq.Stores {
 	return e.stores
 }
 
+// Config returns the resolved fabriq data-fabric config (datastore DSNs,
+// catalog clusters, store addresses) after the Register-time overlay. The
+// adminapi connection-info endpoints read it to surface REDACTED topology; it
+// carries secrets, so callers MUST redact before serializing. Locked read: the
+// overlay in Register may replace it before Start.
+func (e *Extension) Config() fabriq.Config {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cfg.Fabriq
+}
+
 // ResolveGrove best-effort resolves a *grove.DB from the host app's DI
 // container (honouring GroveDatabase), returning nil when none is available.
 // It is the exported seam wrapping extensions (e.g. a consuming app's fabriqkg) use to

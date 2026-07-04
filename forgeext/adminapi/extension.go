@@ -64,6 +64,14 @@ type config struct {
 	// WithTenantsAdmin. Even when enabled, the endpoints only function in
 	// catalog mode (db-per-tenant) — see requireTenantsAdmin.
 	TenantsAdmin bool
+	// ConnectionsRead enables the connection/topology info endpoints (GET
+	// /connections and GET /tenants/:id/connection). Default false: those
+	// endpoints 403 until the host opts in via WithConnectionsRead. It is a
+	// read-only, least-privilege gate distinct from the mutating TenantsAdmin
+	// — a topology viewer needs it without gaining provision/suspend rights.
+	// Even redacted, connection info reveals hosts/ports/usernames, so it
+	// stays behind an explicit opt-in.
+	ConnectionsRead bool
 	// KeyStore is the instance-global API key store. When non-nil, per-tenant
 	// API-key auth is enabled: the /admin/keys issue/list/revoke routes are
 	// registered (see registerKeyRoutes). Set it via WithAuth. Note: this option
@@ -123,6 +131,15 @@ func WithSchemaAdmin() Option { return func(c *config) { c.SchemaAdmin = true } 
 // are instance-global, catalog-mode-only operations; leave OFF unless the host
 // guards the admin API and runs db-per-tenant.
 func WithTenantsAdmin() Option { return func(c *config) { c.TenantsAdmin = true } }
+
+// WithConnectionsRead enables the connection/topology info endpoints — GET
+// /connections (the tier's stores + cluster topology) and GET
+// /tenants/:id/connection (a tenant's dedicated database). All connection info
+// is REDACTED server-side: passwords and other secrets are never serialized.
+// It is a read-only gate, deliberately separate from the mutating
+// WithTenantsAdmin so a topology viewer can be granted without provisioning
+// rights; leave OFF unless the host guards the admin API.
+func WithConnectionsRead() Option { return func(c *config) { c.ConnectionsRead = true } }
 
 // WithAuth sets the instance-global API key store, enabling the /admin/keys
 // issue/list/revoke management routes (registered only when the store is
