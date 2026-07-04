@@ -43,3 +43,25 @@ func TestConfigValidate_CatalogMode(t *testing.T) {
 		t.Fatal("catalog + postgres.dsn must be rejected (ambiguous source of truth)")
 	}
 }
+
+func TestConfig_CatalogReplicaDSNs_MalformedRejected(t *testing.T) {
+	c := Config{Catalog: CatalogConfig{
+		DSN:         "postgres://u@localhost/fabriq?sslmode=disable",
+		ClusterDSNs: map[string]string{"c1": "postgres://u@localhost/postgres?sslmode=disable"},
+		ReplicaDSNs: []string{"::not a url::"},
+	}}
+	if err := c.Validate(); err == nil {
+		t.Fatal("malformed replica DSN must fail validation")
+	}
+}
+
+func TestConfig_CatalogReplicaDSNs_Valid(t *testing.T) {
+	c := Config{Catalog: CatalogConfig{
+		DSN:         "postgres://u@localhost/fabriq?sslmode=disable",
+		ClusterDSNs: map[string]string{"c1": "postgres://u@localhost/postgres?sslmode=disable"},
+		ReplicaDSNs: []string{"postgres://u@standby/fabriq?sslmode=disable"},
+	}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("valid replica DSN rejected: %v", err)
+	}
+}
