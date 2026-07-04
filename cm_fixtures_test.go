@@ -51,6 +51,21 @@ func cmRegistry(t *testing.T) *registry.Registry {
 	return reg
 }
 
+func cmRegistryArchive(t *testing.T) *registry.Registry {
+	t.Helper()
+	reg := registry.New()
+	if err := reg.Register(registry.EntitySpec{
+		Name: "cmnote", Kind: registry.KindDocument, Model: (*cmNote)(nil),
+		CRDT: &registry.CRDTSpec{Engine: "grove-crdt", SnapshotEvery: 2, QuietWindow: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
 // cmDDL creates the app-owned entity tables inside one tenant database.
 func cmDDL() []string {
 	return []string{

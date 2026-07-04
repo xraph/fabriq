@@ -36,11 +36,13 @@ type Maintenance struct {
 }
 
 // NewMaintenance builds the maintenance surface for one tenant database.
-// pub may be nil (no event transport configured): the relay phase is
-// skipped and outbox rows accumulate transactionally until one exists.
-func NewMaintenance(a *Adapter, reg *registry.Registry, pub event.Publisher) *Maintenance {
+// docs MUST be the SAME DocStore the serving plane uses (archive-enabled
+// when history offload is configured) — minting a fresh a.Documents() here
+// would silently skip history sealing on compaction. pub may be nil (no
+// event transport): the relay phase is skipped and outbox rows accumulate.
+func NewMaintenance(a *Adapter, reg *registry.Registry, pub event.Publisher, docs *DocStore) *Maintenance {
 	m := &Maintenance{
-		docs:       a.Documents(),
+		docs:       docs,
 		docElector: NewElector(a, LockKeyDocumentPlane),
 	}
 	if pub != nil {

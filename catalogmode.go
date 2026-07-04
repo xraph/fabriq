@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
 	"github.com/xraph/fabriq/adapters/shard"
+	trovestore "github.com/xraph/fabriq/adapters/trove"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/fabriqerr"
@@ -30,7 +31,6 @@ import (
 //
 // v1 serving scope (each gap fails fast in validateCatalogMode and is
 // recorded in the spec's deviation log):
-//   - document history archiving (blob offload) is not wired yet;
 //   - live queries return the same typed not-configured error as static
 //     multi-shard deployments (routed live stores are a later phase);
 //   - blue-green rebuilds and the drift reconciler stay static-mode-only
@@ -75,6 +75,23 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		stores.Redis = rd
 	}
 
+	// Shared byte plane: one blob adapter serves all tenants (trove isolates
+	// CAS per tenant by bucket + the RLS-scoped index living in each tenant
+	// DB). Archiving requires storage to be configured.
+	var blobAdapter *trovestore.Adapter
+	if cfg.Storage.StorageDriver != "" {
+		ba, berr := trovestore.Open(ctx, trovestore.Config{
+			StorageDriver: cfg.Storage.StorageDriver,
+			DefaultBucket: cfg.Storage.DefaultBucket,
+		})
+		if berr != nil {
+			_ = stores.Close()
+			return nil, nil, fmt.Errorf("fabriq: open storage: %w", berr)
+		}
+		stores.Blob = ba
+		blobAdapter = ba
+	}
+
 	// The dialer opens one tenant database's full adapter stack; the pool
 	// manager owns its lifetime (LRU idle eviction, breaker).
 	dialer := func(dctx context.Context, shardID string) (shard.Shard, func() error, error) {
@@ -101,6 +118,10 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 			_ = a.Close()
 			return shard.Shard{}, nil, perr
 		}
+		ds := a.Documents()
+		if blobAdapter != nil {
+			ds.EnableArchive(blobAdapter, cfg.Documents.ArchiveHistory)
+		}
 		var pub event.Publisher // stays a nil interface when Redis is off
 		if rd != nil {
 			pub = rd
@@ -109,8 +130,8 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 			ID: shardID, Store: a, Relational: a,
 			Vector: postgres.NewVectorAdapter(a), Timeseries: a,
 			Spatial:     postgres.NewSpatialAdapter(a),
-			Documents:   a.Documents(),
-			Maintenance: postgres.NewMaintenance(a, reg, pub),
+			Documents:   ds,
+			Maintenance: postgres.NewMaintenance(a, reg, pub, ds),
 			Projection:  a.ProjectionState(),
 			Replay:      a,
 			Live:        a.NewLiveStore(),
@@ -218,8 +239,8 @@ func (s *nudgingStore) InTenantTx(ctx context.Context, fn func(ctx context.Conte
 // honor yet — failing fast beats silently-dead subsystems.
 func validateCatalogMode(cfg Config) error {
 	var missing []string
-	if cfg.Documents.ArchiveHistory {
-		missing = append(missing, "document history archiving")
+	if cfg.Documents.ArchiveHistory && cfg.Storage.StorageDriver == "" {
+		missing = append(missing, "document history archiving without storage (set storage.storageDriver)")
 	}
 	if (cfg.Projections.Graph || cfg.Projections.Search) && cfg.Redis.Addr == "" {
 		missing = append(missing, "projections without Redis (the sweeper relays through it)")
