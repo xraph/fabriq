@@ -21,21 +21,36 @@ import (
 // one-table schema does not warrant a versioned chain yet; EnsureSchema
 // becomes chain-managed the day it grows.)
 type CatalogStore struct {
-	db *pgdriver.PgDB
+	db       *pgdriver.PgDB
+	readOnly bool
 }
 
 var _ catalog.Catalog = (*CatalogStore)(nil)
 
-// OpenCatalog dials the control database and ensures the catalog schema.
+// OpenCatalog dials the control database (the writable PRIMARY) and ensures
+// the catalog schema.
 func OpenCatalog(ctx context.Context, dsn string) (*CatalogStore, error) {
+	return openCatalog(ctx, dsn, false)
+}
+
+// OpenCatalogReplica dials a read-only catalog REPLICA (a hot standby): it
+// does NOT run schema DDL (a standby is read-only) and refuses writes. Used
+// only as a routing-read fallback behind catalog.Failover.
+func OpenCatalogReplica(ctx context.Context, dsn string) (*CatalogStore, error) {
+	return openCatalog(ctx, dsn, true)
+}
+
+func openCatalog(ctx context.Context, dsn string, readOnly bool) (*CatalogStore, error) {
 	db := pgdriver.New()
 	if err := db.Open(ctx, dsn); err != nil {
 		return nil, fmt.Errorf("fabriq: open catalog control db: %w", err)
 	}
-	s := &CatalogStore{db: db}
-	if err := s.ensureSchema(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
+	s := &CatalogStore{db: db, readOnly: readOnly}
+	if !readOnly {
+		if err := s.ensureSchema(ctx); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -104,6 +119,10 @@ func (s *CatalogStore) Get(ctx context.Context, tenantID string) (catalog.Entry,
 // Put implements catalog.Catalog with optimistic concurrency on
 // updated_at (zero = create).
 func (s *CatalogStore) Put(ctx context.Context, e catalog.Entry) (catalog.Entry, error) {
+	if s.readOnly {
+		return catalog.Entry{}, fabriqerr.New(fabriqerr.CodeUnavailable,
+			"catalog replica is read-only.")
+	}
 	if err := catalog.ValidateEntry(e); err != nil {
 		return catalog.Entry{}, err
 	}
