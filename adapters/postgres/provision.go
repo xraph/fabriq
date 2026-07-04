@@ -80,6 +80,20 @@ func (c *ClusterOps) AssertBoot(ctx context.Context, allowSuperuser bool) error 
 	return nil
 }
 
+// PingDSN opens a short-lived connection to dsn and runs SELECT 1, reporting
+// reachability. It is the reachability probe behind the adminapi connection-info
+// endpoints (per-cluster and per-tenant DBs, which have no persistent adapter).
+// Bound it with a context deadline; grove dials lazily, so the query is the dial.
+func PingDSN(ctx context.Context, dsn string) error {
+	db := pgdriver.New()
+	if err := db.Open(ctx, dsn); err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	var one int
+	return db.QueryRow(ctx, `SELECT 1`).Scan(&one)
+}
+
 // TenantDSN derives the DSN for one tenant database on a cluster — the
 // same derivation the catalog-mode dialer uses, exported so routing and
 // provisioning can never disagree.

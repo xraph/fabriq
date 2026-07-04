@@ -78,5 +78,9 @@ func Open(ctx context.Context, cfg Config, opts ...Option) (*Adapter, error) {
 	return a, nil
 }
 
+// Ping reports Redis reachability, bounded by ctx. It backs the adminapi
+// connection-info health probe.
+func (a *Adapter) Ping(ctx context.Context) error { return a.client.Ping(ctx).Err() }
+
 // Close releases the client.
 func (a *Adapter) Close() error { return a.client.Close() }
