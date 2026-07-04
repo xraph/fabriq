@@ -162,3 +162,47 @@ func TestCatalogMode_DocumentPlanePerTenantDB(t *testing.T) {
 		t.Fatalf("tenant-db crdt log = %v", rows)
 	}
 }
+
+// TestCatalogMode_WithReplicaDSN_Routes proves the wiring: configuring
+// ReplicaDSNs builds the Failover routing path and the facade still serves
+// tenants normally. Using the same DB as its own "replica" only proves the
+// path builds and routes; true standby fallback behaviour is validated by
+// the chaos suite (Task 7).
+func TestCatalogMode_WithReplicaDSN_Routes(t *testing.T) {
+	ctx := context.Background()
+	dsn := fabriqtest.StartPostgres(t)
+
+	cat, err := postgres.OpenCatalog(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := postgres.NewClusterOps(map[string]string{"c1": dsn})
+	p := provision.New(cat, ops)
+	if _, err := p.Provision(ctx, "acme", "c1"); err != nil {
+		t.Fatal(err)
+	}
+	tenantDSN, _ := ops.TenantDSN("c1", "fabriq_acme")
+	fabriqtest.ApplyDDL(t, tenantDSN, cmDDL())
+	_ = cat.Close()
+
+	// Same DB doubles as its own "replica" here: this only proves the wiring
+	// builds the Failover path and routes; true standby behaviour is Task 7.
+	reg := cmRegistry(t)
+	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
+		Catalog: fabriq.CatalogConfig{
+			DSN: dsn, ClusterDSNs: map[string]string{"c1": dsn},
+			ReplicaDSNs: []string{dsn}, AllowSuperuser: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stores.Close() })
+
+	acmeCtx, _ := tenant.WithTenant(ctx, "acme")
+	if _, err := f.Exec(acmeCtx, command.Command{
+		Entity: "cmwidget", Op: command.OpCreate, Payload: &cmWidget{Name: "w"},
+	}); err != nil {
+		t.Fatalf("replica-configured routing failed: %v", err)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/fabriq/adapters/redis"
 	"github.com/xraph/fabriq/adapters/shard"
 	trovestore "github.com/xraph/fabriq/adapters/trove"
+	"github.com/xraph/fabriq/core/catalog"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/fabriqerr"
@@ -18,6 +19,23 @@ import (
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/migrations"
 )
+
+// buildCatalogRoutes returns the catalog the ROUTING directory reads through.
+// With no replicas it is the bare primary (single-Postgres default, unchanged);
+// with replicas it is a Failover wrapper (primary-first, replica-fallback). The
+// returned *catalog.Failover is nil in the no-replica case so callers can tell
+// the modes apart (observability). stores.Catalog stays the primary regardless.
+func buildCatalogRoutes(primary catalog.Catalog, replicas []*postgres.CatalogStore) (catalog.Catalog, *catalog.Failover) {
+	if len(replicas) == 0 {
+		return primary, nil
+	}
+	rs := make([]catalog.Catalog, len(replicas))
+	for i, r := range replicas {
+		rs[i] = r
+	}
+	fo := catalog.NewFailover(primary, rs...)
+	return fo, fo
+}
 
 // openCatalogMode assembles the db-per-tenant deployment (spec 2026-07-03):
 // every port routes through a DynamicSet whose directory is the tenant
@@ -54,10 +72,25 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		return nil, nil, bootErr
 	}
 
-	dir := shard.CatalogDirectory(catStore, cfg.Catalog.CacheTTL,
+	// Optional read-replica fallback for routing reads (spec HA). Replicas are
+	// read-only standbys: open failures do NOT block boot (a down replica must
+	// not stop serving); malformed DSNs were already rejected in Validate.
+	var replicas []*postgres.CatalogStore
+	for _, rdsn := range cfg.Catalog.ReplicaDSNs {
+		rs, rerr := postgres.OpenCatalogReplica(ctx, rdsn)
+		if rerr != nil {
+			continue // lazy dialer: this practically never errors at open
+		}
+		replicas = append(replicas, rs)
+	}
+	routeCatalog, failover := buildCatalogRoutes(catStore, replicas)
+
+	dir := shard.CatalogDirectory(routeCatalog, cfg.Catalog.CacheTTL,
 		shard.WithMinVersion(migrations.HeadVersion()))
 
 	stores := &Stores{Catalog: catStore, customAppliers: cfg.CustomAppliers}
+	stores.catalogReplicas = replicas
+	stores.catalogRoutes = failover
 	stores.state = routingState{stores: stores}
 
 	// Redis opens before the dialer: each tenant shard's maintenance

@@ -8,6 +8,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/shard"
 	"github.com/xraph/fabriq/core/catalog"
 	"github.com/xraph/fabriq/core/event"
@@ -173,5 +174,18 @@ func TestReplaySource_RoutesPerTenant(t *testing.T) {
 	}
 	if router.held != 0 {
 		t.Fatalf("%d shard acquisitions never released", router.held)
+	}
+}
+
+func TestCatalogRoutes_NilWithoutReplicas(t *testing.T) {
+	// buildCatalogRoutes returns the bare primary (nil *Failover) when no
+	// replicas are configured, and a wrapper when they are.
+	primary := &postgres.CatalogStore{}
+	routes, failover := buildCatalogRoutes(primary, nil)
+	if failover != nil {
+		t.Fatal("no replicas ⇒ no Failover wrapper")
+	}
+	if routes != catalog.Catalog(primary) {
+		t.Fatal("no replicas ⇒ directory sees the bare primary")
 	}
 }

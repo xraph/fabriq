@@ -18,6 +18,7 @@ import (
 	trovestore "github.com/xraph/fabriq/adapters/trove"
 	"github.com/xraph/fabriq/cachequery"
 	corecache "github.com/xraph/fabriq/core/cache"
+	"github.com/xraph/fabriq/core/catalog"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/crypto"
 	"github.com/xraph/fabriq/core/event"
@@ -312,6 +313,12 @@ type Stores struct {
 	Postgres *postgres.Adapter
 	// Catalog is the db-per-tenant control plane (nil outside catalog mode).
 	Catalog *postgres.CatalogStore
+	// catalogReplicas are read-only control-DB standbys backing the routing
+	// Failover (empty outside HA catalog mode). Closed on shutdown.
+	catalogReplicas []*postgres.CatalogStore
+	// catalogRoutes is the routing directory's Failover view (nil when no
+	// replicas are configured). Exposed for observability only.
+	catalogRoutes *catalog.Failover
 	// pool owns catalog-mode tenant pools (nil outside catalog mode).
 	pool *shard.PoolManager
 	// router is the catalog-mode DynamicSet the sweeper acquires tenant
@@ -416,6 +423,11 @@ func (s *Stores) Close() error {
 	}
 	if s.pool != nil {
 		if err := s.pool.CloseAll(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	for _, r := range s.catalogReplicas {
+		if err := r.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
