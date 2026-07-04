@@ -10,6 +10,8 @@ import (
 	"github.com/xraph/vessel"
 
 	"github.com/xraph/fabriq"
+	"github.com/xraph/fabriq/adapters/postgres"
+	"github.com/xraph/fabriq/core/provision"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/internal/metrics"
 )
@@ -48,6 +50,21 @@ func New(reg *registry.Registry, opts ...Option) *Extension {
 		o(&cfg)
 	}
 	return &Extension{reg: reg, cfg: cfg}
+}
+
+// Provisioner builds a tenant provisioner over the ALREADY-OPEN catalog
+// store (reused, not a second connection) and the configured clusters.
+// Nil outside catalog mode — the admin API uses that to gate its tenant
+// endpoints. Safe to call per request: New is cheap (no I/O).
+func (e *Extension) Provisioner() *provision.Provisioner {
+	e.mu.Lock()
+	stores := e.stores
+	clusters := e.cfg.Fabriq.Catalog.ClusterDSNs
+	e.mu.Unlock()
+	if stores == nil || stores.Catalog == nil {
+		return nil
+	}
+	return provision.New(stores.Catalog, postgres.NewClusterOps(clusters))
 }
 
 func (e *Extension) Name() string    { return "fabriq" }
