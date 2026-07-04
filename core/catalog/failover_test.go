@@ -1,9 +1,7 @@
-// core/catalog/failover_test.go
 package catalog_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/xraph/fabriq/core/catalog"
@@ -149,4 +147,28 @@ func TestFailover_NoReplicas_PassesContract(t *testing.T) {
 	})
 }
 
-var _ = errors.Is // keep errors import if unused after edits
+func TestFailover_List_PrimaryDown_FallsToReplica(t *testing.T) {
+	inner := fabriqtest.NewFakeCatalog()
+	seed(t, inner, "acme")
+	seed(t, inner, "beta")
+	primary := &flaky{inner: fabriqtest.NewFakeCatalog(), down: true}
+	f := catalog.NewFailover(primary, inner)
+
+	got, _, err := f.List(context.Background(), "", 10)
+	if err != nil {
+		t.Fatalf("list fallback failed: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 entries from replica, got %d", len(got))
+	}
+}
+
+func TestFailover_List_AllDown_ReturnsPrimaryError(t *testing.T) {
+	primary := &flaky{inner: fabriqtest.NewFakeCatalog(), down: true}
+	replica := &flaky{inner: fabriqtest.NewFakeCatalog(), down: true}
+	f := catalog.NewFailover(primary, replica)
+
+	if _, _, err := f.List(context.Background(), "", 10); fabriqerr.CodeOf(err) != fabriqerr.CodeInternal {
+		t.Fatalf("want primary transport error, got %v", err)
+	}
+}

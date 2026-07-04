@@ -1,4 +1,3 @@
-// core/catalog/failover.go
 package catalog
 
 import (
@@ -73,9 +72,11 @@ func (f *Failover) Get(ctx context.Context, tenantID string) (Entry, error) {
 	return Entry{}, primaryErr
 }
 
-// List mirrors Get's fallback shape (kept coherent; only Get is wired to the
-// failover path in v1). Degradation marking is unnecessary for List — the
-// sweeper/AllTenants consumers use the primary, not this wrapper.
+// List falls through to replicas on any primary error. Unlike Get, List has no
+// definitive business answer to distinguish (no NotFound), so every primary
+// error is a transport failure — replica-fallback needs no primaryDefinitive
+// gate here. Only Get is wired to the routing directory in v1; List fallback is
+// kept for interface coherence.
 func (f *Failover) List(ctx context.Context, cursor Cursor, limit int) ([]Entry, Cursor, error) {
 	out, next, err := f.primary.List(ctx, cursor, limit)
 	if err == nil {
