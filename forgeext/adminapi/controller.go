@@ -6,6 +6,7 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/fabriq/core/provision"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/tenant"
 )
@@ -193,6 +194,10 @@ func (c *adminController) Routes(r forge.Router) error {
 		return err
 	}
 
+	if err := c.registerTenantRoutes(r); err != nil {
+		return err
+	}
+
 	if c.ext.cfg.KeyStore != nil {
 		if err := c.registerKeyRoutes(r); err != nil {
 			return err
@@ -219,11 +224,39 @@ func (c *adminController) requireSchemaAdmin(ctx forge.Context) error {
 	return nil
 }
 
+// requireTenantsAdmin gates the tenant-management endpoints. It checks the
+// tenants.admin capability opt-in first (403 when off), then resolves the
+// catalog-mode Provisioner (400 when the deployment isn't catalog mode, or
+// when parent is absent — e.g. unit tests built directly against a bare
+// Extension without a started forgeext.Extension).
+func (c *adminController) requireTenantsAdmin(ctx forge.Context) (*provision.Provisioner, error) {
+	if !c.ext.cfg.TenantsAdmin {
+		return nil, ctx.JSON(http.StatusForbidden, map[string]string{
+			"error": "tenant admin not enabled (host must opt in via WithTenantsAdmin)",
+		})
+	}
+	if c.ext.parent == nil {
+		return nil, ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "tenant management requires catalog mode (db-per-tenant)",
+		})
+	}
+	p := c.ext.parent.Provisioner()
+	if p == nil {
+		return nil, ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "tenant management requires catalog mode (db-per-tenant)",
+		})
+	}
+	return p, nil
+}
+
 // handleMeta serves GET {BasePath}/meta.
 func (c *adminController) handleMeta(ctx forge.Context) error {
 	caps := capabilities
 	if c.ext.cfg.SchemaAdmin {
 		caps = append(append([]string(nil), capabilities...), "schema.admin")
+	}
+	if c.ext.cfg.TenantsAdmin {
+		caps = append(append([]string(nil), caps...), "tenants.admin")
 	}
 	resp := metaResponse{
 		Name:         "fabriq-admin-api",
