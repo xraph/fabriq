@@ -45,12 +45,13 @@ type entityListResponse struct {
 
 // adminController registers all admin HTTP routes.
 type adminController struct {
-	ext  *Extension
-	jobs *migrationJobs // async migration-run registry (single-flight)
+	ext        *Extension
+	jobs       *migrationJobs // async migration-run registry (single-flight)
+	tenantJobs *tenantJobs    // async tenant provision/migrate-all registry
 }
 
 func newAdminController(e *Extension) *adminController {
-	return &adminController{ext: e, jobs: newMigrationJobs()}
+	return &adminController{ext: e, jobs: newMigrationJobs(), tenantJobs: newTenantJobs()}
 }
 
 func (c *adminController) Name() string { return "fabriq:admin" }
@@ -229,22 +230,25 @@ func (c *adminController) requireSchemaAdmin(ctx forge.Context) error {
 // catalog-mode Provisioner (400 when the deployment isn't catalog mode, or
 // when parent is absent — e.g. unit tests built directly against a bare
 // Extension without a started forgeext.Extension).
+//
+// The returned error is a real forge.IHTTPError (not the result of an
+// eager ctx.JSON write) so that callers' `if err != nil { return err }`
+// early-return actually short-circuits: go-utils' Ctx.JSON returns nil on a
+// successful write regardless of status code, so returning its result
+// directly here would let gate failures silently fall through as err == nil
+// — harmless for a handler that does nothing else afterward, but fatal for
+// handlers (like the async tenant job starters) that go on to dereference
+// the (nil) *provision.Provisioner.
 func (c *adminController) requireTenantsAdmin(ctx forge.Context) (*provision.Provisioner, error) {
 	if !c.ext.cfg.TenantsAdmin {
-		return nil, ctx.JSON(http.StatusForbidden, map[string]string{
-			"error": "tenant admin not enabled (host must opt in via WithTenantsAdmin)",
-		})
+		return nil, forge.Forbidden("tenant admin not enabled (host must opt in via WithTenantsAdmin)")
 	}
 	if c.ext.parent == nil {
-		return nil, ctx.JSON(http.StatusBadRequest, map[string]string{
-			"error": "tenant management requires catalog mode (db-per-tenant)",
-		})
+		return nil, forge.BadRequest("tenant management requires catalog mode (db-per-tenant)")
 	}
 	p := c.ext.parent.Provisioner()
 	if p == nil {
-		return nil, ctx.JSON(http.StatusBadRequest, map[string]string{
-			"error": "tenant management requires catalog mode (db-per-tenant)",
-		})
+		return nil, forge.BadRequest("tenant management requires catalog mode (db-per-tenant)")
 	}
 	return p, nil
 }
