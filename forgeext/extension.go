@@ -113,11 +113,16 @@ func (e *Extension) Register(app forge.App) error {
 // Start implements forge.Extension. Opens the fabriq facade.
 func (e *Extension) Start(ctx context.Context) error {
 	cfg := e.cfg.Fabriq
-	if cfg.Postgres.DSN == "" && len(cfg.Shards) == 0 {
+	if cfg.Postgres.DSN == "" && len(cfg.Shards) == 0 && !cfg.Catalog.Enabled() {
 		// No explicit source of truth: borrow a *grove.DB from the host's DI
 		// container, the same way xraph/authsome auto-discovers the shared
 		// grove. This lets fabriq serve inside an app that already owns a
 		// Postgres/grove handle without duplicating the DSN.
+		//
+		// Catalog mode (db-per-tenant) is the third source of truth: the
+		// tenant catalog is the routing authority and tenant databases dial
+		// lazily, so no primary DSN / shards / host grove is needed here —
+		// fabriq.Open routes to openCatalogMode.
 		if gdb := e.resolveGrove(); gdb != nil {
 			cfg = cfg.WithInjectedGrove(gdb)
 			if log := e.Logger(); log != nil {

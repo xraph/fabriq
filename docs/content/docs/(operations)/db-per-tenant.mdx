@@ -109,8 +109,33 @@ full scheduling pass over 10k catalog entries with 100 active costs ~20ms.
 
 Projection sinks (graph/search) stay shared; each tenant's projection
 bookkeeping lives in its own database. Blue-green rebuilds, the drift
-reconciler, live queries and document history archiving are not yet
-routed in catalog mode (they return typed errors or are documented gaps).
+reconciler, live queries, and document history archiving all route per
+tenant in catalog mode now: the reconciler elects a single scanner on the
+catalog control database; rebuilds replay from each tenant's own database;
+live queries require Redis (the tailer); and archiving requires
+`storage.storageDriver` and seals each tenant's trimmed CRDT history to its
+own CAS bucket.
+
+## Tenant management API
+
+With the admin extension mounted and `WithTenantsAdmin()` enabled, the
+`tenants.admin` capability exposes the provisioning surface over HTTP
+(catalog mode only) — the HTTP twin of the `fabriq tenant` CLI, backed by
+the same idempotent state machine:
+
+| Method + path | Effect |
+| --- | --- |
+| `POST {base}/tenants` `{tenantId, clusterId}` | Provision (async job → `{jobId}`) |
+| `POST {base}/tenants/migrate-all` | Roll the fleet to head (async job) |
+| `GET {base}/tenants/jobs/:id` / `.../stream` | Poll / SSE-stream a job |
+| `GET {base}/tenants` | List catalog entries |
+| `GET {base}/tenants/:id` | One tenant's state + version |
+| `POST {base}/tenants/:id/suspend` / `.../resume` | Route off / back on |
+
+Provision and migrate-all run as background jobs (HTTP returns `202` with a
+`jobId`); poll `jobs/:id` or stream `jobs/:id/stream` for progress. The
+job-status routes are unguarded beyond the unguessable job id (parity with
+the migrations job API).
 
 ## Connections and PgBouncer
 
