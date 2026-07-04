@@ -95,11 +95,7 @@ func (c *adminController) registerTenantRoutes(r forge.Router) error {
 		forge.WithSummary("Resume a suspended tenant (catalog mode)"),
 		forge.WithTags("Fabriq", "Admin", "Tenants"),
 	}, opts...)
-	if err := r.POST(base+"/tenants/:id/resume", c.handleTenantResume, resumeOpts...); err != nil {
-		return err
-	}
-
-	return nil
+	return r.POST(base+"/tenants/:id/resume", c.handleTenantResume, resumeOpts...)
 }
 
 // tenantView is the JSON projection of a catalog.Entry.
@@ -169,8 +165,7 @@ func (c *adminController) handleTenantGet(ctx forge.Context) error {
 		})
 	}
 	e, err := stores.Catalog.Get(ctx.Request().Context(), id)
-	switch fabriqerr.CodeOf(err) {
-	case fabriqerr.CodeNotFound:
+	if fabriqerr.CodeOf(err) == fabriqerr.CodeNotFound {
 		return ctx.JSON(http.StatusNotFound, map[string]string{"error": "no such tenant"})
 	}
 	if err != nil {

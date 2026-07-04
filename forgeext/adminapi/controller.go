@@ -239,7 +239,7 @@ func (c *adminController) requireSchemaAdmin(ctx forge.Context) error {
 // — harmless for a handler that does nothing else afterward, but fatal for
 // handlers (like the async tenant job starters) that go on to dereference
 // the (nil) *provision.Provisioner.
-func (c *adminController) requireTenantsAdmin(ctx forge.Context) (*provision.Provisioner, error) {
+func (c *adminController) requireTenantsAdmin(_ forge.Context) (*provision.Provisioner, error) {
 	if !c.ext.cfg.TenantsAdmin {
 		return nil, forge.Forbidden("tenant admin not enabled (host must opt in via WithTenantsAdmin)")
 	}
