@@ -217,6 +217,141 @@ func TestPoolManager_DoubleReleaseIsSafe(t *testing.T) {
 	}
 }
 
+func TestPoolManager_CountersTrackHitMissEvictWaitTimeout(t *testing.T) {
+	d := newFakeDialer()
+	now := time.Unix(0, 0)
+	p := NewPoolManager(d.dial, PoolManagerConfig{
+		MaxActive: 1, AcquireTimeout: 60 * time.Millisecond,
+		now: func() time.Time { now = now.Add(time.Millisecond); return now },
+	})
+	ctx := context.Background()
+
+	// miss #1: cold dial of "a".
+	_, rel, err := p.Acquire(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// timeout: cap 1, "a" held, "b" cannot get capacity.
+	if _, _, err := p.Acquire(ctx, "b"); fabriqerr.CodeOf(err) != fabriqerr.CodeUnavailable {
+		t.Fatalf("want CodeUnavailable, got %v", err)
+	}
+	rel() // release "a" so it becomes idle-evictable
+	// miss #2: "b" now dials, evicting idle "a".
+	_, rel2, err := p.Acquire(ctx, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel2()
+	// hit: re-acquire "b" (ready).
+	_, rel3, err := p.Acquire(ctx, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel3()
+
+	s := p.snapshotCounters()
+	if s.acquires != 3 { // a, b(after evict), b(hit)
+		t.Errorf("acquires=%d want 3", s.acquires)
+	}
+	if s.misses != 2 { // a, b
+		t.Errorf("misses=%d want 2", s.misses)
+	}
+	if s.evictions != 1 { // a evicted for b
+		t.Errorf("evictions=%d want 1", s.evictions)
+	}
+	if s.waits < 1 { // the "b" that timed out waited
+		t.Errorf("waits=%d want >=1", s.waits)
+	}
+	if s.timeouts != 1 {
+		t.Errorf("timeouts=%d want 1", s.timeouts)
+	}
+	if s.cap != 1 {
+		t.Errorf("cap=%d want 1", s.cap)
+	}
+}
+
+func TestPoolManager_SnapshotResetsWindow(t *testing.T) {
+	d := newFakeDialer()
+	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 4})
+	_, rel, _ := p.Acquire(context.Background(), "a")
+	rel()
+	first := p.snapshotCounters()
+	if first.acquires == 0 {
+		t.Fatal("expected acquires in first window")
+	}
+	second := p.snapshotCounters()
+	if second.acquires != 0 || second.misses != 0 {
+		t.Fatalf("window not reset: %+v", second)
+	}
+	if second.open != 1 { // "a" still open (open/held are live, not windowed)
+		t.Fatalf("open=%d want 1", second.open)
+	}
+}
+
+func TestPoolManager_CapIsAtomic_GrowUnblocks(t *testing.T) {
+	d := newFakeDialer()
+	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 1, AcquireTimeout: 2 * time.Second})
+	ctx := context.Background()
+	_, rel, err := p.Acquire(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	done := make(chan error, 1)
+	go func() {
+		_, r, err := p.Acquire(ctx, "b")
+		if err == nil {
+			r()
+		}
+		done <- err
+	}()
+	time.Sleep(30 * time.Millisecond)
+	p.cap.Store(2) // grow: "b" can now open without "a" releasing
+	select {
+	case p.freed <- struct{}{}: // nudge the waiter (mirrors reconsider on grow)
+	default:
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiter failed after grow: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("grow did not unblock the waiter")
+	}
+}
+
+func TestPoolManager_CapIsAtomic_ShrinkEvicts(t *testing.T) {
+	d := newFakeDialer()
+	now := time.Unix(0, 0)
+	p := NewPoolManager(d.dial, PoolManagerConfig{
+		MaxActive: 3, AcquireTimeout: 200 * time.Millisecond,
+		now: func() time.Time { now = now.Add(time.Millisecond); return now },
+	})
+	ctx := context.Background()
+	for _, id := range []string{"a", "b", "c"} {
+		_, rel, err := p.Acquire(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rel() // all idle
+	}
+	if open, _ := p.Stats(); open != 3 {
+		t.Fatalf("open=%d want 3", open)
+	}
+	p.cap.Store(1) // shrink
+	// Opening a new shard must evict down toward the new cap (idle-first).
+	_, rel, err := p.Acquire(ctx, "d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel()
+	open, _ := p.Stats()
+	if open > 2 { // at most the just-opened "d" plus at most cap-1 survivors
+		t.Fatalf("shrink did not evict: open=%d want <=2", open)
+	}
+}
+
 // staticDirectory routes every tenant to a fixed shard id (test helper).
 type staticDirectory map[string]string
 
