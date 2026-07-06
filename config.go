@@ -101,6 +101,12 @@ func (c CatalogConfig) Enabled() bool { return c.DSN != "" }
 // AdaptivePoolConfig is the user-facing autoscaling surface. Policy
 // constants (grow factor, thresholds, cooldown) are NOT exposed here; they
 // default inside the shard autoscaler. Operators set only what they must own.
+//
+// Shrink is lazy: lowering the cap (idle slack, or heap pressure) does not
+// force-close held pools; idle pools above a freshly-shrunk cap are reclaimed
+// on the NEXT new-shard dial, not proactively. Under total quiescence they
+// persist until traffic resumes — this is intentional (see the design's
+// non-goals), not a leak.
 type AdaptivePoolConfig struct {
 	Enabled       bool          `yaml:"enabled" json:"enabled"`
 	Min           int           `yaml:"min" json:"min"`                     // floor; 0 -> 8

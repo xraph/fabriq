@@ -181,7 +181,12 @@ func (a *autoscaler) decide(s poolSignals) (newCap int, dir scaleDir, reason str
 
 	if pressure {
 		a.slackStreak = 0
-		a.pressureStreak++
+		// Bound the streak at ConfirmTicks: it only ever gates a >= check, so
+		// once confirmed there is no reason to keep counting (e.g. sustained
+		// pressure while growth is frozen at the ceiling).
+		if a.pressureStreak < cfg.ConfirmTicks {
+			a.pressureStreak++
+		}
 		canGrow := s.cap < ceiling && !heapOverSoft
 		if a.pressureStreak >= cfg.ConfirmTicks && canGrow {
 			grown := int(math.Ceil(float64(s.cap) * cfg.GrowFactor))
@@ -204,7 +209,9 @@ func (a *autoscaler) decide(s poolSignals) (newCap int, dir scaleDir, reason str
 	utilLow := s.open == 0 || float64(s.held) < float64(s.open)*cfg.HeldUtilLow
 	if fillLow && utilLow {
 		a.pressureStreak = 0
-		a.slackStreak++
+		if a.slackStreak < cfg.ConfirmTicks {
+			a.slackStreak++
+		}
 		if a.slackStreak >= cfg.ConfirmTicks && s.cap > lo {
 			shrunk := s.cap - cfg.ShrinkStep
 			if shrunk < lo {
