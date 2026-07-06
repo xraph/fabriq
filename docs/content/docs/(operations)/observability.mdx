@@ -18,12 +18,21 @@ Five instruments, defined in `internal/metrics`. The names are exact.
 | `fabriq_tenant_hook_trips_total` | counter | Tenant-guard backstop trips. | Must stay zero. **Any non-zero value is a fabriq bug.** |
 | `fabriq_conflation_depth` | gauge | Deltas buffered in subscription-hub conflation windows. | Low is healthy. Sustained growth means subscribers cannot drain. |
 | `fabriq_relay_published_total` | counter | Events published by the outbox relay. | Monotonic; flatlining while backlog grows confirms a stalled relay. |
+| `fabriq_analytics_applied_total` | counter | Envelopes successfully applied by the [analytics sink](/docs/analytics-sink)'s `proj:analytics` consumer. | Monotonic while analytics is configured and traffic flows; only emitted when `Config.Analytics` is set. |
+| `fabriq_analytics_failures_total` | counter | Envelopes the analytics consumer failed to apply (transient; left pending for redelivery). | Must stay near zero. Sustained growth means the analytics database is unreachable or rejecting writes. |
 
 <Callout type="error">
 `fabriq_tenant_hook_trips_total` is a correctness alarm, not a capacity one. A
 non-zero value means a query reached an engine without tenant scoping — RLS
 contained the blast radius, but the call site must be found and fixed. Page the
 owning team. See [Runbooks](/docs/runbooks).
+</Callout>
+
+<Callout type="info">
+Planned, not yet built: a `fabriq_analytics_lag_seconds` gauge (needs a
+database-side poller comparing applied watermarks to stream position) and a
+`fabriq_analytics_backfill_rows_total` counter (backfill runs outside the
+worker's metrics loop today). See [Analytics sink](/docs/analytics-sink).
 </Callout>
 
 ### How they are populated

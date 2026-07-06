@@ -116,6 +116,13 @@ live queries require Redis (the tailer); and archiving requires
 `storage.storageDriver` and seals each tenant's trimmed CRDT history to its
 own CAS bucket.
 
+Fleet-wide reporting across all those per-tenant databases is now an
+opt-in third projection peer rather than a deferred item: the
+[analytics sink](/docs/analytics-sink) reads the same shared event stream
+graph/search already consume, so it needs no per-tenant-database wiring
+here — it is the one deliberate, narrow, auditable place tenant data is
+co-located, gated by explicit per-entity marking and field redaction.
+
 ## Tenant management API
 
 With the admin extension mounted and `WithTenantsAdmin()` enabled, the
@@ -205,3 +212,4 @@ backing off on failures) and pool open vs cap (undersized
 | Backup/restore per tenant | filtered export | **pg_dump the database** |
 | Fleet ceiling | shard count | pool-capped, thousands |
 | Worker plane | boot-time loops | catalog sweeper |
+| Cross-tenant reporting | [analytics sink](/docs/analytics-sink) (opt-in, mode-agnostic) | [analytics sink](/docs/analytics-sink) (opt-in, mode-agnostic) |
