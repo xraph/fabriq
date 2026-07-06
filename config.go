@@ -2,12 +2,17 @@ package fabriq
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/xraph/grove"
 
 	"github.com/xraph/fabriq/core/projection"
 )
+
+// catalogSharedSchemaPattern bounds the consolidation shared-schema name to a
+// safe bare Postgres identifier (it is interpolated into DDL at bootstrap).
+var catalogSharedSchemaPattern = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
 // Config is fabriq's declarative configuration: which stores exist and
 // which projections run. It is the same schema a future standalone
@@ -90,10 +95,30 @@ type CatalogConfig struct {
 	// bind superusers, and the serving tier must not hold rights it does
 	// not need; provisioning (the CLI) is a separate, privileged concern.
 	AllowSuperuser bool `yaml:"allowSuperuser" json:"allowSuperuser"`
+	// Isolation selects catalog-mode tenant isolation: "" / "database" (a
+	// dedicated database per tenant) or "schema" (schema-per-tenant
+	// consolidation: many tenants share a database, isolated by search_path).
+	// See ADR 0012.
+	Isolation string `yaml:"isolation" json:"isolation"`
+	// SharedSchema (schema isolation only) holds the shared extensions
+	// (pgvector/postgis) and is appended to every tenant's search_path so
+	// their types resolve. Empty defaults to "fabriq_shared".
+	SharedSchema string `yaml:"sharedSchema" json:"sharedSchema"`
 }
 
 // Enabled reports whether catalog mode is configured.
 func (c CatalogConfig) Enabled() bool { return c.DSN != "" }
+
+// SchemaMode reports whether catalog mode uses schema-per-tenant isolation.
+func (c CatalogConfig) SchemaMode() bool { return c.Isolation == "schema" }
+
+// sharedSchemaOrDefault returns the configured shared schema, or the default.
+func (c CatalogConfig) sharedSchemaOrDefault() string {
+	if c.SharedSchema != "" {
+		return c.SharedSchema
+	}
+	return "fabriq_shared"
+}
 
 // PostgresConfig locates the source of truth. Required unless Shards is set
 // (it is the one-shard shorthand).
@@ -246,6 +271,14 @@ func (c Config) Validate() error {
 		}
 		if c.Catalog.MaxActiveShards < 0 {
 			return fmt.Errorf("fabriq: config: catalog.maxActiveShards must be >= 0")
+		}
+		switch c.Catalog.Isolation {
+		case "", "database", "schema":
+		default:
+			return fmt.Errorf("fabriq: config: catalog.isolation must be \"database\" or \"schema\" (got %q)", c.Catalog.Isolation)
+		}
+		if c.Catalog.SchemaMode() && !catalogSharedSchemaPattern.MatchString(c.Catalog.sharedSchemaOrDefault()) {
+			return fmt.Errorf("fabriq: config: catalog.sharedSchema %q is not a valid bare identifier", c.Catalog.SharedSchema)
 		}
 	}
 	if c.Projections.Graph && c.FalkorDB.Addr == "" {
