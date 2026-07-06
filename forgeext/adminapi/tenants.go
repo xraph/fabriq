@@ -103,6 +103,7 @@ type tenantView struct {
 	TenantID  string `json:"tenantId"`
 	ClusterID string `json:"clusterId"`
 	Database  string `json:"database"`
+	Schema    string `json:"schema,omitempty"`
 	State     string `json:"state"`
 	Version   string `json:"version"`
 }
@@ -112,6 +113,7 @@ func toTenantView(e catalog.Entry) tenantView {
 		TenantID:  e.TenantID,
 		ClusterID: e.ClusterID,
 		Database:  e.Database,
+		Schema:    e.Schema,
 		State:     string(e.State),
 		Version:   e.Version,
 	}
@@ -176,22 +178,22 @@ func (c *adminController) handleTenantGet(ctx forge.Context) error {
 
 // handleTenantSuspend serves POST {BasePath}/tenants/:id/suspend.
 func (c *adminController) handleTenantSuspend(ctx forge.Context) error {
-	return c.tenantLifecycle(ctx, func(p *provision.Provisioner, id string) (catalog.Entry, error) {
+	return c.tenantLifecycle(ctx, func(p tenantAdminOps, id string) (catalog.Entry, error) {
 		return p.Suspend(ctx.Request().Context(), id)
 	})
 }
 
 // handleTenantResume serves POST {BasePath}/tenants/:id/resume.
 func (c *adminController) handleTenantResume(ctx forge.Context) error {
-	return c.tenantLifecycle(ctx, func(p *provision.Provisioner, id string) (catalog.Entry, error) {
+	return c.tenantLifecycle(ctx, func(p tenantAdminOps, id string) (catalog.Entry, error) {
 		return p.Resume(ctx.Request().Context(), id)
 	})
 }
 
 // tenantLifecycle is the shared gate + error-mapping path for the
 // suspend/resume handlers: validate the tenant id, run op against the
-// gated Provisioner, and map the typed error to an HTTP status.
-func (c *adminController) tenantLifecycle(ctx forge.Context, op func(p *provision.Provisioner, id string) (catalog.Entry, error)) error {
+// gated provisioner, and map the typed error to an HTTP status.
+func (c *adminController) tenantLifecycle(ctx forge.Context, op func(p tenantAdminOps, id string) (catalog.Entry, error)) error {
 	p, err := c.requireTenantsAdmin(ctx)
 	if err != nil {
 		return err
@@ -266,10 +268,13 @@ func (j *tenantJobs) start(kind, tenantID string, run func() (*tenantJob, error)
 	return job
 }
 
-// provisionBody is the POST {BasePath}/tenants request body.
+// provisionBody is the POST {BasePath}/tenants request body. Database is
+// required in schema isolation (the consolidation database) and ignored in
+// database isolation.
 type provisionBody struct {
 	TenantID  string `json:"tenantId"`
 	ClusterID string `json:"clusterId"`
+	Database  string `json:"database"`
 }
 
 // handleTenantProvision serves POST {BasePath}/tenants — starts an async
@@ -277,8 +282,7 @@ type provisionBody struct {
 // pollable jobId. The provisioning itself runs detached from the request
 // (context.Background()) so it survives the response being written.
 func (c *adminController) handleTenantProvision(ctx forge.Context) error {
-	p, err := c.requireTenantsAdmin(ctx)
-	if err != nil {
+	if err := c.ensureTenantsAdmin(); err != nil {
 		return err
 	}
 	var body provisionBody
@@ -288,8 +292,33 @@ func (c *adminController) handleTenantProvision(ctx forge.Context) error {
 	if !tenant.Valid(body.TenantID) {
 		return ctx.JSON(http.StatusBadRequest, map[string]string{"error": "invalid tenant id"})
 	}
+
+	// Schema isolation needs an explicit consolidation database and provisions
+	// a schema; database isolation provisions a dedicated database.
+	var provisionFn func() (catalog.Entry, error)
+	if c.ext.parent.SchemaMode() {
+		sp := c.ext.parent.SchemaProvisioner()
+		if sp == nil {
+			return ctx.JSON(http.StatusBadRequest, map[string]string{"error": "tenant management requires catalog mode (db-per-tenant)"})
+		}
+		if body.Database == "" {
+			return ctx.JSON(http.StatusBadRequest, map[string]string{"error": "database is required in schema isolation (the consolidation database)"})
+		}
+		provisionFn = func() (catalog.Entry, error) {
+			return sp.Provision(context.Background(), body.TenantID, body.ClusterID, body.Database)
+		}
+	} else {
+		p := c.ext.parent.Provisioner()
+		if p == nil {
+			return ctx.JSON(http.StatusBadRequest, map[string]string{"error": "tenant management requires catalog mode (db-per-tenant)"})
+		}
+		provisionFn = func() (catalog.Entry, error) {
+			return p.Provision(context.Background(), body.TenantID, body.ClusterID)
+		}
+	}
+
 	job := c.tenantJobs.start("provision", body.TenantID, func() (*tenantJob, error) {
-		e, perr := p.Provision(context.Background(), body.TenantID, body.ClusterID)
+		e, perr := provisionFn()
 		if perr != nil {
 			return nil, perr
 		}
