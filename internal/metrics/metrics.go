@@ -50,6 +50,8 @@ type Metrics struct {
 	SweepErrorsTotal    prometheus.Counter
 	PoolShardsOpen      prometheus.Gauge
 	PoolShardsHeld      prometheus.Gauge
+	PoolCap             prometheus.Gauge
+	PoolScaleEvents     *prometheus.CounterVec
 
 	// Distillation worker (proj:distill) instruments.
 	DistillNodesTotal          prometheus.Counter
@@ -154,6 +156,14 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fabriq_pool_shards_held",
 			Help: "Open tenant database pools with in-flight acquisitions.",
 		}),
+		PoolCap: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "fabriq_pool_cap",
+			Help: "Current effective MaxActive shard-pool cap (catalog mode).",
+		}),
+		PoolScaleEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fabriq_pool_scale_events_total",
+			Help: "Adaptive pool cap scaling decisions by direction.",
+		}, []string{"direction"}),
 		DistillNodesTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "fabriq_distill_nodes_total", Help: "Digest nodes (re)built by the distill worker."}),
 		DistillSummariesTotal: prometheus.NewCounter(prometheus.CounterOpts{
@@ -178,7 +188,7 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 		m.AnalyticsAppliedTotal, m.AnalyticsFailuresTotal,
 		m.SweepPassDuration, m.SweepTenantsTracked, m.SweepEligible,
 		m.SweepSweptTotal, m.SweepBusyTotal, m.SweepErrorsTotal,
-		m.PoolShardsOpen, m.PoolShardsHeld,
+		m.PoolShardsOpen, m.PoolShardsHeld, m.PoolCap, m.PoolScaleEvents,
 		m.DistillNodesTotal, m.DistillSummariesTotal, m.DistillShortCircuitTotal, m.DistillGuardBlockedTotal, m.DistillFailuresTotal,
 		m.DistillSplitsTotal, m.DistillDedupTotal, m.DistillIntermediateGCTotal,
 	} {

@@ -27,6 +27,7 @@ import (
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/subscribe"
 	"github.com/xraph/fabriq/core/sweep"
+	"github.com/xraph/fabriq/internal/metrics"
 )
 
 // Open dials the configured stores and assembles a Fabriq:
@@ -339,6 +340,10 @@ type Stores struct {
 	Catalog *postgres.CatalogStore
 	// pool owns catalog-mode tenant pools (nil outside catalog mode).
 	pool *shard.PoolManager
+	// metricsMu guards metrics, which is attached late (post-Open, once the
+	// worker plane builds the registry). See AttachMetrics.
+	metricsMu sync.Mutex
+	metrics   *metrics.Metrics
 	// router is the catalog-mode DynamicSet the sweeper acquires tenant
 	// shards through (nil outside catalog mode).
 	router shard.Router
@@ -407,6 +412,37 @@ func (s *Stores) PoolStats() (open, held int, ok bool) {
 	}
 	open, held = s.pool.Stats()
 	return open, held, true
+}
+
+// AttachMetrics wires the metrics registry after the worker plane builds it
+// (post-Open, from another package — e.g. forgeext). Scale events before
+// this are not recorded (startup only).
+func (s *Stores) AttachMetrics(m *metrics.Metrics) {
+	s.metricsMu.Lock()
+	s.metrics = m
+	s.metricsMu.Unlock()
+}
+
+// recordScale is the pool autoscaler's OnScale hook: reflect the new cap and
+// count the decision. Best-effort; never blocks the controller.
+func (s *Stores) recordScale(ev shard.ScaleEvent) {
+	s.metricsMu.Lock()
+	m := s.metrics
+	s.metricsMu.Unlock()
+	if m == nil {
+		return
+	}
+	m.PoolCap.Set(float64(ev.NewCap))
+	m.PoolScaleEvents.WithLabelValues(ev.Direction.String()).Inc()
+}
+
+// PoolCap reports the pool's current effective cap. ok is false outside
+// catalog mode.
+func (s *Stores) PoolCap() (int, bool) {
+	if s.pool == nil {
+		return 0, false
+	}
+	return s.pool.Cap(), true
 }
 
 // Close releases every opened adapter (every shard, plus the projections).

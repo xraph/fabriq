@@ -3,6 +3,7 @@ package shard
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xraph/fabriq/core/fabriqerr"
@@ -56,6 +57,32 @@ type PoolManagerConfig struct {
 	DialBackoff time.Duration
 	// now is injectable for tests.
 	now func() time.Time
+
+	// Adaptive, when non-nil, enables autoscaling of MaxActive. The static
+	// MaxActive is the default (nil).
+	Adaptive *AutoscaleConfig
+	// OnScale is called after each cap change (best-effort; must not block).
+	OnScale func(ScaleEvent)
+	// sampleHeap / newTicker are test seams (nil = production defaults).
+	sampleHeap func() uint64
+	newTicker  func(time.Duration) (<-chan time.Time, func())
+}
+
+// poolCounters are lock-free window counters the autoscaler samples. They
+// are monotonic totals; snapshotCounters swaps them to zero per tick.
+type poolCounters struct {
+	acquires  atomic.Int64
+	misses    atomic.Int64
+	evictions atomic.Int64
+	waits     atomic.Int64
+	timeouts  atomic.Int64
+}
+
+// poolSignals is one window snapshot fed to the autoscaler (Task 2).
+type poolSignals struct {
+	acquires, misses, evictions, waits, timeouts int64
+	open, held, cap                              int
+	heapInUse                                    uint64
 }
 
 // PoolManager implements Provider: lazy dial on first touch (singleflight),
@@ -68,6 +95,16 @@ type PoolManager struct {
 	mu      sync.Mutex
 	entries map[string]*poolEntry
 	freed   chan struct{} // signaled on release/eviction capacity
+
+	cap atomic.Int64 // effective MaxActive (static const, or adaptive)
+	ctr poolCounters
+
+	auto       *autoscaler
+	onScale    func(ScaleEvent)
+	sampleHeap func() uint64
+	newTicker  func(time.Duration) (<-chan time.Time, func())
+	done       chan struct{}
+	closeOnce  sync.Once
 }
 
 type poolEntry struct {
@@ -100,17 +137,36 @@ func NewPoolManager(dial Dialer, cfg PoolManagerConfig) *PoolManager {
 	if cfg.now == nil {
 		cfg.now = time.Now
 	}
-	return &PoolManager{
+	p := &PoolManager{
 		dial:    dial,
 		cfg:     cfg,
 		entries: map[string]*poolEntry{},
 		freed:   make(chan struct{}, 1),
+		onScale: cfg.OnScale,
+		done:    make(chan struct{}),
 	}
+	if cfg.Adaptive != nil {
+		p.auto = newAutoscaler(*cfg.Adaptive)
+		p.cap.Store(int64(p.auto.cfg.Min)) // start at the floor, grow into the working set
+		p.sampleHeap = cfg.sampleHeap
+		if p.sampleHeap == nil {
+			p.sampleHeap = heapInUse
+		}
+		p.newTicker = cfg.newTicker
+		if p.newTicker == nil {
+			p.newTicker = defaultTicker
+		}
+		go p.runController()
+	} else {
+		p.cap.Store(int64(cfg.MaxActive))
+	}
+	return p
 }
 
 // Acquire implements Provider.
 func (p *PoolManager) Acquire(ctx context.Context, shardID string) (Shard, func(), error) {
 	deadline := p.cfg.now().Add(p.cfg.AcquireTimeout)
+	waited := false
 	for {
 		sh, release, retry, err := p.tryAcquire(ctx, shardID)
 		if err == nil && !retry {
@@ -119,11 +175,15 @@ func (p *PoolManager) Acquire(ctx context.Context, shardID string) (Shard, func(
 		if err != nil {
 			return Shard{}, nil, err
 		}
-		// At capacity with nothing evictable: wait for a release.
 		if p.cfg.now().After(deadline) {
+			p.ctr.timeouts.Add(1)
 			return Shard{}, nil, fabriqerr.New(fabriqerr.CodeUnavailable,
 				"shard pool is at capacity.",
 				fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{"shard": shardID}}))
+		}
+		if !waited {
+			p.ctr.waits.Add(1)
+			waited = true
 		}
 		select {
 		case <-ctx.Done():
@@ -142,6 +202,7 @@ func (p *PoolManager) tryAcquire(ctx context.Context, shardID string) (sh Shard,
 	if ok && e.ready {
 		e.refs++
 		e.lastUsed = p.cfg.now()
+		p.ctr.acquires.Add(1)
 		p.mu.Unlock()
 		return e.shard, p.releaseFunc(shardID), false, nil
 	}
@@ -163,10 +224,16 @@ func (p *PoolManager) tryAcquire(ctx context.Context, shardID string) (sh Shard,
 			fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{"shard": shardID}}))
 	}
 
-	// Need to dial: ensure capacity first.
-	if p.liveCountLocked() >= p.cfg.MaxActive && !p.evictIdleLocked() {
-		p.mu.Unlock()
-		return Shard{}, nil, true, nil
+	// Need to dial: ensure capacity first. Evict idle shards until we are
+	// below the cap — a LOOP, not a single evict, so a shrunk cap actually
+	// sheds connections instead of staying pinned at the old high-water mark
+	// (each dial would otherwise evict one and add one, net zero). In steady
+	// state live <= cap, so this evicts exactly once, unchanged from before.
+	for p.liveCountLocked() >= int(p.cap.Load()) {
+		if !p.evictIdleLocked() {
+			p.mu.Unlock()
+			return Shard{}, nil, true, nil
+		}
 	}
 	if e == nil {
 		e = &poolEntry{}
@@ -195,6 +262,8 @@ func (p *PoolManager) tryAcquire(ctx context.Context, shardID string) (sh Shard,
 	e.failCount, e.failUntil = 0, time.Time{}
 	e.refs = 1
 	e.lastUsed = p.cfg.now()
+	p.ctr.acquires.Add(1)
+	p.ctr.misses.Add(1)
 	p.mu.Unlock()
 	return sh, p.releaseFunc(shardID), false, nil
 }
@@ -265,6 +334,7 @@ func (p *PoolManager) evictIdleLocked() bool {
 	if closeFn != nil {
 		_ = closeFn()
 	}
+	p.ctr.evictions.Add(1)
 	return true
 }
 
@@ -281,6 +351,71 @@ func (p *PoolManager) Stats() (open, held int) {
 		}
 	}
 	return open, held
+}
+
+// Cap reports the current effective MaxActive (static or adaptive).
+func (p *PoolManager) Cap() int { return int(p.cap.Load()) }
+
+// snapshotCounters reads and RESETS the window counters and pairs them with
+// a live open/held/cap read. Called once per controller tick.
+func (p *PoolManager) snapshotCounters() poolSignals {
+	s := poolSignals{
+		acquires:  p.ctr.acquires.Swap(0),
+		misses:    p.ctr.misses.Swap(0),
+		evictions: p.ctr.evictions.Swap(0),
+		waits:     p.ctr.waits.Swap(0),
+		timeouts:  p.ctr.timeouts.Swap(0),
+	}
+	p.mu.Lock()
+	for _, e := range p.entries {
+		if e.ready {
+			s.open++
+			if e.refs > 0 {
+				s.held++
+			}
+		}
+	}
+	s.cap = int(p.cap.Load())
+	p.mu.Unlock()
+	return s
+}
+
+func (p *PoolManager) runController() {
+	tick, stop := p.newTicker(p.auto.cfg.Interval)
+	defer stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-tick:
+			p.reconsider()
+		}
+	}
+}
+
+// reconsider samples one window and applies the autoscaler's decision. A
+// panic in the decision core is recovered so the controller keeps ticking
+// (the cap simply holds at its last value).
+func (p *PoolManager) reconsider() {
+	defer func() { _ = recover() }()
+	sig := p.snapshotCounters()
+	sig.heapInUse = p.sampleHeap()
+	newCap, dir, reason := p.auto.decide(sig)
+	if dir == scaleHold {
+		return
+	}
+	old := int(p.cap.Load())
+	p.cap.Store(int64(newCap))
+	if dir == scaleGrow {
+		// Nudge any Acquire parked at the old cap to re-check the gate.
+		select {
+		case p.freed <- struct{}{}:
+		default:
+		}
+	}
+	if p.onScale != nil {
+		p.onScale(ScaleEvent{OldCap: old, NewCap: newCap, Direction: dir, Reason: reason, Signals: sig})
+	}
 }
 
 // DynamicSet is the catalog-mode Router: the directory resolves the ctx
@@ -323,6 +458,7 @@ var (
 // CloseAll tears down every open shard (process shutdown). Held shards are
 // closed too — pgx pool Close blocks until in-flight connections return.
 func (p *PoolManager) CloseAll() error {
+	p.closeOnce.Do(func() { close(p.done) })
 	p.mu.Lock()
 	entries := p.entries
 	p.entries = map[string]*poolEntry{}

@@ -46,6 +46,7 @@ func (e *Extension) runCatalogSweeper() error {
 	if app != nil {
 		if wired, err := wireObservability(app, stores); err == nil {
 			m = wired
+			stores.AttachMetrics(m)
 			e.mu.Lock()
 			e.metrics = m
 			e.mu.Unlock()
@@ -67,6 +68,9 @@ func (e *Extension) runCatalogSweeper() error {
 			if open, held, ok := stores.PoolStats(); ok {
 				m.PoolShardsOpen.Set(float64(open))
 				m.PoolShardsHeld.Set(float64(held))
+			}
+			if capv, ok := stores.PoolCap(); ok {
+				m.PoolCap.Set(float64(capv))
 			}
 		},
 		OnError: func(tenantID string, err error) {

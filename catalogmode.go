@@ -138,9 +138,12 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		}, a.Close, nil
 	}
 
-	pm := shard.NewPoolManager(dialer, shard.PoolManagerConfig{
-		MaxActive: cfg.Catalog.MaxActiveShards,
-	})
+	pmc := shard.PoolManagerConfig{MaxActive: cfg.Catalog.MaxActiveShards}
+	if ac := adaptiveConfig(cfg.Catalog, cfg.Catalog.MaxActiveShards); ac != nil {
+		pmc.Adaptive = ac
+		pmc.OnScale = stores.recordScale
+	}
+	pm := shard.NewPoolManager(dialer, pmc)
 	dset := shard.NewDynamicSet(dir, pm)
 	stores.pool = pm
 	stores.router = dset
@@ -238,6 +241,37 @@ func (s *nudgingStore) InTenantTx(ctx context.Context, fn func(ctx context.Conte
 		}
 	}
 	return err
+}
+
+// adaptiveConfig maps the user's AdaptivePoolConfig to the shard autoscaler
+// config, applying floor/ceiling defaults. Returns nil when disabled.
+func adaptiveConfig(cc CatalogConfig, staticMax int) *shard.AutoscaleConfig {
+	if !cc.Adaptive.Enabled {
+		return nil
+	}
+	min := cc.Adaptive.Min
+	if min <= 0 {
+		min = 8
+	}
+	max := cc.Adaptive.Max
+	if max <= 0 {
+		if staticMax > 0 {
+			max = staticMax
+		} else {
+			max = 128
+		}
+	}
+	if max < min {
+		max = min
+	}
+	return &shard.AutoscaleConfig{
+		Min:           min,
+		Max:           max,
+		Interval:      cc.Adaptive.Interval,
+		ConnBudget:    cc.Adaptive.ConnBudget,
+		PerShardConns: cc.Adaptive.PerShardConns,
+		HeapSoftLimit: cc.Adaptive.HeapSoftLimit,
+	}
 }
 
 // validateCatalogMode rejects configuration the v1 serving path cannot
