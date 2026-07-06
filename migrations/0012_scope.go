@@ -29,8 +29,17 @@ func ScopeAwareTenantPolicy(table string) []string {
 
 // tableExists reports whether the named table exists in the public schema.
 func tableExists(ctx context.Context, exec migrate.Executor, name string) (bool, error) {
+	// Resolve through the connection's search_path so this is correct in every
+	// deployment: it finds public.<name> in single/database mode and
+	// <tenant_schema>.<name> in schema-per-tenant consolidation mode (where
+	// migrations run under SET search_path = tenant_x, shared). A prior
+	// hard-coded table_schema='public' silently skipped schema-mode ALTERs
+	// (e.g. the CRDT scope_id columns in migration 0013).
 	rows, err := exec.Query(ctx,
-		`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1`,
+		`SELECT count(*) FROM pg_class c
+		 JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE c.relname = $1 AND c.relkind IN ('r','p')
+		   AND n.nspname = ANY (current_schemas(false))`,
 		name,
 	)
 	if err != nil {

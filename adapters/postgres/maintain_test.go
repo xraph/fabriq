@@ -57,3 +57,14 @@ func TestMaintenance_LockKeys_SchemaScopedWhenPresent(t *testing.T) {
 		t.Fatalf("schema mode should use schema-scoped keys, got %d/%d", r, d)
 	}
 }
+
+func TestCrdtDocsRef_SchemaQualifiedWhenPresent(t *testing.T) {
+	d := &DocStore{}
+	if got := d.crdtDocsRef(context.Background()); got != "fabriq_crdt_docs" {
+		t.Fatalf("database mode ref = %q, want bare", got)
+	}
+	ctx := pathctx.MustWithSearchPath(context.Background(), "tenant_acme")
+	if got := d.crdtDocsRef(ctx); got != "tenant_acme.fabriq_crdt_docs" {
+		t.Fatalf("schema mode ref = %q, want tenant_acme.fabriq_crdt_docs", got)
+	}
+}
