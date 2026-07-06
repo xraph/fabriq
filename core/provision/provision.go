@@ -158,16 +158,27 @@ func (p *Provisioner) setState(ctx context.Context, tenantID string, s catalog.S
 }
 
 func (p *Provisioner) transition(ctx context.Context, e catalog.Entry, s catalog.State) (catalog.Entry, error) {
-	e.State = s
-	return p.cat.Put(ctx, e)
+	return transitionEntry(ctx, p.cat, e, s)
 }
 
 // fail best-effort marks the entry failed (listable by operators) and
 // returns the step error. The CAS may lose to a concurrent provisioner;
 // that is fine — someone is making progress.
 func (p *Provisioner) fail(ctx context.Context, e catalog.Entry, step string, cause error) error {
+	return failEntry(ctx, p.cat, e, step, cause)
+}
+
+// transitionEntry advances an entry to state s (CAS on UpdatedAt). Shared by
+// both provisioners.
+func transitionEntry(ctx context.Context, cat catalog.Catalog, e catalog.Entry, s catalog.State) (catalog.Entry, error) {
+	e.State = s
+	return cat.Put(ctx, e)
+}
+
+// failEntry best-effort marks the entry failed and returns the step error.
+func failEntry(ctx context.Context, cat catalog.Catalog, e catalog.Entry, step string, cause error) error {
 	e.State = catalog.StateFailed
-	_, _ = p.cat.Put(ctx, e)
+	_, _ = cat.Put(ctx, e)
 	return fabriqerr.New(fabriqerr.CodeUnavailable,
 		"tenant provisioning failed.",
 		fabriqerr.WithEntity("tenant", e.TenantID),
@@ -207,6 +218,17 @@ type Report struct {
 // Batch at a time, stopping once MaxFailures tenants have failed. Each
 // success records the tenant's new version in the catalog.
 func (p *Provisioner) MigrateAll(ctx context.Context, opts MigrateAllOpts) (Report, error) {
+	return fleetMigrate(ctx, p.cat, opts, func(e catalog.Entry) (string, error) {
+		return p.ops.Migrate(ctx, e.ClusterID, e.Database)
+	})
+}
+
+// fleetMigrate is the shared fleet roller for both isolation modes: list the
+// catalog, migrate every active tenant Batch at a time via per, stop at the
+// failure budget, and record each new version. per performs the physical
+// migration (database mode: Migrate; schema mode: MigrateSchema) and returns
+// the resulting head version.
+func fleetMigrate(ctx context.Context, cat catalog.Catalog, opts MigrateAllOpts, per func(catalog.Entry) (string, error)) (Report, error) {
 	if opts.Batch <= 0 {
 		opts.Batch = 8
 	}
@@ -217,7 +239,7 @@ func (p *Provisioner) MigrateAll(ctx context.Context, opts MigrateAllOpts) (Repo
 	var entries []catalog.Entry
 	cursor := catalog.Cursor("")
 	for {
-		page, next, err := p.cat.List(ctx, cursor, 500)
+		page, next, err := cat.List(ctx, cursor, 500)
 		if err != nil {
 			return Report{}, err
 		}
@@ -260,7 +282,7 @@ func (p *Provisioner) MigrateAll(ctx context.Context, opts MigrateAllOpts) (Repo
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			version, err := p.ops.Migrate(ctx, e.ClusterID, e.Database)
+			version, err := per(e)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -274,7 +296,7 @@ func (p *Provisioner) MigrateAll(ctx context.Context, opts MigrateAllOpts) (Repo
 			// Record the observed version (best-effort CAS; a concurrent
 			// writer just means fresher state already landed).
 			e.Version = version
-			if updated, putErr := p.cat.Put(ctx, e); putErr == nil {
+			if updated, putErr := cat.Put(ctx, e); putErr == nil {
 				_ = updated
 			}
 		}(e)
