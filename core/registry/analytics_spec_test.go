@@ -3,8 +3,8 @@ package registry_test
 import (
 	"testing"
 
-	"github.com/xraph/grove"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/grove"
 )
 
 type analyticsModel struct {

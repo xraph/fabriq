@@ -26,7 +26,7 @@ func NewFakeAnalyticsSink() *FakeAnalyticsSink {
 	}
 }
 
-func factKey(tenant, agg, id string) string  { return tenant + "|" + agg + "|" + id }
+func factKey(tenant, agg, id string) string { return tenant + "|" + agg + "|" + id }
 func eventKey(tenant, agg, id string, v int64) string {
 	return tenant + "|" + agg + "|" + id + "|" + itoa(v)
 }

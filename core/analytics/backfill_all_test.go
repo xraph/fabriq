@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/analytics"
-	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/fabriqtest"
 )
 
