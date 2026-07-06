@@ -155,3 +155,61 @@ func TestChaosHA_ProvisioningFailsCleanlyAndRecoversOnFailover(t *testing.T) {
 		t.Fatalf("globex state = %q, want active after successful provision", e.State)
 	}
 }
+
+// TestChaosHA_ReconcilerReElectsAfterFailover proves that the catalog-mode
+// drift reconciler's advisory-lock election (held on the control DB)
+// re-establishes on the promoted node after a primary failover: the
+// elector's watchdog abdicates when its session dies, Run re-campaigns, and
+// re-acquires the lock on the new primary reached through the repointed
+// write endpoint.
+func TestChaosHA_ReconcilerReElectsAfterFailover(t *testing.T) {
+	ctx := context.Background()
+	catPrimaryDSN, catStandbyDSN, proxy := fabriqtest.StartPrimaryStandby(t)
+
+	cat, err := postgres.OpenCatalog(ctx, proxy.DSN(catPrimaryDSN))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cat.Close() }) // registered first → runs LAST
+
+	led := make(chan int, 8)
+	elector := cat.Elector(postgres.LockKeyReconciler,
+		postgres.WithElectorRetry(500*time.Millisecond),
+		postgres.WithElectorHeartbeat(500*time.Millisecond))
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = elector.Run(runCtx, func(leadCtx context.Context) error {
+			led <- 1
+			<-leadCtx.Done()
+			return leadCtx.Err()
+		})
+	}()
+	// Registered AFTER cat.Close's cleanup → runs FIRST (LIFO): stop Run and
+	// wait for it to fully release its dedicated conn before cat.Close, so
+	// shutdown never races the lock-holding session.
+	t.Cleanup(func() { cancel(); <-done })
+
+	// It leads on the primary.
+	select {
+	case <-led:
+	case <-time.After(15 * time.Second):
+		t.Fatal("never acquired leadership on the primary")
+	}
+
+	// FAILOVER: kill the primary (proxy dark), promote the standby, repoint the
+	// write endpoint at it.
+	proxy.Repoint("127.0.0.1:1")
+	fabriqtest.Promote(t, catStandbyDSN)
+	proxy.Repoint(fabriqtest.UpstreamHostPort(catStandbyDSN))
+
+	// The watchdog abdicated on the dead session; Run re-campaigns and
+	// re-acquires the advisory lock on the promoted node.
+	select {
+	case <-led:
+	case <-time.After(30 * time.Second):
+		t.Fatal("reconciler did not re-elect on the promoted primary")
+	}
+}
