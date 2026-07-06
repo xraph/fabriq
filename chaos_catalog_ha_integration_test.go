@@ -16,7 +16,9 @@ import (
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/adapters/postgres"
+	"github.com/xraph/fabriq/core/catalog"
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/provision"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/fabriqtest"
@@ -94,5 +96,62 @@ func TestChaosHA_RoutingContinuesViaReplica(t *testing.T) {
 	// acme's cached route also keeps serving.
 	if _, err := f.Exec(acmeCtx, widget); err != nil {
 		t.Fatalf("cached route must keep serving during the outage: %v", err)
+	}
+}
+
+// TestChaosHA_ProvisioningFailsCleanlyAndRecoversOnFailover proves that
+// catalog-mode provisioning fails cleanly (a transport error, never nil and
+// never a misleading NotFound) during a catalog-primary outage, and recovers
+// once the standby is promoted and the write endpoint (proxy) is repointed
+// at it.
+func TestChaosHA_ProvisioningFailsCleanlyAndRecoversOnFailover(t *testing.T) {
+	ctx := context.Background()
+	catPrimaryDSN, catStandbyDSN, proxy := fabriqtest.StartPrimaryStandby(t)
+	tenantClusterDSN := fabriqtest.StartPostgres(t)
+
+	cat, err := postgres.OpenCatalog(ctx, proxy.DSN(catPrimaryDSN))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	ops := postgres.NewClusterOps(map[string]string{"c1": tenantClusterDSN})
+	p := provision.New(cat, ops)
+
+	// A tenant provisions cleanly while the primary is healthy.
+	if _, err := p.Provision(ctx, "acme", "c1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Kill the catalog primary: provisioning a NEW tenant must fail cleanly
+	// (a transport error), never nil and never a misleading NotFound.
+	proxy.Repoint("127.0.0.1:1")
+	if _, perr := p.Provision(ctx, "globex", "c1"); perr == nil || fabriqerr.CodeOf(perr) == fabriqerr.CodeNotFound {
+		t.Fatalf("provisioning during a catalog-primary outage must fail cleanly, got %v", perr)
+	}
+
+	// FAILOVER: promote the standby (it holds acme's replicated catalog row +
+	// the catalog table) and repoint the write endpoint at it.
+	fabriqtest.Promote(t, catStandbyDSN)
+	proxy.Repoint(fabriqtest.UpstreamHostPort(catStandbyDSN))
+
+	// Provisioning recovers: the same handle reconnects through the proxy to
+	// the promoted node; globex provisions to completion.
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		if _, err := p.Provision(ctx, "globex", "c1"); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("provisioning never recovered after failover: %v", err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// The recovered catalog row is real and readable on the promoted node.
+	e, err := cat.Get(ctx, "globex")
+	if err != nil {
+		t.Fatalf("globex catalog entry unreadable after recovery: %v", err)
+	}
+	if e.State != catalog.StateActive {
+		t.Fatalf("globex state = %q, want active after successful provision", e.State)
 	}
 }
