@@ -186,6 +186,12 @@ type EntitySpec struct {
 	// L0 digest summary; declared Scopes form L1 backbone nodes. Nil = not
 	// distilled. The distillation layer supplies the Summarizer/Guard.
 	Distill *DistillSpec
+
+	// Analytics opts the entity into the cross-tenant analytics sink. Nil
+	// (the zero value) means the entity is NEVER co-located in the shared
+	// analytics store — deny-by-default. When set, only the declared fields
+	// (or the whole payload if IncludeAll) cross the trust boundary.
+	Analytics *AnalyticsSpec
 }
 
 // LiveSpec opts an entity into the live query engine (nil = disabled).
@@ -226,4 +232,18 @@ type DistillSpec struct {
 	Text         func(vals map[string]any) string
 	Scopes       []string
 	Budget       int
+}
+
+// AnalyticsSpec opts an aggregate into the cross-tenant analytics sink and
+// declares exactly what data may cross the co-location trust boundary.
+// Deny-by-default: an unmarked entity ships nothing. Field minimization:
+// Include is an allow-list of payload keys; everything else is stripped
+// before the record leaves the projection.
+type AnalyticsSpec struct {
+	// Include is the allow-list of payload field names co-located in the
+	// analytics store. Ignored when IncludeAll is true.
+	Include []string
+	// IncludeAll ships the whole (unredacted) payload. Use with care — it
+	// widens the trust boundary to every column.
+	IncludeAll bool
 }
