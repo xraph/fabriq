@@ -8,6 +8,7 @@
 //	fabriq inspect registry|state — dump entity specs / projection state
 //	fabriq rebuild                — blue-green projection rebuild
 //	fabriq reconcile              — drift reconciliation
+//	fabriq analytics backfill     — replay tenant snapshots into the analytics sink
 //	fabriq info|health|extensions — Forge built-ins
 //
 // The worker (serve) is a Forge RunnableExtension: leader-elected outbox
@@ -54,7 +55,7 @@ func main() {
 		// app.Start() every store first — disable it and ship ours.
 		cli.WithDisableMigrationCommands(),
 		cli.WithExtraCommands(
-			migrateCommand(), inspectCommand(), rebuildCommand(), reconcileCommand(), tenantCommand(),
+			migrateCommand(), inspectCommand(), rebuildCommand(), reconcileCommand(), tenantCommand(), analyticsCommand(),
 		),
 	)
 }

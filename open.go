@@ -531,6 +531,20 @@ func (s *Stores) AnalyticsConsumer(reg *registry.Registry, upcasters *event.Upca
 	}, nil
 }
 
+// AnalyticsBackfiller assembles a backfiller that replays each tenant's
+// current-state snapshot (routed per tenant, all tenancy modes) through the
+// analytics applier into the sink. Requires a configured analytics sink.
+func (s *Stores) AnalyticsBackfiller(reg *registry.Registry) (*analytics.Backfiller, error) {
+	if s.Analytics == nil {
+		return nil, fmt.Errorf("fabriq: analytics backfiller needs an analytics sink configured")
+	}
+	return &analytics.Backfiller{
+		Snapshot: routingSnapshot{stores: s}.SnapshotEntities,
+		Applier:  analytics.NewApplier(reg),
+		Sink:     s.Analytics,
+	}, nil
+}
+
 // GraphRebuilder assembles the blue-green rebuilder for the graph
 // projection (used by `fabriq rebuild` and tests).
 func (s *Stores) GraphRebuilder(reg *registry.Registry) (*projection.Rebuilder, error) {
