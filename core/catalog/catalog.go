@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/fabriqerr"
+	"github.com/xraph/fabriq/core/pathctx"
 )
 
 // State is a tenant's lifecycle state in the catalog.
@@ -59,6 +60,11 @@ type Entry struct {
 	// observed at (grove migration versions, e.g. "202607030030"). The
 	// router fails closed when it is below the binary's floor.
 	Version string `json:"version"`
+	// Schema is the tenant's Postgres schema in schema-per-tenant
+	// consolidation mode (e.g. "tenant_acme"); empty in database mode. When
+	// set it selects the tenant's namespace via search_path within the
+	// shared consolidation database named by Database.
+	Schema string `json:"schema"`
 	// UpdatedAt is the optimistic-concurrency token: Put succeeds only when
 	// it matches the stored row (zero UpdatedAt = create, must not exist).
 	// The store stamps a fresh UpdatedAt on every successful write.
@@ -99,6 +105,13 @@ func ValidateEntry(e Entry) error {
 		return fabriqerr.New(fabriqerr.CodeInvalidInput,
 			"unknown catalog state.",
 			fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{"state": string(e.State)}}))
+	}
+	// Schema is optional (empty in database mode) but, when present, must be
+	// a safe bare identifier — it is stamped into search_path per tx.
+	if e.Schema != "" && !pathctx.ValidSchema(e.Schema) {
+		return fabriqerr.New(fabriqerr.CodeInvalidInput,
+			"catalog schema is malformed.",
+			fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{"schema": e.Schema}}))
 	}
 	return nil
 }
