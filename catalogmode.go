@@ -104,10 +104,17 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		if derr != nil {
 			return shard.Shard{}, nil, derr
 		}
-		a, oerr := postgres.Open(dctx, dsn, reg,
+		openOpts := []postgres.Option{
 			postgres.WithPoolSize(cfg.Postgres.PoolSize),
 			postgres.WithGuardedTables(cfg.guardedTables()...),
-		)
+		}
+		if cfg.Catalog.SchemaMode() {
+			// Schema isolation: the adapter stamps SET LOCAL search_path from
+			// the tenant schema on ctx, appending this shared schema so
+			// pgvector/postgis types resolve.
+			openOpts = append(openOpts, postgres.WithSharedSchema(cfg.Catalog.sharedSchemaOrDefault()))
+		}
+		a, oerr := postgres.Open(dctx, dsn, reg, openOpts...)
 		if oerr != nil {
 			return shard.Shard{}, nil, oerr
 		}
@@ -146,15 +153,24 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 	pm := shard.NewPoolManager(dialer, pmc)
 	dset := shard.NewDynamicSet(dir, pm)
 	stores.pool = pm
-	stores.router = dset
 
-	docRouter := shard.NewDocuments(dset)
+	// In schema isolation many tenants share one consolidation database
+	// (one shard); the SchemaRouter decorator stamps each tenant's
+	// search_path onto the routing context. Database isolation uses the
+	// DynamicSet directly (one database per tenant).
+	var router shard.Router = dset
+	if cfg.Catalog.SchemaMode() {
+		router = shard.NewSchemaRouter(dset)
+	}
+	stores.router = router
+
+	docRouter := shard.NewDocuments(router)
 	ports := Ports{
-		Store:      shard.NewStore(dset),
-		Relational: shard.NewRelational(dset),
-		Timeseries: shard.NewTimeseries(dset),
-		Vector:     shard.NewVector(dset),
-		Spatial:    shard.NewSpatial(dset),
+		Store:      shard.NewStore(router),
+		Relational: shard.NewRelational(router),
+		Timeseries: shard.NewTimeseries(router),
+		Vector:     shard.NewVector(router),
+		Spatial:    shard.NewSpatial(router),
 		Documents:  docRouter,
 		// Projection bookkeeping routes on its tenant argument to the
 		// tenant's own database (WaitForProjection, engine state).
@@ -164,7 +180,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 	// Live queries route per tenant (Postgres is the exact-top-N oracle in
 	// each tenant DB). The facade only exposes LiveQuery when a tailer is
 	// present, so without Redis this stays a typed not-configured error.
-	ports.Live = shard.NewLive(dset)
+	ports.Live = shard.NewLive(router)
 
 	// Projection sinks are SHARED infrastructure (one graph store / search
 	// cluster, tenant-scoped by naming) — only the bookkeeping is

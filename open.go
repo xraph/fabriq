@@ -392,7 +392,7 @@ func (s *Stores) TenantSweeper() sweep.TenantSweeper {
 		return nil
 	}
 	return func(ctx context.Context, tenantID string, compact bool) (sweep.Result, error) {
-		sh, release, err := s.router.AcquireFor(ctx, tenantID)
+		sh, sctx, release, err := s.router.AcquireFor(ctx, tenantID)
 		if err != nil {
 			return sweep.Result{}, err
 		}
@@ -400,7 +400,9 @@ func (s *Stores) TenantSweeper() sweep.TenantSweeper {
 		if sh.Maintenance == nil {
 			return sweep.Result{}, nil
 		}
-		return sh.Maintenance.Sweep(ctx, compact)
+		// sctx carries the tenant's search_path in schema mode, so the
+		// maintenance pass (relay/materialize/compact) targets its schema.
+		return sh.Maintenance.Sweep(sctx, compact)
 	}
 }
 

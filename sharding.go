@@ -101,9 +101,11 @@ func allTenantsFromCatalog(ctx context.Context, cat catalog.Catalog) ([]string, 
 // withReplay runs fn against the tenant's event-truth surface — the
 // static shardPG adapter, or (catalog mode) the tenant's pooled shard,
 // held for exactly the call so the pool cannot evict it mid-operation.
-func (s *Stores) withReplay(ctx context.Context, tenantID string, fn func(rs shard.ReplaySource) error) error {
+// fn receives the routing context to use with the surface — schema-per-tenant
+// stamps search_path onto it, so raw event SQL targets the tenant's schema.
+func (s *Stores) withReplay(ctx context.Context, tenantID string, fn func(ctx context.Context, rs shard.ReplaySource) error) error {
 	if s.router != nil {
-		sh, release, err := s.router.AcquireFor(ctx, tenantID)
+		sh, sctx, release, err := s.router.AcquireFor(ctx, tenantID)
 		if err != nil {
 			return err
 		}
@@ -111,19 +113,19 @@ func (s *Stores) withReplay(ctx context.Context, tenantID string, fn func(rs sha
 		if sh.Replay == nil {
 			return fmt.Errorf("fabriq: shard %q has no replay surface", sh.ID)
 		}
-		return fn(sh.Replay)
+		return fn(sctx, sh.Replay)
 	}
 	pg, err := s.shardForTenant(ctx, tenantID)
 	if err != nil {
 		return err
 	}
-	return fn(pg) // *postgres.Adapter satisfies shard.ReplaySource
+	return fn(ctx, pg) // *postgres.Adapter satisfies shard.ReplaySource
 }
 
 // truthVersions is the reconciler's TruthVersions, routed to the tenant's
 // shard.
 func (s *Stores) truthVersions(ctx context.Context, tenantID, entity string) (out map[string]int64, err error) {
-	err = s.withReplay(ctx, tenantID, func(rs shard.ReplaySource) error {
+	err = s.withReplay(ctx, tenantID, func(ctx context.Context, rs shard.ReplaySource) error {
 		var ferr error
 		out, ferr = rs.AggregateVersions(ctx, tenantID, entity)
 		return ferr
@@ -135,7 +137,7 @@ func (s *Stores) truthVersions(ctx context.Context, tenantID, entity string) (ou
 // synthetic event lands on that shard's outbox, where its relay republishes
 // it).
 func (s *Stores) repair(ctx context.Context, tenantID string, d projection.Drift) error {
-	return s.withReplay(ctx, tenantID, func(rs shard.ReplaySource) error {
+	return s.withReplay(ctx, tenantID, func(ctx context.Context, rs shard.ReplaySource) error {
 		return rs.Repair(ctx, tenantID, d)
 	})
 }
@@ -155,9 +157,12 @@ var (
 // withState runs fn against the tenant's projection bookkeeping — the
 // static shard map, or (catalog mode) the tenant's pooled shard, held for
 // exactly the duration of the call so the pool cannot evict it mid-query.
-func (r routingState) withState(ctx context.Context, tenantID string, fn func(repo shard.ProjectionStateStore) error) error {
+// fn receives the routing context to use with the surface — schema-per-tenant
+// stamps search_path onto it so projection_state/_applied land in the
+// tenant's schema.
+func (r routingState) withState(ctx context.Context, tenantID string, fn func(ctx context.Context, repo shard.ProjectionStateStore) error) error {
 	if r.stores.router != nil {
-		sh, release, err := r.stores.router.AcquireFor(ctx, tenantID)
+		sh, sctx, release, err := r.stores.router.AcquireFor(ctx, tenantID)
 		if err != nil {
 			return err
 		}
@@ -165,17 +170,17 @@ func (r routingState) withState(ctx context.Context, tenantID string, fn func(re
 		if sh.Projection == nil {
 			return fmt.Errorf("fabriq: shard %q has no projection bookkeeping surface", sh.ID)
 		}
-		return fn(sh.Projection)
+		return fn(sctx, sh.Projection)
 	}
 	pg, err := r.stores.shardForTenant(ctx, tenantID)
 	if err != nil {
 		return err
 	}
-	return fn(pg.ProjectionState())
+	return fn(ctx, pg.ProjectionState())
 }
 
 func (r routingState) AppliedVersion(ctx context.Context, tenantID, proj, aggregate, aggID string) (version int64, err error) {
-	err = r.withState(ctx, tenantID, func(repo shard.ProjectionStateStore) error {
+	err = r.withState(ctx, tenantID, func(ctx context.Context, repo shard.ProjectionStateStore) error {
 		var ferr error
 		version, ferr = repo.AppliedVersion(ctx, tenantID, proj, aggregate, aggID)
 		return ferr
@@ -184,13 +189,13 @@ func (r routingState) AppliedVersion(ctx context.Context, tenantID, proj, aggreg
 }
 
 func (r routingState) SetApplied(ctx context.Context, tenantID, proj, aggregate, aggID string, version int64) error {
-	return r.withState(ctx, tenantID, func(repo shard.ProjectionStateStore) error {
+	return r.withState(ctx, tenantID, func(ctx context.Context, repo shard.ProjectionStateStore) error {
 		return repo.SetApplied(ctx, tenantID, proj, aggregate, aggID, version)
 	})
 }
 
 func (r routingState) Get(ctx context.Context, tenantID, proj string) (st projection.State, err error) {
-	err = r.withState(ctx, tenantID, func(repo shard.ProjectionStateStore) error {
+	err = r.withState(ctx, tenantID, func(ctx context.Context, repo shard.ProjectionStateStore) error {
 		var ferr error
 		st, ferr = repo.Get(ctx, tenantID, proj)
 		return ferr
@@ -199,7 +204,7 @@ func (r routingState) Get(ctx context.Context, tenantID, proj string) (st projec
 }
 
 func (r routingState) Upsert(ctx context.Context, st projection.State) error {
-	return r.withState(ctx, st.TenantID, func(repo shard.ProjectionStateStore) error {
+	return r.withState(ctx, st.TenantID, func(ctx context.Context, repo shard.ProjectionStateStore) error {
 		return repo.Upsert(ctx, st)
 	})
 }
@@ -211,7 +216,7 @@ type routingSnapshot struct{ stores *Stores }
 var _ projection.Snapshotter = routingSnapshot{}
 
 func (r routingSnapshot) SnapshotEntities(ctx context.Context, tenantID string, fn func(env event.Envelope) error) error {
-	return r.stores.withReplay(ctx, tenantID, func(rs shard.ReplaySource) error {
+	return r.stores.withReplay(ctx, tenantID, func(ctx context.Context, rs shard.ReplaySource) error {
 		return rs.SnapshotEntities(ctx, tenantID, fn)
 	})
 }

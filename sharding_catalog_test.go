@@ -44,18 +44,18 @@ type fakeRouter struct {
 	held   int
 }
 
-func (r *fakeRouter) Acquire(context.Context) (shard.Shard, func(), error) {
+func (r *fakeRouter) Acquire(context.Context) (shard.Shard, context.Context, func(), error) {
 	panic("worker routing must use AcquireFor")
 }
 
-func (r *fakeRouter) AcquireFor(_ context.Context, tenantID string) (shard.Shard, func(), error) {
+func (r *fakeRouter) AcquireFor(ctx context.Context, tenantID string) (shard.Shard, context.Context, func(), error) {
 	st, ok := r.stores[tenantID]
 	if !ok {
 		st = &fakeStateStore{shardID: "c1/fabriq_" + tenantID, applied: map[string]int64{}}
 		r.stores[tenantID] = st
 	}
 	r.held++
-	return shard.Shard{ID: st.shardID, Projection: st}, func() { r.held-- }, nil
+	return shard.Shard{ID: st.shardID, Projection: st}, ctx, func() { r.held-- }, nil
 }
 
 func TestRoutingState_RoutesPerTenantThroughRouter(t *testing.T) {
@@ -145,13 +145,13 @@ type fakeReplayRouter struct {
 	held   int
 }
 
-func (r *fakeReplayRouter) Acquire(context.Context) (shard.Shard, func(), error) {
+func (r *fakeReplayRouter) Acquire(context.Context) (shard.Shard, context.Context, func(), error) {
 	panic("worker routing must use AcquireFor")
 }
-func (r *fakeReplayRouter) AcquireFor(_ context.Context, tenantID string) (shard.Shard, func(), error) {
+func (r *fakeReplayRouter) AcquireFor(ctx context.Context, tenantID string) (shard.Shard, context.Context, func(), error) {
 	rs := r.stores[tenantID]
 	r.held++
-	return shard.Shard{ID: rs.shardID, Replay: rs}, func() { r.held-- }, nil
+	return shard.Shard{ID: rs.shardID, Replay: rs}, ctx, func() { r.held-- }, nil
 }
 
 func TestReplaySource_RoutesPerTenant(t *testing.T) {

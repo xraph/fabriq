@@ -1,11 +1,13 @@
 package adminapi
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/fabriq/core/catalog"
 	"github.com/xraph/fabriq/core/provision"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/tenant"
@@ -250,11 +252,37 @@ func (c *adminController) requireSchemaAdmin(ctx forge.Context) error {
 // — harmless for a handler that does nothing else afterward, but fatal for
 // handlers (like the async tenant job starters) that go on to dereference
 // the (nil) *provision.Provisioner.
-func (c *adminController) requireTenantsAdmin(_ forge.Context) (*provision.Provisioner, error) {
+// tenantAdminOps is the mode-agnostic lifecycle surface for the suspend/
+// resume/migrate-all handlers; both provision.Provisioner (database
+// isolation) and provision.SchemaProvisioner (schema isolation) satisfy it.
+// Provision differs by arity (schema mode needs an explicit consolidation
+// database) and is handled directly in handleTenantProvision.
+type tenantAdminOps interface {
+	Suspend(ctx context.Context, tenantID string) (catalog.Entry, error)
+	Resume(ctx context.Context, tenantID string) (catalog.Entry, error)
+	MigrateAll(ctx context.Context, opts provision.MigrateAllOpts) (provision.Report, error)
+}
+
+// ensureTenantsAdmin runs the capability + catalog-mode gate shared by every
+// tenant-admin handler.
+func (c *adminController) ensureTenantsAdmin() error {
 	if !c.ext.cfg.TenantsAdmin {
-		return nil, forge.Forbidden("tenant admin not enabled (host must opt in via WithTenantsAdmin)")
+		return forge.Forbidden("tenant admin not enabled (host must opt in via WithTenantsAdmin)")
 	}
 	if c.ext.parent == nil {
+		return forge.BadRequest("tenant management requires catalog mode (db-per-tenant)")
+	}
+	return nil
+}
+
+func (c *adminController) requireTenantsAdmin(_ forge.Context) (tenantAdminOps, error) {
+	if err := c.ensureTenantsAdmin(); err != nil {
+		return nil, err
+	}
+	if c.ext.parent.SchemaMode() {
+		if sp := c.ext.parent.SchemaProvisioner(); sp != nil {
+			return sp, nil
+		}
 		return nil, forge.BadRequest("tenant management requires catalog mode (db-per-tenant)")
 	}
 	p := c.ext.parent.Provisioner()

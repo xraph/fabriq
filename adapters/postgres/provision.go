@@ -178,3 +178,114 @@ func (c *ClusterOps) Migrate(ctx context.Context, clusterID, database string) (s
 	}
 	return migrations.HeadVersion(), nil
 }
+
+var _ provision.SchemaClusterOps = (*ClusterOps)(nil)
+
+// EnsureBootstrap implements provision.SchemaClusterOps: prepare a
+// consolidation database ONCE with the shared schema and its extensions, so
+// every tenant schema resolves pgvector/postgis types via search_path.
+// Idempotent — a re-run is a cheap marker check plus IF NOT EXISTS DDL.
+func (c *ClusterOps) EnsureBootstrap(ctx context.Context, clusterID, database, sharedSchema string) error {
+	if !dbIdent.MatchString(sharedSchema) {
+		return fabriqerr.New(fabriqerr.CodeInvalidInput, "invalid shared schema name.",
+			fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{"schema": sharedSchema}}))
+	}
+	dsn, err := c.TenantDSN(clusterID, database)
+	if err != nil {
+		return err
+	}
+	db := pgdriver.New()
+	if openErr := db.Open(ctx, dsn); openErr != nil {
+		return fmt.Errorf("fabriq: dial consolidation db %s/%s: %w", clusterID, database, openErr)
+	}
+	defer func() { _ = db.Close() }()
+
+	// sharedSchema passed dbIdent, so it is safe to interpolate into DDL that
+	// cannot be parameterized.
+	stmts := []string{
+		`CREATE SCHEMA IF NOT EXISTS ` + sharedSchema,
+		`CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA ` + sharedSchema,
+		`CREATE EXTENSION IF NOT EXISTS postgis WITH SCHEMA ` + sharedSchema,
+		`CREATE TABLE IF NOT EXISTS ` + sharedSchema + `.fabriq_bootstrap (
+			id int PRIMARY KEY,
+			bootstrapped_at timestamptz NOT NULL DEFAULT now()
+		)`,
+		`INSERT INTO ` + sharedSchema + `.fabriq_bootstrap (id) VALUES (1) ON CONFLICT DO NOTHING`,
+	}
+	for _, s := range stmts {
+		if _, err := db.Exec(ctx, s); err != nil {
+			return translatePg("provision bootstrap", sharedSchema, "", err)
+		}
+	}
+	return nil
+}
+
+// CreateSchema implements provision.SchemaClusterOps (idempotent).
+func (c *ClusterOps) CreateSchema(ctx context.Context, clusterID, database, schema string) error {
+	if !dbIdent.MatchString(schema) {
+		return fabriqerr.New(fabriqerr.CodeInvalidInput, "invalid schema name.",
+			fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{"schema": schema}}))
+	}
+	dsn, err := c.TenantDSN(clusterID, database)
+	if err != nil {
+		return err
+	}
+	db := pgdriver.New()
+	if openErr := db.Open(ctx, dsn); openErr != nil {
+		return fmt.Errorf("fabriq: dial consolidation db %s/%s: %w", clusterID, database, openErr)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS `+schema); err != nil {
+		return translatePg("provision create schema", schema, "", err)
+	}
+	return nil
+}
+
+// MigrateSchema implements provision.SchemaClusterOps: run fabriq's chain
+// inside a tenant schema. search_path is baked into the connection string so
+// EVERY pooled connection resolves bare names (and grove_migrations) to the
+// tenant schema, with the shared schema appended so the chain's
+// CREATE EXTENSION IF NOT EXISTS steps no-op against the already-installed
+// extensions.
+func (c *ClusterOps) MigrateSchema(ctx context.Context, clusterID, database, schema, sharedSchema string) (string, error) {
+	if !dbIdent.MatchString(schema) || !dbIdent.MatchString(sharedSchema) {
+		return "", fabriqerr.New(fabriqerr.CodeInvalidInput, "invalid schema name.")
+	}
+	dsn, err := c.TenantDSN(clusterID, database)
+	if err != nil {
+		return "", err
+	}
+	dsn, err = dsnWithSearchPath(dsn, schema, sharedSchema)
+	if err != nil {
+		return "", err
+	}
+	db := pgdriver.New()
+	if openErr := db.Open(ctx, dsn); openErr != nil {
+		return "", fmt.Errorf("fabriq: dial consolidation db %s/%s: %w", clusterID, database, openErr)
+	}
+	defer func() { _ = db.Close() }()
+
+	orch, err := migrations.NewOrchestrator(db)
+	if err != nil {
+		return "", err
+	}
+	if _, err := orch.Migrate(ctx); err != nil {
+		return "", fmt.Errorf("fabriq: migrate schema %s/%s/%s: %w", clusterID, database, schema, err)
+	}
+	return migrations.HeadVersion(), nil
+}
+
+// dsnWithSearchPath appends a connection-level search_path (via the libpq
+// "options" runtime parameter) so every connection in the pool defaults to
+// "<schema>, <shared>". This is how migrations — which span many statements
+// and may use multiple connections — land in the tenant schema.
+func dsnWithSearchPath(dsn, schema, shared string) (string, error) {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Scheme == "" {
+		return "", fabriqerr.New(fabriqerr.CodeInvalidInput, "cluster DSN must be a postgres:// URL.")
+	}
+	q := u.Query()
+	q.Set("options", "-c search_path="+schema+","+shared)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}

@@ -74,8 +74,11 @@ func (s *CatalogStore) ensureSchema(ctx context.Context) error {
 			db_name    TEXT NOT NULL,
 			state      TEXT NOT NULL,
 			version    TEXT NOT NULL DEFAULT '',
+			schema     TEXT NOT NULL DEFAULT '',
 			updated_at TIMESTAMPTZ NOT NULL
 		)`,
+		// Idempotent upgrade for control databases created before schema mode.
+		`ALTER TABLE fabriq_tenant_catalog ADD COLUMN IF NOT EXISTS schema TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS fabriq_tenant_catalog_state_idx
 			ON fabriq_tenant_catalog (state)`,
 	}
@@ -90,7 +93,7 @@ func (s *CatalogStore) ensureSchema(ctx context.Context) error {
 // Get implements catalog.Catalog.
 func (s *CatalogStore) Get(ctx context.Context, tenantID string) (catalog.Entry, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT tenant_id, cluster_id, db_name, state, version, updated_at
+		`SELECT tenant_id, cluster_id, db_name, state, version, schema, updated_at
 		 FROM fabriq_tenant_catalog WHERE tenant_id = $1`, tenantID)
 	if err != nil {
 		return catalog.Entry{}, translatePg("catalog get", "tenant_catalog", "", err)
@@ -109,7 +112,7 @@ func (s *CatalogStore) Get(ctx context.Context, tenantID string) (catalog.Entry,
 	}
 	var e catalog.Entry
 	var state string
-	if err := rows.Scan(&e.TenantID, &e.ClusterID, &e.Database, &state, &e.Version, &e.UpdatedAt); err != nil {
+	if err := rows.Scan(&e.TenantID, &e.ClusterID, &e.Database, &state, &e.Version, &e.Schema, &e.UpdatedAt); err != nil {
 		return catalog.Entry{}, translatePg("catalog scan", "tenant_catalog", "", err)
 	}
 	e.State = catalog.State(state)
@@ -129,11 +132,11 @@ func (s *CatalogStore) Put(ctx context.Context, e catalog.Entry) (catalog.Entry,
 
 	if e.UpdatedAt.IsZero() {
 		rows, err := s.db.Query(ctx,
-			`INSERT INTO fabriq_tenant_catalog (tenant_id, cluster_id, db_name, state, version, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, clock_timestamp())
+			`INSERT INTO fabriq_tenant_catalog (tenant_id, cluster_id, db_name, state, version, schema, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp())
 			 ON CONFLICT (tenant_id) DO NOTHING
 			 RETURNING updated_at`,
-			e.TenantID, e.ClusterID, e.Database, string(e.State), e.Version)
+			e.TenantID, e.ClusterID, e.Database, string(e.State), e.Version, e.Schema)
 		if err != nil {
 			return catalog.Entry{}, translatePg("catalog create", "tenant_catalog", "", err)
 		}
@@ -155,10 +158,10 @@ func (s *CatalogStore) Put(ctx context.Context, e catalog.Entry) (catalog.Entry,
 
 	rows, err := s.db.Query(ctx,
 		`UPDATE fabriq_tenant_catalog
-		 SET cluster_id = $2, db_name = $3, state = $4, version = $5, updated_at = clock_timestamp()
-		 WHERE tenant_id = $1 AND updated_at = $6
+		 SET cluster_id = $2, db_name = $3, state = $4, version = $5, schema = $6, updated_at = clock_timestamp()
+		 WHERE tenant_id = $1 AND updated_at = $7
 		 RETURNING updated_at`,
-		e.TenantID, e.ClusterID, e.Database, string(e.State), e.Version, e.UpdatedAt)
+		e.TenantID, e.ClusterID, e.Database, string(e.State), e.Version, e.Schema, e.UpdatedAt)
 	if err != nil {
 		return catalog.Entry{}, translatePg("catalog update", "tenant_catalog", "", err)
 	}
@@ -184,7 +187,7 @@ func (s *CatalogStore) List(ctx context.Context, cursor catalog.Cursor, limit in
 		limit = 100
 	}
 	rows, err := s.db.Query(ctx,
-		`SELECT tenant_id, cluster_id, db_name, state, version, updated_at
+		`SELECT tenant_id, cluster_id, db_name, state, version, schema, updated_at
 		 FROM fabriq_tenant_catalog
 		 WHERE tenant_id > $1
 		 ORDER BY tenant_id
@@ -197,7 +200,7 @@ func (s *CatalogStore) List(ctx context.Context, cursor catalog.Cursor, limit in
 	for rows.Next() {
 		var e catalog.Entry
 		var state string
-		if err := rows.Scan(&e.TenantID, &e.ClusterID, &e.Database, &state, &e.Version, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.TenantID, &e.ClusterID, &e.Database, &state, &e.Version, &e.Schema, &e.UpdatedAt); err != nil {
 			return nil, "", translatePg("catalog list scan", "tenant_catalog", "", err)
 		}
 		e.State = catalog.State(state)

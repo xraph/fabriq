@@ -67,6 +67,33 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
+	t.Run("SchemaRoundTrips", func(t *testing.T) {
+		cat := factory(t)
+		e := entry("acme")
+		e.Schema = "tenant_acme" // consolidation mode carries a schema
+		created, err := cat.Put(ctx, e)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		got, err := cat.Get(ctx, "acme")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got.Schema != "tenant_acme" {
+			t.Fatalf("schema not persisted: got %q", got.Schema)
+		}
+		// And a CAS update preserves it.
+		created.Schema = "tenant_acme"
+		created.State = catalog.StateActive
+		if _, err := cat.Put(ctx, created); err != nil {
+			t.Fatalf("cas update: %v", err)
+		}
+		got, _ = cat.Get(ctx, "acme")
+		if got.Schema != "tenant_acme" {
+			t.Fatalf("schema lost on update: got %q", got.Schema)
+		}
+	})
+
 	t.Run("CreateExistingIsAlreadyExists", func(t *testing.T) {
 		cat := factory(t)
 		if _, err := cat.Put(ctx, entry("acme")); err != nil {

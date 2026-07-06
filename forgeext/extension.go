@@ -67,6 +67,23 @@ func (e *Extension) Provisioner() *provision.Provisioner {
 	return provision.New(stores.Catalog, postgres.NewClusterOps(clusters))
 }
 
+// SchemaMode reports whether catalog mode uses schema-per-tenant isolation.
+func (e *Extension) SchemaMode() bool { return e.cfg.Fabriq.Catalog.SchemaMode() }
+
+// SchemaProvisioner builds a schema-per-tenant provisioner over the
+// already-open catalog store. Nil outside schema-isolation catalog mode — the
+// admin API uses that to pick the provisioning path.
+func (e *Extension) SchemaProvisioner() *provision.SchemaProvisioner {
+	e.mu.Lock()
+	stores := e.stores
+	cat := e.cfg.Fabriq.Catalog
+	e.mu.Unlock()
+	if stores == nil || stores.Catalog == nil || !cat.SchemaMode() {
+		return nil
+	}
+	return provision.NewSchemaProvisioner(stores.Catalog, postgres.NewClusterOps(cat.ClusterDSNs), cat.SharedSchema)
+}
+
 func (e *Extension) Name() string    { return "fabriq" }
 func (e *Extension) Version() string { return Version }
 func (e *Extension) Description() string {

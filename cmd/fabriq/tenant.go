@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -32,6 +33,8 @@ func tenantCommand() cli.Command {
 	})
 	cmd.AddFlag(cli.NewStringFlag("catalog-dsn", "", "control database DSN (or FABRIQ_CATALOG_DSN)", ""))
 	cmd.AddFlag(cli.NewStringFlag("clusters", "", `cluster DSNs "id=dsn,id=dsn" (or FABRIQ_CLUSTER_DSNS)`, ""))
+	cmd.AddFlag(cli.NewStringFlag("isolation", "", `catalog isolation: "database" (default) or "schema" (consolidation)`, "database"))
+	cmd.AddFlag(cli.NewStringFlag("shared-schema", "", "schema mode: shared extensions schema", "fabriq_shared"))
 
 	provisionCmd := cli.NewCommand("provision", "Create (or resume) a tenant's dedicated database", func(ctx cli.CommandContext) error {
 		tenantID, err := tenantArg(ctx)
@@ -42,27 +45,44 @@ func tenantCommand() cli.Command {
 		if clusterID == "" {
 			return fmt.Errorf("--cluster is required")
 		}
-		p, closeFn, err := provisionerFromContext(ctx)
+		cat, closeFn, err := catalogFromContext(ctx)
 		if err != nil {
 			return err
 		}
 		defer closeFn()
-		entry, err := p.Provision(ctx.Context(), tenantID, clusterID)
+		clusters, err := parseClusterDSNs(ctx)
 		if err != nil {
 			return err
 		}
-		ctx.Println(fmt.Sprintf("tenant %s: %s on %s/%s (version %s)",
-			entry.TenantID, entry.State, entry.ClusterID, entry.Database, entry.Version))
+		ops := postgres.NewClusterOps(clusters)
+
+		var entry catalog.Entry
+		if isSchemaMode(ctx) {
+			database := ctx.String("database")
+			if database == "" {
+				return fmt.Errorf("--database is required in schema isolation (the consolidation database)")
+			}
+			sp := provision.NewSchemaProvisioner(cat, ops, ctx.String("shared-schema"))
+			entry, err = sp.Provision(ctx.Context(), tenantID, clusterID, database)
+		} else {
+			entry, err = provision.New(cat, ops).Provision(ctx.Context(), tenantID, clusterID)
+		}
+		if err != nil {
+			return err
+		}
+		ctx.Println(fmt.Sprintf("tenant %s: %s on %s/%s schema=%s (version %s)",
+			entry.TenantID, entry.State, entry.ClusterID, entry.Database, entry.Schema, entry.Version))
 		return nil
 	})
 	provisionCmd.AddFlag(cli.NewStringFlag("cluster", "", "target cluster id", ""))
+	provisionCmd.AddFlag(cli.NewStringFlag("database", "", "schema mode: the consolidation database to place the tenant in", ""))
 
 	suspendCmd := cli.NewCommand("suspend", "Route a tenant off (database untouched)", func(ctx cli.CommandContext) error {
 		tenantID, err := tenantArg(ctx)
 		if err != nil {
 			return err
 		}
-		p, closeFn, err := provisionerFromContext(ctx)
+		p, closeFn, err := tenantOpsFromContext(ctx)
 		if err != nil {
 			return err
 		}
@@ -80,7 +100,7 @@ func tenantCommand() cli.Command {
 		if err != nil {
 			return err
 		}
-		p, closeFn, err := provisionerFromContext(ctx)
+		p, closeFn, err := tenantOpsFromContext(ctx)
 		if err != nil {
 			return err
 		}
@@ -116,7 +136,7 @@ func tenantCommand() cli.Command {
 	})
 
 	migrateAllCmd := cli.NewCommand("migrate-all", "Roll fabriq's migration chain across the fleet", func(ctx cli.CommandContext) error {
-		p, closeFn, err := provisionerFromContext(ctx)
+		p, closeFn, err := tenantOpsFromContext(ctx)
 		if err != nil {
 			return err
 		}
@@ -173,7 +193,26 @@ func catalogFromContext(ctx cli.CommandContext) (catalog.Catalog, func(), error)
 	return store, func() { _ = store.Close() }, nil
 }
 
-func provisionerFromContext(ctx cli.CommandContext) (*provision.Provisioner, func(), error) {
+// isSchemaMode reports whether the operator selected schema isolation.
+func isSchemaMode(ctx cli.CommandContext) bool {
+	iso := ctx.String("isolation")
+	if iso == "" {
+		iso = os.Getenv("FABRIQ_CATALOG_ISOLATION")
+	}
+	return iso == "schema"
+}
+
+// tenantOps is the mode-agnostic surface for suspend/resume/migrate-all; both
+// provision.Provisioner and provision.SchemaProvisioner satisfy it. Provision
+// itself differs by arity (schema mode needs an explicit database) and is
+// handled directly in the provision command.
+type tenantOps interface {
+	Suspend(ctx context.Context, tenantID string) (catalog.Entry, error)
+	Resume(ctx context.Context, tenantID string) (catalog.Entry, error)
+	MigrateAll(ctx context.Context, opts provision.MigrateAllOpts) (provision.Report, error)
+}
+
+func tenantOpsFromContext(ctx cli.CommandContext) (tenantOps, func(), error) {
 	cat, closeFn, err := catalogFromContext(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -183,7 +222,11 @@ func provisionerFromContext(ctx cli.CommandContext) (*provision.Provisioner, fun
 		closeFn()
 		return nil, nil, err
 	}
-	return provision.New(cat, postgres.NewClusterOps(clusters)), closeFn, nil
+	ops := postgres.NewClusterOps(clusters)
+	if isSchemaMode(ctx) {
+		return provision.NewSchemaProvisioner(cat, ops, ctx.String("shared-schema")), closeFn, nil
+	}
+	return provision.New(cat, ops), closeFn, nil
 }
 
 // parseClusterDSNs reads "id=dsn,id=dsn" from --clusters or

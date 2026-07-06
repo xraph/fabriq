@@ -19,6 +19,7 @@ import (
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/pathctx"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 )
@@ -401,7 +402,7 @@ func (d *DocStore) CompactDue(ctx context.Context) (int, error) {
 		Entity   string
 	}
 	var docs []docRow
-	rows, err := d.a.pg.Query(ctx, `SELECT doc_id, tenant_id, entity FROM fabriq_crdt_docs WHERE flagged = FALSE`)
+	rows, err := d.a.pg.Query(ctx, `SELECT doc_id, tenant_id, entity FROM `+d.crdtDocsRef(ctx)+` WHERE flagged = FALSE`)
 	if err != nil {
 		return 0, err
 	}
@@ -765,7 +766,7 @@ func (d *DocStore) MaterializeQuiet(ctx context.Context, validate ValidateFunc) 
 	// COALESCE folds the nullable scope_id to the "" sentinel so the doc's scope
 	// can be carried onto the materialized row (materializeOne stamps the column).
 	rows, err := d.a.pg.Query(ctx, `SELECT doc_id, tenant_id, entity, COALESCE(scope_id, ''), last_seq_materialized
-		FROM fabriq_crdt_docs
+		FROM `+d.crdtDocsRef(ctx)+`
 		WHERE flagged = FALSE AND last_seq > last_seq_materialized`)
 	if err != nil {
 		return 0, err
@@ -804,9 +805,22 @@ func (d *DocStore) MaterializeQuiet(ctx context.Context, validate ValidateFunc) 
 	return materialized, nil
 }
 
+// crdtDocsRef returns the fabriq_crdt_docs table reference for a POOL-PATH
+// scan: schema-qualified in schema-per-tenant consolidation mode (where a
+// pool-path query gets no per-tx search_path stamp), or the bare name
+// otherwise. The schema is a validated identifier (pathctx grammar), safe to
+// interpolate. Per-doc work runs through inTenantTx, which stamps search_path
+// itself, so only these bare pool-path scans need qualifying.
+func (d *DocStore) crdtDocsRef(ctx context.Context) string {
+	if schema := pathctx.SchemaOrEmpty(ctx); schema != "" {
+		return schema + ".fabriq_crdt_docs"
+	}
+	return "fabriq_crdt_docs"
+}
+
 func (d *DocStore) isQuiet(ctx context.Context, docID string, window time.Duration) (bool, error) {
 	row := d.a.pg.QueryRow(ctx,
-		`SELECT updated_at < now() - ($2 || ' milliseconds')::interval FROM fabriq_crdt_docs WHERE doc_id = $1`,
+		`SELECT updated_at < now() - ($2 || ' milliseconds')::interval FROM `+d.crdtDocsRef(ctx)+` WHERE doc_id = $1`,
 		docID, fmt.Sprintf("%d", window.Milliseconds()))
 	var quiet bool
 	if err := row.Scan(&quiet); err != nil {

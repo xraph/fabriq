@@ -38,6 +38,7 @@ import (
 	"github.com/xraph/grove/drivers/pgdriver"
 
 	"github.com/xraph/fabriq/core/fabriqerr"
+	"github.com/xraph/fabriq/core/pathctx"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
@@ -55,6 +56,9 @@ type Adapter struct {
 	// false the handle was borrowed (e.g. resolved from a host DI container),
 	// so Close MUST NOT tear it down — the host owns its lifecycle.
 	owned bool
+	// sharedSchema is the consolidation-mode shared schema ("" when off). See
+	// WithSharedSchema and stampSearchPath.
+	sharedSchema string
 }
 
 var _ query.RelationalQuerier = (*Adapter)(nil)
@@ -65,6 +69,7 @@ type Option func(*openConfig)
 type openConfig struct {
 	poolSize      int
 	guardedTables []string
+	sharedSchema  string // consolidation mode: appended to SET LOCAL search_path
 }
 
 // WithPoolSize sets the pgx pool size.
@@ -77,6 +82,15 @@ func WithPoolSize(n int) Option {
 // columnstore forbids it).
 func WithGuardedTables(tables ...string) Option {
 	return func(c *openConfig) { c.guardedTables = append(c.guardedTables, tables...) }
+}
+
+// WithSharedSchema enables schema-per-tenant stamping: when a tenant schema
+// is present on ctx (pathctx), every stamped transaction sets
+// search_path = "<tenant_schema>, <shared>" so bare table names resolve to
+// the tenant's schema and extension types resolve from the shared schema.
+// Empty (the default) means no search_path is ever stamped — legacy behavior.
+func WithSharedSchema(name string) Option {
+	return func(c *openConfig) { c.sharedSchema = name }
 }
 
 // Open connects to Postgres and wires the tenant backstop.
@@ -139,9 +153,31 @@ func newAdapter(gdb *grove.DB, pg *pgdriver.PgDB, reg *registry.Registry, cfg op
 	backstop := newTenantBackstop(reg, cfg.guardedTables)
 	gdb.Hooks().AddHook(backstop)
 
-	a := &Adapter{gdb: gdb, pg: pg, reg: reg, backstop: backstop, owned: owned}
+	a := &Adapter{gdb: gdb, pg: pg, reg: reg, backstop: backstop, owned: owned, sharedSchema: cfg.sharedSchema}
 	a.state = &StateRepo{pg: pg}
 	return a, nil
+}
+
+// SharedSchema reports the consolidation-mode shared schema ("" when off).
+func (a *Adapter) SharedSchema() string { return a.sharedSchema }
+
+// stampSearchPath issues SET LOCAL search_path for the ctx schema when
+// consolidation mode is active. A no-op otherwise, keeping every non-schema
+// deployment byte-for-byte identical.
+func (a *Adapter) stampSearchPath(ctx context.Context, tx *pgdriver.PgTx) error {
+	if a.sharedSchema == "" {
+		return nil
+	}
+	schema := pathctx.SchemaOrEmpty(ctx)
+	if schema == "" {
+		return nil
+	}
+	// schema and sharedSchema are validated identifiers; bound as the
+	// set_config VALUE ($1), never spliced into SQL structure.
+	if _, err := tx.NewRaw(`SELECT set_config('search_path', $1, true)`, schema+", "+a.sharedSchema).Exec(ctx); err != nil {
+		return fmt.Errorf("fabriq: stamp search_path: %w", err)
+	}
+	return nil
 }
 
 // Close releases the connection pool. For a borrowed grove (OpenWithGrove) it
@@ -210,6 +246,9 @@ func (a *Adapter) inTenantTx(ctx context.Context, fn func(tx *pgdriver.PgTx) err
 	if _, err := ptx.NewRaw(`SELECT set_config('app.scope_id', $1, true)`, tenant.ScopeOrEmpty(ctx)).Exec(ctx); err != nil {
 		return fmt.Errorf("fabriq: stamp scope: %w", err)
 	}
+	if err := a.stampSearchPath(ctx, ptx); err != nil {
+		return err
+	}
 	if err := fn(ptx); err != nil {
 		return err
 	}
@@ -244,6 +283,13 @@ func (a *Adapter) inDynamicTenantTx(ctx context.Context, fn func(tid string, tx 
 	}
 	if _, err := tx.Exec(ctx, `SELECT set_config('app.scope_id', $1, true)`, tenant.ScopeOrEmpty(ctx)); err != nil {
 		return fmt.Errorf("fabriq: stamp scope: %w", err)
+	}
+	if a.sharedSchema != "" {
+		if schema := pathctx.SchemaOrEmpty(ctx); schema != "" {
+			if _, err := tx.Exec(ctx, `SELECT set_config('search_path', $1, true)`, schema+", "+a.sharedSchema); err != nil {
+				return fmt.Errorf("fabriq: stamp search_path: %w", err)
+			}
+		}
 	}
 	if err := fn(tid, tx); err != nil {
 		return err

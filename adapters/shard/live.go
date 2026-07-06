@@ -15,28 +15,28 @@ type Live struct{ set Router }
 func NewLive(set Router) *Live { return &Live{set: set} }
 
 func (l *Live) Snapshot(ctx context.Context, q livequery.LiveQuery, limit int) ([]livequery.Row, error) {
-	sh, release, err := l.set.Acquire(ctx)
+	sh, sctx, release, err := l.set.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return sh.Live.Snapshot(ctx, q, limit)
+	return sh.Live.Snapshot(sctx, q, limit)
 }
 
 func (l *Live) After(ctx context.Context, q livequery.LiveQuery, after livequery.Cursor, limit int) ([]livequery.Row, error) {
-	sh, release, err := l.set.Acquire(ctx)
+	sh, sctx, release, err := l.set.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return sh.Live.After(ctx, q, after, limit)
+	return sh.Live.After(sctx, q, after, limit)
 }
 
 func (l *Live) Members(ctx context.Context, q livequery.LiveQuery) ([]string, error) {
-	sh, release, err := l.set.Acquire(ctx)
+	sh, sctx, release, err := l.set.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return sh.Live.Members(ctx, q)
+	return sh.Live.Members(sctx, q)
 }

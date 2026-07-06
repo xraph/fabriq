@@ -369,17 +369,17 @@ func TestDynamicSet_RoutesByTenant(t *testing.T) {
 	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 4})
 	ds := NewDynamicSet(staticDirectory{"t1": "c1/db1", "t2": "c1/db2"}, p)
 
-	sh, release, err := ds.AcquireFor(context.Background(), "t1")
+	sh, _, release, err := ds.AcquireFor(context.Background(), "t1")
 	if err != nil || sh.ID != "c1/db1" {
 		t.Fatalf("t1 → %v (%v)", sh.ID, err)
 	}
 	release()
-	sh, release, err = ds.AcquireFor(context.Background(), "t2")
+	sh, _, release, err = ds.AcquireFor(context.Background(), "t2")
 	if err != nil || sh.ID != "c1/db2" {
 		t.Fatalf("t2 → %v (%v)", sh.ID, err)
 	}
 	release()
-	if _, _, err := ds.AcquireFor(context.Background(), "ghost"); fabriqerr.CodeOf(err) != fabriqerr.CodeNotFound {
+	if _, _, _, err := ds.AcquireFor(context.Background(), "ghost"); fabriqerr.CodeOf(err) != fabriqerr.CodeNotFound {
 		t.Fatalf("ghost err = %v, want CodeNotFound", err)
 	}
 }
@@ -391,7 +391,7 @@ func BenchmarkDynamicSet_AcquireHot(b *testing.B) {
 	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 4})
 	ds := NewDynamicSet(staticDirectory{"t1": "c1/db1"}, p)
 	ctx := context.Background()
-	if _, r, err := ds.AcquireFor(ctx, "t1"); err != nil {
+	if _, _, r, err := ds.AcquireFor(ctx, "t1"); err != nil {
 		b.Fatal(err)
 	} else {
 		r()
@@ -399,7 +399,7 @@ func BenchmarkDynamicSet_AcquireHot(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, release, err := ds.AcquireFor(ctx, "t1")
+		_, _, release, err := ds.AcquireFor(ctx, "t1")
 		if err != nil {
 			b.Fatal(err)
 		}
