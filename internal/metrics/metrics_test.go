@@ -72,3 +72,35 @@ func TestBlobGCInstruments(t *testing.T) {
 	m.BlobGCBroken.Set(1)
 	m.BlobGCOrphans.Add(4)
 }
+
+func TestAnalyticsInstruments(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m, err := New(reg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	m.AnalyticsAppliedTotal.Inc()
+	m.AnalyticsFailuresTotal.Inc()
+
+	if got := testutil.ToFloat64(m.AnalyticsAppliedTotal); got != 1 {
+		t.Fatalf("AnalyticsAppliedTotal = %v", got)
+	}
+	if got := testutil.ToFloat64(m.AnalyticsFailuresTotal); got != 1 {
+		t.Fatalf("AnalyticsFailuresTotal = %v", got)
+	}
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(families))
+	for _, f := range families {
+		names = append(names, f.GetName())
+	}
+	joined := strings.Join(names, ",")
+	for _, want := range []string{"fabriq_analytics_applied_total", "fabriq_analytics_failures_total"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("metric %q not registered (have %s)", want, joined)
+		}
+	}
+}

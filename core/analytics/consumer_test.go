@@ -2,6 +2,7 @@ package analytics_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/xraph/fabriq/core/analytics"
@@ -52,6 +53,62 @@ func TestConsumer_SkipsUnmarked(t *testing.T) {
 	if len(sink.Facts()) != 0 {
 		t.Fatal("unmarked entity should produce no facts")
 	}
+}
+
+// failingUpsertSink wraps a Sink and forces UpsertFacts to fail, so OnFailure
+// can be exercised without a real adapter.
+type failingUpsertSink struct{ *fabriqtest.FakeAnalyticsSink }
+
+func (f failingUpsertSink) UpsertFacts(context.Context, []analytics.Fact) error {
+	return errTestSinkFailure
+}
+
+var errTestSinkFailure = fmt.Errorf("boom")
+
+func TestConsumer_InvokesHooks(t *testing.T) {
+	t.Run("applied", func(t *testing.T) {
+		sink := fabriqtest.NewFakeAnalyticsSink()
+		var applied, failed int
+		c := &analytics.Consumer{
+			Group:     "proj:analytics",
+			Source:    &fakeSource{envs: []event.Envelope{env("widget", "widget.updated", 1, `{"name":"a","ssn":"x"}`)}},
+			Applier:   analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}})),
+			Sink:      sink,
+			OnApplied: func() { applied++ },
+			OnFailure: func() { failed++ },
+		}
+		if err := c.Run(context.Background(), "c1"); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if applied != 1 {
+			t.Fatalf("expected OnApplied called once, got %d", applied)
+		}
+		if failed != 0 {
+			t.Fatalf("expected OnFailure not called, got %d", failed)
+		}
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		sink := failingUpsertSink{fabriqtest.NewFakeAnalyticsSink()}
+		var applied, failed int
+		c := &analytics.Consumer{
+			Group:     "proj:analytics",
+			Source:    &fakeSource{envs: []event.Envelope{env("widget", "widget.updated", 1, `{"name":"a"}`)}},
+			Applier:   analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}})),
+			Sink:      sink,
+			OnApplied: func() { applied++ },
+			OnFailure: func() { failed++ },
+		}
+		if err := c.Run(context.Background(), "c1"); err == nil {
+			t.Fatal("expected Run to surface the sink error")
+		}
+		if failed != 1 {
+			t.Fatalf("expected OnFailure called once, got %d", failed)
+		}
+		if applied != 0 {
+			t.Fatalf("expected OnApplied not called, got %d", applied)
+		}
+	})
 }
 
 func TestConsumer_ReplayIdempotent(t *testing.T) {

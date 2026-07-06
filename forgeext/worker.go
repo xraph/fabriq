@@ -172,11 +172,19 @@ func (e *Extension) Run(ctx context.Context) error {
 			cancel()
 			return err
 		}
+		if e.metrics != nil {
+			cons.OnApplied = e.metrics.AnalyticsAppliedTotal.Inc
+			cons.OnFailure = e.metrics.AnalyticsFailuresTotal.Inc
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			supervise(runCtx, logger, "proj:analytics", func(c context.Context) error { return cons.Run(c, consumer) })
 		}()
+	} else if stores.Analytics != nil && stores.Redis != nil {
+		if logger != nil {
+			logger.Warn("fabriq: analytics is configured but no entity is marked for it; nothing will flow to the analytics sink")
+		}
 	}
 
 	// Embedding worker: one consumer per replica, no election needed.

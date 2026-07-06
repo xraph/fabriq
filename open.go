@@ -243,6 +243,10 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 	}
 
 	if cfg.Analytics.Enabled() {
+		if verr := ValidateAnalyticsConfig(cfg); verr != nil {
+			_ = stores.Close()
+			return nil, nil, verr
+		}
 		as, aerr := pganalytics.Open(ctx, cfg.Analytics.DSN)
 		if aerr != nil {
 			_ = stores.Close()

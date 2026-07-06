@@ -22,6 +22,18 @@ type Consumer struct {
 	Applier   *Applier
 	Sink      Sink
 	Upcasters *event.UpcasterChain // optional
+
+	// OnApplied and OnFailure are optional observability hooks: OnApplied
+	// fires once per envelope that is successfully applied to the Sink
+	// (all writes succeeded); OnFailure fires once per envelope whose Sink
+	// write returned an error. Neither fires on the skip/poison paths
+	// (un-migratable payload, malformed payload, un-derivable tenant, or an
+	// unmarked entity) — those are neither applied nor failed. Both are
+	// nil-safe: callers that don't need metrics leave them unset. Kept as
+	// bare func() (not a metrics dependency) so core/analytics stays free
+	// of internal/metrics — callers wire prometheus.Counter.Inc directly.
+	OnApplied func()
+	OnFailure func()
 }
 
 // Run consumes until ctx ends. Scale by running replicas with distinct names.
@@ -56,12 +68,27 @@ func (c *Consumer) handle(ctx context.Context, env event.Envelope) error {
 	tctx = otel.ContextWithTraceparent(tctx, env.Traceparent)
 
 	if err := c.Sink.UpsertFacts(tctx, []Fact{fact}); err != nil {
+		if c.OnFailure != nil {
+			c.OnFailure()
+		}
 		return err // transient: stay pending, redelivery is safe
 	}
 	if err := c.Sink.AppendEvents(tctx, []Event{ev}); err != nil {
+		if c.OnFailure != nil {
+			c.OnFailure()
+		}
 		return err
 	}
-	return c.Sink.SetWatermark(tctx, []Watermark{{
+	if err := c.Sink.SetWatermark(tctx, []Watermark{{
 		TenantID: env.TenantID, Aggregate: env.Aggregate, AggID: env.AggID, Version: env.Version,
-	}})
+	}}); err != nil {
+		if c.OnFailure != nil {
+			c.OnFailure()
+		}
+		return err
+	}
+	if c.OnApplied != nil {
+		c.OnApplied()
+	}
+	return nil
 }

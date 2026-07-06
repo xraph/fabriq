@@ -10,3 +10,47 @@ func TestAnalyticsConfig_EnabledByDSN(t *testing.T) {
 		t.Fatal("DSN present must be enabled")
 	}
 }
+
+func TestOpen_AnalyticsDSNCollisionRejected(t *testing.T) {
+	collideWithPostgres := Config{
+		Postgres:  PostgresConfig{DSN: "postgres://same"},
+		Analytics: AnalyticsConfig{DSN: "postgres://same"},
+	}
+	if err := ValidateAnalyticsConfig(collideWithPostgres); err == nil {
+		t.Fatal("expected error when analytics DSN collides with postgres.dsn")
+	}
+
+	collideWithCatalog := Config{
+		Catalog:   CatalogConfig{DSN: "postgres://catalog"},
+		Analytics: AnalyticsConfig{DSN: "postgres://catalog"},
+	}
+	if err := ValidateAnalyticsConfig(collideWithCatalog); err == nil {
+		t.Fatal("expected error when analytics DSN collides with catalog.dsn")
+	}
+
+	collideWithShard := Config{
+		Shards:    []ShardConfig{{ID: "s1", DSN: "postgres://shard1"}},
+		Analytics: AnalyticsConfig{DSN: "postgres://shard1"},
+	}
+	if err := ValidateAnalyticsConfig(collideWithShard); err == nil {
+		t.Fatal("expected error when analytics DSN collides with a shard DSN")
+	}
+
+	distinct := Config{
+		Postgres:  PostgresConfig{DSN: "postgres://tenant"},
+		Catalog:   CatalogConfig{DSN: "postgres://catalog"},
+		Shards:    []ShardConfig{{ID: "s1", DSN: "postgres://shard1"}},
+		Analytics: AnalyticsConfig{DSN: "postgres://analytics"},
+	}
+	if err := ValidateAnalyticsConfig(distinct); err != nil {
+		t.Fatalf("expected no error for distinct DSNs, got %v", err)
+	}
+
+	disabled := Config{
+		Postgres: PostgresConfig{DSN: "postgres://same"},
+	}
+	disabled.Analytics.DSN = ""
+	if err := ValidateAnalyticsConfig(disabled); err != nil {
+		t.Fatalf("expected no error when analytics is disabled, got %v", err)
+	}
+}

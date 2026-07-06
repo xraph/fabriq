@@ -110,6 +110,25 @@ type AnalyticsConfig struct {
 // Enabled reports whether analytics is configured.
 func (c AnalyticsConfig) Enabled() bool { return c.DSN != "" }
 
+// ValidateAnalyticsConfig rejects an analytics DSN that collides with a
+// tenant, shard, or catalog control DSN — the analytics store MUST be a
+// separate database (the one deliberate cross-tenant co-location).
+func ValidateAnalyticsConfig(cfg Config) error {
+	if !cfg.Analytics.Enabled() {
+		return nil
+	}
+	adsn := cfg.Analytics.DSN
+	if adsn == cfg.Postgres.DSN || adsn == cfg.Catalog.DSN {
+		return fmt.Errorf("fabriq: analytics DSN must differ from the tenant and catalog control DSNs")
+	}
+	for _, sh := range cfg.Shards {
+		if adsn == sh.DSN {
+			return fmt.Errorf("fabriq: analytics DSN must differ from every shard DSN")
+		}
+	}
+	return nil
+}
+
 // PostgresConfig locates the source of truth. Required unless Shards is set
 // (it is the one-shard shorthand).
 type PostgresConfig struct {
