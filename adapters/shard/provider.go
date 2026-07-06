@@ -10,26 +10,29 @@ import (
 )
 
 // Router resolves the ctx tenant to a live shard. Acquire pairs the shard
-// with a release func: the static Set releases nothing (its pools live for
-// the process), while catalog-mode DynamicSet refcounts pooled shards so
-// the pool manager never closes a shard mid-operation.
+// with the routing context to use downstream and a release func: the static
+// Set releases nothing and returns ctx unchanged (its pools live for the
+// process), while catalog-mode DynamicSet refcounts pooled shards so the
+// pool manager never closes a shard mid-operation. The returned context is
+// the seam through which schema-per-tenant mode stamps search_path
+// (SchemaRouter); every other Router returns the input ctx verbatim.
 type Router interface {
-	Acquire(ctx context.Context) (Shard, func(), error)
-	AcquireFor(ctx context.Context, tenantID string) (Shard, func(), error)
+	Acquire(ctx context.Context) (Shard, context.Context, func(), error)
+	AcquireFor(ctx context.Context, tenantID string) (Shard, context.Context, func(), error)
 }
 
 func noopRelease() {}
 
-// Acquire implements Router on the static Set (no-op release).
-func (s *Set) Acquire(ctx context.Context) (Shard, func(), error) {
+// Acquire implements Router on the static Set (no-op release, ctx unchanged).
+func (s *Set) Acquire(ctx context.Context) (Shard, context.Context, func(), error) {
 	sh, err := s.For(ctx)
-	return sh, noopRelease, err
+	return sh, ctx, noopRelease, err
 }
 
-// AcquireFor implements Router on the static Set (no-op release).
-func (s *Set) AcquireFor(ctx context.Context, tenantID string) (Shard, func(), error) {
+// AcquireFor implements Router on the static Set (no-op release, ctx unchanged).
+func (s *Set) AcquireFor(ctx context.Context, tenantID string) (Shard, context.Context, func(), error) {
 	sh, err := s.ForTenant(ctx, tenantID)
-	return sh, noopRelease, err
+	return sh, ctx, noopRelease, err
 }
 
 // Provider owns shard lifecycles in catalog mode: Acquire returns a live
@@ -296,22 +299,24 @@ func NewDynamicSet(dir Directory, provider Provider) *DynamicSet {
 	return &DynamicSet{dir: dir, provider: provider}
 }
 
-// Acquire implements Router.
-func (d *DynamicSet) Acquire(ctx context.Context) (Shard, func(), error) {
+// Acquire implements Router (ctx unchanged — schema stamping, if any, is the
+// SchemaRouter decorator's job).
+func (d *DynamicSet) Acquire(ctx context.Context) (Shard, context.Context, func(), error) {
 	tid, err := tenant.Require(ctx)
 	if err != nil {
-		return Shard{}, nil, err
+		return Shard{}, nil, nil, err
 	}
 	return d.AcquireFor(ctx, tid)
 }
 
-// AcquireFor implements Router.
-func (d *DynamicSet) AcquireFor(ctx context.Context, tenantID string) (Shard, func(), error) {
+// AcquireFor implements Router (ctx unchanged).
+func (d *DynamicSet) AcquireFor(ctx context.Context, tenantID string) (Shard, context.Context, func(), error) {
 	id, err := d.dir.Shard(ctx, tenantID)
 	if err != nil {
-		return Shard{}, nil, err
+		return Shard{}, nil, nil, err
 	}
-	return d.provider.Acquire(ctx, id)
+	sh, release, err := d.provider.Acquire(ctx, id)
+	return sh, ctx, release, err
 }
 
 var (

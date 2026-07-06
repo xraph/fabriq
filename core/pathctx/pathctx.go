@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // schemaPattern keeps a stamped schema a safe, bare, lowercase Postgres
@@ -20,6 +21,22 @@ var schemaPattern = regexp.MustCompile(`^tenant_[a-z0-9_]{1,54}$`)
 
 // ValidSchema reports whether s is a well-formed tenant schema name.
 func ValidSchema(s string) bool { return schemaPattern.MatchString(s) }
+
+// SchemaForTenant maps a tenant id to its consolidation-mode schema name:
+// "tenant_" + the id with '-' folded to '_' (tenant ids allow '-', which is
+// illegal in a bare Postgres identifier). It fails CLOSED for ids that
+// cannot map to a legal schema — uppercase (Postgres folds unquoted
+// identifiers to lowercase, so "Acme" and "acme" would collide) or too long
+// — rather than silently folding to a colliding name. The mapping is
+// deterministic, so routing derives the schema without a catalog lookup;
+// provisioning persists the same value in Entry.Schema.
+func SchemaForTenant(tenantID string) (string, error) {
+	s := "tenant_" + strings.ReplaceAll(tenantID, "-", "_")
+	if !ValidSchema(s) {
+		return "", fmt.Errorf("fabriq: tenant %q has no valid consolidation schema (need lowercase, <=55 chars after '-'→'_')", tenantID)
+	}
+	return s, nil
+}
 
 type ctxKey struct{}
 

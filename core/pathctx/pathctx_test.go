@@ -36,3 +36,16 @@ func longName(n int) string {
 	}
 	return string(b)
 }
+
+func TestSchemaForTenant(t *testing.T) {
+	got, err := SchemaForTenant("acme-corp")
+	if err != nil || got != "tenant_acme_corp" {
+		t.Fatalf("got %q, %v; want tenant_acme_corp", got, err)
+	}
+	if _, err := SchemaForTenant("ACME"); err == nil {
+		t.Fatal("uppercase id must be rejected in consolidation mode")
+	}
+	if _, err := SchemaForTenant(longName(60)); err == nil {
+		t.Fatal("over-length id must be rejected")
+	}
+}
