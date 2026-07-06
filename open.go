@@ -381,6 +381,10 @@ func (s *Stores) PoolStats() (open, held int, ok bool) {
 	return open, held, true
 }
 
+// recordScale is the pool autoscaler's OnScale hook. Task 5 wires metrics;
+// until then it is a no-op that never blocks.
+func (s *Stores) recordScale(ev shard.ScaleEvent) {}
+
 // Close releases every opened adapter (every shard, plus the projections).
 func (s *Stores) Close() error {
 	// Cancel background workers first so they stop blocking on their

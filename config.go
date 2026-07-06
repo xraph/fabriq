@@ -90,10 +90,26 @@ type CatalogConfig struct {
 	// bind superusers, and the serving tier must not hold rights it does
 	// not need; provisioning (the CLI) is a separate, privileged concern.
 	AllowSuperuser bool `yaml:"allowSuperuser" json:"allowSuperuser"`
+	// Adaptive turns on autoscaling of MaxActiveShards (opt-in). When
+	// disabled (default) the static MaxActiveShards cap is used.
+	Adaptive AdaptivePoolConfig `yaml:"adaptive" json:"adaptive"`
 }
 
 // Enabled reports whether catalog mode is configured.
 func (c CatalogConfig) Enabled() bool { return c.DSN != "" }
+
+// AdaptivePoolConfig is the user-facing autoscaling surface. Policy
+// constants (grow factor, thresholds, cooldown) are NOT exposed here; they
+// default inside the shard autoscaler. Operators set only what they must own.
+type AdaptivePoolConfig struct {
+	Enabled       bool          `yaml:"enabled" json:"enabled"`
+	Min           int           `yaml:"min" json:"min"`                     // floor; 0 -> 8
+	Max           int           `yaml:"max" json:"max"`                     // ceiling; 0 -> MaxActiveShards (or 128)
+	Interval      time.Duration `yaml:"interval" json:"interval"`           // 0 -> 5s
+	ConnBudget    int           `yaml:"connBudget" json:"connBudget"`       // 0 -> no budget clamp
+	PerShardConns int           `yaml:"perShardConns" json:"perShardConns"` // 0 -> 4
+	HeapSoftLimit uint64        `yaml:"heapSoftLimit" json:"heapSoftLimit"` // bytes; 0 -> heap signal off
+}
 
 // PostgresConfig locates the source of truth. Required unless Shards is set
 // (it is the one-shard shorthand).
@@ -246,6 +262,17 @@ func (c Config) Validate() error {
 		}
 		if c.Catalog.MaxActiveShards < 0 {
 			return fmt.Errorf("fabriq: config: catalog.maxActiveShards must be >= 0")
+		}
+		if c.Catalog.Adaptive.Enabled {
+			if c.Catalog.Adaptive.Min < 1 {
+				return fmt.Errorf("fabriq: config: catalog.adaptive.min must be >= 1")
+			}
+			if c.Catalog.Adaptive.Max != 0 && c.Catalog.Adaptive.Max < c.Catalog.Adaptive.Min {
+				return fmt.Errorf("fabriq: config: catalog.adaptive.max must be >= min")
+			}
+			if c.Catalog.Adaptive.ConnBudget < 0 || c.Catalog.Adaptive.PerShardConns < 0 {
+				return fmt.Errorf("fabriq: config: catalog.adaptive.connBudget/perShardConns must be >= 0")
+			}
 		}
 	}
 	if c.Projections.Graph && c.FalkorDB.Addr == "" {
