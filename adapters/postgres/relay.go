@@ -9,6 +9,7 @@ import (
 	"github.com/xraph/grove/drivers/pgdriver"
 
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/pathctx"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/subscribe"
 )
@@ -28,6 +29,10 @@ type Relay struct {
 	batch        int
 	pollInterval time.Duration
 	onPublish    func(n int)
+	// sharedSchema is set in schema-per-tenant consolidation mode; when a
+	// tenant schema is on ctx the drain stamps SET LOCAL search_path so the
+	// bare fabriq_outbox resolves to that tenant's schema.
+	sharedSchema string
 }
 
 // RelayOption tunes the relay.
@@ -65,6 +70,7 @@ func NewRelay(a *Adapter, reg *registry.Registry, pub event.Publisher, opts ...R
 		pub:          pub,
 		batch:        128,
 		pollInterval: time.Second,
+		sharedSchema: a.SharedSchema(),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -147,6 +153,17 @@ func (r *Relay) drainOnce(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("fabriq: relay begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Schema-per-tenant: stamp the tenant's search_path so the bare
+	// fabriq_outbox below resolves to its schema (the sweeper puts the schema
+	// on ctx). Inert in database/single/shards mode.
+	if r.sharedSchema != "" {
+		if schema := pathctx.SchemaOrEmpty(ctx); schema != "" {
+			if _, err := tx.NewRaw(`SELECT set_config('search_path', $1, true)`, schema+", "+r.sharedSchema).Exec(ctx); err != nil {
+				return 0, fmt.Errorf("fabriq: relay stamp search_path: %w", err)
+			}
+		}
+	}
 
 	var rows []outboxScanRow
 	const sel = `SELECT id, tenant_id, aggregate, agg_id, version, type, at::text AS at,
