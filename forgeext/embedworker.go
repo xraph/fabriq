@@ -21,6 +21,17 @@ func hasEmbeddableEntity(reg *registry.Registry) bool {
 	return false
 }
 
+// hasAnalyticsEntity reports whether any registered entity opts into the
+// cross-tenant analytics sink.
+func hasAnalyticsEntity(reg *registry.Registry) bool {
+	for _, ent := range reg.All() {
+		if ent.Spec.Analytics != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // embedHandler is the per-event consumer callback: it derives a tenant-scoped
 // context from the envelope and indexes the event.
 //

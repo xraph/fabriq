@@ -115,6 +115,18 @@ func (e *Extension) runCatalogSweeper() error {
 			supervise(runCtx, logger, "proj:search", func(c context.Context) error { return sengine.Run(c, consumer) })
 		}()
 	}
+	if stores.Analytics != nil && stores.Redis != nil && hasAnalyticsEntity(e.reg) {
+		cons, err := stores.AnalyticsConsumer(e.reg, fab.Upcasters())
+		if err != nil {
+			cancel()
+			return err
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "proj:analytics", func(c context.Context) error { return cons.Run(c, consumer) })
+		}()
+	}
 
 	// The tracked-tenants gauge moves slowly; poll it off the pass path.
 	if m != nil {
