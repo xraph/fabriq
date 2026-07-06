@@ -122,8 +122,9 @@ that harmless instead of dangerous:
   replica's recorded migration version is behind the binary's floor, routing
   through it returns `CodeUnavailable` rather than a route to a
   schema-behind database. That `CodeUnavailable` is temporary and
-  self-healing — it clears once the replica catches up or the primary
-  recovers — never a silent correctness hazard.
+  self-healing — it clears within one cache TTL once the replica catches up
+  or the primary recovers (a version-gated read taken during an outage is
+  cached like any other routing answer) — never a silent correctness hazard.
 
 **Boot behavior differs deliberately between a bad config and a bad
 network:** a malformed replica DSN is a configuration error and **fails the
@@ -259,7 +260,7 @@ parameterized SQL on the serving path. Two caveats:
 | Control DB down | Cached routes keep serving until `cacheTtl`; uncached tenants 503 (`unavailable`); the sweeper pauses; recovery is immediate — transport errors are never negative-cached |
 | Control primary down, no replicas configured | Same as above — this is the HA-off default |
 | Control primary down, replicas configured | Routing reads fall through to a replica; uncached tenants keep resolving instead of 503ing; writes/provisioning still fail typed until the write endpoint recovers |
-| Replica reports a stale (behind-floor) version | Router fails closed (`CodeUnavailable`) for that read — temporary and self-healing, never a route to a schema-behind database |
+| Replica reports a stale (behind-floor) version | Router fails closed (`CodeUnavailable`) for that read — self-heals within one cache TTL, never a route to a schema-behind database |
 | A replica is unreachable | Skipped in favor of the next replica (or the primary's original error if none answer); does not fail boot |
 | Primary failover / promotion completes | fabriq's write pool reconnects automatically once the floating endpoint repoints; the reconciler elector abdicates and re-campaigns on the promoted node |
 | Malformed `catalog.replicaDsns` entry | Fails config validation at boot (same as any invalid DSN) — never silently ignored |
