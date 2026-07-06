@@ -9,6 +9,8 @@ import (
 	"fmt"
 
 	"github.com/xraph/grove/drivers/pgdriver"
+
+	"github.com/xraph/fabriq/core/analytics"
 )
 
 // Sink writes the analytics read model. It ensures its own schema at Open
@@ -18,6 +20,8 @@ import (
 type Sink struct {
 	db *pgdriver.PgDB
 }
+
+var _ analytics.Sink = (*Sink)(nil)
 
 // Open dials the analytics database and ensures the schema.
 // ensureSchema proves reachability (it requires a live connection).
@@ -79,4 +83,82 @@ func (s *Sink) ensureSchema(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// UpsertFacts version-gates: a row is updated only when the incoming version
+// is strictly greater than the stored one.
+func (s *Sink) UpsertFacts(ctx context.Context, facts []analytics.Fact) error {
+	for _, f := range facts {
+		const q = `INSERT INTO fabriq_analytics_facts
+			(tenant_id, aggregate, agg_id, version, payload, at, deleted, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+			ON CONFLICT (tenant_id, aggregate, agg_id) DO UPDATE
+			SET version = EXCLUDED.version, payload = EXCLUDED.payload,
+			    at = EXCLUDED.at, deleted = EXCLUDED.deleted, updated_at = now()
+			WHERE EXCLUDED.version > fabriq_analytics_facts.version`
+		if _, err := s.db.Exec(ctx, q, f.TenantID, f.Aggregate, f.AggID, f.Version, string(f.Payload), f.At, f.Deleted); err != nil {
+			return fmt.Errorf("fabriq: analytics upsert fact: %w", err)
+		}
+	}
+	return nil
+}
+
+// AppendEvents dedupes on the natural key.
+func (s *Sink) AppendEvents(ctx context.Context, events []analytics.Event) error {
+	for _, e := range events {
+		const q = `INSERT INTO fabriq_analytics_events
+			(tenant_id, aggregate, agg_id, version, type, payload, at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			ON CONFLICT (tenant_id, aggregate, agg_id, version) DO NOTHING`
+		if _, err := s.db.Exec(ctx, q, e.TenantID, e.Aggregate, e.AggID, e.Version, e.Type, string(e.Payload), e.At); err != nil {
+			return fmt.Errorf("fabriq: analytics append event: %w", err)
+		}
+	}
+	return nil
+}
+
+// SetWatermark advances monotonically.
+func (s *Sink) SetWatermark(ctx context.Context, ws []analytics.Watermark) error {
+	for _, w := range ws {
+		const q = `INSERT INTO fabriq_analytics_applied
+			(tenant_id, aggregate, agg_id, version, updated_at)
+			VALUES ($1,$2,$3,$4, now())
+			ON CONFLICT (tenant_id, aggregate, agg_id) DO UPDATE
+			SET version = EXCLUDED.version, updated_at = now()
+			WHERE EXCLUDED.version > fabriq_analytics_applied.version`
+		if _, err := s.db.Exec(ctx, q, w.TenantID, w.Aggregate, w.AggID, w.Version); err != nil {
+			return fmt.Errorf("fabriq: analytics set watermark: %w", err)
+		}
+	}
+	return nil
+}
+
+// Watermark reads the highest applied version (0 if unknown). Follows the
+// catalog.go Get pattern: a failed row iteration must surface as an error,
+// not silently read as "no rows" (see adapters/postgres/catalog.go Get).
+func (s *Sink) Watermark(ctx context.Context, tenantID, aggregate, aggID string) (int64, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT version FROM fabriq_analytics_applied
+		 WHERE tenant_id=$1 AND aggregate=$2 AND agg_id=$3`, tenantID, aggregate, aggID)
+	if err != nil {
+		return 0, fmt.Errorf("fabriq: analytics watermark: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("fabriq: analytics watermark: %w", err)
+		}
+		return 0, nil
+	}
+	var v int64
+	if err := rows.Scan(&v); err != nil {
+		return 0, fmt.Errorf("fabriq: analytics watermark scan: %w", err)
+	}
+	return v, rows.Err()
+}
+
+// TruncateForTest clears all analytics tables. Test-only.
+func TruncateForTest(ctx context.Context, s *Sink) error {
+	_, err := s.db.Exec(ctx, `TRUNCATE fabriq_analytics_facts, fabriq_analytics_events, fabriq_analytics_applied`)
+	return err
 }
