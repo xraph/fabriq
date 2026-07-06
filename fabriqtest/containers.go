@@ -16,7 +16,13 @@ import (
 // Container images for the integration harness. timescaledb-ha bundles
 // TimescaleDB and pgvector, matching the production datastore contract.
 const (
-	PostgresImage      = "timescale/timescaledb-ha:pg16-all"
+	PostgresImage = "timescale/timescaledb-ha:pg16-all"
+	// PostgresPlainImage is the vanilla upstream Postgres image used for the
+	// primary+standby replication harness (StartPrimaryStandby). It backs the
+	// catalog control database — a single plain table with no pgvector/timescale
+	// needs — and, unlike timescaledb-ha, has no HA entrypoint that fights
+	// pg_basebackup-based standby setup.
+	PostgresPlainImage = "postgres:16-alpine"
 	RedisImage         = "redis:7-alpine"
 	FalkorDBImage      = "falkordb/falkordb:v4.2.2" // pinned: multi-label + SET n:Label
 	ElasticsearchImage = "elasticsearch:9.4.1"

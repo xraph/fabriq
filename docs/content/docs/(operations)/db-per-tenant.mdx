@@ -58,6 +58,87 @@ CREATEDB + the migration chain's rights; run it with its own role.
 Every cluster DSN is dialed at boot — a dead or misconfigured cluster
 fails the deploy, not the first tenant request routed to it.
 
+## High availability (opt-in)
+
+The control database (`fabriq_tenant_catalog`) is a single Postgres by
+default. That is fine for steady state, but a control-primary outage longer
+than `cacheTtl` stops routing for any uncached tenant, blocks provisioning,
+and halts the reconciler's leader election. HA is **opt-in read-replica
+fallback** for the routing read path — writes and election stay put, on a
+floating write endpoint your infra repoints on failover. This is the
+standard managed-Postgres HA division of labour: fabriq never promotes a
+standby and never writes to a replica.
+
+**Topology:** one primary (the write endpoint named by `catalog.dsn` — a
+floating DNS name, VIP, HAProxy target, or your managed provider's endpoint,
+e.g. RDS/Cloud SQL) plus one or more hot-standby replicas behind streaming
+replication. Promotion, fencing, and repointing the floating endpoint are
+your infra's job (`pg_promote`, Patroni, RDS/Cloud SQL failover, etc.) —
+fabriq has no promotion path of its own, which is what rules out
+split-brain.
+
+```yaml
+catalog:
+  dsn: postgres://fabriq_ctl@ctl-db:5432/fabriq_control   # floating write endpoint
+  replicaDsns:                                            # optional hot standbys
+    - postgres://fabriq_ctl@ctl-replica-1:5432/fabriq_control
+    - postgres://fabriq_ctl@ctl-replica-2:5432/fabriq_control
+  clusterDsns:
+    eu-1: postgres://fabriq_app@pg-eu-1:5432/postgres
+```
+
+Leave `replicaDsns` empty and nothing changes — single-Postgres is still the
+default, byte-for-byte.
+
+**What fabriq does:**
+
+- **Read fallback, primary-first.** Routing reads try the primary first; a
+  replica is only consulted when the primary is unreachable (not merely
+  "returned not found" — that's an authoritative answer). Steady-state
+  staleness is zero, because the primary answers every request it can.
+- **Clean typed write failure.** Provisioning `Put` and the reconciler
+  elector never touch a replica. During a primary outage they fail with a
+  typed, retryable error; the idempotent provisioner resumes once the write
+  endpoint is reachable again.
+- **Automatic reconnect.** Once the floating endpoint repoints at the
+  promoted node, fabriq's pool reconnects on its own — no restart needed.
+- **Elector re-campaigns.** The reconciler's leader abdicates on session
+  loss and re-campaigns against whatever now answers the write endpoint. A
+  brief dual-leader window during promotion is harmless: the reconciler is
+  idempotent.
+
+**What the infra does:** decide when to promote a standby, fence the old
+primary (so it can never accept writes again), and repoint the floating
+write endpoint at the new primary. fabriq has no opinion on *which* replica
+gets promoted or *when* — it only reacts to where the write endpoint points.
+
+**Staleness is safe by construction.** A replica can lag. Two guards make
+that harmless instead of dangerous:
+
+- A NotFound served from a replica is marked **degraded** and is never
+  negative-cached — a lagged replica can't route a real tenant off for a
+  cache TTL.
+- The version gate (fleet upgrades, above) is **fail-closed**: if a
+  replica's recorded migration version is behind the binary's floor, routing
+  through it returns `CodeUnavailable` rather than a route to a
+  schema-behind database. That `CodeUnavailable` is temporary and
+  self-healing — it clears within one cache TTL once the replica catches up
+  or the primary recovers (a version-gated read taken during an outage is
+  cached like any other routing answer) — never a silent correctness hazard.
+
+**Boot behavior differs deliberately between a bad config and a bad
+network:** a malformed replica DSN is a configuration error and **fails the
+boot** (same treatment as any other invalid config). An **unreachable**
+replica does **not** fail the boot — it silently no-ops as a fallback that
+just isn't there yet, because refusing to boot over a transient network
+blip would defeat the point of HA. The replica pool dials lazily.
+
+**Metrics** (alongside the sweep/pool instruments above):
+`fabriq_catalog_read_primary_total`, `fabriq_catalog_read_replica_total`,
+and `fabriq_catalog_read_failover_total`. A nonzero, climbing
+`failover_total` is the operational signal that routing reads are being
+served by a replica — i.e. the primary is currently unreachable.
+
 ## Provisioning runbook
 
 Provisioning is **explicit** (never an implicit first-write side effect)
@@ -184,6 +265,12 @@ parameterized SQL on the serving path. Two caveats:
 | Failure | Behavior |
 | --- | --- |
 | Control DB down | Cached routes keep serving until `cacheTtl`; uncached tenants 503 (`unavailable`); the sweeper pauses; recovery is immediate — transport errors are never negative-cached |
+| Control primary down, no replicas configured | Same as above — this is the HA-off default |
+| Control primary down, replicas configured | Routing reads fall through to a replica; uncached tenants keep resolving instead of 503ing; writes/provisioning still fail typed until the write endpoint recovers |
+| Replica reports a stale (behind-floor) version | Router fails closed (`CodeUnavailable`) for that read — self-heals within one cache TTL, never a route to a schema-behind database |
+| A replica is unreachable | Skipped in favor of the next replica (or the primary's original error if none answer); does not fail boot |
+| Primary failover / promotion completes | fabriq's write pool reconnects automatically once the floating endpoint repoints; the reconciler elector abdicates and re-campaigns on the promoted node |
+| Malformed `catalog.replicaDsns` entry | Fails config validation at boot (same as any invalid DSN) — never silently ignored |
 | Tenant DB down | That tenant's dial breaker opens (fast 503s, no dial storm); neighbors unaffected; the sweeper isolates and backs off; recovery is automatic once it dials |
 | Provisioning crash | The catalog row resumes the state machine; `failed` tenants are listable |
 | Version skew | Router fails closed per tenant until `migrate-all` catches it up |
@@ -200,7 +287,10 @@ aspirations.
 `fabriq_sweep_tenants_eligible`, `fabriq_sweep_{swept,busy,errors}_total`,
 and `fabriq_pool_shards_{open,held}`. Watch errors-total (a tenant
 backing off on failures) and pool open vs cap (undersized
-`maxActiveShards` shows up as acquire waits).
+`maxActiveShards` shows up as acquire waits). With HA replicas configured,
+also watch `fabriq_catalog_read_{primary,replica,failover}_total` (see
+"High availability" above) — `failover_total` climbing is the signal that
+the control primary is currently unreachable.
 
 ## Choosing a mode
 

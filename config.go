@@ -2,6 +2,7 @@ package fabriq
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"time"
 
@@ -88,6 +89,12 @@ type CatalogConfig struct {
 	// or a maintenance database); a tenant's database lives on the cluster
 	// its catalog entry names. At least one cluster is required.
 	ClusterDSNs map[string]string `yaml:"clusterDsns" json:"clusterDsns"`
+	// ReplicaDSNs are optional read-replica endpoints (hot standbys) for the
+	// control database. When set, routing reads fall through to them if the
+	// primary (DSN) is unreachable, so a primary outage no longer blocks
+	// routing (spec 2026-07-03 HA). Writes and reconciler election stay on
+	// DSN. Empty = single-Postgres default, unchanged.
+	ReplicaDSNs []string `yaml:"replicaDsns" json:"replicaDsns"`
 	// CacheTTL bounds route freshness (suspension / new-tenant visibility).
 	// Zero falls back to 30s.
 	CacheTTL time.Duration `yaml:"cacheTtl" json:"cacheTtl"`
@@ -351,6 +358,14 @@ func (c Config) Validate() error {
 		}
 		if c.Catalog.SchemaMode() && !catalogSharedSchemaPattern.MatchString(c.Catalog.sharedSchemaOrDefault()) {
 			return fmt.Errorf("fabriq: config: catalog.sharedSchema %q is not a valid bare identifier", c.Catalog.SharedSchema)
+		}
+		for i, rdsn := range c.Catalog.ReplicaDSNs {
+			if rdsn == "" {
+				return fmt.Errorf("fabriq: config: catalog.replicaDsns[%d] is empty", i)
+			}
+			if u, err := url.Parse(rdsn); err != nil || u.Scheme == "" {
+				return fmt.Errorf("fabriq: config: catalog.replicaDsns[%d] must be a postgres:// URL", i)
+			}
 		}
 	}
 	if c.Projections.Graph && c.FalkorDB.Addr == "" {

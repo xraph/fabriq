@@ -53,6 +53,12 @@ type Metrics struct {
 	PoolCap             prometheus.Gauge
 	PoolScaleEvents     *prometheus.CounterVec
 
+	// Catalog HA routing-read instruments (Failover primary/replica/failover
+	// counters, polled as gauges — see catalog.Failover.ReadStats).
+	CatalogReadPrimary  prometheus.Gauge
+	CatalogReadReplica  prometheus.Gauge
+	CatalogReadFailover prometheus.Gauge
+
 	// Distillation worker (proj:distill) instruments.
 	DistillNodesTotal          prometheus.Counter
 	DistillSummariesTotal      prometheus.Counter
@@ -164,6 +170,18 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fabriq_pool_scale_events_total",
 			Help: "Adaptive pool cap scaling decisions by direction.",
 		}, []string{"direction"}),
+		CatalogReadPrimary: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "fabriq_catalog_read_primary_total",
+			Help: "Routing catalog reads served by the primary.",
+		}),
+		CatalogReadReplica: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "fabriq_catalog_read_replica_total",
+			Help: "Routing catalog reads served by a replica (failover).",
+		}),
+		CatalogReadFailover: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "fabriq_catalog_read_failover_total",
+			Help: "Routing catalog read failover events (primary unreachable).",
+		}),
 		DistillNodesTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "fabriq_distill_nodes_total", Help: "Digest nodes (re)built by the distill worker."}),
 		DistillSummariesTotal: prometheus.NewCounter(prometheus.CounterOpts{
@@ -189,6 +207,7 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 		m.SweepPassDuration, m.SweepTenantsTracked, m.SweepEligible,
 		m.SweepSweptTotal, m.SweepBusyTotal, m.SweepErrorsTotal,
 		m.PoolShardsOpen, m.PoolShardsHeld, m.PoolCap, m.PoolScaleEvents,
+		m.CatalogReadPrimary, m.CatalogReadReplica, m.CatalogReadFailover,
 		m.DistillNodesTotal, m.DistillSummariesTotal, m.DistillShortCircuitTotal, m.DistillGuardBlockedTotal, m.DistillFailuresTotal,
 		m.DistillSplitsTotal, m.DistillDedupTotal, m.DistillIntermediateGCTotal,
 	} {

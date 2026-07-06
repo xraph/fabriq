@@ -20,6 +20,7 @@ import (
 	"github.com/xraph/fabriq/cachequery"
 	"github.com/xraph/fabriq/core/analytics"
 	corecache "github.com/xraph/fabriq/core/cache"
+	"github.com/xraph/fabriq/core/catalog"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/crypto"
 	"github.com/xraph/fabriq/core/event"
@@ -338,6 +339,12 @@ type Stores struct {
 	Postgres *postgres.Adapter
 	// Catalog is the db-per-tenant control plane (nil outside catalog mode).
 	Catalog *postgres.CatalogStore
+	// catalogReplicas are read-only control-DB standbys backing the routing
+	// Failover (empty outside HA catalog mode). Closed on shutdown.
+	catalogReplicas []*postgres.CatalogStore
+	// catalogRoutes is the routing directory's Failover view (nil when no
+	// replicas are configured). Exposed for observability only.
+	catalogRoutes *catalog.Failover
 	// pool owns catalog-mode tenant pools (nil outside catalog mode).
 	pool *shard.PoolManager
 	// metricsMu guards metrics, which is attached late (post-Open, once the
@@ -447,6 +454,17 @@ func (s *Stores) PoolCap() (int, bool) {
 	return s.pool.Cap(), true
 }
 
+// CatalogReadStats returns cumulative routing-read counters from the HA
+// Failover view (ok=false when no replicas are configured — the single-Postgres
+// default, where every read is the primary and there is nothing to distinguish).
+func (s *Stores) CatalogReadStats() (primary, replica, failover int64, ok bool) {
+	if s.catalogRoutes == nil {
+		return 0, 0, 0, false
+	}
+	p, r, f := s.catalogRoutes.ReadStats()
+	return p, r, f, true
+}
+
 // Close releases every opened adapter (every shard, plus the projections).
 func (s *Stores) Close() error {
 	// Cancel background workers first so they stop blocking on their
@@ -487,6 +505,11 @@ func (s *Stores) Close() error {
 	}
 	if s.pool != nil {
 		if err := s.pool.CloseAll(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	for _, r := range s.catalogReplicas {
+		if err := r.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
