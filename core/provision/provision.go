@@ -30,6 +30,24 @@ type ClusterOps interface {
 	Migrate(ctx context.Context, clusterID, database string) (version string, err error)
 }
 
+// SchemaClusterOps performs the physical work for schema-per-tenant
+// consolidation mode: many tenants share one consolidation database, each
+// isolated by a schema. Every operation MUST be idempotent — the
+// SchemaProvisioner's resumability rests on it.
+type SchemaClusterOps interface {
+	// EnsureBootstrap prepares a consolidation database ONCE: creates the
+	// shared schema and its extensions (pgvector/postgis) so every tenant
+	// schema resolves their types via search_path. Idempotent per database.
+	EnsureBootstrap(ctx context.Context, clusterID, database, sharedSchema string) error
+	// CreateSchema ensures a tenant's schema exists in the consolidation
+	// database.
+	CreateSchema(ctx context.Context, clusterID, database, schema string) error
+	// MigrateSchema runs fabriq's migration chain inside a tenant schema
+	// (bare-named DDL + grove_migrations land there via search_path) and
+	// returns the resulting head version.
+	MigrateSchema(ctx context.Context, clusterID, database, schema, sharedSchema string) (version string, err error)
+}
+
 // Provisioner drives tenant lifecycles against the catalog.
 type Provisioner struct {
 	cat catalog.Catalog
