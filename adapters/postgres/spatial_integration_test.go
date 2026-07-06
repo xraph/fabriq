@@ -338,3 +338,101 @@ func TestSpatialAdapter_GetAndFilter(t *testing.T) {
 		t.Fatalf("filtered within want [pump1], got %#v", got)
 	}
 }
+
+// TestSpatial_CoveringContains verifies point-in-polygon: two zone polygons are
+// stored, and CoverContains finds the zone whose polygon contains a probe point.
+// Also exercises the meta Filter and the SRID-share requirement.
+func TestSpatial_CoveringContains(t *testing.T) {
+	s := newSpatialHarness(t)
+	ctx := spatialCtx(t, "acme")
+
+	// Two adjacent 10x10 planar squares: west [0,10]x[0,10], east [10,20]x[0,10].
+	west := "POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))"
+	east := "POLYGON((10 0, 20 0, 20 10, 10 10, 10 0))"
+	if err := s.Upsert(ctx, "zone", "west", query.Geometry{WKT: west, SRID: 0}, map[string]any{"kind": "zone"}); err != nil {
+		t.Fatalf("Upsert west: %v", err)
+	}
+	if err := s.Upsert(ctx, "zone", "east", query.Geometry{WKT: east, SRID: 0}, map[string]any{"kind": "zone"}); err != nil {
+		t.Fatalf("Upsert east: %v", err)
+	}
+
+	// A point at (5,5) is inside the west square only.
+	var got []query.SpatialMatch
+	if err := s.Covering(ctx, query.CoverQuery{
+		Entity:    "zone",
+		Probe:     query.Geometry{WKT: "POINT(5 5)", SRID: 0},
+		Predicate: query.CoverContains,
+		K:         10,
+	}, &got); err != nil {
+		t.Fatalf("Covering: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "west" {
+		t.Fatalf("point (5,5) should be contained by [west], got %#v", got)
+	}
+	// Containment is boolean: distance is 0.
+	if got[0].DistanceM != 0 {
+		t.Errorf("DistanceM = %v, want 0 for containment", got[0].DistanceM)
+	}
+
+	// The meta filter still applies: no zone tagged kind=building exists.
+	var none []query.SpatialMatch
+	if err := s.Covering(ctx, query.CoverQuery{
+		Entity: "zone", Probe: query.Geometry{WKT: "POINT(5 5)", SRID: 0},
+		Predicate: query.CoverContains, K: 10, Filter: map[string]string{"kind": "building"},
+	}, &none); err != nil {
+		t.Fatalf("Covering filtered: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("kind=building filter should match no zone, got %#v", none)
+	}
+}
+
+// TestSpatial_CoveringWithin verifies the inverse predicate: stored points that
+// lie WITHIN a probe polygon are returned, and points outside it are excluded.
+func TestSpatial_CoveringWithin(t *testing.T) {
+	s := newSpatialHarness(t)
+	ctx := spatialCtx(t, "acme")
+
+	for _, tc := range []struct{ id, wkt string }{
+		{"in1", "POINT(2 2)"},
+		{"in2", "POINT(8 8)"},
+		{"out", "POINT(15 5)"},
+	} {
+		if err := s.Upsert(ctx, "asset", tc.id, query.Geometry{WKT: tc.wkt, SRID: 0}, nil); err != nil {
+			t.Fatalf("Upsert %s: %v", tc.id, err)
+		}
+	}
+
+	var got []query.SpatialMatch
+	if err := s.Covering(ctx, query.CoverQuery{
+		Entity:    "asset",
+		Probe:     query.Geometry{WKT: "POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))", SRID: 0},
+		Predicate: query.CoverWithin,
+		K:         10,
+	}, &got); err != nil {
+		t.Fatalf("Covering within: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, m := range got {
+		ids[m.ID] = true
+	}
+	if len(got) != 2 || !ids["in1"] || !ids["in2"] || ids["out"] {
+		t.Fatalf("within polygon want [in1,in2], got %#v", got)
+	}
+}
+
+// TestSpatial_CoveringUnknownPredicate verifies an unsupported predicate is a
+// clean error, not a malformed query.
+func TestSpatial_CoveringUnknownPredicate(t *testing.T) {
+	s := newSpatialHarness(t)
+	ctx := spatialCtx(t, "acme")
+	var got []query.SpatialMatch
+	err := s.Covering(ctx, query.CoverQuery{
+		Entity:    "zone",
+		Probe:     query.Geometry{WKT: "POINT(0 0)", SRID: 0},
+		Predicate: query.CoverPredicate("touches"),
+	}, &got)
+	if err == nil {
+		t.Fatal("unknown predicate must return an error")
+	}
+}

@@ -19,7 +19,10 @@ type SpatialAdapter struct {
 	a *Adapter
 }
 
-var _ query.SpatialQuerier = (*SpatialAdapter)(nil)
+var (
+	_ query.SpatialQuerier = (*SpatialAdapter)(nil)
+	_ query.SpatialCoverer = (*SpatialAdapter)(nil)
+)
 
 // NewSpatialAdapter wraps an existing Postgres adapter for geometry operations.
 func NewSpatialAdapter(a *Adapter) *SpatialAdapter { return &SpatialAdapter{a: a} }
@@ -164,6 +167,82 @@ func (s *SpatialAdapter) Within(ctx context.Context, q query.SpatialQuery, into 
 			if r.Meta != "" && r.Meta != "{}" {
 				if err := json.Unmarshal([]byte(r.Meta), &m.Meta); err != nil {
 					return err
+				}
+			}
+			*dest = append(*dest, m)
+		}
+		return nil
+	})
+}
+
+// coverPredicateSQL maps a CoverPredicate to the PostGIS function applied as
+// f(geom, probe). All three are GiST-accelerated by fabriq_geometries_gist.
+func coverPredicateSQL(p query.CoverPredicate) (string, error) {
+	switch p {
+	case "", query.CoverContains:
+		return "ST_Contains", nil
+	case query.CoverWithin:
+		return "ST_Within", nil
+	case query.CoverIntersects:
+		return "ST_Intersects", nil
+	default:
+		return "", fmt.Errorf("fabriq: unknown cover predicate %q", p)
+	}
+}
+
+// Covering implements query.SpatialCoverer: a GiST-accelerated topological
+// containment search (no radius). Containment is boolean, so DistanceM is 0 and
+// results are unordered beyond the K cap. SRID mixing is the caller's
+// responsibility — the probe and stored geometry must share an SRID for PostGIS
+// to compare them (unlike Within, no geography cast is applied).
+func (s *SpatialAdapter) Covering(ctx context.Context, q query.CoverQuery, into any) error {
+	if _, err := tenant.Require(ctx); err != nil {
+		return err
+	}
+	dest, ok := into.(*[]query.SpatialMatch)
+	if !ok {
+		return fmt.Errorf("fabriq: Covering scans into *[]query.SpatialMatch, got %T", into)
+	}
+	if q.Probe.WKT == "" {
+		return fmt.Errorf("fabriq: Covering requires a probe geometry")
+	}
+	fn, err := coverPredicateSQL(q.Predicate)
+	if err != nil {
+		return err
+	}
+	k := q.K
+	if k <= 0 {
+		k = 50
+	}
+	args := []any{q.Probe.WKT, q.Probe.SRID, "", q.Entity, k}
+	filterClause := ""
+	if len(q.Filter) > 0 {
+		fj, ferr := json.Marshal(q.Filter)
+		if ferr != nil {
+			return ferr
+		}
+		filterClause = " AND meta @> $6::jsonb"
+		args = append(args, string(fj))
+	}
+	// dist is a constant 0 — containment is boolean, not ranked — but the scan
+	// target reuses geoRow so the column list mirrors Within.
+	sql := fmt.Sprintf(`SELECT id, 0 AS dist, meta::text AS meta
+		FROM fabriq_geometries, (SELECT ST_GeomFromText($1, $2) AS p) pp
+		WHERE tenant_id = $3 AND entity = $4
+		  AND %s(geom, p)%s
+		LIMIT $5`, fn, filterClause)
+	return s.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		tid, _ := tenant.FromContext(ctx)
+		args[2] = tid
+		var rows []geoRow
+		if serr := tx.NewRaw(sql, args...).Scan(ctx, &rows); serr != nil {
+			return fmt.Errorf("fabriq: covering %s: %w", q.Entity, serr)
+		}
+		for _, r := range rows {
+			m := query.SpatialMatch{ID: r.ID, DistanceM: r.Dist}
+			if r.Meta != "" && r.Meta != "{}" {
+				if uerr := json.Unmarshal([]byte(r.Meta), &m.Meta); uerr != nil {
+					return uerr
 				}
 			}
 			*dest = append(*dest, m)

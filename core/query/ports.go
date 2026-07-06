@@ -255,3 +255,47 @@ type SpatialMatch struct {
 	DistanceM float64 // metres
 	Meta      map[string]any
 }
+
+// SpatialCoverer is an optional extension of SpatialQuerier for topological
+// containment predicates (point-in-polygon and friends), the complement of
+// SpatialQuerier.Within's radius search. Adapters that can evaluate ST_Contains
+// / ST_Intersects / ST_Within implement it; callers type-assert and fall back
+// when it is absent (e.g. the in-memory fake, which is point-only). Kept off the
+// core SpatialQuerier so point-only implementations aren't forced to carry
+// polygon geometry.
+type SpatialCoverer interface {
+	// Covering returns stored entities whose geometry satisfies q.Predicate
+	// against q.Probe, scanned into *[]SpatialMatch. Containment is boolean, so
+	// SpatialMatch.DistanceM is always 0; results are unordered (bounded by K).
+	Covering(ctx context.Context, q CoverQuery, into any) error
+}
+
+// CoverPredicate selects the topological test CoverQuery applies between each
+// stored geometry and the probe.
+type CoverPredicate string
+
+const (
+	// CoverContains matches stored geometries that CONTAIN the probe:
+	// ST_Contains(stored, probe). Use for "which zone contains this point"
+	// (stored = zone polygons, probe = the point).
+	CoverContains CoverPredicate = "contains"
+	// CoverWithin matches stored geometries that lie WITHIN the probe:
+	// ST_Within(stored, probe). Use for "which points fall inside this polygon"
+	// (stored = points, probe = the polygon).
+	CoverWithin CoverPredicate = "within"
+	// CoverIntersects matches stored geometries that intersect the probe in any
+	// way: ST_Intersects(stored, probe).
+	CoverIntersects CoverPredicate = "intersects"
+)
+
+// CoverQuery is a topological containment search of stored geometry against a
+// probe geometry. Unlike SpatialQuery it has no radius: the predicate is exact.
+type CoverQuery struct {
+	Entity    string
+	Probe     Geometry
+	Predicate CoverPredicate // empty → CoverContains
+	K         int            // cap; <=0 → adapter default
+	// Filter is an AND-ed set of equality predicates evaluated against the
+	// stored geometry meta (JSONB). Empty → no filter. e.g. {"kind":"zone"}.
+	Filter map[string]string
+}

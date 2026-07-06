@@ -2,6 +2,7 @@ package shard
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/query"
@@ -33,6 +34,7 @@ var (
 	_ query.VectorQuerier     = (*Vector)(nil)
 	_ query.TSQuerier         = (*Timeseries)(nil)
 	_ query.SpatialQuerier    = (*Spatial)(nil)
+	_ query.SpatialCoverer    = (*Spatial)(nil)
 )
 
 // NewStore wraps a Set as a routing command.Store.
@@ -190,6 +192,22 @@ func (s *Spatial) Within(ctx context.Context, q query.SpatialQuery, into any) er
 	}
 	defer release()
 	return sh.Spatial.Within(ctx, q, into)
+}
+
+// Covering routes a containment search to the tenant's shard, provided that
+// shard's spatial adapter implements query.SpatialCoverer. Returns an error
+// when the underlying adapter is radius-only.
+func (s *Spatial) Covering(ctx context.Context, q query.CoverQuery, into any) error {
+	sh, release, err := s.set.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	coverer, ok := sh.Spatial.(query.SpatialCoverer)
+	if !ok {
+		return fmt.Errorf("fabriq: shard spatial adapter %T does not support containment queries", sh.Spatial)
+	}
+	return coverer.Covering(ctx, q, into)
 }
 
 // Get routes a single-geometry read to the tenant's shard.
