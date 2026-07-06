@@ -1,0 +1,203 @@
+---
+title: Analytics sink
+description: An opt-in, cross-tenant analytics read model fed by the shared event stream — fleet-wide reporting without touching per-tenant databases.
+---
+
+Every fabriq tenancy mode is built around one invariant: no cross-tenant
+queries. That is exactly why fleet-wide reporting ("orders fleet-wide, by
+status") has nowhere to run — not in a shared database, not across shards,
+not across thousands of per-tenant databases — without punching a hole in
+the isolation the rest of the system guarantees. The analytics sink is
+the one deliberate, narrow, auditable exception: an opt-in projection that
+co-locates a **redacted, allow-listed** subset of tenant data for
+operator-only reporting.
+
+<Callout type="warn">
+**Trust boundary.** This is the only place fabriq deliberately co-locates
+data from many tenants in one store. It is operator-only: never wire it to
+a tenant-facing dashboard, API, or export. Every table carries `tenant_id`
+and every query pattern below filters or groups by it — but there is
+deliberately **no RLS**, because RLS defends a store scoped to one tenant
+on `ctx`, and this store's entire purpose is cross-tenant aggregation.
+PII exposure is bounded by allow-listing fields per entity (see
+[Enabling it](#enabling-it)), not by row-level policy. See
+[ADR 0013](/docs/decisions/0013-cross-tenant-analytics-sink) for the full
+trust-boundary rationale.
+</Callout>
+
+## Topology
+
+The analytics sink is a **third projection peer** to graph and search — it
+reads the same shared event stream, not a new transport:
+
+```
+command → outbox → relay/sweeper → shared Redis stream
+                                          │
+                    ┌─────────────────────┼─────────────────────┐
+                    ▼                     ▼                     ▼
+             proj:graph groups     proj:search groups     proj:analytics group
+                    │                     │                     │
+                    ▼                     ▼                     ▼
+              graph store            search cluster       analytics database
+```
+
+`proj:analytics` is an ordinary Redis consumer group on
+`registry.StreamKey()`, consumed through the exported `projection.Source`
+seam (`core/analytics.Consumer` deliberately does not wrap
+`projection.Engine`, which is hardwired to graph/search's closed
+`Mutation` set). Each envelope is turned into a redacted `Fact` + `Event`
+by a pure `core/analytics.Applier`, then written through the
+`core/analytics.Sink` port. The reference adapter, `adapters/pganalytics`,
+is a shared Postgres database.
+
+Because it rides the existing stream, the analytics sink starts in
+**every** tenancy mode — static and catalog alike — with no per-shard or
+per-tenant-database wiring.
+
+## Enabling it
+
+The sink is off unless `Config.Analytics.DSN` is set, and the
+`proj:analytics` consumer only starts when a DSN is configured AND at
+least one entity opts in:
+
+```yaml
+analytics:
+  dsn: postgres://fabriq_analytics@analytics-db:5432/fabriq_analytics
+  batch: 128   # backfill write batch size (default 128)
+```
+
+The analytics DSN **must differ** from every tenant, shard, and catalog
+control DSN — `ValidateAnalyticsConfig` checks this at `fabriq.Open` and
+refuses to start on a collision. Separate database, separate credential,
+enforced at boot, not left as an operational convention.
+
+Mark an aggregate for analytics with an allow-list of payload fields on
+its `registry.EntitySpec`:
+
+```go
+r.Register(registry.EntitySpec{
+    Name: "order",
+    // ...
+    Analytics: &registry.AnalyticsSpec{
+        Include: []string{"status", "category", "total"},
+    },
+})
+```
+
+Everything not named in `Include` is stripped before the record leaves
+the projection — deny-by-default at the aggregate level, then field
+minimization within a marked aggregate. `IncludeAll: true` ships the
+whole payload unredacted; use it only when you have already reviewed the
+payload for PII. A spec with neither `Include` entries nor `IncludeAll`
+set is rejected by the registry (a marked-but-empty spec would silently
+analyticize nothing).
+
+## Schema
+
+`adapters/pganalytics` ensures its schema idempotently at `Open` (three
+`CREATE TABLE IF NOT EXISTS` statements) rather than joining fabriq's
+tenant migration chain — this is a self-contained operator store:
+
+| Table | Shape | Purpose |
+| --- | --- | --- |
+| `fabriq_analytics_facts` | PK `(tenant_id, aggregate, agg_id)`, `version`, JSONB `payload`, `deleted` | Latest denormalized state per aggregate instance. Upserts are version-gated: `WHERE excluded.version > fabriq_analytics_facts.version`. |
+| `fabriq_analytics_events` | PK `(tenant_id, aggregate, agg_id, version)`, `type`, JSONB `payload` | Append-only history of every applied change. Inserts use `ON CONFLICT DO NOTHING`. |
+| `fabriq_analytics_applied` | PK `(tenant_id, aggregate, agg_id)`, `version` | Per-aggregate watermark, used for backfill resumability. |
+
+Every table has `tenant_id NOT NULL`. There is no RLS on this database —
+see the trust boundary callout above.
+
+The `version` gate on `fabriq_analytics_facts` is what turns Redis's
+at-least-once delivery into an idempotent effect: redelivery of an
+already-applied envelope is a no-op, with no separate dedupe table or
+lock required. The steady-state apply path only ever reads and writes the
+analytics database — it never touches a tenant database.
+
+## Query patterns
+
+Every query against the analytics database filters or groups by
+`tenant_id` — that is the whole point of retaining the column even though
+there is no RLS to enforce it. Fleet-wide aggregation groups across
+tenants deliberately; per-tenant reporting still filters by it.
+
+Fleet-wide count of live orders by status:
+
+```sql
+SELECT payload->>'status' AS status, count(*)
+FROM fabriq_analytics_facts
+WHERE aggregate = 'order' AND NOT deleted
+GROUP BY payload->>'status';
+```
+
+Per-tenant history for one order:
+
+```sql
+SELECT version, type, payload, at
+FROM fabriq_analytics_events
+WHERE tenant_id = $1 AND aggregate = 'order' AND agg_id = $2
+ORDER BY version;
+```
+
+## Backfill runbook
+
+Backfill replays a tenant's **current-state snapshot** — not the event
+log — through the same `Applier` the live consumer uses, so a re-run is a
+no-op (version-gated) and safe to run alongside live traffic. Use it when
+you mark a new entity for analytics (its history predates the marking) or
+to recover a dropped/rebuilt analytics database.
+
+CLI, one tenant or the whole fleet:
+
+```bash
+export FABRIQ_ANALYTICS_DSN=postgres://fabriq_analytics@analytics-db:5432/fabriq_analytics
+
+fabriq analytics backfill --tenant acme
+fabriq analytics backfill --all-tenants --concurrency 8
+```
+
+With the admin extension mounted and `WithAnalyticsAdmin()` enabled, the
+`analytics.admin`/`analytics.read` capabilities expose the same operation
+over HTTP:
+
+| Method + path | Effect |
+| --- | --- |
+| `POST {base}/analytics/backfill` `{"tenant":"acme"}` or `{"all":true,"concurrency":8}` | Backfill one tenant or the fleet — **synchronous**, returns per-tenant row counts once the replay completes |
+| `GET {base}/analytics/status` | `{enabled, tenantCount}` — whether the sink is configured, without triggering any work |
+
+A fleet backfill (`"all": true`) that partially fails returns HTTP `207`
+with the partial per-tenant counts and an error string, rather than
+discarding successful tenants' results. Backfill is deliberately
+synchronous today — an async job/SSE variant (matching the tenant
+provisioning and migration job APIs) is a documented future enhancement,
+not built here.
+
+## Freshness, lag, and metrics
+
+The sink is near-real-time: lag is relay latency plus apply time,
+sub-second in a healthy deployment, because it rides the same stream
+graph and search already consume from. Two counters, defined in
+`internal/metrics`, are emitted by the `proj:analytics` consumer:
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `fabriq_analytics_applied_total` | counter | Envelopes successfully applied by the analytics consumer. |
+| `fabriq_analytics_failures_total` | counter | Envelopes the consumer failed to apply (transient; left pending for redelivery). |
+
+<Callout type="info">
+**Planned, not yet built:** a `fabriq_analytics_lag_seconds` gauge (needs
+a database-side poller comparing applied watermarks to stream position)
+and a `fabriq_analytics_backfill_rows_total` counter (backfill runs
+outside the worker's metrics loop today). Until then, watch
+`fabriq_analytics_failures_total` for stalls and use the CLI/admin
+backfill row counts to gauge one-off catch-up volume.
+</Callout>
+
+<Cards>
+  <Card title="Observability" href="/docs/observability">
+    The full metric catalog and health endpoints.
+  </Card>
+  <Card title="Database per tenant" href="/docs/db-per-tenant">
+    Catalog mode — the tenancy mode the analytics sink is designed to sit
+    alongside without per-tenant-database wiring.
+  </Card>
+</Cards>

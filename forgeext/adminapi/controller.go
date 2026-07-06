@@ -199,6 +199,10 @@ func (c *adminController) Routes(r forge.Router) error {
 		return err
 	}
 
+	if err := c.registerAnalyticsRoutes(r); err != nil {
+		return err
+	}
+
 	// Registered AFTER registerTenantRoutes so the static /tenants/... routes
 	// are already in place: /tenants/:id/connection must not shadow (or be
 	// shadowed by) the existing /tenants/:id subtree.
@@ -271,6 +275,9 @@ func (c *adminController) handleMeta(ctx forge.Context) error {
 	}
 	if c.ext.cfg.ConnectionsRead {
 		caps = append(append([]string(nil), caps...), "connections.read")
+	}
+	if c.ext.cfg.AnalyticsAdmin {
+		caps = append(append([]string(nil), caps...), "analytics.admin", "analytics.read")
 	}
 	resp := metaResponse{
 		Name:         "fabriq-admin-api",

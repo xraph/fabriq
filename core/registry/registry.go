@@ -139,6 +139,9 @@ func (r *Registry) validateAndBind(spec EntitySpec) (*Binding, error) {
 			}
 		}
 	}
+	if spec.Analytics != nil && !spec.Analytics.IncludeAll && len(spec.Analytics.Include) == 0 {
+		return nil, fmt.Errorf("fabriq: entity %q: Analytics spec has no Include fields and IncludeAll is false (nothing would be analyticized)", spec.Name)
+	}
 
 	return binding, nil
 }

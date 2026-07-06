@@ -37,6 +37,10 @@ type Metrics struct {
 	EmbedEventsTotal   prometheus.Counter
 	EmbedFailuresTotal prometheus.Counter
 
+	// Analytics consumer (proj:analytics) instruments.
+	AnalyticsAppliedTotal  prometheus.Counter
+	AnalyticsFailuresTotal prometheus.Counter
+
 	// Catalog-mode sweeper instruments.
 	SweepPassDuration   prometheus.Histogram
 	SweepTenantsTracked prometheus.Gauge
@@ -109,6 +113,14 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fabriq_embed_failures_total",
 			Help: "Events the embed worker failed to process (transient; left pending for retry).",
 		}),
+		AnalyticsAppliedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_analytics_applied_total",
+			Help: "Envelopes successfully applied by the analytics consumer (proj:analytics).",
+		}),
+		AnalyticsFailuresTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_analytics_failures_total",
+			Help: "Envelopes the analytics consumer failed to apply (transient; left pending for retry).",
+		}),
 		SweepPassDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "fabriq_sweep_pass_duration_seconds",
 			Help:    "Wall-clock duration of one catalog sweep pass.",
@@ -163,6 +175,7 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 		m.OutboxBacklog, m.TenantHookTrips, m.ConflationDepth, m.ProjectionLag, m.RelayPublished,
 		m.BlobGCBytesFreed, m.BlobGCCollected, m.BlobGCRefDriftCorrected, m.BlobGCBroken, m.BlobGCOrphans,
 		m.EmbedEventsTotal, m.EmbedFailuresTotal,
+		m.AnalyticsAppliedTotal, m.AnalyticsFailuresTotal,
 		m.SweepPassDuration, m.SweepTenantsTracked, m.SweepEligible,
 		m.SweepSweptTotal, m.SweepBusyTotal, m.SweepErrorsTotal,
 		m.PoolShardsOpen, m.PoolShardsHeld,

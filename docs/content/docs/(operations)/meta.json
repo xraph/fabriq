@@ -6,6 +6,7 @@
     "cli",
     "migrations",
     "db-per-tenant",
+    "analytics-sink",
     "rebuild-and-reconcile",
     "observability",
     "runbooks"

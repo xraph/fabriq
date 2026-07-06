@@ -115,6 +115,26 @@ func (e *Extension) runCatalogSweeper() error {
 			supervise(runCtx, logger, "proj:search", func(c context.Context) error { return sengine.Run(c, consumer) })
 		}()
 	}
+	if stores.Analytics != nil && stores.Redis != nil && hasAnalyticsEntity(e.reg) {
+		cons, err := stores.AnalyticsConsumer(e.reg, fab.Upcasters())
+		if err != nil {
+			cancel()
+			return err
+		}
+		if e.metrics != nil {
+			cons.OnApplied = e.metrics.AnalyticsAppliedTotal.Inc
+			cons.OnFailure = e.metrics.AnalyticsFailuresTotal.Inc
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "proj:analytics", func(c context.Context) error { return cons.Run(c, consumer) })
+		}()
+	} else if stores.Analytics != nil && stores.Redis != nil {
+		if logger != nil {
+			logger.Warn("fabriq: analytics is configured but no entity is marked for it; nothing will flow to the analytics sink")
+		}
+	}
 
 	// The tracked-tenants gauge moves slowly; poll it off the pass path.
 	if m != nil {
