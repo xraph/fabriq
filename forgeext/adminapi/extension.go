@@ -64,6 +64,14 @@ type config struct {
 	// WithTenantsAdmin. Even when enabled, the endpoints only function in
 	// catalog mode (db-per-tenant) — see requireTenantsAdmin.
 	TenantsAdmin bool
+	// AnalyticsAdmin enables the cross-tenant analytics sink endpoints —
+	// synchronous backfill (single-tenant or fleet) and a status check, the
+	// HTTP twin of `fabriq analytics backfill`. Default false: those
+	// endpoints 403 until the host opts in via WithAnalyticsAdmin. Even when
+	// enabled, the endpoints only function when the analytics sink is
+	// configured and a parent forgeext.Extension is present — see
+	// requireAnalyticsAdmin.
+	AnalyticsAdmin bool
 	// ConnectionsRead enables the connection/topology info endpoints (GET
 	// /connections and GET /tenants/:id/connection). Default false: those
 	// endpoints 403 until the host opts in via WithConnectionsRead. It is a
@@ -131,6 +139,13 @@ func WithSchemaAdmin() Option { return func(c *config) { c.SchemaAdmin = true } 
 // are instance-global, catalog-mode-only operations; leave OFF unless the host
 // guards the admin API and runs db-per-tenant.
 func WithTenantsAdmin() Option { return func(c *config) { c.TenantsAdmin = true } }
+
+// WithAnalyticsAdmin enables the cross-tenant analytics sink endpoints —
+// synchronous backfill (single-tenant or fleet) plus a status check (the HTTP
+// twin of `fabriq analytics backfill`). Leave OFF unless the host guards the
+// admin API: backfill replays tenant snapshots into the analytics sink and is
+// an instance-global operation.
+func WithAnalyticsAdmin() Option { return func(c *config) { c.AnalyticsAdmin = true } }
 
 // WithConnectionsRead enables the connection/topology info endpoints — GET
 // /connections (the tier's stores + cluster topology) and GET
