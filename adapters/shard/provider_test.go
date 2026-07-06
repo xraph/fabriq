@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -546,4 +547,94 @@ func BenchmarkPoolManager_ChurnLRU(b *testing.B) {
 	if b.N > 1000 && totalOpens > 8*3 {
 		b.Fatalf("hot shards re-dialed %d times — LRU is thrashing the hot set", totalOpens)
 	}
+}
+
+// runZipfPool replays a zipf(1.2) access stream over nShards, driving the
+// controller (if adaptive) every 500 ops. Returns total dials and final cap.
+func runZipfPool(pool *PoolManager, d *fakeDialer, nShards, ops int, tick func()) (dials, finalCap int) {
+	rng := rand.New(rand.NewSource(1))
+	z := rand.NewZipf(rng, 1.2, 1.0, uint64(nShards-1))
+	ctx := context.Background()
+	for i := 0; i < ops; i++ {
+		id := fmt.Sprintf("s%d", z.Uint64())
+		if _, rel, err := pool.Acquire(ctx, id); err == nil {
+			rel()
+		}
+		if tick != nil && i%500 == 0 {
+			tick()
+		}
+	}
+	d.mu.Lock()
+	for _, n := range d.opens {
+		dials += n
+	}
+	d.mu.Unlock()
+	return dials, pool.Cap()
+}
+
+func TestAdaptive_BeatsFixedCap_UnderZipf(t *testing.T) {
+	const (
+		nShards = 200
+		ops     = 40000
+	)
+	// Fixed small cap.
+	df := newFakeDialer()
+	fixed := NewPoolManager(df.dial, PoolManagerConfig{MaxActive: 16, AcquireTimeout: time.Second})
+	fixedDials, _ := runZipfPool(fixed, df, nShards, ops, nil)
+
+	// Adaptive, starting at the same floor but free to grow.
+	da := newFakeDialer()
+	adaptive := NewPoolManager(da.dial, PoolManagerConfig{
+		AcquireTimeout: time.Second,
+		Adaptive: &AutoscaleConfig{
+			Min: 16, Max: 128, ConfirmTicks: 1, CooldownTicks: 1,
+			MissRatioHigh: 0.15, EvictRateHigh: 0.05,
+		},
+		sampleHeap: func() uint64 { return 0 },
+		newTicker:  blockingTicker, // manual ticks below
+	})
+	defer adaptive.CloseAll()
+	adaptiveDials, finalCap := runZipfPool(adaptive, da, nShards, ops, adaptive.reconsider)
+
+	t.Logf("fixed dials=%d ; adaptive dials=%d finalCap=%d", fixedDials, adaptiveDials, finalCap)
+	if adaptiveDials >= fixedDials {
+		t.Fatalf("adaptive did not reduce dials: adaptive=%d fixed=%d", adaptiveDials, fixedDials)
+	}
+	if finalCap <= 16 {
+		t.Fatalf("adaptive cap never grew past the floor (finalCap=%d)", finalCap)
+	}
+	if finalCap > 128 {
+		t.Fatalf("adaptive cap exceeded the ceiling (finalCap=%d)", finalCap)
+	}
+}
+
+// BenchmarkAdaptiveVsFixed_ZipfHitRatio reports hit ratios for both modes.
+func BenchmarkAdaptiveVsFixed_ZipfHitRatio(b *testing.B) {
+	const nShards = 200
+	run := func(pool *PoolManager, d *fakeDialer, tick func()) float64 {
+		dials, _ := runZipfPool(pool, d, nShards, b.N, tick)
+		if b.N == 0 {
+			return 0
+		}
+		return 1 - float64(dials)/float64(b.N)
+	}
+	df := newFakeDialer()
+	fixed := NewPoolManager(df.dial, PoolManagerConfig{MaxActive: 16, AcquireTimeout: time.Second})
+	fixedHit := run(fixed, df, nil)
+
+	da := newFakeDialer()
+	adaptive := NewPoolManager(da.dial, PoolManagerConfig{
+		AcquireTimeout: time.Second,
+		Adaptive: &AutoscaleConfig{
+			Min: 16, Max: 128, ConfirmTicks: 1, CooldownTicks: 1,
+			MissRatioHigh: 0.15, EvictRateHigh: 0.05,
+		},
+		sampleHeap: func() uint64 { return 0 },
+		newTicker:  blockingTicker,
+	})
+	defer adaptive.CloseAll()
+	adaptiveHit := run(adaptive, da, adaptive.reconsider)
+
+	b.ReportMetric(fixedHit, "fixed-hit-ratio")
+	b.ReportMetric(adaptiveHit, "adaptive-hit-ratio")
 }
