@@ -87,7 +87,7 @@ All shards carry the same schema; there is no separate catalog database to migra
 ## Status
 
 <Callout type="info">
-  **Implemented:** the tenant→shard routing layer behind the ports, multi-shard `Open`, the hash directory, config-pinned tenant→shard overrides (`shardPins`), the per-shard outbox relay — and **catalog mode** (ADR 0011): a catalog-backed directory routing each tenant to its own dedicated database, with explicit provisioning, a fleet migration roller (`fabriq tenant migrate-all`), a per-tenant document plane, and a sweeping worker plane. See [Database per tenant](/docs/db-per-tenant). **Not yet:** online tenant moves between clusters/shards, and hash-mode document-plane sharding (single-shard on the primary in `shards` mode).
+  **Implemented:** the tenant→shard routing layer behind the ports, multi-shard `Open`, the hash directory, config-pinned tenant→shard overrides (`shardPins`), the per-shard outbox relay — and **catalog mode** with two isolation levels: a dedicated **database** per tenant (ADR 0011, [Database per tenant](/docs/db-per-tenant)) or a dedicated **schema** per tenant sharing a consolidation database, routed by `search_path` (ADR 0012, [Schema per tenant](/docs/schema-per-tenant)). Both provide explicit provisioning, a fleet migration roller (`fabriq tenant migrate-all`), a per-tenant document plane, and a sweeping worker plane. **Not yet:** online tenant moves between clusters/schemas, and hash-mode document-plane sharding (single-shard on the primary in `shards` mode).
 </Callout>
 
 <Cards>

@@ -1,0 +1,127 @@
+---
+title: Schema per tenant
+description: Consolidation mode — many tenants share one Postgres database, each isolated by its own schema and routed by search_path, with far less overhead than a database each.
+---
+
+Schema-per-tenant "consolidation mode" is the middle ground between
+shared-RLS and [database per tenant](/docs/db-per-tenant): many tenants share
+one Postgres **database**, but each tenant owns a dedicated **schema**
+(`tenant_{id}`), routed by setting `search_path` per transaction. It is a
+second *isolation level* under catalog mode — the same control plane,
+provisioning, sweeper and fleet roller — selected by one config field. The
+facade, `core/`, and every call site are unchanged.
+
+```yaml
+# config.yaml — schema-per-tenant consolidation mode
+catalog:
+  dsn: "postgres://fabriq_ctl:***@pg-control:5432/fabriq_control"
+  isolation: "schema"            # "database" (default) | "schema"
+  sharedSchema: "fabriq_shared"  # holds pgvector/postgis; default fabriq_shared
+  clusterDsns:
+    c1: "postgres://fabriq_app:***@pg-a:5432/postgres?sslmode=require"
+  maxActiveShards: 32            # pools per CONSOLIDATION DATABASE, not per tenant
+```
+
+## The model: a database is the shard, a schema is a per-transaction stamp
+
+A tenant's catalog entry records its cluster, its consolidation **database**,
+and its **schema**. The routing shard id is `{cluster}/{database}` — *shared*
+by every tenant in that database — so the connection pool manager opens at most
+one pool per consolidation database. **1000 tenants across 10 consolidation
+databases hold 10 pools, not 1000.** That is the operational win.
+
+The tenant's schema rides on `context.Context` and is stamped into every
+transaction exactly as the tenant id is:
+
+```sql
+SELECT set_config('search_path', 'tenant_acme, fabriq_shared', true)  -- SET LOCAL semantics
+```
+
+Grove emits bare, unqualified table names, so `SELECT … FROM fabriq_events`
+resolves through `search_path` to `tenant_acme.fabriq_events`. The shared
+schema is appended so extension types (`vector`, `geometry`) still resolve.
+Because it is `SET LOCAL` (transaction-scoped, reset at commit), it is
+**PgBouncer transaction-pooling safe**, just like `SET LOCAL app.tenant_id`.
+
+## Three isolation gates
+
+Isolation is stronger than shared-RLS — three independent gates that must all
+agree:
+
+1. **`search_path`** selects the tenant's schema — the primary boundary.
+2. **FORCE RLS** on `app.tenant_id` still applies *inside* the schema: a
+   wrong or empty tenant stamp denies rows even with a correct `search_path`.
+3. **The grove backstop** denies pool-path (unstamped) access to tenant tables.
+
+The shared pool's default `search_path` is the shared schema only, which holds
+no `fabriq_*` tables — so an unstamped or bug-skipped query **fails closed**
+(relation-not-found), never crossing tenants. As in database mode, consolidation
+mode refuses superuser serving credentials at boot (RLS never binds superusers).
+
+## Provisioning
+
+Provisioning is explicit and idempotent, and names the consolidation database:
+
+```bash
+# The consolidation database is bootstrapped once (shared schema + extensions);
+# each tenant then gets its own schema, migrated under its search_path.
+fabriq tenant provision acme --cluster c1 --database pool_a --isolation schema
+fabriq tenant suspend   acme --isolation schema   # route off (schema untouched)
+fabriq tenant migrate-all      --isolation schema  # roll the chain across every schema
+```
+
+The same surface is available over HTTP (`POST /admin/tenants` with a
+`database` field, behind the `tenants.admin` capability). fabriq **never drops**
+a schema or database — offboarding is `suspend`; the physical drop is a human
+step.
+
+### The shared schema and extensions
+
+`vector` (pgvector) and `postgis` are database-global. They are installed once,
+into the shared schema, when a consolidation database is first used, so every
+tenant schema resolves their types via `search_path`. The per-tenant migration
+chain's `CREATE EXTENSION IF NOT EXISTS` steps then no-op. `spatial_ref_sys`
+(postgis's own table) lives in the shared schema too.
+
+## The worker plane
+
+The catalog sweeper drives maintenance in consolidation mode. Because many
+tenants share one database, the advisory-lock keys **fold in the schema** — a
+static per-database lock would serialize every tenant's relay behind one lock.
+Two replicas contend per schema, and tenants in one database relay and
+materialize concurrently. Idle tenants back off; `fabriq:wake:{tenant}` nudges
+keep busy tenants at next-pass latency. Cost tracks *active* tenants.
+
+## PgBouncer
+
+The `SET LOCAL search_path` stamp is transaction-scoped and reset at commit, so
+transaction pooling never leaks a schema across pooled clients — identical to
+the tenant/scope stamps. Front each consolidation cluster with PgBouncer in
+transaction mode and keep fabriq's own pools small.
+
+## Choosing an isolation model
+
+| Dimension | Shared-RLS (`single`/`shards`) | Schema-per-tenant | DB-per-tenant (catalog) |
+| --- | --- | --- | --- |
+| Isolation boundary | RLS predicate only | schema + `search_path` + RLS | database + RLS |
+| Independent gates | 2 (RLS, backstop) | 3 (path, RLS, backstop) | 2 (routing, RLS) |
+| Pools held | 1..N shards | **1 per consolidation DB** | 1 per active tenant (LRU) |
+| Tenants / cluster | many (1 DB) | hundreds–thousands (schemas) | hundreds (databases) |
+| Backup granularity | whole DB | `pg_dump -n tenant_x` | whole DB per tenant |
+| Blast radius (infra) | whole cluster | one consolidation DB | one tenant |
+| DDL / extensions | shared | shared exts, per-schema tables | fully independent |
+| Onboarding | implicit first write | provision (`CREATE SCHEMA`) | provision (`CREATE DATABASE`) |
+| Provisioning cost | none | ~schema + chain | ~database + chain |
+
+Pick **shared-RLS** for the simplest deployment and the most tenants per
+database. Pick **schema-per-tenant** when you want a real namespace boundary,
+per-tenant backup/restore, and independent per-tenant table DDL, at thousands
+of tenants per cluster and a handful of pools. Pick **database-per-tenant** when
+contractual/physical isolation, residency, or per-tenant resource governance
+demands a whole database — accepting hundreds (not thousands) per cluster.
+
+<Cards>
+  <Card title="Database per tenant" href="/docs/db-per-tenant">The stronger-isolation sibling: a dedicated database per tenant.</Card>
+  <Card title="Tenancy" href="/docs/tenancy">The stamped transaction and the three enforcement layers.</Card>
+  <Card title="Sharding" href="/docs/sharding">The routing seam every mode shares.</Card>
+</Cards>

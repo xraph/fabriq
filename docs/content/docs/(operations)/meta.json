@@ -6,6 +6,7 @@
     "cli",
     "migrations",
     "db-per-tenant",
+    "schema-per-tenant",
     "rebuild-and-reconcile",
     "observability",
     "runbooks"
