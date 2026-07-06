@@ -242,17 +242,9 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		ports.Search = es
 	}
 
-	if cfg.Analytics.Enabled() {
-		if verr := ValidateAnalyticsConfig(cfg); verr != nil {
-			_ = stores.Close()
-			return nil, nil, verr
-		}
-		as, aerr := pganalytics.Open(ctx, cfg.Analytics.DSN)
-		if aerr != nil {
-			_ = stores.Close()
-			return nil, nil, aerr
-		}
-		stores.Analytics = as
+	if err := openAnalytics(ctx, cfg, stores); err != nil {
+		_ = stores.Close()
+		return nil, nil, err
 	}
 
 	if cfg.Storage.StorageDriver != "" {
@@ -284,6 +276,24 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		ds.authz = f.settings.docAuthz
 	}
 	return f, stores, nil
+}
+
+// openAnalytics validates and dials the analytics sink into stores when
+// configured. Shared by Open and openCatalogMode so the sink is available
+// in every tenancy mode. No-op (nil sink) when analytics is disabled.
+func openAnalytics(ctx context.Context, cfg Config, stores *Stores) error {
+	if !cfg.Analytics.Enabled() {
+		return nil
+	}
+	if err := ValidateAnalyticsConfig(cfg); err != nil {
+		return err
+	}
+	as, err := pganalytics.Open(ctx, cfg.Analytics.DSN)
+	if err != nil {
+		return err
+	}
+	stores.Analytics = as
+	return nil
 }
 
 // validateArchiveConfig fails fast when CRDT history offload is requested —

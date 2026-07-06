@@ -190,6 +190,11 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		ports.Search = es
 	}
 
+	if aerr := openAnalytics(ctx, cfg, stores); aerr != nil {
+		_ = stores.Close()
+		return nil, nil, aerr
+	}
+
 	allOpts := append(cfg.Options(), opts...)
 
 	if rd != nil {

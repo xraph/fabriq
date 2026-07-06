@@ -36,6 +36,22 @@ func TestOpen_AnalyticsDSNCollisionRejected(t *testing.T) {
 		t.Fatal("expected error when analytics DSN collides with a shard DSN")
 	}
 
+	collideWithCatalogCluster := Config{
+		Catalog:   CatalogConfig{ClusterDSNs: map[string]string{"c1": "postgres://x/db"}},
+		Analytics: AnalyticsConfig{DSN: "postgres://x/db"},
+	}
+	if err := ValidateAnalyticsConfig(collideWithCatalogCluster); err == nil {
+		t.Fatal("expected error when analytics DSN collides with a catalog cluster DSN")
+	}
+
+	distinctCatalogCluster := Config{
+		Catalog:   CatalogConfig{ClusterDSNs: map[string]string{"c1": "postgres://x/db"}},
+		Analytics: AnalyticsConfig{DSN: "postgres://analytics-only"},
+	}
+	if err := ValidateAnalyticsConfig(distinctCatalogCluster); err != nil {
+		t.Fatalf("expected no error for a distinct catalog cluster DSN, got %v", err)
+	}
+
 	distinct := Config{
 		Postgres:  PostgresConfig{DSN: "postgres://tenant"},
 		Catalog:   CatalogConfig{DSN: "postgres://catalog"},

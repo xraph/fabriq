@@ -126,6 +126,11 @@ func ValidateAnalyticsConfig(cfg Config) error {
 			return fmt.Errorf("fabriq: analytics DSN must differ from every shard DSN")
 		}
 	}
+	for _, dsn := range cfg.Catalog.ClusterDSNs {
+		if adsn == dsn {
+			return fmt.Errorf("fabriq: analytics DSN must differ from every catalog cluster DSN")
+		}
+	}
 	return nil
 }
 

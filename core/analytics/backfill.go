@@ -54,7 +54,10 @@ func (b *Backfiller) Tenant(ctx context.Context, tenantID string) (int, error) {
 	err := b.Snapshot(ctx, tenantID, func(env event.Envelope) error {
 		fact, ev, ok, err := b.Applier.Apply(env)
 		if err != nil || !ok {
-			return err // skip unmarked/malformed (err is nil for unmarked)
+			// unmarked (ok=false, err=nil) is skipped; a malformed-payload error
+			// aborts this tenant's backfill (fail loud — a partial catch-up must
+			// not look complete)
+			return err
 		}
 		rows++
 		facts = append(facts, fact)
