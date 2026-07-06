@@ -129,6 +129,11 @@ func (e *Extension) runCatalogSweeper() error {
 					return
 				case <-ticker.C:
 					m.SweepTenantsTracked.Set(float64(engine.TrackedTenants()))
+					if p, r, fo, ok := stores.CatalogReadStats(); ok {
+						m.CatalogReadPrimary.Set(float64(p))
+						m.CatalogReadReplica.Set(float64(r))
+						m.CatalogReadFailover.Set(float64(fo))
+					}
 				}
 			}
 		}()

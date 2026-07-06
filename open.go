@@ -388,6 +388,17 @@ func (s *Stores) PoolStats() (open, held int, ok bool) {
 	return open, held, true
 }
 
+// CatalogReadStats returns cumulative routing-read counters from the HA
+// Failover view (ok=false when no replicas are configured — the single-Postgres
+// default, where every read is the primary and there is nothing to distinguish).
+func (s *Stores) CatalogReadStats() (primary, replica, failover int64, ok bool) {
+	if s.catalogRoutes == nil {
+		return 0, 0, 0, false
+	}
+	p, r, f := s.catalogRoutes.ReadStats()
+	return p, r, f, true
+}
+
 // Close releases every opened adapter (every shard, plus the projections).
 func (s *Stores) Close() error {
 	// Cancel background workers first so they stop blocking on their
