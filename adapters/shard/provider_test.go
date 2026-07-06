@@ -406,6 +406,113 @@ func BenchmarkDynamicSet_AcquireHot(b *testing.B) {
 	}
 }
 
+// blockingTicker never fires — lets tests drive reconsider() by hand while
+// the background goroutine idles.
+func blockingTicker(time.Duration) (<-chan time.Time, func()) {
+	return make(chan time.Time), func() {}
+}
+
+func TestController_GrowStoresCapAndFiresEvent(t *testing.T) {
+	d := newFakeDialer()
+	var events []ScaleEvent
+	p := NewPoolManager(d.dial, PoolManagerConfig{
+		Adaptive: &AutoscaleConfig{
+			Min: 2, Max: 100, ConfirmTicks: 1, CooldownTicks: 0,
+			MissRatioHigh: 0.20,
+		},
+		OnScale:    func(ev ScaleEvent) { events = append(events, ev) },
+		sampleHeap: func() uint64 { return 0 },
+		newTicker:  blockingTicker,
+	})
+	defer p.CloseAll()
+	if p.Cap() != 2 {
+		t.Fatalf("start cap=%d want Min 2", p.Cap())
+	}
+	// Simulate a pressured window.
+	p.ctr.acquires.Store(100)
+	p.ctr.misses.Store(50)
+	p.mu.Lock()
+	p.entries["x"] = &poolEntry{ready: true}
+	p.mu.Unlock()
+
+	p.reconsider()
+	if p.Cap() != 3 { // ceil(2*1.5)
+		t.Fatalf("cap=%d want 3 after grow", p.Cap())
+	}
+	if len(events) != 1 || events[0].Direction != scaleGrow {
+		t.Fatalf("events=%+v want one grow", events)
+	}
+}
+
+func TestController_ShrinkOnIdle(t *testing.T) {
+	d := newFakeDialer()
+	p := NewPoolManager(d.dial, PoolManagerConfig{
+		Adaptive: &AutoscaleConfig{
+			Min: 2, Max: 100, ConfirmTicks: 1, CooldownTicks: 0,
+		},
+		sampleHeap: func() uint64 { return 0 },
+		newTicker:  blockingTicker,
+	})
+	defer p.CloseAll()
+	p.cap.Store(32) // oversized, idle
+	p.reconsider()
+	if p.Cap() != 31 {
+		t.Fatalf("cap=%d want 31 after idle shrink", p.Cap())
+	}
+}
+
+func TestController_HeapCriticalShrinks(t *testing.T) {
+	d := newFakeDialer()
+	heap := uint64(0)
+	p := NewPoolManager(d.dial, PoolManagerConfig{
+		Adaptive: &AutoscaleConfig{
+			Min: 2, Max: 100, ConfirmTicks: 1, CooldownTicks: 5,
+			HeapSoftLimit: 1000, HeapShrinkMult: 1.10,
+		},
+		sampleHeap: func() uint64 { return heap },
+		newTicker:  blockingTicker,
+	})
+	defer p.CloseAll()
+	p.cap.Store(20)
+	heap = 5000 // critical
+	p.reconsider()
+	if p.Cap() != 19 {
+		t.Fatalf("cap=%d want 19 after heap-critical shrink", p.Cap())
+	}
+}
+
+func TestController_StopsOnClose(t *testing.T) {
+	d := newFakeDialer()
+	ticks := make(chan time.Time)
+	stopped := make(chan struct{})
+	p := NewPoolManager(d.dial, PoolManagerConfig{
+		Adaptive:   &AutoscaleConfig{Min: 2, Max: 8, Interval: time.Hour},
+		sampleHeap: func() uint64 { return 0 },
+		newTicker: func(time.Duration) (<-chan time.Time, func()) {
+			return ticks, func() { close(stopped) }
+		},
+	})
+	if err := p.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("controller ticker was not stopped on CloseAll")
+	}
+}
+
+func TestPoolManager_AdaptiveDisabled_NoController(t *testing.T) {
+	d := newFakeDialer()
+	p := NewPoolManager(d.dial, PoolManagerConfig{MaxActive: 42})
+	if p.auto != nil {
+		t.Fatal("autoscaler must be nil when adaptive is disabled")
+	}
+	if p.Cap() != 42 {
+		t.Fatalf("cap=%d want static 42", p.Cap())
+	}
+}
+
 // BenchmarkPoolManager_ChurnLRU: zipf-ish access over more shards than the
 // cap; asserts a healthy hit ratio for the hot set.
 func BenchmarkPoolManager_ChurnLRU(b *testing.B) {

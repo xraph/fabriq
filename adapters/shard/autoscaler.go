@@ -3,6 +3,7 @@ package shard
 import (
 	"fmt"
 	"math"
+	"runtime/metrics"
 	"time"
 )
 
@@ -210,4 +211,21 @@ func (a *autoscaler) decide(s poolSignals) (newCap int, dir scaleDir, reason str
 
 	a.pressureStreak, a.slackStreak = 0, 0
 	return s.cap, scaleHold, "steady"
+}
+
+// heapInUse reads live heap-object bytes via runtime/metrics (no
+// stop-the-world, unlike runtime.ReadMemStats).
+func heapInUse() uint64 {
+	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	metrics.Read(s)
+	if s[0].Value.Kind() == metrics.KindUint64 {
+		return s[0].Value.Uint64()
+	}
+	return 0
+}
+
+// defaultTicker is the production ticker seam.
+func defaultTicker(d time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTicker(d)
+	return t.C, t.Stop
 }

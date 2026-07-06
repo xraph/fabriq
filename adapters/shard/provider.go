@@ -57,6 +57,15 @@ type PoolManagerConfig struct {
 	DialBackoff time.Duration
 	// now is injectable for tests.
 	now func() time.Time
+
+	// Adaptive, when non-nil, enables autoscaling of MaxActive. The static
+	// MaxActive is the default (nil).
+	Adaptive *AutoscaleConfig
+	// OnScale is called after each cap change (best-effort; must not block).
+	OnScale func(ScaleEvent)
+	// sampleHeap / newTicker are test seams (nil = production defaults).
+	sampleHeap func() uint64
+	newTicker  func(time.Duration) (<-chan time.Time, func())
 }
 
 // poolCounters are lock-free window counters the autoscaler samples. They
@@ -89,6 +98,13 @@ type PoolManager struct {
 
 	cap atomic.Int64 // effective MaxActive (static const, or adaptive)
 	ctr poolCounters
+
+	auto       *autoscaler
+	onScale    func(ScaleEvent)
+	sampleHeap func() uint64
+	newTicker  func(time.Duration) (<-chan time.Time, func())
+	done       chan struct{}
+	closeOnce  sync.Once
 }
 
 type poolEntry struct {
@@ -126,8 +142,24 @@ func NewPoolManager(dial Dialer, cfg PoolManagerConfig) *PoolManager {
 		cfg:     cfg,
 		entries: map[string]*poolEntry{},
 		freed:   make(chan struct{}, 1),
+		onScale: cfg.OnScale,
+		done:    make(chan struct{}),
 	}
-	p.cap.Store(int64(cfg.MaxActive))
+	if cfg.Adaptive != nil {
+		p.auto = newAutoscaler(*cfg.Adaptive)
+		p.cap.Store(int64(p.auto.cfg.Min)) // start at the floor, grow into the working set
+		p.sampleHeap = cfg.sampleHeap
+		if p.sampleHeap == nil {
+			p.sampleHeap = heapInUse
+		}
+		p.newTicker = cfg.newTicker
+		if p.newTicker == nil {
+			p.newTicker = defaultTicker
+		}
+		go p.runController()
+	} else {
+		p.cap.Store(int64(cfg.MaxActive))
+	}
 	return p
 }
 
@@ -348,6 +380,44 @@ func (p *PoolManager) snapshotCounters() poolSignals {
 	return s
 }
 
+func (p *PoolManager) runController() {
+	tick, stop := p.newTicker(p.auto.cfg.Interval)
+	defer stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-tick:
+			p.reconsider()
+		}
+	}
+}
+
+// reconsider samples one window and applies the autoscaler's decision. A
+// panic in the decision core is recovered so the controller keeps ticking
+// (the cap simply holds at its last value).
+func (p *PoolManager) reconsider() {
+	defer func() { _ = recover() }()
+	sig := p.snapshotCounters()
+	sig.heapInUse = p.sampleHeap()
+	newCap, dir, reason := p.auto.decide(sig)
+	if dir == scaleHold {
+		return
+	}
+	old := int(p.cap.Load())
+	p.cap.Store(int64(newCap))
+	if dir == scaleGrow {
+		// Nudge any Acquire parked at the old cap to re-check the gate.
+		select {
+		case p.freed <- struct{}{}:
+		default:
+		}
+	}
+	if p.onScale != nil {
+		p.onScale(ScaleEvent{OldCap: old, NewCap: newCap, Direction: dir, Reason: reason, Signals: sig})
+	}
+}
+
 // DynamicSet is the catalog-mode Router: the directory resolves the ctx
 // tenant to its dedicated shard id and the provider keeps that shard's
 // pools alive.
@@ -388,6 +458,7 @@ var (
 // CloseAll tears down every open shard (process shutdown). Held shards are
 // closed too — pgx pool Close blocks until in-flight connections return.
 func (p *PoolManager) CloseAll() error {
+	p.closeOnce.Do(func() { close(p.done) })
 	p.mu.Lock()
 	entries := p.entries
 	p.entries = map[string]*poolEntry{}
