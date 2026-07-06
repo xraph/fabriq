@@ -16,6 +16,13 @@ const (
 	scaleShrink
 )
 
+// DirGrow / DirShrink expose scale directions to other packages (wiring,
+// tests). The underlying type stays unexported; only the values escape.
+var (
+	DirGrow   = scaleGrow
+	DirShrink = scaleShrink
+)
+
 // String is the {direction} metric label value.
 func (d scaleDir) String() string {
 	switch d {
