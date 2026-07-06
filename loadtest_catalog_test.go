@@ -77,6 +77,7 @@ func TestLoad_CatalogMode(t *testing.T) {
 	seconds := envInt("FABRIQ_LOADTEST_SECONDS", 15)
 	workers := envInt("FABRIQ_LOADTEST_WORKERS", 32)
 	const maxActive = 64
+	adaptive := os.Getenv("FABRIQ_LOADTEST_ADAPTIVE") == "1"
 
 	ctx := context.Background()
 	c1 := fabriqtest.StartPostgres(t) // doubles as the control DB
@@ -126,13 +127,20 @@ func TestLoad_CatalogMode(t *testing.T) {
 
 	// ---- One facade over the fleet, pool capped far below the fleet. ----
 	reg := cmRegistry(t)
-	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
-		Catalog: fabriq.CatalogConfig{
-			DSN: c1, ClusterDSNs: clusters,
-			MaxActiveShards: maxActive,
-			AllowSuperuser:  true,
-		},
-	})
+	catCfg := fabriq.CatalogConfig{
+		DSN: c1, ClusterDSNs: clusters,
+		MaxActiveShards: maxActive,
+		AllowSuperuser:  true,
+	}
+	if adaptive {
+		catCfg.Adaptive = fabriq.AdaptivePoolConfig{
+			Enabled:  true,
+			Min:      16,
+			Max:      maxActive * 2, // 128
+			Interval: time.Second,   // converge within the 15s window
+		}
+	}
+	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{Catalog: catCfg})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,12 +248,22 @@ func TestLoad_CatalogMode(t *testing.T) {
 	t.Logf("writes: n=%d p50=%v p99=%v", writes.Load(), percentile(writeL, 0.50), percentile(writeL, 0.99))
 	t.Logf("errors: %d (pool-cap 503s count here by design)", errsN.Load())
 	t.Logf("pool: open=%d held=%d (cap %d)", open, held, maxActive)
+	capv, _ := stores.PoolCap()
+	t.Logf("adaptive=%v finalCap=%d (static cap=%d)", adaptive, capv, maxActive)
 	t.Logf("sweep: last pass %+v; drain-after-traffic=%v", st, drainDur.Round(time.Millisecond))
 
 	if reads.Load() == 0 || writes.Load() == 0 {
 		t.Fatal("traffic generator produced no successful operations")
 	}
-	if open > maxActive {
+	if !adaptive && open > maxActive {
 		t.Fatalf("pool exceeded its cap: open=%d cap=%d", open, maxActive)
+	}
+	if adaptive {
+		if capv > maxActive*2 {
+			t.Fatalf("adaptive cap exceeded ceiling: cap=%d ceiling=%d", capv, maxActive*2)
+		}
+		if open > capv {
+			t.Fatalf("open exceeded the live adaptive cap: open=%d cap=%d", open, capv)
+		}
 	}
 }
