@@ -32,6 +32,17 @@ package fabriq_test
 //	        oversubscribed; LRU eviction churn absorbed without a 503)
 //	sweep:  172ms full pass over 200 tenants; fleet drained 1.0s after
 //	        traffic stopped
+//
+// Adaptive A/B (set FABRIQ_LOADTEST_ADAPTIVE=1; Adaptive{Min:16, Max:128,
+// Interval:1s}): starts the pool at Min=16 and grows into the zipf hot set
+// instead of pegging a hand-tuned static cap. The no-Docker convergence
+// harness (adapters/shard: TestAdaptive_BeatsFixedCap_UnderZipf) is the
+// committed proof — over 40k ops on 200 shards, zipf(1.2): fixed cap 16
+// dials 16756 times (hit ratio 0.58) vs adaptive 3178 dials (hit ratio
+// 0.92), cap converging into (16,128]. On real clusters the adaptive facade
+// should match/beat the static hit ratio starting from a smaller Min, hold
+// open<=live cap, and keep 0 errors. (Fill the p50/p99/final-cap row from a
+// real two-cluster run.)
 
 import (
 	"context"
