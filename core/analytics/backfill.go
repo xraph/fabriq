@@ -2,6 +2,8 @@ package analytics
 
 import (
 	"context"
+	"fmt"
+	"sync"
 
 	"github.com/xraph/fabriq/core/event"
 )
@@ -67,4 +69,36 @@ func (b *Backfiller) Tenant(ctx context.Context, tenantID string) (int, error) {
 		return rows, err
 	}
 	return rows, flush()
+}
+
+// AllTenants backfills each tenant with bounded concurrency. One tenant's
+// failure is recorded in the returned error but does not abort the others
+// (fleet-wide operation). Concurrency <= 0 defaults to 4.
+func (b *Backfiller) AllTenants(ctx context.Context, tenants []string, concurrency int) (map[string]int, error) {
+	if concurrency <= 0 {
+		concurrency = 4
+	}
+	sem := make(chan struct{}, concurrency)
+	var mu sync.Mutex
+	counts := make(map[string]int, len(tenants))
+	var firstErr error
+	var wg sync.WaitGroup
+
+	for _, tn := range tenants {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(tn string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			n, err := b.Tenant(ctx, tn)
+			mu.Lock()
+			counts[tn] = n
+			if err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("fabriq: analytics backfill tenant %s: %w", tn, err)
+			}
+			mu.Unlock()
+		}(tn)
+	}
+	wg.Wait()
+	return counts, firstErr
 }
