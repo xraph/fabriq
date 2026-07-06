@@ -29,7 +29,11 @@ type Config struct {
 	// instead of hash placement. Mutually exclusive with Shards/ShardPins.
 	// Like Shards it is config.yaml-only (the env overlay cannot express
 	// the cluster map).
-	Catalog       CatalogConfig       `yaml:"catalog" json:"catalog"`
+	Catalog CatalogConfig `yaml:"catalog" json:"catalog"`
+	// Analytics enables the opt-in cross-tenant analytics sink (spec
+	// 2026-07-03). Empty DSN = disabled. The DSN MUST point at a database
+	// separate from tenant DBs and the catalog control DB.
+	Analytics     AnalyticsConfig     `yaml:"analytics" json:"analytics"`
 	Redis         RedisConfig         `yaml:"redis" json:"redis"`
 	FalkorDB      FalkorDBConfig      `yaml:"falkordb" json:"falkordb"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
@@ -94,6 +98,17 @@ type CatalogConfig struct {
 
 // Enabled reports whether catalog mode is configured.
 func (c CatalogConfig) Enabled() bool { return c.DSN != "" }
+
+// AnalyticsConfig configures the cross-tenant analytics sink.
+type AnalyticsConfig struct {
+	// DSN locates the shared analytics database.
+	DSN string `yaml:"dsn" json:"dsn"`
+	// Batch bounds the backfill write batch size (default 128 when 0).
+	Batch int `yaml:"batch" json:"batch"`
+}
+
+// Enabled reports whether analytics is configured.
+func (c AnalyticsConfig) Enabled() bool { return c.DSN != "" }
 
 // PostgresConfig locates the source of truth. Required unless Shards is set
 // (it is the one-shard shorthand).

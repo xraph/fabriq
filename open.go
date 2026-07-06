@@ -12,11 +12,13 @@ import (
 	fcache "github.com/xraph/fabriq/adapters/cache"
 	"github.com/xraph/fabriq/adapters/elastic"
 	"github.com/xraph/fabriq/adapters/falkordb"
+	"github.com/xraph/fabriq/adapters/pganalytics"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
 	"github.com/xraph/fabriq/adapters/shard"
 	trovestore "github.com/xraph/fabriq/adapters/trove"
 	"github.com/xraph/fabriq/cachequery"
+	"github.com/xraph/fabriq/core/analytics"
 	corecache "github.com/xraph/fabriq/core/cache"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/crypto"
@@ -240,6 +242,15 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		ports.Search = es
 	}
 
+	if cfg.Analytics.Enabled() {
+		as, aerr := pganalytics.Open(ctx, cfg.Analytics.DSN)
+		if aerr != nil {
+			_ = stores.Close()
+			return nil, nil, aerr
+		}
+		stores.Analytics = as
+	}
+
 	if cfg.Storage.StorageDriver != "" {
 		ba, berr := trovestore.Open(ctx, trovestore.Config{
 			StorageDriver: cfg.Storage.StorageDriver,
@@ -325,7 +336,10 @@ type Stores struct {
 	Redis   *redis.Adapter
 	Falkor  *falkordb.Adapter
 	Elastic *elastic.Adapter
-	Blob    *trovestore.Adapter // nil when Storage not configured
+	// Analytics is the opt-in cross-tenant analytics sink (nil unless
+	// Config.Analytics is configured).
+	Analytics analytics.Sink
+	Blob      *trovestore.Adapter // nil when Storage not configured
 	// CAS is the content-addressable store (nil when EnableCas is false).
 	CAS *trovestore.CASStore
 	// Cache is the engine cache (nil when Redis is not configured).
@@ -396,6 +410,11 @@ func (s *Stores) Close() error {
 	}
 	if s.Falkor != nil {
 		if err := s.Falkor.Close(); err != nil {
+			firstErr = err
+		}
+	}
+	if s.Analytics != nil {
+		if err := s.Analytics.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -493,6 +512,22 @@ func (s *Stores) GraphEngine(reg *registry.Registry, upcasters *event.UpcasterCh
 			}
 			return []string{""}, nil
 		},
+	}, nil
+}
+
+// AnalyticsConsumer assembles the proj:analytics consumer: the shared Redis
+// stream -> registry-driven applier -> analytics sink. Run one per worker
+// replica. Requires redis and a configured analytics sink.
+func (s *Stores) AnalyticsConsumer(reg *registry.Registry, upcasters *event.UpcasterChain) (*analytics.Consumer, error) {
+	if s.Redis == nil || s.Analytics == nil {
+		return nil, fmt.Errorf("fabriq: analytics consumer needs redis and an analytics sink configured")
+	}
+	return &analytics.Consumer{
+		Group:     "proj:analytics",
+		Source:    s.Redis,
+		Applier:   analytics.NewApplier(reg),
+		Sink:      s.Analytics,
+		Upcasters: upcasters,
 	}, nil
 }
 
