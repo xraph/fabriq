@@ -211,8 +211,140 @@ func (s *Sink) LagByTenant(ctx context.Context) (map[string]float64, error) {
 	return out, rows.Err()
 }
 
-func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string, transform func(payload json.RawMessage) (json.RawMessage, error)) (rowsRewritten int64, err error) {
-	return 0, errUnimplemented
+// ReprojectTenant re-writes stored fact and event payloads for a tenant (and
+// optional aggregate) through transform, in place. ClickHouse's
+// ReplacingMergeTree can't UPDATE a row, so instead: read the CURRENT
+// winning row per key via argMax(col, _dedup) (facts: payload, version, at,
+// deleted; events: payload, type, at) plus max(_dedup), transform the
+// payload in Go, and re-INSERT only the rows whose bytes actually changed
+// with _dedup = max(_dedup) + 1 — that stays within the domain version's
+// 2^20 reprojection band, so the rewrite wins the next merge while
+// argMax/max reads see it immediately. The count is computed by byte
+// comparison in Go, so it is exact and idempotent regardless of merge state.
+func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
+	transform func(payload json.RawMessage) (json.RawMessage, error)) (int64, error) {
+	var total int64
+
+	// --- facts ---
+	fr, err := s.conn.Query(ctx,
+		`SELECT aggregate, agg_id,
+		        argMax(payload, _dedup)  AS payload,
+		        argMax(version, _dedup)  AS version,
+		        argMax(at, _dedup)       AS at,
+		        argMax(deleted, _dedup)  AS deleted,
+		        max(_dedup)              AS dd
+		 FROM fabriq_analytics_facts
+		 WHERE tenant_id = ? AND (? = '' OR aggregate = ?)
+		 GROUP BY aggregate, agg_id`, tenantID, aggregate, aggregate)
+	if err != nil {
+		return 0, fmt.Errorf("fabriq: analytics reproject scan facts: %w", err)
+	}
+	type factRewrite struct {
+		agg, aggID string
+		version    int64
+		at         time.Time
+		deleted    uint8
+		payload    string
+		dd         uint64
+	}
+	var factRewrites []factRewrite
+	for fr.Next() {
+		var r factRewrite
+		if err := fr.Scan(&r.agg, &r.aggID, &r.payload, &r.version, &r.at, &r.deleted, &r.dd); err != nil {
+			fr.Close()
+			return total, fmt.Errorf("fabriq: analytics reproject fact scan: %w", err)
+		}
+		np, err := transform(json.RawMessage(r.payload))
+		if err != nil {
+			fr.Close()
+			return total, fmt.Errorf("fabriq: analytics reproject fact %s/%s: %w", r.agg, r.aggID, err)
+		}
+		if string(np) != r.payload {
+			r.payload = string(np)
+			factRewrites = append(factRewrites, r)
+		}
+	}
+	if err := fr.Err(); err != nil {
+		fr.Close()
+		return total, fmt.Errorf("fabriq: analytics reproject facts: %w", err)
+	}
+	fr.Close()
+	if len(factRewrites) > 0 {
+		batch, err := s.conn.PrepareBatch(ctx,
+			"INSERT INTO fabriq_analytics_facts (tenant_id, aggregate, agg_id, version, payload, at, deleted, _dedup)")
+		if err != nil {
+			return total, fmt.Errorf("fabriq: analytics reproject reinsert facts: %w", err)
+		}
+		for _, r := range factRewrites {
+			if err := batch.Append(tenantID, r.agg, r.aggID, r.version, r.payload, r.at, r.deleted, r.dd+1); err != nil {
+				return total, fmt.Errorf("fabriq: analytics reproject reinsert facts: %w", err)
+			}
+		}
+		if err := batch.Send(); err != nil {
+			return total, fmt.Errorf("fabriq: analytics reproject reinsert facts: %w", err)
+		}
+		total += int64(len(factRewrites))
+	}
+
+	// --- events ---
+	er, err := s.conn.Query(ctx,
+		`SELECT aggregate, agg_id, version,
+		        argMax(payload, _dedup) AS payload,
+		        argMax(type, _dedup)    AS type,
+		        argMax(at, _dedup)      AS at,
+		        max(_dedup)             AS dd
+		 FROM fabriq_analytics_events
+		 WHERE tenant_id = ? AND (? = '' OR aggregate = ?)
+		 GROUP BY aggregate, agg_id, version`, tenantID, aggregate, aggregate)
+	if err != nil {
+		return total, fmt.Errorf("fabriq: analytics reproject scan events: %w", err)
+	}
+	type eventRewrite struct {
+		agg, aggID, typ string
+		version         int64
+		at              time.Time
+		payload         string
+		dd              uint64
+	}
+	var eventRewrites []eventRewrite
+	for er.Next() {
+		var r eventRewrite
+		if err := er.Scan(&r.agg, &r.aggID, &r.version, &r.payload, &r.typ, &r.at, &r.dd); err != nil {
+			er.Close()
+			return total, fmt.Errorf("fabriq: analytics reproject event scan: %w", err)
+		}
+		np, err := transform(json.RawMessage(r.payload))
+		if err != nil {
+			er.Close()
+			return total, fmt.Errorf("fabriq: analytics reproject event %s/%s/%d: %w", r.agg, r.aggID, r.version, err)
+		}
+		if string(np) != r.payload {
+			r.payload = string(np)
+			eventRewrites = append(eventRewrites, r)
+		}
+	}
+	if err := er.Err(); err != nil {
+		er.Close()
+		return total, fmt.Errorf("fabriq: analytics reproject events: %w", err)
+	}
+	er.Close()
+	if len(eventRewrites) > 0 {
+		batch, err := s.conn.PrepareBatch(ctx,
+			"INSERT INTO fabriq_analytics_events (tenant_id, aggregate, agg_id, version, type, payload, at, _dedup)")
+		if err != nil {
+			return total, fmt.Errorf("fabriq: analytics reproject reinsert events: %w", err)
+		}
+		for _, r := range eventRewrites {
+			if err := batch.Append(tenantID, r.agg, r.aggID, r.version, r.typ, r.payload, r.at, r.dd+1); err != nil {
+				return total, fmt.Errorf("fabriq: analytics reproject reinsert events: %w", err)
+			}
+		}
+		if err := batch.Send(); err != nil {
+			return total, fmt.Errorf("fabriq: analytics reproject reinsert events: %w", err)
+		}
+		total += int64(len(eventRewrites))
+	}
+	return total, nil
 }
 
 func (s *Sink) PruneEvents(ctx context.Context, olderThan time.Time) (rowsDeleted int64, err error) {
