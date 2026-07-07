@@ -27,7 +27,9 @@ func ScopeAwareTenantPolicy(table string) []string {
 	}
 }
 
-// tableExists reports whether the named table exists in the public schema.
+// tableExists reports whether the named table is reachable through the
+// connection's current search_path (public in single/database mode, the
+// tenant schema in schema-per-tenant consolidation mode).
 func tableExists(ctx context.Context, exec migrate.Executor, name string) (bool, error) {
 	// Resolve through the connection's search_path so this is correct in every
 	// deployment: it finds public.<name> in single/database mode and
