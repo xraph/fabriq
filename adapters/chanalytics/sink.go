@@ -9,7 +9,6 @@ package chanalytics
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -94,8 +93,6 @@ func TruncateForTest(ctx context.Context, s *Sink) error {
 	}
 	return nil
 }
-
-var errUnimplemented = errors.New("fabriq: analytics clickhouse method unimplemented")
 
 // UpsertFacts version-gates via _dedup: ReplacingMergeTree keeps the row with
 // the max _dedup per (tenant, aggregate, agg_id), so a higher domain version
@@ -347,14 +344,56 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 	return total, nil
 }
 
-func (s *Sink) PruneEvents(ctx context.Context, olderThan time.Time) (rowsDeleted int64, err error) {
-	return 0, errUnimplemented
+// PruneEvents deletes history events with at < olderThan across all tenants
+// and returns the number of logical events removed. Count-then-DELETE: the
+// count is taken before the lightweight delete, so a re-run at the same cutoff
+// returns 0.
+func (s *Sink) PruneEvents(ctx context.Context, olderThan time.Time) (int64, error) {
+	var n uint64
+	if err := s.conn.QueryRow(ctx,
+		`SELECT uniqExact((tenant_id, aggregate, agg_id, version))
+		 FROM fabriq_analytics_events WHERE at < ?`, olderThan).Scan(&n); err != nil {
+		return 0, fmt.Errorf("fabriq: analytics prune count: %w", err)
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	if err := s.conn.Exec(ctx,
+		`DELETE FROM fabriq_analytics_events WHERE at < ?`, olderThan); err != nil {
+		return 0, fmt.Errorf("fabriq: analytics prune delete: %w", err)
+	}
+	return int64(n), nil
 }
 
 func (s *Sink) MaintainPartitions(ctx context.Context, retention time.Duration) (created, dropped int, err error) {
 	return 0, 0, nil
 }
 
-func (s *Sink) PurgeTenant(ctx context.Context, tenantID string) (rowsDeleted int64, err error) {
-	return 0, errUnimplemented
+// PurgeTenant hard-deletes all of one tenant's rows across the three tables and
+// returns the total logical rows removed. ClickHouse has no cross-table
+// transaction, so this deletes table-by-table; it is idempotent and safe to
+// re-run if interrupted.
+func (s *Sink) PurgeTenant(ctx context.Context, tenantID string) (int64, error) {
+	specs := []struct{ table, key string }{
+		{"fabriq_analytics_facts", "(tenant_id, aggregate, agg_id)"},
+		{"fabriq_analytics_events", "(tenant_id, aggregate, agg_id, version)"},
+		{"fabriq_analytics_applied", "(tenant_id, aggregate, agg_id)"},
+	}
+	var total int64
+	for _, sp := range specs {
+		var n uint64
+		if err := s.conn.QueryRow(ctx,
+			"SELECT uniqExact("+sp.key+") FROM "+sp.table+" WHERE tenant_id = ?", tenantID).Scan(&n); err != nil {
+			return total, fmt.Errorf("fabriq: analytics purge count %s: %w", sp.table, err)
+		}
+		if n == 0 {
+			continue
+		}
+		if err := s.conn.Exec(ctx,
+			"DELETE FROM "+sp.table+" WHERE tenant_id = ?", tenantID); err != nil {
+			return total, fmt.Errorf("fabriq: analytics purge delete %s: %w", sp.table, err)
+		}
+		total += int64(n)
+	}
+	return total, nil
 }
