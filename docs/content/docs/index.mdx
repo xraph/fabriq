@@ -83,6 +83,30 @@ until a storage driver is configured.
   [File Plane](/docs/file-plane) overview.
 </Callout>
 
+## Cross-tenant analytics
+
+Catalog mode physically isolates each tenant in its own database — which makes
+fleet-wide reporting impossible with an ordinary query. The optional
+**[analytics sink](/docs/analytics-sink)** closes that gap: a third projection,
+peer to graph and search, that consumes the *same* shared event stream and
+materializes a denormalized, cross-tenant read model in one Postgres database
+keyed by `tenant_id`. Operators run fleet-wide SQL without ever touching a
+per-tenant database, in single, sharded, and catalog modes alike.
+
+It is the one place fabriq deliberately co-locates data from many tenants, so it
+is fenced as a trust boundary: **deny-by-default** (an aggregate is analyticized
+only when explicitly marked), **field-level redaction** (only allow-listed
+columns cross), a **separate database and credential** (rejected at boot if it
+collides with a tenant DSN), and `tenant_id NOT NULL` on every row. Off until
+`Config.Analytics` is set.
+
+<Callout type="warn">
+  The analytics store is **operator-only**: it has no RLS and holds many tenants'
+  data side by side. Never expose it to tenant-facing surfaces, and mark only the
+  fields that genuinely need fleet-wide reporting. See the
+  [Analytics sink](/docs/analytics-sink) trust-boundary section.
+</Callout>
+
 ## A first taste
 
 ```go
@@ -203,6 +227,11 @@ token validated by the same key middleware.
   <Card title="Operations" href="/docs/deployment">
     Deploy the worker, run migrations, rebuild and reconcile projections, and
     read the metrics and runbooks.
+  </Card>
+  <Card title="Cross-tenant analytics" href="/docs/analytics-sink">
+    Fleet-wide reporting over db-per-tenant deployments: an opt-in, field-redacted
+    read model fed by the shared event stream, co-located behind a documented
+    trust boundary.
   </Card>
 </Cards>
 
