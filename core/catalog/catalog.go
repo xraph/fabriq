@@ -69,6 +69,13 @@ type Entry struct {
 	// it matches the stored row (zero UpdatedAt = create, must not exist).
 	// The store stamps a fresh UpdatedAt on every successful write.
 	UpdatedAt time.Time `json:"updatedAt"`
+	// FromReplica is a transient routing-provenance flag: true when this entry
+	// was served by a read replica during a primary outage (set only by
+	// Failover, never persisted or serialized). The directory treats any answer
+	// it derives from a replica-sourced entry — a version-gate or not-active
+	// CodeUnavailable — as degraded (non-cacheable), because a lagged replica
+	// could report a stale-old version or a superseded state.
+	FromReplica bool `json:"-"`
 }
 
 // ShardID derives the routing shard id for this entry: one tenant database
