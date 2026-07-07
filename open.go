@@ -298,7 +298,11 @@ func openAnalytics(ctx context.Context, cfg Config, reg *registry.Registry, stor
 			}
 		}
 	}
-	as, err := pganalytics.Open(ctx, cfg.Analytics.DSN)
+	var aopts []pganalytics.Option
+	if cfg.Analytics.PartitionEvents {
+		aopts = append(aopts, pganalytics.WithEventPartitioning())
+	}
+	as, err := pganalytics.Open(ctx, cfg.Analytics.DSN, aopts...)
 	if err != nil {
 		return err
 	}

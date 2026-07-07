@@ -166,6 +166,11 @@ func (s *FakeAnalyticsSink) PruneEvents(_ context.Context, olderThan time.Time) 
 	return n, nil
 }
 
+// MaintainPartitions is a no-op for the in-memory fake (it does not partition).
+func (s *FakeAnalyticsSink) MaintainPartitions(_ context.Context, _ time.Duration) (int, int, error) {
+	return 0, 0, nil
+}
+
 // PurgeTenant hard-deletes every fact, event, and watermark for one tenant and
 // returns the count removed. Idempotent.
 func (s *FakeAnalyticsSink) PurgeTenant(_ context.Context, tenantID string) (int64, error) {

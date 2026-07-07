@@ -281,11 +281,33 @@ worker runs), use the CLI:
 fabriq analytics prune-events --older-than 2160h
 ```
 
-<Callout type="info">
-Retention is time-based deletion, which is simple and works on the existing
-schema. For a very large fleet, native range **partitioning** of the event log
-by month (drop-partition instead of delete-scan) is the next efficiency step —
-a documented future refinement, not built here.
+### Partitioning at scale
+
+At a very large fleet, deleting expired rows one-by-one is expensive. Set
+`partitionEvents` to create the event log as a **monthly range-partitioned**
+table: retention then reclaims space by **dropping whole partitions** (instant)
+instead of a delete-scan, and queries prune irrelevant months automatically.
+
+```yaml
+analytics:
+  dsn: postgres://…/analytics
+  eventRetention: 2160h
+  partitionEvents: true   # monthly partitions; drop-partition retention
+```
+
+A worker maintainer creates upcoming month partitions ahead of the write clock
+and drops any partition entirely older than the retention window. A **default
+partition** catches any write outside the maintained window (e.g. a backfill
+appending an event with a historical timestamp), so writes never fail; the
+row-level pruner sweeps that default partition for the boundary.
+
+<Callout type="warn">
+Partitioning takes effect on a **fresh** analytics database only —
+`CREATE TABLE IF NOT EXISTS` will not convert an existing non-partitioned event
+table in place. Migrating an existing deployment (create partitioned, copy,
+swap) is a manual operation. The partitioned event log's primary key includes
+`at` (the partition key), which is fixed per version, so dedup is unchanged —
+the full sink contract is verified identically in both modes.
 </Callout>
 
 ## Reconciling drift

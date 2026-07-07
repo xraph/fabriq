@@ -78,6 +78,11 @@ type Sink interface {
 	// retention control for the unbounded event log; facts (latest state) are
 	// never pruned — only the history. Idempotent.
 	PruneEvents(ctx context.Context, olderThan time.Time) (rowsDeleted int64, err error)
+	// MaintainPartitions is the partition-management hook for sinks that
+	// range-partition the event log: it creates upcoming partitions and, when
+	// retention > 0, drops partitions entirely older than retention (instant
+	// reclaim). Sinks that do not partition return (0, 0, nil).
+	MaintainPartitions(ctx context.Context, retention time.Duration) (created, dropped int, err error)
 	// PurgeTenant hard-deletes ALL of one tenant's co-located data — facts,
 	// events, and watermarks — and returns the number of rows removed. It is the
 	// erasure primitive for tenant offboarding and right-to-be-forgotten

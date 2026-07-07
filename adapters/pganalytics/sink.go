@@ -21,19 +21,33 @@ import (
 // than joining fabriq's tenant migration chain — this is a self-contained
 // operator store.
 type Sink struct {
-	db *pgdriver.PgDB
+	db          *pgdriver.PgDB
+	partitioned bool // fabriq_analytics_events is range-partitioned by month on `at`
 }
 
 var _ analytics.Sink = (*Sink)(nil)
 
+// Option configures the sink at Open.
+type Option func(*Sink)
+
+// WithEventPartitioning creates the event log as a monthly range-partitioned
+// table (PARTITION BY RANGE (at)) so retention becomes an instant DROP
+// PARTITION instead of a delete-scan. Takes effect only on a FRESH database —
+// CREATE TABLE IF NOT EXISTS will not convert an existing non-partitioned
+// events table; migrating an existing deployment is a manual step.
+func WithEventPartitioning() Option { return func(s *Sink) { s.partitioned = true } }
+
 // Open dials the analytics database and ensures the schema.
 // ensureSchema proves reachability (it requires a live connection).
-func Open(ctx context.Context, dsn string) (*Sink, error) {
+func Open(ctx context.Context, dsn string, opts ...Option) (*Sink, error) {
 	db := pgdriver.New()
 	if err := db.Open(ctx, dsn); err != nil {
 		return nil, fmt.Errorf("fabriq: open analytics db: %w", err)
 	}
 	s := &Sink{db: db}
+	for _, o := range opts {
+		o(s)
+	}
 	if err := s.ensureSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -59,16 +73,7 @@ func (s *Sink) ensureSchema(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS fabriq_analytics_facts_agg_idx
 			ON fabriq_analytics_facts (aggregate)`,
-		`CREATE TABLE IF NOT EXISTS fabriq_analytics_events (
-			tenant_id TEXT NOT NULL,
-			aggregate TEXT NOT NULL,
-			agg_id    TEXT NOT NULL,
-			version   BIGINT NOT NULL,
-			type      TEXT NOT NULL,
-			payload   JSONB NOT NULL,
-			at        TIMESTAMPTZ NOT NULL,
-			PRIMARY KEY (tenant_id, aggregate, agg_id, version)
-		)`,
+		s.eventsDDL(),
 		`CREATE INDEX IF NOT EXISTS fabriq_analytics_events_at_idx
 			ON fabriq_analytics_events (at)`,
 		`CREATE TABLE IF NOT EXISTS fabriq_analytics_applied (
@@ -85,7 +90,149 @@ func (s *Sink) ensureSchema(ctx context.Context) error {
 			return fmt.Errorf("fabriq: ensure analytics schema: %w", err)
 		}
 	}
+	if s.partitioned {
+		// A DEFAULT partition catches any write outside the maintained monthly
+		// window (e.g. a backfill appending an event with a historical `at`), so
+		// writes never fail even if the maintainer is behind. The maintainer
+		// creates the current/next month partitions and drops aged ones.
+		if _, err := s.db.Exec(ctx,
+			`CREATE TABLE IF NOT EXISTS fabriq_analytics_events_default
+			 PARTITION OF fabriq_analytics_events DEFAULT`); err != nil {
+			return fmt.Errorf("fabriq: ensure analytics events default partition: %w", err)
+		}
+		if _, _, err := s.MaintainPartitions(ctx, 0); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// eventsDDL returns the events-table DDL — range-partitioned by `at` when the
+// sink is in partitioned mode (the partition key must be in the primary key, so
+// `at` joins it; dedup still keys on version, which has one fixed `at`), plain
+// otherwise.
+func (s *Sink) eventsDDL() string {
+	if s.partitioned {
+		return `CREATE TABLE IF NOT EXISTS fabriq_analytics_events (
+			tenant_id TEXT NOT NULL,
+			aggregate TEXT NOT NULL,
+			agg_id    TEXT NOT NULL,
+			version   BIGINT NOT NULL,
+			type      TEXT NOT NULL,
+			payload   JSONB NOT NULL,
+			at        TIMESTAMPTZ NOT NULL,
+			PRIMARY KEY (tenant_id, aggregate, agg_id, version, at)
+		) PARTITION BY RANGE (at)`
+	}
+	return `CREATE TABLE IF NOT EXISTS fabriq_analytics_events (
+		tenant_id TEXT NOT NULL,
+		aggregate TEXT NOT NULL,
+		agg_id    TEXT NOT NULL,
+		version   BIGINT NOT NULL,
+		type      TEXT NOT NULL,
+		payload   JSONB NOT NULL,
+		at        TIMESTAMPTZ NOT NULL,
+		PRIMARY KEY (tenant_id, aggregate, agg_id, version)
+	)`
+}
+
+// monthStart truncates t to the first instant of its month (UTC).
+func monthStart(t time.Time) time.Time {
+	y, m, _ := t.UTC().Date()
+	return time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
+}
+
+// MaintainPartitions (partitioned mode only) ensures the current and next two
+// months have partitions and, when retention > 0, drops every monthly partition
+// whose entire range is older than now-retention — the instant-reclaim path
+// that replaces a delete-scan. Returns (created, dropped). A no-op when the sink
+// is not partitioned.
+func (s *Sink) MaintainPartitions(ctx context.Context, retention time.Duration) (int, int, error) {
+	if !s.partitioned {
+		return 0, 0, nil
+	}
+	now := time.Now().UTC()
+	created := 0
+	// Ensure current + next two months exist (stay ahead of the write clock).
+	for i := 0; i < 3; i++ {
+		start := monthStart(now).AddDate(0, i, 0)
+		end := start.AddDate(0, 1, 0)
+		name := fmt.Sprintf("fabriq_analytics_events_%04d%02d", start.Year(), int(start.Month()))
+		// Skip if it already exists (IF NOT EXISTS is not allowed on PARTITION OF).
+		if s.partitionExists(ctx, name) {
+			continue
+		}
+		q := fmt.Sprintf(
+			`CREATE TABLE %s PARTITION OF fabriq_analytics_events FOR VALUES FROM ('%s') TO ('%s')`,
+			name, start.Format("2006-01-02"), end.Format("2006-01-02"))
+		if _, err := s.db.Exec(ctx, q); err != nil {
+			// A concurrent maintainer or a stray default-partition row in this
+			// range can make one create fail; that is not fatal — the default
+			// partition still catches those writes. Continue.
+			continue
+		}
+		created++
+	}
+
+	dropped := 0
+	if retention > 0 {
+		cutoff := now.Add(-retention)
+		names, err := s.agedPartitions(ctx, cutoff)
+		if err != nil {
+			return created, 0, err
+		}
+		for _, name := range names {
+			if _, err := s.db.Exec(ctx, `DROP TABLE IF EXISTS `+name); err != nil {
+				return created, dropped, fmt.Errorf("fabriq: drop analytics partition %s: %w", name, err)
+			}
+			dropped++
+		}
+	}
+	return created, dropped, nil
+}
+
+func (s *Sink) partitionExists(ctx context.Context, name string) bool {
+	rows, err := s.db.Query(ctx, `SELECT 1 FROM pg_class WHERE relname = $1`, name)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	return rows.Next()
+}
+
+// agedPartitions returns monthly event partitions whose upper bound is <= cutoff
+// (the whole partition is older than retention). The default partition is never
+// returned.
+func (s *Sink) agedPartitions(ctx context.Context, cutoff time.Time) ([]string, error) {
+	// A monthly partition named ..._YYYYMM covers [YYYY-MM-01, next month). Its
+	// upper bound <= cutoff iff the FIRST of the following month <= cutoff, i.e.
+	// the partition's month is strictly before cutoff's month.
+	rows, err := s.db.Query(ctx,
+		`SELECT relname FROM pg_class
+		 WHERE relname ~ '^fabriq_analytics_events_[0-9]{6}$'`)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: list analytics partitions: %w", err)
+	}
+	defer rows.Close()
+	var aged []string
+	cutoffMonth := monthStart(cutoff)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		// parse YYYYMM suffix
+		suffix := name[len("fabriq_analytics_events_"):]
+		var y, m int
+		if _, err := fmt.Sscanf(suffix, "%04d%02d", &y, &m); err != nil {
+			continue
+		}
+		partEnd := time.Date(y, time.Month(m), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+		if !partEnd.After(cutoffMonth) { // partEnd <= cutoffMonth
+			aged = append(aged, name)
+		}
+	}
+	return aged, rows.Err()
 }
 
 // UpsertFacts version-gates: a row is updated only when the incoming version
@@ -106,13 +253,19 @@ func (s *Sink) UpsertFacts(ctx context.Context, facts []analytics.Fact) error {
 	return nil
 }
 
-// AppendEvents dedupes on the natural key.
+// AppendEvents dedupes on the natural key. The conflict target must match the
+// events primary key, which includes `at` in partitioned mode (`at` is fixed
+// per version, so dedup semantics are unchanged).
 func (s *Sink) AppendEvents(ctx context.Context, events []analytics.Event) error {
+	conflict := "(tenant_id, aggregate, agg_id, version)"
+	if s.partitioned {
+		conflict = "(tenant_id, aggregate, agg_id, version, at)"
+	}
+	q := `INSERT INTO fabriq_analytics_events
+		(tenant_id, aggregate, agg_id, version, type, payload, at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT ` + conflict + ` DO NOTHING`
 	for _, e := range events {
-		const q = `INSERT INTO fabriq_analytics_events
-			(tenant_id, aggregate, agg_id, version, type, payload, at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7)
-			ON CONFLICT (tenant_id, aggregate, agg_id, version) DO NOTHING`
 		if _, err := s.db.Exec(ctx, q, e.TenantID, e.Aggregate, e.AggID, e.Version, e.Type, string(e.Payload), e.At); err != nil {
 			return fmt.Errorf("fabriq: analytics append event: %w", err)
 		}

@@ -149,6 +149,11 @@ type AnalyticsConfig struct {
 	// makes the hashes brute-forceable). Required when any marked entity uses
 	// Hash; validated at Open.
 	HashSalt string `yaml:"hashSalt" json:"hashSalt"`
+	// PartitionEvents creates the event log as a monthly range-partitioned
+	// table so retention becomes an instant DROP PARTITION. Fresh databases
+	// only (an existing events table is not converted in place). When set, a
+	// worker maintainer creates upcoming partitions and drops aged ones.
+	PartitionEvents bool `yaml:"partitionEvents" json:"partitionEvents"`
 }
 
 // Enabled reports whether analytics is configured.

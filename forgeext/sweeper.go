@@ -147,12 +147,12 @@ func (e *Extension) runCatalogSweeper() error {
 			logger.Warn("fabriq: analytics is configured but no entity is marked for it; nothing will flow to the analytics sink")
 		}
 	}
-	if stores.Analytics != nil && e.cfg.Fabriq.Analytics.EventRetention > 0 {
+	if stores.Analytics != nil && (e.cfg.Fabriq.Analytics.EventRetention > 0 || e.cfg.Fabriq.Analytics.PartitionEvents) {
 		m, sink, retention := e.metrics, stores.Analytics, e.cfg.Fabriq.Analytics.EventRetention
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			pruneAnalyticsEventsLoop(runCtx, m, sink, retention)
+			analyticsRetentionLoop(runCtx, m, sink, retention)
 		}()
 	}
 

@@ -196,12 +196,12 @@ func (e *Extension) Run(ctx context.Context) error {
 			logger.Warn("fabriq: analytics is configured but no entity is marked for it; nothing will flow to the analytics sink")
 		}
 	}
-	if stores.Analytics != nil && e.cfg.Fabriq.Analytics.EventRetention > 0 {
+	if stores.Analytics != nil && (e.cfg.Fabriq.Analytics.EventRetention > 0 || e.cfg.Fabriq.Analytics.PartitionEvents) {
 		m, sink, retention := e.metrics, stores.Analytics, e.cfg.Fabriq.Analytics.EventRetention
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			pruneAnalyticsEventsLoop(runCtx, m, sink, retention)
+			analyticsRetentionLoop(runCtx, m, sink, retention)
 		}()
 	}
 
@@ -488,26 +488,33 @@ func (e *Extension) reconcileAll(ctx context.Context) {
 	}
 }
 
-// pruneAnalyticsEventsLoop deletes analytics history events older than the
-// configured retention on a slow cadence (hourly), keeping the append-only log
-// bounded. Facts are never pruned. Runs on every replica — the DELETE is
-// idempotent, so redundant runs just find less to do. No-op until retention > 0.
-func pruneAnalyticsEventsLoop(ctx context.Context, m *metrics.Metrics, sink analytics.Sink, retention time.Duration) {
+// analyticsRetentionLoop keeps the append-only event log bounded on a slow
+// (hourly) cadence: it maintains monthly partitions (creating upcoming ones and
+// dropping aged ones — a no-op for a non-partitioned sink) and, when retention
+// is set, deletes any straggler events older than the window. Facts are never
+// pruned. Runs on every replica; both operations are idempotent, so redundant
+// runs just find less to do.
+func analyticsRetentionLoop(ctx context.Context, m *metrics.Metrics, sink analytics.Sink, retention time.Duration) {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
-	prune := func() {
-		n, err := sink.PruneEvents(ctx, time.Now().Add(-retention))
-		if err == nil && n > 0 && m != nil {
-			m.AnalyticsEventsPrunedTotal.Add(float64(n))
+	tick := func() {
+		// Partition maintenance first (create ahead / drop aged), then a
+		// delete-scan for anything retention-expired that a dropped partition
+		// did not cover (the default partition, or a non-partitioned table).
+		_, _, _ = sink.MaintainPartitions(ctx, retention)
+		if retention > 0 {
+			if n, err := sink.PruneEvents(ctx, time.Now().Add(-retention)); err == nil && n > 0 && m != nil {
+				m.AnalyticsEventsPrunedTotal.Add(float64(n))
+			}
 		}
 	}
-	prune() // once at startup so a long-idle log is trimmed promptly
+	tick() // once at startup so upcoming partitions exist and an idle log is trimmed
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			prune()
+			tick()
 		}
 	}
 }
