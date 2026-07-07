@@ -246,4 +246,11 @@ type AnalyticsSpec struct {
 	// IncludeAll ships the whole (unredacted) payload. Use with care — it
 	// widens the trust boundary to every column.
 	IncludeAll bool
+	// Hash names payload fields whose VALUE is replaced with a stable salted
+	// hash before it crosses the trust boundary — pseudonymization. The raw
+	// value never lands, but equal values hash equally, so operators can still
+	// count-distinct / group-by / join on the field across the fleet without
+	// co-locating the sensitive value. A hashed field is implicitly included
+	// (it need not also appear in Include). Requires Config.Analytics.HashSalt.
+	Hash []string
 }

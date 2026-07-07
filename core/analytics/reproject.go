@@ -23,6 +23,9 @@ import (
 type Reprojector struct {
 	Reg  *registry.Registry
 	Sink Sink
+	// Salt must match the deployment's Config.Analytics.HashSalt so re-projected
+	// Hash fields hash identically to how the live applier wrote them.
+	Salt string
 }
 
 // Tenant re-projects every analytics-marked aggregate's stored payloads for one
@@ -35,7 +38,7 @@ func (r *Reprojector) Tenant(ctx context.Context, tenantID string) (int64, error
 			continue
 		}
 		aggregate := ent.Spec.Name
-		transform := func(p json.RawMessage) (json.RawMessage, error) { return Redact(p, spec) }
+		transform := func(p json.RawMessage) (json.RawMessage, error) { return Redact(p, spec, r.Salt) }
 		n, err := r.Sink.ReprojectTenant(ctx, tenantID, aggregate, transform)
 		if err != nil {
 			return total, fmt.Errorf("fabriq: analytics reproject %s/%s: %w", tenantID, aggregate, err)

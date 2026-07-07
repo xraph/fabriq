@@ -244,7 +244,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		ports.Search = es
 	}
 
-	if err := openAnalytics(ctx, cfg, stores); err != nil {
+	if err := openAnalytics(ctx, cfg, reg, stores); err != nil {
 		_ = stores.Close()
 		return nil, nil, err
 	}
@@ -283,18 +283,27 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 // openAnalytics validates and dials the analytics sink into stores when
 // configured. Shared by Open and openCatalogMode so the sink is available
 // in every tenancy mode. No-op (nil sink) when analytics is disabled.
-func openAnalytics(ctx context.Context, cfg Config, stores *Stores) error {
+func openAnalytics(ctx context.Context, cfg Config, reg *registry.Registry, stores *Stores) error {
 	if !cfg.Analytics.Enabled() {
 		return nil
 	}
 	if err := ValidateAnalyticsConfig(cfg); err != nil {
 		return err
 	}
+	// A pseudonymizing Hash field needs a stable, secret salt.
+	if cfg.Analytics.HashSalt == "" {
+		for _, ent := range reg.All() {
+			if ent.Spec.Analytics != nil && len(ent.Spec.Analytics.Hash) > 0 {
+				return fmt.Errorf("fabriq: entity %q uses Analytics.Hash but Config.Analytics.HashSalt is empty", ent.Spec.Name)
+			}
+		}
+	}
 	as, err := pganalytics.Open(ctx, cfg.Analytics.DSN)
 	if err != nil {
 		return err
 	}
 	stores.Analytics = as
+	stores.analyticsSalt = cfg.Analytics.HashSalt
 	return nil
 }
 
@@ -364,8 +373,9 @@ type Stores struct {
 	Elastic *elastic.Adapter
 	// Analytics is the opt-in cross-tenant analytics sink (nil unless
 	// Config.Analytics is configured).
-	Analytics analytics.Sink
-	Blob      *trovestore.Adapter // nil when Storage not configured
+	Analytics     analytics.Sink
+	analyticsSalt string
+	Blob          *trovestore.Adapter // nil when Storage not configured
 	// CAS is the content-addressable store (nil when EnableCas is false).
 	CAS *trovestore.CASStore
 	// Cache is the engine cache (nil when Redis is not configured).
@@ -600,7 +610,7 @@ func (s *Stores) AnalyticsConsumer(reg *registry.Registry, upcasters *event.Upca
 	return &analytics.Consumer{
 		Group:     "proj:analytics",
 		Source:    s.Redis,
-		Applier:   analytics.NewApplier(reg),
+		Applier:   analytics.NewApplier(reg, analytics.WithHashSalt(s.analyticsSalt)),
 		Sink:      s.Analytics,
 		Upcasters: upcasters,
 	}, nil
@@ -615,7 +625,7 @@ func (s *Stores) AnalyticsBackfiller(reg *registry.Registry) (*analytics.Backfil
 	}
 	return &analytics.Backfiller{
 		Snapshot: routingSnapshot{stores: s}.SnapshotEntities,
-		Applier:  analytics.NewApplier(reg),
+		Applier:  analytics.NewApplier(reg, analytics.WithHashSalt(s.analyticsSalt)),
 		Sink:     s.Analytics,
 	}, nil
 }
@@ -628,7 +638,7 @@ func (s *Stores) AnalyticsReprojector(reg *registry.Registry) (*analytics.Reproj
 	if s.Analytics == nil {
 		return nil, fmt.Errorf("fabriq: analytics reprojector needs an analytics sink configured")
 	}
-	return &analytics.Reprojector{Reg: reg, Sink: s.Analytics}, nil
+	return &analytics.Reprojector{Reg: reg, Sink: s.Analytics, Salt: s.analyticsSalt}, nil
 }
 
 // AnalyticsReconciler assembles a reconciler that heals divergence between the
@@ -641,7 +651,7 @@ func (s *Stores) AnalyticsReconciler(reg *registry.Registry) (*analytics.Reconci
 	}
 	return &analytics.Reconciler{
 		Snapshot: routingSnapshot{stores: s}.SnapshotEntities,
-		Applier:  analytics.NewApplier(reg),
+		Applier:  analytics.NewApplier(reg, analytics.WithHashSalt(s.analyticsSalt)),
 		Sink:     s.Analytics,
 	}, nil
 }

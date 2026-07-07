@@ -144,6 +144,11 @@ type AnalyticsConfig struct {
 	// pruner deletes events older than this. Zero keeps events forever. Facts
 	// (latest state) are never pruned.
 	EventRetention time.Duration `yaml:"eventRetention" json:"eventRetention"`
+	// HashSalt salts the pseudonymizing hash applied to AnalyticsSpec.Hash
+	// fields. It must be stable across restarts and kept secret (a leaked salt
+	// makes the hashes brute-forceable). Required when any marked entity uses
+	// Hash; validated at Open.
+	HashSalt string `yaml:"hashSalt" json:"hashSalt"`
 }
 
 // Enabled reports whether analytics is configured.

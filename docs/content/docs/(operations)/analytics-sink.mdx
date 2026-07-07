@@ -88,9 +88,32 @@ Everything not named in `Include` is stripped before the record leaves
 the projection — deny-by-default at the aggregate level, then field
 minimization within a marked aggregate. `IncludeAll: true` ships the
 whole payload unredacted; use it only when you have already reviewed the
-payload for PII. A spec with neither `Include` entries nor `IncludeAll`
-set is rejected by the registry (a marked-but-empty spec would silently
+payload for PII. A spec with no `Include`, `Hash`, or `IncludeAll`
+is rejected by the registry (a marked-but-empty spec would silently
 analyticize nothing).
+
+### Pseudonymizing a field
+
+Sometimes you need to *analyze by* a sensitive field — count distinct
+users across the fleet, group orders by customer — without co-locating
+the raw value. List those fields under `Hash`: their value is replaced
+with a stable, salted hash before it crosses the boundary. Equal values
+hash equally (so group-by and count-distinct still work), but the raw
+value never lands and is not recoverable.
+
+```go
+Analytics: &registry.AnalyticsSpec{
+    Include: []string{"status", "total"},
+    Hash:    []string{"customerId"},   // pseudonymized, not raw
+},
+```
+
+The hash uses `Config.Analytics.HashSalt` — a stable, secret,
+deployment-wide salt (a leaked salt makes the hashes brute-forceable).
+It is **required** when any entity uses `Hash`; `Open` fails fast
+otherwise. Because the salt is stable, live apply, backfill, and
+reproject all produce the same hash for the same value. A hashed field is
+implicitly included — it need not also appear in `Include`.
 
 ## Schema
 

@@ -82,6 +82,55 @@ func TestApply_DeleteMarksDeletedEmptyPayload(t *testing.T) {
 	}
 }
 
+func TestApply_HashPseudonymizesField(t *testing.T) {
+	reg := regWith(&registry.AnalyticsSpec{Include: []string{"name"}, Hash: []string{"ssn"}})
+	a := analytics.NewApplier(reg, analytics.WithHashSalt("pepper"))
+	fact, _, ok, err := a.Apply(env("widget", "widget.updated", 1, `{"name":"a","ssn":"secret"}`))
+	if err != nil || !ok {
+		t.Fatalf("apply ok=%v err=%v", ok, err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(fact.Payload, &got)
+	if got["name"] != "a" {
+		t.Fatalf("name should pass through raw: %s", fact.Payload)
+	}
+	h, _ := got["ssn"].(string)
+	if h == "" || h == "secret" {
+		t.Fatalf("ssn should be a non-empty hash, not the raw value: %s", fact.Payload)
+	}
+	// Same value + salt -> same hash (referential integrity for group-by).
+	fact2, _, _, _ := a.Apply(env("widget", "widget.updated", 1, `{"name":"b","ssn":"secret"}`))
+	var got2 map[string]any
+	_ = json.Unmarshal(fact2.Payload, &got2)
+	if got2["ssn"] != h {
+		t.Fatalf("same ssn hashed differently: %v vs %v", got2["ssn"], h)
+	}
+	// Different salt -> different hash.
+	a2 := analytics.NewApplier(reg, analytics.WithHashSalt("other"))
+	fact3, _, _, _ := a2.Apply(env("widget", "widget.updated", 1, `{"name":"a","ssn":"secret"}`))
+	var got3 map[string]any
+	_ = json.Unmarshal(fact3.Payload, &got3)
+	if got3["ssn"] == h {
+		t.Fatal("different salt produced the same hash")
+	}
+}
+
+func TestApply_HashOnlySpecIncludesHashedField(t *testing.T) {
+	a := analytics.NewApplier(regWith(&registry.AnalyticsSpec{Hash: []string{"ssn"}}), analytics.WithHashSalt("s"))
+	fact, _, ok, err := a.Apply(env("widget", "widget.updated", 1, `{"name":"a","ssn":"x"}`))
+	if err != nil || !ok {
+		t.Fatalf("apply ok=%v err=%v", ok, err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(fact.Payload, &got)
+	if _, ok := got["ssn"]; !ok {
+		t.Fatalf("hashed field should be present: %s", fact.Payload)
+	}
+	if _, leaked := got["name"]; leaked {
+		t.Fatalf("non-listed field leaked: %s", fact.Payload)
+	}
+}
+
 func TestApply_Deterministic(t *testing.T) {
 	a := analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}}))
 	e := env("widget", "widget.updated", 1, `{"name":"a","ssn":"x"}`)
