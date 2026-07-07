@@ -84,6 +84,17 @@ func (s *Sink) ensureSchema(ctx context.Context) error {
 	return nil
 }
 
+// LatestFactVersionForTest returns the winning fact version for a key
+// (argMax over _dedup). Test-only; proves the read-time version-gate.
+func LatestFactVersionForTest(ctx context.Context, s *Sink, tenantID, aggregate, aggID string) (int64, error) {
+	var v int64
+	err := s.conn.QueryRow(ctx,
+		`SELECT argMax(version, _dedup) FROM fabriq_analytics_facts
+		 WHERE tenant_id = ? AND aggregate = ? AND agg_id = ?`,
+		tenantID, aggregate, aggID).Scan(&v)
+	return v, err
+}
+
 // TruncateForTest clears all analytics tables. Test-only.
 func TruncateForTest(ctx context.Context, s *Sink) error {
 	for _, tbl := range []string{"fabriq_analytics_facts", "fabriq_analytics_events", "fabriq_analytics_applied"} {
