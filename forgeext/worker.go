@@ -196,6 +196,14 @@ func (e *Extension) Run(ctx context.Context) error {
 			logger.Warn("fabriq: analytics is configured but no entity is marked for it; nothing will flow to the analytics sink")
 		}
 	}
+	if stores.Analytics != nil && e.cfg.Fabriq.Analytics.EventRetention > 0 {
+		m, sink, retention := e.metrics, stores.Analytics, e.cfg.Fabriq.Analytics.EventRetention
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pruneAnalyticsEventsLoop(runCtx, m, sink, retention)
+		}()
+	}
 
 	// Embedding worker: one consumer per replica, no election needed.
 	if e.cfg.Embedder != nil && stores.Redis != nil && hasEmbeddableEntity(e.reg) {
@@ -476,6 +484,30 @@ func (e *Extension) reconcileAll(ctx context.Context) {
 			if rec, err := stores.SearchReconciler(e.reg); err == nil {
 				_, _ = rec.Reconcile(ctx, tenantID, true)
 			}
+		}
+	}
+}
+
+// pruneAnalyticsEventsLoop deletes analytics history events older than the
+// configured retention on a slow cadence (hourly), keeping the append-only log
+// bounded. Facts are never pruned. Runs on every replica — the DELETE is
+// idempotent, so redundant runs just find less to do. No-op until retention > 0.
+func pruneAnalyticsEventsLoop(ctx context.Context, m *metrics.Metrics, sink analytics.Sink, retention time.Duration) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	prune := func() {
+		n, err := sink.PruneEvents(ctx, time.Now().Add(-retention))
+		if err == nil && n > 0 && m != nil {
+			m.AnalyticsEventsPrunedTotal.Add(float64(n))
+		}
+	}
+	prune() // once at startup so a long-idle log is trimmed promptly
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			prune()
 		}
 	}
 }

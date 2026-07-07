@@ -140,6 +140,10 @@ type AnalyticsConfig struct {
 	DSN string `yaml:"dsn" json:"dsn"`
 	// Batch bounds the backfill write batch size (default 128 when 0).
 	Batch int `yaml:"batch" json:"batch"`
+	// EventRetention bounds the append-only history log: when > 0, a periodic
+	// pruner deletes events older than this. Zero keeps events forever. Facts
+	// (latest state) are never pruned.
+	EventRetention time.Duration `yaml:"eventRetention" json:"eventRetention"`
 }
 
 // Enabled reports whether analytics is configured.

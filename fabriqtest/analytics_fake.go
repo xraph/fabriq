@@ -152,6 +152,20 @@ func (s *FakeAnalyticsSink) ReprojectTenant(_ context.Context, tenantID, aggrega
 	return n, nil
 }
 
+// PruneEvents deletes history events older than olderThan across all tenants.
+func (s *FakeAnalyticsSink) PruneEvents(_ context.Context, olderThan time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int64
+	for k, e := range s.evs {
+		if e.At.Before(olderThan) {
+			delete(s.evs, k)
+			n++
+		}
+	}
+	return n, nil
+}
+
 // PurgeTenant hard-deletes every fact, event, and watermark for one tenant and
 // returns the count removed. Idempotent.
 func (s *FakeAnalyticsSink) PurgeTenant(_ context.Context, tenantID string) (int64, error) {

@@ -147,6 +147,38 @@ func RunSinkConformance(t *testing.T, newSink func() Sink) {
 		}
 	})
 
+	t.Run("PruneEventsByAge", func(t *testing.T) {
+		s := newSink()
+		defer s.Close()
+		old := time.Unix(1000, 0).UTC()    // "old" history
+		recent := time.Unix(9000, 0).UTC() // "recent" history
+		ev := func(id string, at time.Time) Event {
+			return Event{TenantID: "t1", Aggregate: "widget", AggID: id, Version: 1,
+				Type: "widget.created", Payload: json.RawMessage(`{}`), At: at}
+		}
+		must(t, s.AppendEvents(ctx, []Event{ev("w1", old), ev("w2", recent)}))
+		// A fact with an old timestamp — pruning must NOT touch facts.
+		must(t, s.UpsertFacts(ctx, []Fact{{TenantID: "t1", Aggregate: "widget", AggID: "w1", Version: 1, Payload: json.RawMessage(`{}`), At: old}}))
+		must(t, s.SetWatermark(ctx, []Watermark{{TenantID: "t1", Aggregate: "widget", AggID: "w1", Version: 1}}))
+
+		// Prune events committed before a cutoff between old and recent.
+		if n, err := s.PruneEvents(ctx, time.Unix(5000, 0).UTC()); err != nil || n != 1 {
+			t.Fatalf("prune old: n=%d err=%v, want 1 (only the old event)", n, err)
+		}
+		// Idempotent at the same cutoff.
+		if n, err := s.PruneEvents(ctx, time.Unix(5000, 0).UTC()); err != nil || n != 0 {
+			t.Fatalf("re-prune: n=%d err=%v, want 0", n, err)
+		}
+		// The fact (old timestamp) survived pruning — facts are never pruned.
+		if v, _ := s.Watermark(ctx, "t1", "widget", "w1"); v != 1 {
+			t.Fatalf("fact watermark = %d after prune, want 1 (facts untouched)", v)
+		}
+		// The recent event survived; a later cutoff removes it.
+		if n, err := s.PruneEvents(ctx, time.Unix(99999, 0).UTC()); err != nil || n != 1 {
+			t.Fatalf("prune recent: n=%d err=%v, want 1 (the recent event survived the first prune)", n, err)
+		}
+	})
+
 	t.Run("PurgeTenantErasesOnlyThatTenant", func(t *testing.T) {
 		s := newSink()
 		defer s.Close()

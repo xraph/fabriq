@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/xraph/grove/drivers/pgdriver"
 
@@ -272,6 +273,18 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string, 
 		total += n
 	}
 	return total, nil
+}
+
+// PruneEvents deletes history events with at < olderThan across all tenants
+// (the (at) index carries the scan) and returns the count removed. Facts are
+// untouched. Idempotent.
+func (s *Sink) PruneEvents(ctx context.Context, olderThan time.Time) (int64, error) {
+	res, err := s.db.Exec(ctx, `DELETE FROM fabriq_analytics_events WHERE at < $1`, olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("fabriq: analytics prune events: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // PurgeTenant hard-deletes all of one tenant's rows across the three analytics

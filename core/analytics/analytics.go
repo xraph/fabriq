@@ -73,6 +73,11 @@ type Sink interface {
 	// through the entity's current AnalyticsSpec. Idempotent — a second run with
 	// the same transform rewrites nothing.
 	ReprojectTenant(ctx context.Context, tenantID, aggregate string, transform func(payload json.RawMessage) (json.RawMessage, error)) (rowsRewritten int64, err error)
+	// PruneEvents deletes append-only history events committed strictly before
+	// olderThan, across all tenants, and returns the count removed. It is the
+	// retention control for the unbounded event log; facts (latest state) are
+	// never pruned — only the history. Idempotent.
+	PruneEvents(ctx context.Context, olderThan time.Time) (rowsDeleted int64, err error)
 	// PurgeTenant hard-deletes ALL of one tenant's co-located data — facts,
 	// events, and watermarks — and returns the number of rows removed. It is the
 	// erasure primitive for tenant offboarding and right-to-be-forgotten

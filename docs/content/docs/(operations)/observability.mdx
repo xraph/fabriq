@@ -22,6 +22,7 @@ Five instruments, defined in `internal/metrics`. The names are exact.
 | `fabriq_analytics_failures_total` | counter | Envelopes the analytics consumer failed to apply (transient; left pending for redelivery). | Must stay near zero. Sustained growth means the analytics database is unreachable or rejecting writes. |
 | `fabriq_analytics_lag_seconds` | gauge | Worst-case analytics freshness: the **stalest** tenant's lag (`now()` minus that tenant's newest fact). Per-tenant under the hood, so one stalled tenant moves it — it is not masked by others still flowing. Sampled every 15s. | Low is healthy (sub-second under active traffic). A climb means at least one tenant's consumer is behind. |
 | `fabriq_analytics_tenants_behind` | gauge | Number of tenants whose analytics lag exceeds the alarm threshold (60s). | Zero is healthy. Non-zero names how many tenants are stalled; query `fabriq_analytics_facts` grouped by `tenant_id` to find which. |
+| `fabriq_analytics_events_pruned_total` | counter | Analytics history events deleted by the retention pruner (only when `analytics.eventRetention` is set). | Monotonic; flat means either retention is off or nothing is old enough to prune yet. |
 
 <Callout type="error">
 `fabriq_tenant_hook_trips_total` is a correctness alarm, not a capacity one. A

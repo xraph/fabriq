@@ -83,6 +83,7 @@ func TestAnalyticsInstruments(t *testing.T) {
 	m.AnalyticsFailuresTotal.Inc()
 	m.AnalyticsLagSeconds.Set(12.5)
 	m.AnalyticsTenantsBehind.Set(3)
+	m.AnalyticsEventsPrunedTotal.Add(7)
 
 	if got := testutil.ToFloat64(m.AnalyticsAppliedTotal); got != 1 {
 		t.Fatalf("AnalyticsAppliedTotal = %v", got)
@@ -96,6 +97,9 @@ func TestAnalyticsInstruments(t *testing.T) {
 	if got := testutil.ToFloat64(m.AnalyticsTenantsBehind); got != 3 {
 		t.Fatalf("AnalyticsTenantsBehind = %v", got)
 	}
+	if got := testutil.ToFloat64(m.AnalyticsEventsPrunedTotal); got != 7 {
+		t.Fatalf("AnalyticsEventsPrunedTotal = %v", got)
+	}
 
 	families, err := reg.Gather()
 	if err != nil {
@@ -106,7 +110,7 @@ func TestAnalyticsInstruments(t *testing.T) {
 		names = append(names, f.GetName())
 	}
 	joined := strings.Join(names, ",")
-	for _, want := range []string{"fabriq_analytics_applied_total", "fabriq_analytics_failures_total", "fabriq_analytics_lag_seconds", "fabriq_analytics_tenants_behind"} {
+	for _, want := range []string{"fabriq_analytics_applied_total", "fabriq_analytics_failures_total", "fabriq_analytics_lag_seconds", "fabriq_analytics_tenants_behind", "fabriq_analytics_events_pruned_total"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("metric %q not registered (have %s)", want, joined)
 		}

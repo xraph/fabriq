@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/xraph/forge/cli"
 
@@ -258,9 +259,41 @@ func analyticsCommand() cli.Command {
 	reconcile.AddFlag(cli.NewBoolFlag("all-tenants", "", "reconcile every tenant", false))
 	reconcile.AddFlag(cli.NewIntFlag("concurrency", "", "concurrent tenant reconciliations (--all-tenants only)", 4))
 
+	pruneEvents := cli.NewCommand("prune-events", "Delete analytics history events older than a retention window", func(ctx cli.CommandContext) error {
+		older := ctx.String("older-than")
+		if older == "" {
+			return cliError("--older-than is required (e.g. 720h for 30 days)")
+		}
+		dur, perr := time.ParseDuration(older)
+		if perr != nil || dur <= 0 {
+			return cliError("--older-than must be a positive Go duration (e.g. 720h)")
+		}
+		analyticsDSN := ctx.String("analytics-dsn")
+		if analyticsDSN == "" {
+			analyticsDSN = os.Getenv("FABRIQ_ANALYTICS_DSN")
+		}
+		if analyticsDSN == "" {
+			return cliError("--analytics-dsn (or FABRIQ_ANALYTICS_DSN) is required")
+		}
+		as, err := pganalytics.Open(ctx.Context(), analyticsDSN)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = as.Close() }()
+		n, err := as.PruneEvents(ctx.Context(), time.Now().Add(-dur))
+		if err != nil {
+			return err
+		}
+		ctx.Success(fmt.Sprintf("pruned %d events older than %s", n, dur))
+		return nil
+	})
+	pruneEvents.AddFlag(cli.NewStringFlag("analytics-dsn", "", "analytics sink DSN (or FABRIQ_ANALYTICS_DSN)", ""))
+	pruneEvents.AddFlag(cli.NewStringFlag("older-than", "", "retention window as a Go duration (e.g. 720h)", ""))
+
 	_ = cmd.AddSubcommand(backfill)
 	_ = cmd.AddSubcommand(purge)
 	_ = cmd.AddSubcommand(reproject)
 	_ = cmd.AddSubcommand(reconcile)
+	_ = cmd.AddSubcommand(pruneEvents)
 	return cmd
 }

@@ -224,6 +224,35 @@ the row again so live apply re-ingests it. It is idempotent: a second run
 rewrites nothing.
 </Callout>
 
+## Event-log retention
+
+`fabriq_analytics_facts` holds one latest-state row per aggregate and stays
+bounded, but `fabriq_analytics_events` is an append-only history that grows
+without limit. Set a retention window to bound it — a worker pruner then deletes
+history events older than the window on an hourly cadence (facts are never
+pruned):
+
+```yaml
+analytics:
+  dsn: postgres://…/analytics
+  eventRetention: 2160h   # keep 90 days of history; 0 (default) keeps forever
+```
+
+The pruner runs in both the static worker and the catalog sweeper planes and
+emits `fabriq_analytics_events_pruned_total`. For a one-off trim (or when no
+worker runs), use the CLI:
+
+```bash
+fabriq analytics prune-events --older-than 2160h
+```
+
+<Callout type="info">
+Retention is time-based deletion, which is simple and works on the existing
+schema. For a very large fleet, native range **partitioning** of the event log
+by month (drop-partition instead of delete-scan) is the next efficiency step —
+a documented future refinement, not built here.
+</Callout>
+
 ## Reconciling drift
 
 The consumer skips any event it cannot upcast or apply (poison-avoidance), so a

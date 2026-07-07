@@ -38,10 +38,11 @@ type Metrics struct {
 	EmbedFailuresTotal prometheus.Counter
 
 	// Analytics consumer (proj:analytics) instruments.
-	AnalyticsAppliedTotal  prometheus.Counter
-	AnalyticsFailuresTotal prometheus.Counter
-	AnalyticsLagSeconds    prometheus.Gauge
-	AnalyticsTenantsBehind prometheus.Gauge
+	AnalyticsAppliedTotal      prometheus.Counter
+	AnalyticsFailuresTotal     prometheus.Counter
+	AnalyticsLagSeconds        prometheus.Gauge
+	AnalyticsTenantsBehind     prometheus.Gauge
+	AnalyticsEventsPrunedTotal prometheus.Counter
 
 	// Catalog-mode sweeper instruments.
 	SweepPassDuration   prometheus.Histogram
@@ -139,6 +140,10 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fabriq_analytics_tenants_behind",
 			Help: "Number of tenants whose analytics lag exceeds the alarm threshold (60s).",
 		}),
+		AnalyticsEventsPrunedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fabriq_analytics_events_pruned_total",
+			Help: "Analytics history events deleted by the retention pruner.",
+		}),
 		SweepPassDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "fabriq_sweep_pass_duration_seconds",
 			Help:    "Wall-clock duration of one catalog sweep pass.",
@@ -213,7 +218,7 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 		m.OutboxBacklog, m.TenantHookTrips, m.ConflationDepth, m.ProjectionLag, m.RelayPublished,
 		m.BlobGCBytesFreed, m.BlobGCCollected, m.BlobGCRefDriftCorrected, m.BlobGCBroken, m.BlobGCOrphans,
 		m.EmbedEventsTotal, m.EmbedFailuresTotal,
-		m.AnalyticsAppliedTotal, m.AnalyticsFailuresTotal, m.AnalyticsLagSeconds, m.AnalyticsTenantsBehind,
+		m.AnalyticsAppliedTotal, m.AnalyticsFailuresTotal, m.AnalyticsLagSeconds, m.AnalyticsTenantsBehind, m.AnalyticsEventsPrunedTotal,
 		m.SweepPassDuration, m.SweepTenantsTracked, m.SweepEligible,
 		m.SweepSweptTotal, m.SweepBusyTotal, m.SweepErrorsTotal,
 		m.PoolShardsOpen, m.PoolShardsHeld, m.PoolCap, m.PoolScaleEvents,
