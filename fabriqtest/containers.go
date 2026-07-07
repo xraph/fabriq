@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
+	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -26,6 +27,9 @@ const (
 	RedisImage         = "redis:7-alpine"
 	FalkorDBImage      = "falkordb/falkordb:v4.2.2" // pinned: multi-label + SET n:Label
 	ElasticsearchImage = "elasticsearch:9.4.1"
+	// ClickHouseImage pins a server new enough that lightweight DELETE is GA and
+	// enabled by default (>= 23.3).
+	ClickHouseImage = "clickhouse/clickhouse-server:24.3"
 )
 
 // StartPostgres launches a Postgres+Timescale+pgvector container and
@@ -56,6 +60,43 @@ func StartPostgres(t testing.TB) string {
 	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
 		t.Fatalf("fabriqtest: postgres connection string: %v", err)
+	}
+	return dsn
+}
+
+// StartClickHouse launches a ClickHouse container and returns its
+// clickhouse:// DSN. The container terminates with the test.
+func StartClickHouse(t testing.TB) string {
+	t.Helper()
+	ctx := context.Background()
+
+	ch, err := tcclickhouse.Run(ctx, ClickHouseImage,
+		tcclickhouse.WithUsername("fabriq"),
+		tcclickhouse.WithPassword("fabriq"),
+		tcclickhouse.WithDatabase("fabriq"),
+		// ClickHouse logs "Ready for connections" to its internal server log
+		// file, NOT container stdout (the entrypoint script's own stdout lines
+		// stop at "create database" — verified against 24.3), so wait.ForLog
+		// never matches. Poll the HTTP interface instead, mirroring the
+		// module's own default wait strategy.
+		testcontainers.WithWaitStrategy(
+			wait.ForHTTP("/").WithPort("8123/tcp").
+				WithStatusCodeMatcher(func(status int) bool { return status == 200 }).
+				WithStartupTimeout(2*time.Minute),
+		),
+	)
+	if err != nil {
+		t.Fatalf("fabriqtest: start clickhouse container: %v", err)
+	}
+	t.Cleanup(func() {
+		if termErr := testcontainers.TerminateContainer(ch); termErr != nil {
+			t.Logf("fabriqtest: terminate clickhouse: %v", termErr)
+		}
+	})
+
+	dsn, err := ch.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("fabriqtest: clickhouse connection string: %v", err)
 	}
 	return dsn
 }
