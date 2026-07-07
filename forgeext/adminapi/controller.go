@@ -47,13 +47,14 @@ type entityListResponse struct {
 
 // adminController registers all admin HTTP routes.
 type adminController struct {
-	ext        *Extension
-	jobs       *migrationJobs // async migration-run registry (single-flight)
-	tenantJobs *tenantJobs    // async tenant provision/migrate-all registry
+	ext           *Extension
+	jobs          *migrationJobs // async migration-run registry (single-flight)
+	tenantJobs    *tenantJobs    // async tenant provision/migrate-all registry
+	analyticsJobs *analyticsJobs // async analytics bulk-op registry
 }
 
 func newAdminController(e *Extension) *adminController {
-	return &adminController{ext: e, jobs: newMigrationJobs(), tenantJobs: newTenantJobs()}
+	return &adminController{ext: e, jobs: newMigrationJobs(), tenantJobs: newTenantJobs(), analyticsJobs: newAnalyticsJobs()}
 }
 
 func (c *adminController) Name() string { return "fabriq:admin" }

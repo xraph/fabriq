@@ -1,9 +1,11 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // TestAnalyticsBackfill_403WhenGateOff verifies that without WithAnalyticsAdmin
@@ -160,4 +162,69 @@ func TestAnalyticsEndpoints_Capability(t *testing.T) {
 	if !foundAdmin || !foundRead {
 		t.Fatalf("analytics.admin and analytics.read must both be advertised when AnalyticsAdmin is on, got %v", metaOn.Capabilities)
 	}
+}
+
+// TestAnalyticsReconcile_403WhenGateOff verifies the reconcile endpoint is gated.
+func TestAnalyticsReconcile_403WhenGateOff(t *testing.T) {
+	e := NewAdminAPI(nil)
+	srv := buildServer(t, e)
+	defer srv.Close()
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/analytics/reconcile", map[string]any{"tenant": "acme"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestAnalyticsJobs_LifecycleDone runs a job to completion and checks the
+// recorded result and terminal state.
+func TestAnalyticsJobs_LifecycleDone(t *testing.T) {
+	j := newAnalyticsJobs()
+	job := j.start("backfill", func(context.Context) (any, error) {
+		return map[string]int{"t1": 3}, nil
+	})
+	got := waitJob(t, j, job.ID)
+	if got.State != "done" || got.Error != "" {
+		t.Fatalf("state=%q err=%q, want done/empty", got.State, got.Error)
+	}
+	if string(got.Result) != `{"t1":3}` {
+		t.Fatalf("result = %s, want {\"t1\":3}", got.Result)
+	}
+	if got.EndedAt == nil {
+		t.Fatal("EndedAt should be set on a terminal job")
+	}
+}
+
+// TestAnalyticsJobs_LifecycleFailed records a failed run.
+func TestAnalyticsJobs_LifecycleFailed(t *testing.T) {
+	j := newAnalyticsJobs()
+	job := j.start("reproject", func(context.Context) (any, error) {
+		return nil, boomError("boom")
+	})
+	got := waitJob(t, j, job.ID)
+	if got.State != "failed" || got.Error != "boom" {
+		t.Fatalf("state=%q err=%q, want failed/boom", got.State, got.Error)
+	}
+}
+
+type boomError string
+
+func (e boomError) Error() string { return string(e) }
+
+func waitJob(t *testing.T, j *analyticsJobs, id string) analyticsJob {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if job, ok := j.get(id); ok {
+			j.mu.Lock()
+			snap := *job
+			j.mu.Unlock()
+			if snap.State != "running" {
+				return snap
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("job %s did not reach a terminal state", id)
+	return analyticsJob{}
 }

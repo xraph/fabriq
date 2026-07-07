@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/xraph/forge"
@@ -9,14 +10,14 @@ import (
 )
 
 // registerAnalyticsRoutes wires the cross-tenant analytics sink surface:
-// synchronous backfill (POST) and a light status check (GET). Both handlers
-// gate on the analytics.admin/analytics.read capabilities — see
-// requireAnalyticsAdmin.
+// backfill / reproject / reconcile / purge (POST), a status check (GET), and
+// the async job poll+stream endpoints. All gate on the
+// analytics.admin/analytics.read capabilities — see requireAnalyticsAdmin.
 //
-// Backfill is deliberately SYNCHRONOUS (unlike the async tenant
-// provision/migrate-all jobs): it returns once the replay completes. This is
-// simpler and reliable for v1; an async job/SSE variant is a documented
-// future enhancement, not built here.
+// Single-tenant ops run synchronously; a fleet-wide op ("all") may set
+// "async": true to run as a background job (202 + jobId), polled at
+// /analytics/jobs/:id (or streamed via SSE at .../stream) — for fleets large
+// enough to exceed an HTTP timeout.
 func (c *adminController) registerAnalyticsRoutes(r forge.Router) error {
 	base := c.ext.cfg.BasePath
 	opts := c.ext.cfg.RouteOptions
@@ -27,6 +28,27 @@ func (c *adminController) registerAnalyticsRoutes(r forge.Router) error {
 		forge.WithTags("Fabriq", "Admin", "Analytics"),
 	}, opts...)
 	if err := r.POST(base+"/analytics/backfill", c.handleAnalyticsBackfill, backfillOpts...); err != nil {
+		return err
+	}
+
+	reconcileOpts := append([]forge.RouteOption{
+		forge.WithName("fabriq.admin.analytics.reconcile"),
+		forge.WithSummary("Detect and heal analytics rows missing/stale vs the source of truth"),
+		forge.WithTags("Fabriq", "Admin", "Analytics"),
+	}, opts...)
+	if err := r.POST(base+"/analytics/reconcile", c.handleAnalyticsReconcile, reconcileOpts...); err != nil {
+		return err
+	}
+
+	jobOpts := append([]forge.RouteOption{
+		forge.WithName("fabriq.admin.analytics.job"),
+		forge.WithSummary("Poll an async analytics bulk-op job"),
+		forge.WithTags("Fabriq", "Admin", "Analytics"),
+	}, opts...)
+	if err := r.GET(base+"/analytics/jobs/:id", c.handleAnalyticsJob, jobOpts...); err != nil {
+		return err
+	}
+	if err := r.GET(base+"/analytics/jobs/:id/stream", c.handleAnalyticsJobStream, jobOpts...); err != nil {
 		return err
 	}
 
@@ -87,6 +109,19 @@ type backfillRequest struct {
 	Tenant      string `json:"tenant,omitempty"`
 	All         bool   `json:"all,omitempty"`
 	Concurrency int    `json:"concurrency,omitempty"`
+	// Async runs a fleet backfill (All) as a background job, returning 202 +
+	// jobId instead of blocking — for fleets large enough to exceed an HTTP
+	// timeout. Ignored for a single-tenant backfill.
+	Async bool `json:"async,omitempty"`
+}
+
+// errString returns err.Error() or "" for nil — for the partial-failure Error
+// field on a job result.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // backfillResponse is the payload for a completed backfill, keyed by tenant
@@ -130,6 +165,18 @@ func (c *adminController) handleAnalyticsBackfill(ctx forge.Context) error {
 	}
 
 	if body.All {
+		if body.Async {
+			conc := body.Concurrency
+			job := c.analyticsJobs.start("backfill", func(jctx context.Context) (any, error) {
+				tenants, terr := c.ext.parent.Stores().AllTenants(jctx)
+				if terr != nil {
+					return nil, terr
+				}
+				counts, aerr := bf.AllTenants(jctx, tenants, conc)
+				return backfillResponse{Counts: counts, Error: errString(aerr)}, nil
+			})
+			return ctx.JSON(http.StatusAccepted, map[string]string{"jobId": job.ID})
+		}
 		tenants, terr := c.ext.parent.Stores().AllTenants(reqCtx)
 		if terr != nil {
 			return renderError(ctx, terr)
@@ -155,6 +202,74 @@ type reprojectRequest struct {
 	Tenant      string `json:"tenant,omitempty"`
 	All         bool   `json:"all,omitempty"`
 	Concurrency int    `json:"concurrency,omitempty"`
+	Async       bool   `json:"async,omitempty"`
+}
+
+// analyticsReconcileRequest is the POST {BasePath}/analytics/reconcile request body.
+type analyticsReconcileRequest struct {
+	Tenant      string `json:"tenant,omitempty"`
+	All         bool   `json:"all,omitempty"`
+	Concurrency int    `json:"concurrency,omitempty"`
+	Async       bool   `json:"async,omitempty"`
+}
+
+// analyticsReconcileResponse reports per-tenant drift reports.
+type analyticsReconcileResponse struct {
+	Reports map[string]analytics.Report `json:"reports"`
+	Error   string                      `json:"error,omitempty"`
+}
+
+// handleAnalyticsReconcile serves POST {BasePath}/analytics/reconcile: detect
+// and heal analytics rows missing/stale vs the source of truth. Gated on
+// analytics.admin. Fleet reconcile supports async (202 + jobId).
+func (c *adminController) handleAnalyticsReconcile(ctx forge.Context) error {
+	if !c.ext.cfg.AnalyticsAdmin {
+		return forge.Forbidden("analytics admin not enabled (host must opt in via WithAnalyticsAdmin)")
+	}
+	if c.ext.parent == nil || c.ext.parent.Stores() == nil {
+		return forge.BadRequest("analytics reconcile requires a started fabriq extension")
+	}
+	rc, rerr := c.ext.parent.Stores().AnalyticsReconciler(c.ext.reg)
+	if rerr != nil {
+		return forge.BadRequest(rerr.Error())
+	}
+	var body analyticsReconcileRequest
+	if derr := ctx.BindJSON(&body); derr != nil {
+		return forge.BadRequest("invalid request body: " + derr.Error())
+	}
+	reqCtx := ctx.Request().Context()
+
+	if body.Tenant != "" {
+		rep, terr := rc.Tenant(reqCtx, body.Tenant)
+		if terr != nil {
+			return renderError(ctx, terr)
+		}
+		return ctx.JSON(http.StatusOK, analyticsReconcileResponse{Reports: map[string]analytics.Report{body.Tenant: rep}})
+	}
+	if body.All {
+		if body.Async {
+			conc := body.Concurrency
+			job := c.analyticsJobs.start("reconcile", func(jctx context.Context) (any, error) {
+				tenants, terr := c.ext.parent.Stores().AllTenants(jctx)
+				if terr != nil {
+					return nil, terr
+				}
+				reports, aerr := rc.AllTenants(jctx, tenants, conc)
+				return analyticsReconcileResponse{Reports: reports, Error: errString(aerr)}, nil
+			})
+			return ctx.JSON(http.StatusAccepted, map[string]string{"jobId": job.ID})
+		}
+		tenants, terr := c.ext.parent.Stores().AllTenants(reqCtx)
+		if terr != nil {
+			return renderError(ctx, terr)
+		}
+		reports, aerr := rc.AllTenants(reqCtx, tenants, body.Concurrency)
+		if aerr != nil {
+			return ctx.JSON(http.StatusMultiStatus, analyticsReconcileResponse{Reports: reports, Error: aerr.Error()})
+		}
+		return ctx.JSON(http.StatusOK, analyticsReconcileResponse{Reports: reports})
+	}
+	return forge.BadRequest("request body must set either 'tenant' or 'all'")
 }
 
 // reprojectResponse reports rows rewritten per tenant.
@@ -191,6 +306,18 @@ func (c *adminController) handleAnalyticsReproject(ctx forge.Context) error {
 		return ctx.JSON(http.StatusOK, reprojectResponse{Counts: map[string]int64{body.Tenant: n}})
 	}
 	if body.All {
+		if body.Async {
+			conc := body.Concurrency
+			job := c.analyticsJobs.start("reproject", func(jctx context.Context) (any, error) {
+				tenants, terr := c.ext.parent.Stores().AllTenants(jctx)
+				if terr != nil {
+					return nil, terr
+				}
+				counts, aerr := rp.AllTenants(jctx, tenants, conc)
+				return reprojectResponse{Counts: counts, Error: errString(aerr)}, nil
+			})
+			return ctx.JSON(http.StatusAccepted, map[string]string{"jobId": job.ID})
+		}
 		tenants, terr := c.ext.parent.Stores().AllTenants(reqCtx)
 		if terr != nil {
 			return renderError(ctx, terr)

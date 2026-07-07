@@ -189,10 +189,17 @@ over HTTP:
 
 | Method + path | Effect |
 | --- | --- |
-| `POST {base}/analytics/backfill` `{"tenant":"acme"}` or `{"all":true,"concurrency":8}` | Backfill one tenant or the fleet — **synchronous**, returns per-tenant row counts once the replay completes |
+| `POST {base}/analytics/backfill` `{"tenant":"acme"}` or `{"all":true,"concurrency":8}` | Backfill one tenant or the fleet — synchronous, returns per-tenant row counts once the replay completes |
 | `GET {base}/analytics/status` | `{enabled, tenantCount}` — whether the sink is configured, without triggering any work |
 
-A fleet backfill (`"all": true`) that partially fails returns HTTP `207`
+**Async for large fleets.** A fleet-wide op (`"all": true`) on a big fleet can
+run longer than an HTTP timeout. Add `"async": true` to `backfill`,
+`reproject`, or `reconcile` and the endpoint returns `202` with a `{"jobId"}`
+immediately; poll `GET {base}/analytics/jobs/:id` for `{state, result}`
+(`running` → `done`/`failed`), or stream state changes over SSE at
+`GET {base}/analytics/jobs/:id/stream`. Single-tenant ops stay synchronous.
+
+A synchronous fleet backfill (`"all": true`) that partially fails returns HTTP `207`
 with the partial per-tenant counts and an error string, rather than
 discarding successful tenants' results. Backfill is deliberately
 synchronous today — an async job/SSE variant (matching the tenant
