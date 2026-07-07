@@ -3,6 +3,7 @@ package fabriqtest
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,6 +91,34 @@ func (s *FakeAnalyticsSink) LagSeconds(_ context.Context) (float64, bool, error)
 		}
 	}
 	return time.Since(newest).Seconds(), true, nil
+}
+
+// PurgeTenant hard-deletes every fact, event, and watermark for one tenant and
+// returns the count removed. Idempotent.
+func (s *FakeAnalyticsSink) PurgeTenant(_ context.Context, tenantID string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int64
+	prefix := tenantID + "|"
+	for k := range s.facts {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.facts, k)
+			n++
+		}
+	}
+	for k := range s.evs {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.evs, k)
+			n++
+		}
+	}
+	for k := range s.wm {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.wm, k)
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (s *FakeAnalyticsSink) Close() error { return nil }

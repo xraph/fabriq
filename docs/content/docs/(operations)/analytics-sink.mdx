@@ -171,6 +171,32 @@ synchronous today — an async job/SSE variant (matching the tenant
 provisioning and migration job APIs) is a documented future enhancement,
 not built here.
 
+## Erasure and offboarding
+
+Because the sink co-locates many tenants' data, it needs an explicit way to
+remove a tenant — for offboarding and for right-to-be-forgotten requests.
+`PurgeTenant` hard-deletes **all** of one tenant's rows across the three tables
+(facts, events, and watermarks) in a single transaction and reports the count
+removed. It is idempotent (purging an absent tenant deletes nothing) and is the
+**only** supported way to remove a tenant from the store.
+
+```bash
+# CLI — the destructive erase requires an explicit --yes.
+fabriq analytics purge --tenant acme --yes
+```
+
+| Method + path | Effect |
+| --- | --- |
+| `POST {base}/analytics/purge` `{"tenant":"acme"}` | Erase one tenant's facts, events, and watermarks; returns `{tenant, rowsDeleted}`. Gated on `analytics.admin`. |
+
+<Callout type="warn">
+Erasure is **never automatic**. Suspending or offboarding a tenant in the
+catalog does not touch the analytics store — mirroring fabriq's rule that it
+never drops a tenant database on its own. Purge is a deliberate operator step,
+and it is irreversible: the append-only event history for that tenant is gone.
+Run it as the final step of an offboarding runbook, after any last export.
+</Callout>
+
 ## Freshness, lag, and metrics
 
 The sink is near-real-time: lag is relay latency plus apply time,
@@ -182,14 +208,15 @@ graph and search already consume from. Two counters, defined in
 | --- | --- | --- |
 | `fabriq_analytics_applied_total` | counter | Envelopes successfully applied by the analytics consumer. |
 | `fabriq_analytics_failures_total` | counter | Envelopes the consumer failed to apply (transient; left pending for redelivery). |
+| `fabriq_analytics_lag_seconds` | gauge | `now()` minus the newest fact's commit time — read-model freshness. Sampled every 15s by the worker/sweeper; unset until the first fact lands. |
 
 <Callout type="info">
-**Planned, not yet built:** a `fabriq_analytics_lag_seconds` gauge (needs
-a database-side poller comparing applied watermarks to stream position)
-and a `fabriq_analytics_backfill_rows_total` counter (backfill runs
-outside the worker's metrics loop today). Until then, watch
-`fabriq_analytics_failures_total` for stalls and use the CLI/admin
-backfill row counts to gauge one-off catch-up volume.
+**Planned, not yet built:** a `fabriq_analytics_backfill_rows_total`
+counter (backfill runs outside the worker's metrics loop today). Until
+then, use the CLI/admin backfill row counts to gauge one-off catch-up
+volume. Note the lag gauge is a fleet-wide **max** freshness — a single
+stalled tenant can be masked by others still flowing; per-tenant lag is a
+future refinement.
 </Callout>
 
 <Cards>

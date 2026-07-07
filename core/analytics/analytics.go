@@ -57,5 +57,13 @@ type Sink interface {
 	// time), in seconds. hasData is false when the sink holds no facts yet
 	// (nothing to be stale). Publishes the fabriq_analytics_lag_seconds gauge.
 	LagSeconds(ctx context.Context) (seconds float64, hasData bool, err error)
+	// PurgeTenant hard-deletes ALL of one tenant's co-located data — facts,
+	// events, and watermarks — and returns the number of rows removed. It is the
+	// erasure primitive for tenant offboarding and right-to-be-forgotten
+	// requests: the ONE deliberately destructive operation on the sink, and the
+	// only supported way to remove a tenant from the shared store. Idempotent
+	// (purging an absent tenant deletes nothing and returns 0). Never invoked
+	// automatically — an explicit operator step, like dropping a tenant database.
+	PurgeTenant(ctx context.Context, tenantID string) (rowsDeleted int64, err error)
 	Close() error
 }

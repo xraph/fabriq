@@ -112,6 +112,43 @@ func RunSinkConformance(t *testing.T, newSink func() Sink) {
 			t.Fatalf("lag = %v, want > 0 for a fact committed in the past", secs)
 		}
 	})
+
+	t.Run("PurgeTenantErasesOnlyThatTenant", func(t *testing.T) {
+		s := newSink()
+		defer s.Close()
+		ev := func(tenant, id string, v int64) Event {
+			return Event{TenantID: tenant, Aggregate: "widget", AggID: id, Version: v,
+				Type: "widget.created", Payload: json.RawMessage(`{}`), At: time.Unix(100, 0).UTC()}
+		}
+		for _, tn := range []string{"t1", "t2"} {
+			must(t, s.UpsertFacts(ctx, []Fact{fact(tn, "w1", 1, false)}))
+			must(t, s.AppendEvents(ctx, []Event{ev(tn, "w1", 1)}))
+			must(t, s.SetWatermark(ctx, []Watermark{{TenantID: tn, Aggregate: "widget", AggID: "w1", Version: 1}}))
+		}
+
+		n, err := s.PurgeTenant(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n < 3 { // at least fact + event + watermark
+			t.Fatalf("purge removed %d rows, want >= 3", n)
+		}
+
+		// t1 is gone: its watermark reads zero (unknown).
+		if v, _ := s.Watermark(ctx, "t1", "widget", "w1"); v != 0 {
+			t.Fatalf("t1 watermark after purge = %d, want 0", v)
+		}
+		// t2 is untouched.
+		if v, _ := s.Watermark(ctx, "t2", "widget", "w1"); v != 1 {
+			t.Fatalf("t2 watermark after purging t1 = %d, want 1 (must be untouched)", v)
+		}
+
+		// Idempotent: purging an absent tenant removes nothing.
+		again, err := s.PurgeTenant(ctx, "t1")
+		if err != nil || again != 0 {
+			t.Fatalf("second purge of t1: n=%d err=%v, want 0/nil", again, err)
+		}
+	})
 }
 
 func must(t *testing.T, err error) {

@@ -7,6 +7,7 @@ import (
 	"github.com/xraph/forge/cli"
 
 	"github.com/xraph/fabriq"
+	"github.com/xraph/fabriq/adapters/pganalytics"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/domain"
 )
@@ -95,6 +96,38 @@ func analyticsCommand() cli.Command {
 	backfill.AddFlag(cli.NewBoolFlag("all-tenants", "", "backfill every tenant", false))
 	backfill.AddFlag(cli.NewIntFlag("concurrency", "", "concurrent tenant backfills (--all-tenants only)", 4))
 
+	purge := cli.NewCommand("purge", "Erase one tenant's data from the analytics sink (offboarding / right-to-be-forgotten)", func(ctx cli.CommandContext) error {
+		tenantID := ctx.String("tenant")
+		if tenantID == "" {
+			return cliError("--tenant is required")
+		}
+		if !ctx.Bool("yes") {
+			return cliError(fmt.Sprintf("refusing to erase tenant %q without --yes (this permanently deletes its facts, events, and watermarks)", tenantID))
+		}
+		analyticsDSN := ctx.String("analytics-dsn")
+		if analyticsDSN == "" {
+			analyticsDSN = os.Getenv("FABRIQ_ANALYTICS_DSN")
+		}
+		if analyticsDSN == "" {
+			return cliError("--analytics-dsn (or FABRIQ_ANALYTICS_DSN) is required")
+		}
+		as, err := pganalytics.Open(ctx.Context(), analyticsDSN)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = as.Close() }()
+		n, err := as.PurgeTenant(ctx.Context(), tenantID)
+		if err != nil {
+			return err
+		}
+		ctx.Success(fmt.Sprintf("tenant %s: erased %d analytics rows", tenantID, n))
+		return nil
+	})
+	purge.AddFlag(cli.NewStringFlag("analytics-dsn", "", "analytics sink DSN (or FABRIQ_ANALYTICS_DSN)", ""))
+	purge.AddFlag(cli.NewStringFlag("tenant", "t", "tenant id to erase", ""))
+	purge.AddFlag(cli.NewBoolFlag("yes", "", "confirm the destructive erase", false))
+
 	_ = cmd.AddSubcommand(backfill)
+	_ = cmd.AddSubcommand(purge)
 	return cmd
 }

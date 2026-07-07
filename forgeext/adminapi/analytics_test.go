@@ -37,6 +37,36 @@ func TestAnalyticsStatus_403WhenGateOff(t *testing.T) {
 	}
 }
 
+// TestAnalyticsPurge_403WhenGateOff verifies the destructive erase endpoint is
+// also capability-gated: 403 without WithAnalyticsAdmin.
+func TestAnalyticsPurge_403WhenGateOff(t *testing.T) {
+	e := NewAdminAPI(nil) // AnalyticsAdmin defaults to false
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/analytics/purge", map[string]any{"tenant": "acme"})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (analytics admin not enabled)", resp.StatusCode)
+	}
+}
+
+// TestAnalyticsPurge_NoParent verifies that with the gate on but no parent
+// extension (so no sink), purge answers 400 (not 500/panic).
+func TestAnalyticsPurge_NoParent(t *testing.T) {
+	e := NewAdminAPI(nil, WithAnalyticsAdmin())
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/analytics/purge", map[string]any{"tenant": "acme"})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (no parent extension)", resp.StatusCode)
+	}
+}
+
 // TestAnalyticsEndpoints_NoParent verifies that with WithAnalyticsAdmin on but
 // no parent forgeext.Extension (so Stores() is unreachable), the backfill
 // endpoint answers 400 (not 500/panic) — the pure-unit path with no Docker, no

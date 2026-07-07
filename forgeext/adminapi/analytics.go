@@ -30,6 +30,15 @@ func (c *adminController) registerAnalyticsRoutes(r forge.Router) error {
 		return err
 	}
 
+	purgeOpts := append([]forge.RouteOption{
+		forge.WithName("fabriq.admin.analytics.purge"),
+		forge.WithSummary("Erase one tenant's data from the analytics sink (offboarding / erasure)"),
+		forge.WithTags("Fabriq", "Admin", "Analytics"),
+	}, opts...)
+	if err := r.POST(base+"/analytics/purge", c.handleAnalyticsPurge, purgeOpts...); err != nil {
+		return err
+	}
+
 	statusOpts := append([]forge.RouteOption{
 		forge.WithName("fabriq.admin.analytics.status"),
 		forge.WithSummary("Report whether the analytics sink is configured"),
@@ -128,6 +137,42 @@ func (c *adminController) handleAnalyticsBackfill(ctx forge.Context) error {
 	}
 
 	return forge.BadRequest("request body must set either 'tenant' or 'all'")
+}
+
+// purgeRequest is the POST {BasePath}/analytics/purge request body.
+type purgeRequest struct {
+	Tenant string `json:"tenant"`
+}
+
+// purgeResponse reports how many rows the erase removed.
+type purgeResponse struct {
+	Tenant      string `json:"tenant"`
+	RowsDeleted int64  `json:"rowsDeleted"`
+}
+
+// handleAnalyticsPurge serves POST {BasePath}/analytics/purge: it hard-deletes
+// ALL of one tenant's co-located data (facts, events, watermarks) from the
+// analytics sink — the erasure step for tenant offboarding and
+// right-to-be-forgotten. Destructive; gated on analytics.admin.
+func (c *adminController) handleAnalyticsPurge(ctx forge.Context) error {
+	if !c.ext.cfg.AnalyticsAdmin {
+		return forge.Forbidden("analytics admin not enabled (host must opt in via WithAnalyticsAdmin)")
+	}
+	if c.ext.parent == nil || c.ext.parent.Stores() == nil || c.ext.parent.Stores().Analytics == nil {
+		return forge.BadRequest("analytics purge requires a started fabriq extension with an analytics sink configured")
+	}
+	var body purgeRequest
+	if derr := ctx.BindJSON(&body); derr != nil {
+		return forge.BadRequest("invalid request body: " + derr.Error())
+	}
+	if body.Tenant == "" {
+		return forge.BadRequest("request body must set 'tenant'")
+	}
+	n, perr := c.ext.parent.Stores().Analytics.PurgeTenant(ctx.Request().Context(), body.Tenant)
+	if perr != nil {
+		return renderError(ctx, perr)
+	}
+	return ctx.JSON(http.StatusOK, purgeResponse{Tenant: body.Tenant, RowsDeleted: n})
 }
 
 // handleAnalyticsStatus serves GET {BasePath}/analytics/status. It reports

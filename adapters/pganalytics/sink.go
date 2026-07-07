@@ -187,6 +187,35 @@ func (s *Sink) LagSeconds(ctx context.Context) (float64, bool, error) {
 	return secs.Float64, true, nil
 }
 
+// PurgeTenant hard-deletes all of one tenant's rows across the three analytics
+// tables and returns the total removed. Runs in one transaction so a tenant is
+// never left half-erased. Idempotent.
+func (s *Sink) PurgeTenant(ctx context.Context, tenantID string) (int64, error) {
+	tx, err := s.db.BeginTxQuery(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("fabriq: analytics purge begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var total int64
+	for _, table := range []string{
+		"fabriq_analytics_facts",
+		"fabriq_analytics_events",
+		"fabriq_analytics_applied",
+	} {
+		res, err := tx.NewRaw(`DELETE FROM `+table+` WHERE tenant_id = $1`, tenantID).Exec(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("fabriq: analytics purge %s: %w", table, err)
+		}
+		n, _ := res.RowsAffected()
+		total += n
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("fabriq: analytics purge commit: %w", err)
+	}
+	return total, nil
+}
+
 // TruncateForTest clears all analytics tables. Test-only.
 func TruncateForTest(ctx context.Context, s *Sink) error {
 	_, err := s.db.Exec(ctx, `TRUNCATE fabriq_analytics_facts, fabriq_analytics_events, fabriq_analytics_applied`)
