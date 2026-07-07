@@ -92,6 +92,38 @@ func RunSinkConformance(t *testing.T, newSink func() Sink) {
 		}
 	})
 
+	t.Run("AllWatermarksPerTenant", func(t *testing.T) {
+		s := newSink()
+		defer s.Close()
+		must(t, s.SetWatermark(ctx, []Watermark{
+			{TenantID: "t1", Aggregate: "widget", AggID: "w1", Version: 5},
+			{TenantID: "t1", Aggregate: "gadget", AggID: "g1", Version: 2},
+			{TenantID: "t2", Aggregate: "widget", AggID: "w1", Version: 9},
+		}))
+		got, err := s.AllWatermarks(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("t1 watermarks = %v, want 2 (widget + gadget), not t2's", got)
+		}
+		byKey := map[string]int64{}
+		for _, w := range got {
+			if w.TenantID != "t1" {
+				t.Fatalf("AllWatermarks(t1) leaked tenant %q", w.TenantID)
+			}
+			byKey[w.Aggregate+"/"+w.AggID] = w.Version
+		}
+		if byKey["widget/w1"] != 5 || byKey["gadget/g1"] != 2 {
+			t.Fatalf("t1 watermark versions wrong: %v", byKey)
+		}
+		// Absent tenant: empty.
+		none, err := s.AllWatermarks(ctx, "nobody")
+		if err != nil || len(none) != 0 {
+			t.Fatalf("absent tenant watermarks = %v err=%v, want empty", none, err)
+		}
+	})
+
 	t.Run("LagByTenantReportsEach", func(t *testing.T) {
 		s := newSink()
 		defer s.Close()

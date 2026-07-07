@@ -194,8 +194,73 @@ func analyticsCommand() cli.Command {
 	reproject.AddFlag(cli.NewBoolFlag("all-tenants", "", "reproject every tenant", false))
 	reproject.AddFlag(cli.NewIntFlag("concurrency", "", "concurrent tenant reprojections (--all-tenants only)", 4))
 
+	reconcile := cli.NewCommand("reconcile", "Detect and heal analytics rows missing/stale vs the source of truth", func(ctx cli.CommandContext) error {
+		dsn, ok := dsnFromContext(ctx)
+		if !ok {
+			return errMissingDSN
+		}
+		analyticsDSN := ctx.String("analytics-dsn")
+		if analyticsDSN == "" {
+			analyticsDSN = os.Getenv("FABRIQ_ANALYTICS_DSN")
+		}
+		if analyticsDSN == "" {
+			return cliError("--analytics-dsn (or FABRIQ_ANALYTICS_DSN) is required")
+		}
+
+		r := registry.New()
+		if err := domain.RegisterAll(r); err != nil {
+			return err
+		}
+		cfg := fabriq.Config{
+			Postgres:  fabriq.PostgresConfig{DSN: dsn},
+			Analytics: fabriq.AnalyticsConfig{DSN: analyticsDSN},
+		}
+		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = stores.Close() }()
+
+		rc, err := stores.AnalyticsReconciler(r)
+		if err != nil {
+			return err
+		}
+
+		tenants := []string{ctx.String("tenant")}
+		all := ctx.Bool("all-tenants")
+		if all {
+			tenants, err = stores.AllTenants(ctx.Context())
+			if err != nil {
+				return err
+			}
+		} else if tenants[0] == "" {
+			return cliError("--tenant is required (or pass --all-tenants)")
+		}
+
+		reports, err := rc.AllTenants(ctx.Context(), tenants, ctx.Int("concurrency"))
+		var totalDrift, totalHealed int
+		for _, tenantID := range tenants {
+			rep := reports[tenantID]
+			totalDrift += rep.Drifted()
+			totalHealed += rep.Healed
+			ctx.Println(fmt.Sprintf("%-24s checked %d, drifted %d (missing %d, stale %d), healed %d",
+				tenantID, rep.Checked, rep.Drifted(), rep.Missing, rep.Stale, rep.Healed))
+		}
+		if err != nil {
+			return err
+		}
+		ctx.Success(fmt.Sprintf("reconciled %d tenants: %d drifted, %d healed", len(tenants), totalDrift, totalHealed))
+		return nil
+	})
+	reconcile.AddFlag(cli.NewStringFlag("dsn", "", "Postgres DSN (or FABRIQ_POSTGRES_DSN)", ""))
+	reconcile.AddFlag(cli.NewStringFlag("analytics-dsn", "", "analytics sink DSN (or FABRIQ_ANALYTICS_DSN)", ""))
+	reconcile.AddFlag(cli.NewStringFlag("tenant", "t", "tenant id", ""))
+	reconcile.AddFlag(cli.NewBoolFlag("all-tenants", "", "reconcile every tenant", false))
+	reconcile.AddFlag(cli.NewIntFlag("concurrency", "", "concurrent tenant reconciliations (--all-tenants only)", 4))
+
 	_ = cmd.AddSubcommand(backfill)
 	_ = cmd.AddSubcommand(purge)
 	_ = cmd.AddSubcommand(reproject)
+	_ = cmd.AddSubcommand(reconcile)
 	return cmd
 }

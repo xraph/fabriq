@@ -78,6 +78,26 @@ func (s *FakeAnalyticsSink) SetWatermark(_ context.Context, ws []analytics.Water
 	return nil
 }
 
+// AllWatermarks returns every applied watermark for a tenant.
+func (s *FakeAnalyticsSink) AllWatermarks(_ context.Context, tenantID string) ([]analytics.Watermark, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []analytics.Watermark
+	prefix := tenantID + "|"
+	for k, v := range s.wm {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		// key is tenant|aggregate|aggID
+		parts := strings.SplitN(k, "|", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		out = append(out, analytics.Watermark{TenantID: parts[0], Aggregate: parts[1], AggID: parts[2], Version: v})
+	}
+	return out, nil
+}
+
 // LagByTenant returns now() - (that tenant's newest fact At) per tenant.
 func (s *FakeAnalyticsSink) LagByTenant(_ context.Context) (map[string]float64, error) {
 	s.mu.Lock()

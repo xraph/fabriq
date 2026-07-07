@@ -224,6 +224,27 @@ the row again so live apply re-ingests it. It is idempotent: a second run
 rewrites nothing.
 </Callout>
 
+## Reconciling drift
+
+The consumer skips any event it cannot upcast or apply (poison-avoidance), so a
+deployment bug can leave a fact permanently missing or stale — the same way it
+would for the graph and search projections, which heal from Postgres via their
+reconcilers. **Reconciliation** is the analytics equivalent: it reads each
+marked aggregate's current source state, compares it against the stored
+watermark, and re-applies only the aggregates that are missing or behind.
+
+```bash
+fabriq analytics reconcile --tenant acme
+fabriq analytics reconcile --all-tenants --concurrency 8
+```
+
+Each tenant reports `checked / drifted (missing, stale) / healed`. It is
+idempotent — a healthy tenant reports zero drift — and safe to run alongside
+live traffic (the same version gate protects it). Unlike backfill, which
+re-applies every row blindly, reconcile only touches what actually diverged, so
+it doubles as a **drift audit**: a non-zero `drifted` count is a signal that the
+consumer skipped events (check `fabriq_analytics_failures_total` and the logs).
+
 ## Freshness, lag, and metrics
 
 The sink is near-real-time: lag is relay latency plus apply time,

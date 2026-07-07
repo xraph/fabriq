@@ -159,6 +159,26 @@ func (s *Sink) Watermark(ctx context.Context, tenantID, aggregate, aggID string)
 	return v, rows.Err()
 }
 
+// AllWatermarks returns every applied watermark for a tenant in one read.
+func (s *Sink) AllWatermarks(ctx context.Context, tenantID string) ([]analytics.Watermark, error) {
+	type wmRow struct {
+		Aggregate string `grove:"aggregate"`
+		AggID     string `grove:"agg_id"`
+		Version   int64  `grove:"version"`
+	}
+	var rows []wmRow
+	if err := s.db.NewRaw(
+		`SELECT aggregate, agg_id, version FROM fabriq_analytics_applied WHERE tenant_id = $1`, tenantID,
+	).Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("fabriq: analytics all watermarks: %w", err)
+	}
+	out := make([]analytics.Watermark, len(rows))
+	for i, r := range rows {
+		out[i] = analytics.Watermark{TenantID: tenantID, Aggregate: r.Aggregate, AggID: r.AggID, Version: r.Version}
+	}
+	return out, nil
+}
+
 // LagByTenant reports now() - (that tenant's newest fact commit time), in
 // seconds, per tenant. An empty map means no facts. Same
 // failed-iteration-is-an-error discipline as Watermark.

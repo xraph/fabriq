@@ -631,6 +631,21 @@ func (s *Stores) AnalyticsReprojector(reg *registry.Registry) (*analytics.Reproj
 	return &analytics.Reprojector{Reg: reg, Sink: s.Analytics}, nil
 }
 
+// AnalyticsReconciler assembles a reconciler that heals divergence between the
+// source databases and the analytics store (facts a skipped/poison event left
+// missing or stale) — the analytics equivalent of the graph/search reconcilers.
+// Requires a configured analytics sink.
+func (s *Stores) AnalyticsReconciler(reg *registry.Registry) (*analytics.Reconciler, error) {
+	if s.Analytics == nil {
+		return nil, fmt.Errorf("fabriq: analytics reconciler needs an analytics sink configured")
+	}
+	return &analytics.Reconciler{
+		Snapshot: routingSnapshot{stores: s}.SnapshotEntities,
+		Applier:  analytics.NewApplier(reg),
+		Sink:     s.Analytics,
+	}, nil
+}
+
 // GraphRebuilder assembles the blue-green rebuilder for the graph
 // projection (used by `fabriq rebuild` and tests).
 func (s *Stores) GraphRebuilder(reg *registry.Registry) (*projection.Rebuilder, error) {

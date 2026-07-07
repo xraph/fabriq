@@ -53,6 +53,11 @@ type Sink interface {
 	AppendEvents(ctx context.Context, events []Event) error
 	Watermark(ctx context.Context, tenantID, aggregate, aggID string) (int64, error)
 	SetWatermark(ctx context.Context, ws []Watermark) error
+	// AllWatermarks returns every applied watermark for a tenant in one read —
+	// the reconciler compares these against the source's current versions to
+	// find drift (facts a skipped event left missing or stale) without a
+	// per-aggregate round-trip.
+	AllWatermarks(ctx context.Context, tenantID string) ([]Watermark, error)
 	// LagByTenant reports per-tenant read-model freshness: for each tenant with
 	// at least one fact, now() - (that tenant's newest fact commit time), in
 	// seconds. An empty map means the sink holds no facts. Per-tenant (rather
