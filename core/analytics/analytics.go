@@ -53,5 +53,9 @@ type Sink interface {
 	AppendEvents(ctx context.Context, events []Event) error
 	Watermark(ctx context.Context, tenantID, aggregate, aggID string) (int64, error)
 	SetWatermark(ctx context.Context, ws []Watermark) error
+	// LagSeconds reports read-model freshness as now() - (newest fact's commit
+	// time), in seconds. hasData is false when the sink holds no facts yet
+	// (nothing to be stale). Publishes the fabriq_analytics_lag_seconds gauge.
+	LagSeconds(ctx context.Context) (seconds float64, hasData bool, err error)
 	Close() error
 }

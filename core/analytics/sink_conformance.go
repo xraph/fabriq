@@ -91,6 +91,27 @@ func RunSinkConformance(t *testing.T, newSink func() Sink) {
 			}
 		}
 	})
+
+	t.Run("LagReflectsData", func(t *testing.T) {
+		s := newSink()
+		defer s.Close()
+		// Empty sink: nothing to be stale.
+		if _, hasData, err := s.LagSeconds(ctx); err != nil || hasData {
+			t.Fatalf("empty sink: hasData=%v err=%v, want hasData=false", hasData, err)
+		}
+		// A fact committed in the past (At=1970) yields a positive lag.
+		must(t, s.UpsertFacts(ctx, []Fact{fact("t1", "w1", 1, false)}))
+		secs, hasData, err := s.LagSeconds(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasData {
+			t.Fatal("populated sink: want hasData=true")
+		}
+		if secs <= 0 {
+			t.Fatalf("lag = %v, want > 0 for a fact committed in the past", secs)
+		}
+	})
 }
 
 func must(t *testing.T, err error) {

@@ -11,7 +11,9 @@ import (
 
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/agent"
+	"github.com/xraph/fabriq/core/analytics"
 	"github.com/xraph/fabriq/core/tenant"
+	"github.com/xraph/fabriq/internal/metrics"
 )
 
 // Advisory lock keys live with the adapter (postgres.LockKey*) so the
@@ -181,6 +183,14 @@ func (e *Extension) Run(ctx context.Context) error {
 			defer wg.Done()
 			supervise(runCtx, logger, "proj:analytics", func(c context.Context) error { return cons.Run(c, consumer) })
 		}()
+		if e.metrics != nil {
+			m, sink := e.metrics, stores.Analytics
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				pollAnalyticsLag(runCtx, m, sink)
+			}()
+		}
 	} else if stores.Analytics != nil && stores.Redis != nil {
 		if logger != nil {
 			logger.Warn("fabriq: analytics is configured but no entity is marked for it; nothing will flow to the analytics sink")
@@ -466,6 +476,27 @@ func (e *Extension) reconcileAll(ctx context.Context) {
 			if rec, err := stores.SearchReconciler(e.reg); err == nil {
 				_, _ = rec.Reconcile(ctx, tenantID, true)
 			}
+		}
+	}
+}
+
+// pollAnalyticsLag samples the analytics read model's freshness every 15s and
+// publishes fabriq_analytics_lag_seconds. It skips the gauge while the sink
+// holds no facts (nothing to be stale) or a read fails transiently. Shared by
+// the static worker and the catalog sweeper planes.
+func pollAnalyticsLag(ctx context.Context, m *metrics.Metrics, sink analytics.Sink) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			secs, hasData, err := sink.LagSeconds(ctx)
+			if err != nil || !hasData {
+				continue
+			}
+			m.AnalyticsLagSeconds.Set(secs)
 		}
 	}
 }

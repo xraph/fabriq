@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/xraph/fabriq/core/analytics"
 )
@@ -73,6 +74,22 @@ func (s *FakeAnalyticsSink) SetWatermark(_ context.Context, ws []analytics.Water
 		}
 	}
 	return nil
+}
+
+// LagSeconds returns now() - (newest fact's At); hasData is false when empty.
+func (s *FakeAnalyticsSink) LagSeconds(_ context.Context) (float64, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.facts) == 0 {
+		return 0, false, nil
+	}
+	var newest time.Time
+	for _, f := range s.facts {
+		if f.At.After(newest) {
+			newest = f.At
+		}
+	}
+	return time.Since(newest).Seconds(), true, nil
 }
 
 func (s *FakeAnalyticsSink) Close() error { return nil }

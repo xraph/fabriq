@@ -134,6 +134,14 @@ func (e *Extension) runCatalogSweeper() error {
 			defer wg.Done()
 			supervise(runCtx, logger, "proj:analytics", func(c context.Context) error { return cons.Run(c, consumer) })
 		}()
+		if e.metrics != nil {
+			m, sink := e.metrics, stores.Analytics
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				pollAnalyticsLag(runCtx, m, sink)
+			}()
+		}
 	} else if stores.Analytics != nil && stores.Redis != nil {
 		if logger != nil {
 			logger.Warn("fabriq: analytics is configured but no entity is marked for it; nothing will flow to the analytics sink")
