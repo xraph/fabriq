@@ -74,8 +74,15 @@ func StartClickHouse(t testing.TB) string {
 		tcclickhouse.WithUsername("fabriq"),
 		tcclickhouse.WithPassword("fabriq"),
 		tcclickhouse.WithDatabase("fabriq"),
+		// ClickHouse logs "Ready for connections" to its internal server log
+		// file, NOT container stdout (the entrypoint script's own stdout lines
+		// stop at "create database" — verified against 24.3), so wait.ForLog
+		// never matches. Poll the HTTP interface instead, mirroring the
+		// module's own default wait strategy.
 		testcontainers.WithWaitStrategy(
-			wait.ForLog("Ready for connections").WithStartupTimeout(2*time.Minute),
+			wait.ForHTTP("/").WithPort("8123/tcp").
+				WithStatusCodeMatcher(func(status int) bool { return status == 200 }).
+				WithStartupTimeout(2*time.Minute),
 		),
 	)
 	if err != nil {
