@@ -501,11 +501,12 @@ export function DataLifecycleDiagram() {
         <desc id="fabriq-flow-d">
           A command writes a row and an outbox event in one transaction; the
           leader-elected relay publishes to Redis Streams, which fans out to
-          three independent consumers — the projection engine (graph, search,
-          vector), the agent workers (auto-embed to pgvector and auto-distill to
-          the CAS digest tree), and the subscription hub (subscriptions and live
-          queries over SSE). Reads bypass the stream through capability ports,
-          with a read-through cache.
+          independent consumers — the projection engine (graph, search, vector),
+          the opt-in cross-tenant analytics sink (a deny-by-default, redacted
+          read model), the agent workers (auto-embed to pgvector and auto-distill
+          to the CAS digest tree), and the subscription hub (subscriptions and
+          live queries over SSE). Reads bypass the stream through capability
+          ports, with a read-through cache.
         </desc>
         <Defs />
 
@@ -602,6 +603,9 @@ export function DataLifecycleDiagram() {
         ))}
         <text x={40} y={294} fontSize="10" fill={INK_FAINT}>
           reconciler · blue-green rebuild keep projections converged
+        </text>
+        <text x={40} y={310} fontSize="10" fill={ACCENT}>
+          + proj:analytics → redacted cross-tenant read-model (opt-in)
         </text>
 
         {/* Lane B — agent workers */}
