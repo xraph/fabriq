@@ -104,20 +104,31 @@ func (d *catalogDirectory) resolve(ctx context.Context, tenantID string) (string
 		return "", err
 	}
 	if entry.State != catalog.StateActive {
+		detail := map[string]string{"state": string(entry.State)}
+		if entry.FromReplica {
+			// Stale replica state (the primary may have reactivated the
+			// tenant): fail closed for this read but don't pin it for a TTL.
+			detail = catalog.MarkDegradedDetail(detail)
+		}
 		return "", fabriqerr.New(fabriqerr.CodeUnavailable,
 			"tenant is not routable.",
 			fabriqerr.WithEntity("tenant", tenantID),
-			fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{"state": string(entry.State)}}))
+			fabriqerr.WithMeta(fabriqerr.Meta{Detail: detail}))
 	}
 	// Version gate (D7): grove migration versions are zero-padded numeric
 	// strings, so lexicographic comparison is version order.
 	if d.minVersion != "" && entry.Version < d.minVersion {
+		detail := map[string]string{"version": entry.Version, "floor": d.minVersion}
+		if entry.FromReplica {
+			// A replica may lag the primary's true (upgraded) version: fail
+			// closed for this read, but don't cache it, so recovery is
+			// immediate once the primary is back or the replica catches up.
+			detail = catalog.MarkDegradedDetail(detail)
+		}
 		return "", fabriqerr.New(fabriqerr.CodeUnavailable,
 			"tenant database is below the binary's migration floor.",
 			fabriqerr.WithEntity("tenant", tenantID),
-			fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{
-				"version": entry.Version, "floor": d.minVersion,
-			}}))
+			fabriqerr.WithMeta(fabriqerr.Meta{Detail: detail}))
 	}
 	return entry.ShardID(), nil
 }

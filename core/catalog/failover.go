@@ -57,6 +57,11 @@ func (f *Failover) Get(ctx context.Context, tenantID string) (Entry, error) {
 		if rerr == nil {
 			f.replicaReads.Add(1)
 			f.failoverReads.Add(1)
+			// Tag the provenance so the directory does not cache any error it
+			// derives from this (possibly-lagged) entry — a version-gate or
+			// not-active CodeUnavailable. The positive route itself is still
+			// cached: routing continuity is the point of the fallback.
+			re.FromReplica = true
 			return re, nil
 		}
 		if fabriqerr.CodeOf(rerr) == fabriqerr.CodeNotFound {
@@ -102,15 +107,34 @@ func (f *Failover) ReadStats() (primary, replica, failover int64) {
 	return f.primaryReads.Load(), f.replicaReads.Load(), f.failoverReads.Load()
 }
 
-// degradedMarker is the Meta.Detail key/value stamped on a replica-sourced
-// NotFound so the directory refuses to negative-cache a possibly-stale answer.
-const degradedMarker = "degraded"
+// DegradedMetaKey / DegradedMetaValue are the fabriqerr Meta.Detail entry that
+// flags a routing answer as served from a replica while the primary was
+// unreachable. Failover stamps it on a replica NotFound, and the directory
+// stamps it on any error it derives from a replica-sourced entry
+// (MarkDegradedDetail); IsDegraded recognises it. The directory's cache
+// predicate excludes degraded answers so a lagged replica can never pin a
+// tenant for a TTL.
+const (
+	DegradedMetaKey   = "catalog"
+	DegradedMetaValue = "degraded"
+)
+
+// MarkDegradedDetail stamps the degraded marker onto a Meta.Detail map,
+// allocating one if nil, and returns it. Callers building a routing error from
+// a replica-sourced entry use it so the directory will not cache the answer.
+func MarkDegradedDetail(detail map[string]string) map[string]string {
+	if detail == nil {
+		detail = map[string]string{}
+	}
+	detail[DegradedMetaKey] = DegradedMetaValue
+	return detail
+}
 
 func degraded(tenantID string) error {
 	return fabriqerr.New(fabriqerr.CodeNotFound,
 		"tenant not found on a catalog replica (primary unreachable; may be stale).",
 		fabriqerr.WithEntity("tenant", tenantID),
-		fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{"catalog": degradedMarker}}))
+		fabriqerr.WithMeta(fabriqerr.Meta{Detail: MarkDegradedDetail(nil)}))
 }
 
 // IsDegraded reports whether err is a replica-sourced answer served while the
@@ -118,7 +142,7 @@ func degraded(tenantID string) error {
 func IsDegraded(err error) bool {
 	var e *fabriqerr.Error
 	if errors.As(err, &e) {
-		return e.Meta.Detail["catalog"] == degradedMarker
+		return e.Meta.Detail[DegradedMetaKey] == DegradedMetaValue
 	}
 	return false
 }
