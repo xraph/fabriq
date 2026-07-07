@@ -115,6 +115,57 @@ func TestApply_HashPseudonymizesField(t *testing.T) {
 	}
 }
 
+func TestApply_NestedPathInclude(t *testing.T) {
+	// Include a nested leaf and drop everything else, including a sibling PII field.
+	reg := regWith(&registry.AnalyticsSpec{Include: []string{"name", "meta.region"}})
+	a := analytics.NewApplier(reg)
+	fact, _, ok, err := a.Apply(env("widget", "widget.updated", 1,
+		`{"name":"a","meta":{"region":"us","ssn":"secret"},"other":9}`))
+	if err != nil || !ok {
+		t.Fatalf("apply ok=%v err=%v", ok, err)
+	}
+	// Deterministic canonical bytes: only name + the nested region survive.
+	if got := string(fact.Payload); got != `{"meta":{"region":"us"},"name":"a"}` {
+		t.Fatalf("nested include payload = %s, want only name + meta.region", got)
+	}
+}
+
+func TestApply_NestedPathHash(t *testing.T) {
+	reg := regWith(&registry.AnalyticsSpec{Include: []string{"name"}, Hash: []string{"meta.userId"}})
+	a := analytics.NewApplier(reg, analytics.WithHashSalt("s"))
+	fact, _, ok, _ := a.Apply(env("widget", "widget.updated", 1,
+		`{"name":"a","meta":{"userId":"u-42","email":"x@y.z"}}`))
+	if !ok {
+		t.Fatal("expected records")
+	}
+	var got map[string]any
+	_ = json.Unmarshal(fact.Payload, &got)
+	meta, _ := got["meta"].(map[string]any)
+	if meta == nil {
+		t.Fatalf("meta missing: %s", fact.Payload)
+	}
+	if _, leaked := meta["email"]; leaked {
+		t.Fatalf("nested email leaked: %s", fact.Payload)
+	}
+	h, _ := meta["userId"].(string)
+	if h == "" || h == "u-42" {
+		t.Fatalf("meta.userId should be hashed, not raw: %s", fact.Payload)
+	}
+}
+
+func TestApply_NestedPathMissingSegmentDropped(t *testing.T) {
+	// A path whose intermediate segment isn't an object contributes nothing.
+	reg := regWith(&registry.AnalyticsSpec{Include: []string{"name", "meta.region"}})
+	a := analytics.NewApplier(reg)
+	fact, _, ok, _ := a.Apply(env("widget", "widget.updated", 1, `{"name":"a","meta":"not-an-object"}`))
+	if !ok {
+		t.Fatal("expected records")
+	}
+	if got := string(fact.Payload); got != `{"name":"a"}` {
+		t.Fatalf("payload = %s, want only name (meta.region unresolvable)", got)
+	}
+}
+
 func TestApply_HashOnlySpecIncludesHashedField(t *testing.T) {
 	a := analytics.NewApplier(regWith(&registry.AnalyticsSpec{Hash: []string{"ssn"}}), analytics.WithHashSalt("s"))
 	fact, _, ok, err := a.Apply(env("widget", "widget.updated", 1, `{"name":"a","ssn":"x"}`))

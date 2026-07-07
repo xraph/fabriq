@@ -86,7 +86,12 @@ r.Register(registry.EntitySpec{
 
 Everything not named in `Include` is stripped before the record leaves
 the projection — deny-by-default at the aggregate level, then field
-minimization within a marked aggregate. `IncludeAll: true` ships the
+minimization within a marked aggregate. Field names may be **dot-paths**
+(`"meta.region"`) that descend through nested JSON objects, so you can keep
+or hash a single nested leaf and drop its PII siblings; a path whose
+intermediate segment is missing or isn't an object simply contributes
+nothing. Leaf values keep their exact bytes (numbers and ids never lose
+precision). `IncludeAll: true` ships the
 whole payload unredacted; use it only when you have already reviewed the
 payload for PII. A spec with no `Include`, `Hash`, or `IncludeAll`
 is rejected by the registry (a marked-but-empty spec would silently
