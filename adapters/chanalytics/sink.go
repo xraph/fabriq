@@ -97,24 +97,81 @@ func TruncateForTest(ctx context.Context, s *Sink) error {
 
 var errUnimplemented = errors.New("fabriq: analytics clickhouse method unimplemented")
 
+// UpsertFacts version-gates via _dedup: ReplacingMergeTree keeps the row with
+// the max _dedup per (tenant, aggregate, agg_id), so a higher domain version
+// always wins and a stale insert is shadowed. rewrite_seq is 0 at ingest.
 func (s *Sink) UpsertFacts(ctx context.Context, facts []analytics.Fact) error {
-	return errUnimplemented
+	batch, err := s.conn.PrepareBatch(ctx,
+		"INSERT INTO fabriq_analytics_facts (tenant_id, aggregate, agg_id, version, payload, at, deleted, _dedup)")
+	if err != nil {
+		return fmt.Errorf("fabriq: analytics upsert fact: %w", err)
+	}
+	for _, f := range facts {
+		var deleted uint8
+		if f.Deleted {
+			deleted = 1
+		}
+		if err := batch.Append(f.TenantID, f.Aggregate, f.AggID, f.Version,
+			string(f.Payload), f.At, deleted, packDedup(f.Version)); err != nil {
+			return fmt.Errorf("fabriq: analytics upsert fact: %w", err)
+		}
+	}
+	return batch.Send()
 }
 
 func (s *Sink) AppendEvents(ctx context.Context, events []analytics.Event) error {
 	return errUnimplemented
 }
 
+// Watermark reads the highest applied version (0 if unknown). max() over an
+// empty set returns 0 in ClickHouse, so the unknown case needs no special path.
 func (s *Sink) Watermark(ctx context.Context, tenantID, aggregate, aggID string) (int64, error) {
-	return 0, errUnimplemented
+	var v int64
+	err := s.conn.QueryRow(ctx,
+		`SELECT max(version) FROM fabriq_analytics_applied
+		 WHERE tenant_id = ? AND aggregate = ? AND agg_id = ?`,
+		tenantID, aggregate, aggID).Scan(&v)
+	if err != nil {
+		return 0, fmt.Errorf("fabriq: analytics watermark: %w", err)
+	}
+	return v, nil
 }
 
+// SetWatermark inserts into the applied table (ReplacingMergeTree(version)); a
+// max(version) read is monotonic, so a lower late insert is ignored.
 func (s *Sink) SetWatermark(ctx context.Context, ws []analytics.Watermark) error {
-	return errUnimplemented
+	batch, err := s.conn.PrepareBatch(ctx,
+		"INSERT INTO fabriq_analytics_applied (tenant_id, aggregate, agg_id, version)")
+	if err != nil {
+		return fmt.Errorf("fabriq: analytics set watermark: %w", err)
+	}
+	for _, w := range ws {
+		if err := batch.Append(w.TenantID, w.Aggregate, w.AggID, w.Version); err != nil {
+			return fmt.Errorf("fabriq: analytics set watermark: %w", err)
+		}
+	}
+	return batch.Send()
 }
 
+// AllWatermarks returns every applied watermark for a tenant in one read.
 func (s *Sink) AllWatermarks(ctx context.Context, tenantID string) ([]analytics.Watermark, error) {
-	return nil, errUnimplemented
+	rows, err := s.conn.Query(ctx,
+		`SELECT aggregate, agg_id, max(version) FROM fabriq_analytics_applied
+		 WHERE tenant_id = ? GROUP BY aggregate, agg_id`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: analytics all watermarks: %w", err)
+	}
+	defer rows.Close()
+	var out []analytics.Watermark
+	for rows.Next() {
+		var agg, aggID string
+		var v int64
+		if err := rows.Scan(&agg, &aggID, &v); err != nil {
+			return nil, fmt.Errorf("fabriq: analytics all watermarks scan: %w", err)
+		}
+		out = append(out, analytics.Watermark{TenantID: tenantID, Aggregate: agg, AggID: aggID, Version: v})
+	}
+	return out, rows.Err()
 }
 
 func (s *Sink) LagByTenant(ctx context.Context) (map[string]float64, error) {
