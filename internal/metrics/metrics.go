@@ -41,6 +41,7 @@ type Metrics struct {
 	AnalyticsAppliedTotal  prometheus.Counter
 	AnalyticsFailuresTotal prometheus.Counter
 	AnalyticsLagSeconds    prometheus.Gauge
+	AnalyticsTenantsBehind prometheus.Gauge
 
 	// Catalog-mode sweeper instruments.
 	SweepPassDuration   prometheus.Histogram
@@ -132,7 +133,11 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 		}),
 		AnalyticsLagSeconds: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "fabriq_analytics_lag_seconds",
-			Help: "Freshness of the analytics read model: now() minus the newest fact's commit time.",
+			Help: "Worst-case analytics freshness: the stalest tenant's lag (now() minus that tenant's newest fact). A single stalled tenant moves it, unmasked by others.",
+		}),
+		AnalyticsTenantsBehind: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "fabriq_analytics_tenants_behind",
+			Help: "Number of tenants whose analytics lag exceeds the alarm threshold (60s).",
 		}),
 		SweepPassDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "fabriq_sweep_pass_duration_seconds",
@@ -208,7 +213,7 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 		m.OutboxBacklog, m.TenantHookTrips, m.ConflationDepth, m.ProjectionLag, m.RelayPublished,
 		m.BlobGCBytesFreed, m.BlobGCCollected, m.BlobGCRefDriftCorrected, m.BlobGCBroken, m.BlobGCOrphans,
 		m.EmbedEventsTotal, m.EmbedFailuresTotal,
-		m.AnalyticsAppliedTotal, m.AnalyticsFailuresTotal, m.AnalyticsLagSeconds,
+		m.AnalyticsAppliedTotal, m.AnalyticsFailuresTotal, m.AnalyticsLagSeconds, m.AnalyticsTenantsBehind,
 		m.SweepPassDuration, m.SweepTenantsTracked, m.SweepEligible,
 		m.SweepSweptTotal, m.SweepBusyTotal, m.SweepErrorsTotal,
 		m.PoolShardsOpen, m.PoolShardsHeld, m.PoolCap, m.PoolScaleEvents,

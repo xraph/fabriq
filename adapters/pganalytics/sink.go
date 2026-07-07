@@ -159,33 +159,32 @@ func (s *Sink) Watermark(ctx context.Context, tenantID, aggregate, aggID string)
 	return v, rows.Err()
 }
 
-// LagSeconds reports now() - (newest fact's commit time), in seconds.
-// hasData is false when no facts exist yet (max(at) is NULL). Same
+// LagByTenant reports now() - (that tenant's newest fact commit time), in
+// seconds, per tenant. An empty map means no facts. Same
 // failed-iteration-is-an-error discipline as Watermark.
-func (s *Sink) LagSeconds(ctx context.Context) (float64, bool, error) {
+func (s *Sink) LagByTenant(ctx context.Context) (map[string]float64, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT EXTRACT(EPOCH FROM (now() - max(at)))::float8 FROM fabriq_analytics_facts`)
+		`SELECT tenant_id, EXTRACT(EPOCH FROM (now() - max(at)))::float8
+		 FROM fabriq_analytics_facts GROUP BY tenant_id`)
 	if err != nil {
-		return 0, false, fmt.Errorf("fabriq: analytics lag: %w", err)
+		return nil, fmt.Errorf("fabriq: analytics lag: %w", err)
 	}
 	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return 0, false, fmt.Errorf("fabriq: analytics lag: %w", err)
+	out := map[string]float64{}
+	for rows.Next() {
+		var tid string
+		var secs sql.NullFloat64
+		if err := rows.Scan(&tid, &secs); err != nil {
+			return nil, fmt.Errorf("fabriq: analytics lag scan: %w", err)
 		}
-		return 0, false, nil
-	}
-	var secs sql.NullFloat64
-	if err := rows.Scan(&secs); err != nil {
-		return 0, false, fmt.Errorf("fabriq: analytics lag scan: %w", err)
+		if secs.Valid {
+			out[tid] = secs.Float64
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return 0, false, fmt.Errorf("fabriq: analytics lag: %w", err)
+		return nil, fmt.Errorf("fabriq: analytics lag: %w", err)
 	}
-	if !secs.Valid { // empty table -> max(at) is NULL
-		return 0, false, nil
-	}
-	return secs.Float64, true, nil
+	return out, nil
 }
 
 // ReprojectTenant re-writes stored fact and event payloads for a tenant (and

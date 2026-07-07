@@ -480,10 +480,17 @@ func (e *Extension) reconcileAll(ctx context.Context) {
 	}
 }
 
-// pollAnalyticsLag samples the analytics read model's freshness every 15s and
-// publishes fabriq_analytics_lag_seconds. It skips the gauge while the sink
-// holds no facts (nothing to be stale) or a read fails transiently. Shared by
-// the static worker and the catalog sweeper planes.
+// analyticsLagBehindThreshold is the per-tenant lag past which a tenant counts
+// toward fabriq_analytics_tenants_behind — the "this tenant is stalled" alarm.
+const analyticsLagBehindThreshold = 60.0 // seconds
+
+// pollAnalyticsLag samples per-tenant analytics freshness every 15s and
+// publishes two low-cardinality gauges derived from it: the worst-case lag
+// (stalest tenant) and the count of tenants past the alarm threshold. Reading
+// per-tenant (rather than one fleet-wide max(at)) is what keeps a single
+// stalled tenant from hiding behind others still flowing. Skips a tick on a
+// transient read error or an empty sink. Shared by the static worker and the
+// catalog sweeper planes.
 func pollAnalyticsLag(ctx context.Context, m *metrics.Metrics, sink analytics.Sink) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -492,11 +499,22 @@ func pollAnalyticsLag(ctx context.Context, m *metrics.Metrics, sink analytics.Si
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			secs, hasData, err := sink.LagSeconds(ctx)
-			if err != nil || !hasData {
+			lags, err := sink.LagByTenant(ctx)
+			if err != nil || len(lags) == 0 {
 				continue
 			}
-			m.AnalyticsLagSeconds.Set(secs)
+			var worst float64
+			var behind int
+			for _, lag := range lags {
+				if lag > worst {
+					worst = lag
+				}
+				if lag > analyticsLagBehindThreshold {
+					behind++
+				}
+			}
+			m.AnalyticsLagSeconds.Set(worst)
+			m.AnalyticsTenantsBehind.Set(float64(behind))
 		}
 	}
 }

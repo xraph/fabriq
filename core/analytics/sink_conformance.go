@@ -92,24 +92,26 @@ func RunSinkConformance(t *testing.T, newSink func() Sink) {
 		}
 	})
 
-	t.Run("LagReflectsData", func(t *testing.T) {
+	t.Run("LagByTenantReportsEach", func(t *testing.T) {
 		s := newSink()
 		defer s.Close()
-		// Empty sink: nothing to be stale.
-		if _, hasData, err := s.LagSeconds(ctx); err != nil || hasData {
-			t.Fatalf("empty sink: hasData=%v err=%v, want hasData=false", hasData, err)
+		// Empty sink: no tenants behind.
+		if m, err := s.LagByTenant(ctx); err != nil || len(m) != 0 {
+			t.Fatalf("empty sink: lag=%v err=%v, want empty map", m, err)
 		}
-		// A fact committed in the past (At=1970) yields a positive lag.
-		must(t, s.UpsertFacts(ctx, []Fact{fact("t1", "w1", 1, false)}))
-		secs, hasData, err := s.LagSeconds(ctx)
+		// Two tenants, both with a fact committed in the past (At=1970).
+		must(t, s.UpsertFacts(ctx, []Fact{fact("t1", "w1", 1, false), fact("t2", "w1", 1, false)}))
+		m, err := s.LagByTenant(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !hasData {
-			t.Fatal("populated sink: want hasData=true")
+		if len(m) != 2 {
+			t.Fatalf("lag map = %v, want an entry per tenant", m)
 		}
-		if secs <= 0 {
-			t.Fatalf("lag = %v, want > 0 for a fact committed in the past", secs)
+		for _, tn := range []string{"t1", "t2"} {
+			if m[tn] <= 0 {
+				t.Fatalf("tenant %s lag = %v, want > 0 for a fact committed in the past", tn, m[tn])
+			}
 		}
 	})
 

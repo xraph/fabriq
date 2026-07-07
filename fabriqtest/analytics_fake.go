@@ -78,20 +78,21 @@ func (s *FakeAnalyticsSink) SetWatermark(_ context.Context, ws []analytics.Water
 	return nil
 }
 
-// LagSeconds returns now() - (newest fact's At); hasData is false when empty.
-func (s *FakeAnalyticsSink) LagSeconds(_ context.Context) (float64, bool, error) {
+// LagByTenant returns now() - (that tenant's newest fact At) per tenant.
+func (s *FakeAnalyticsSink) LagByTenant(_ context.Context) (map[string]float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.facts) == 0 {
-		return 0, false, nil
-	}
-	var newest time.Time
+	newest := map[string]time.Time{}
 	for _, f := range s.facts {
-		if f.At.After(newest) {
-			newest = f.At
+		if f.At.After(newest[f.TenantID]) {
+			newest[f.TenantID] = f.At
 		}
 	}
-	return time.Since(newest).Seconds(), true, nil
+	out := make(map[string]float64, len(newest))
+	for tid, at := range newest {
+		out[tid] = time.Since(at).Seconds()
+	}
+	return out, nil
 }
 
 // ReprojectTenant re-projects stored fact and event payloads for a tenant (and

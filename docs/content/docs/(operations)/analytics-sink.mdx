@@ -235,15 +235,14 @@ graph and search already consume from. Two counters, defined in
 | --- | --- | --- |
 | `fabriq_analytics_applied_total` | counter | Envelopes successfully applied by the analytics consumer. |
 | `fabriq_analytics_failures_total` | counter | Envelopes the consumer failed to apply (transient; left pending for redelivery). |
-| `fabriq_analytics_lag_seconds` | gauge | `now()` minus the newest fact's commit time — read-model freshness. Sampled every 15s by the worker/sweeper; unset until the first fact lands. |
+| `fabriq_analytics_lag_seconds` | gauge | Worst-case freshness — the **stalest** tenant's lag. Sampled per-tenant every 15s, so one stalled tenant is not masked by others. |
+| `fabriq_analytics_tenants_behind` | gauge | How many tenants exceed the 60s lag alarm threshold. Non-zero → query `fabriq_analytics_facts` grouped by `tenant_id` to find which. |
 
 <Callout type="info">
 **Planned, not yet built:** a `fabriq_analytics_backfill_rows_total`
 counter (backfill runs outside the worker's metrics loop today). Until
 then, use the CLI/admin backfill row counts to gauge one-off catch-up
-volume. Note the lag gauge is a fleet-wide **max** freshness — a single
-stalled tenant can be masked by others still flowing; per-tenant lag is a
-future refinement.
+volume.
 </Callout>
 
 <Cards>

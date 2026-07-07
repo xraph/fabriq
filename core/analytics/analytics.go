@@ -53,10 +53,13 @@ type Sink interface {
 	AppendEvents(ctx context.Context, events []Event) error
 	Watermark(ctx context.Context, tenantID, aggregate, aggID string) (int64, error)
 	SetWatermark(ctx context.Context, ws []Watermark) error
-	// LagSeconds reports read-model freshness as now() - (newest fact's commit
-	// time), in seconds. hasData is false when the sink holds no facts yet
-	// (nothing to be stale). Publishes the fabriq_analytics_lag_seconds gauge.
-	LagSeconds(ctx context.Context) (seconds float64, hasData bool, err error)
+	// LagByTenant reports per-tenant read-model freshness: for each tenant with
+	// at least one fact, now() - (that tenant's newest fact commit time), in
+	// seconds. An empty map means the sink holds no facts. Per-tenant (rather
+	// than one fleet-wide number) so a single stalled tenant cannot hide behind
+	// others still flowing; the poller derives the worst-case gauge and the
+	// tenants-behind count from it without emitting a per-tenant metric series.
+	LagByTenant(ctx context.Context) (map[string]float64, error)
 	// ReprojectTenant re-writes stored fact AND event payloads for a tenant in
 	// place, applying transform to each. aggregate "" means every aggregate.
 	// It returns the number of rows whose payload actually changed. Used to
