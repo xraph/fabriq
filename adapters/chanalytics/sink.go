@@ -107,7 +107,8 @@ func TruncateForTest(ctx context.Context, s *Sink) error {
 
 // UpsertFacts version-gates via _dedup: ReplacingMergeTree keeps the row with
 // the max _dedup per (tenant, aggregate, agg_id), so a higher domain version
-// always wins and a stale insert is shadowed. rewrite_seq is 0 at ingest.
+// always wins and a stale insert is shadowed. At ingest _dedup = packDedup(version)
+// (version << dedupShift), so the low reprojection bits are 0.
 func (s *Sink) UpsertFacts(ctx context.Context, facts []analytics.Fact) error {
 	batch, err := s.conn.PrepareBatch(ctx,
 		"INSERT INTO fabriq_analytics_facts (tenant_id, aggregate, agg_id, version, payload, at, deleted, _dedup)")
@@ -225,10 +226,13 @@ func (s *Sink) LagByTenant(ctx context.Context) (map[string]float64, error) {
 // winning row per key via argMax(col, _dedup) (facts: payload, version, at,
 // deleted; events: payload, type, at) plus max(_dedup), transform the
 // payload in Go, and re-INSERT only the rows whose bytes actually changed
-// with _dedup = max(_dedup) + 1 — that stays within the domain version's
-// 2^20 reprojection band, so the rewrite wins the next merge while
-// argMax/max reads see it immediately. The count is computed by byte
-// comparison in Go, so it is exact and idempotent regardless of merge state.
+// with _dedup = max(_dedup) + 1, so the rewrite wins the next merge while
+// argMax/max reads see it immediately. For facts (ingested at _dedup =
+// version << dedupShift) the +1 stays inside that version's reprojection
+// band, below the next version; for events (ingested at _dedup = 0, and
+// keyed by version in the ORDER BY) the +1 is simply a reprojection
+// tie-break. The count is computed by byte comparison in Go, so it is
+// exact and idempotent regardless of merge state.
 func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 	transform func(payload json.RawMessage) (json.RawMessage, error)) (int64, error) {
 	var total int64
