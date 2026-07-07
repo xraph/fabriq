@@ -197,6 +197,33 @@ and it is irreversible: the append-only event history for that tenant is gone.
 Run it as the final step of an offboarding runbook, after any last export.
 </Callout>
 
+## Changing redaction after the fact
+
+Tightening an entity's `Include` allow-list (or dropping a field) does **not**
+retroactively strip that field from rows already in the sink: backfill replays
+at each row's current version, and the fact upsert is version-gated, so a
+same-version replay is a no-op — and the event log is immutable. **Reprojection**
+closes that gap. It re-projects every stored fact and event payload through the
+entity's *current* spec, in place, rewriting only rows that actually change:
+
+```bash
+fabriq analytics reproject --tenant acme
+fabriq analytics reproject --all-tenants --concurrency 8
+```
+
+| Method + path | Effect |
+| --- | --- |
+| `POST {base}/analytics/reproject` `{"tenant":"acme"}` or `{"all":true,"concurrency":8}` | Re-apply the current allow-list to stored rows; returns per-tenant rewrite counts. Gated on `analytics.admin`. |
+
+<Callout type="warn">
+Reprojection can only **narrow** — it removes fields from the already-stored
+(possibly wider) payload, which is exactly what a privacy tightening needs. It
+cannot *widen* (bring a previously-stripped field back), because that data was
+never co-located; re-adding a field requires the source database, i.e. writing
+the row again so live apply re-ingests it. It is idempotent: a second run
+rewrites nothing.
+</Callout>
+
 ## Freshness, lag, and metrics
 
 The sink is near-real-time: lag is relay latency plus apply time,

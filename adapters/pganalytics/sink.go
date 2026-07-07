@@ -7,6 +7,7 @@ package pganalytics
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"github.com/xraph/grove/drivers/pgdriver"
@@ -185,6 +186,73 @@ func (s *Sink) LagSeconds(ctx context.Context) (float64, bool, error) {
 		return 0, false, nil
 	}
 	return secs.Float64, true, nil
+}
+
+// ReprojectTenant re-writes stored fact and event payloads for a tenant (and
+// optional aggregate) through transform, in place. Change detection is
+// semantic: the UPDATE only fires when the re-projected JSONB actually differs
+// (payload IS DISTINCT FROM), so RowsAffected counts real rewrites and a re-run
+// is a no-op — the fake compares its canonical bytes and reaches the same count.
+func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string, transform func(json.RawMessage) (json.RawMessage, error)) (int64, error) {
+	var total int64
+
+	type factRow struct {
+		Aggregate string `grove:"aggregate"`
+		AggID     string `grove:"agg_id"`
+		Payload   string `grove:"payload"`
+	}
+	var facts []factRow
+	if err := s.db.NewRaw(
+		`SELECT aggregate, agg_id, payload::text AS payload FROM fabriq_analytics_facts
+		 WHERE tenant_id = $1 AND ($2 = '' OR aggregate = $2)`, tenantID, aggregate,
+	).Scan(ctx, &facts); err != nil {
+		return 0, fmt.Errorf("fabriq: analytics reproject scan facts: %w", err)
+	}
+	for _, f := range facts {
+		np, err := transform(json.RawMessage(f.Payload))
+		if err != nil {
+			return total, fmt.Errorf("fabriq: analytics reproject fact %s/%s: %w", f.Aggregate, f.AggID, err)
+		}
+		res, err := s.db.Exec(ctx,
+			`UPDATE fabriq_analytics_facts SET payload = $1::jsonb, updated_at = now()
+			 WHERE tenant_id = $2 AND aggregate = $3 AND agg_id = $4 AND payload IS DISTINCT FROM $1::jsonb`,
+			string(np), tenantID, f.Aggregate, f.AggID)
+		if err != nil {
+			return total, fmt.Errorf("fabriq: analytics reproject update fact: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += n
+	}
+
+	type eventRow struct {
+		Aggregate string `grove:"aggregate"`
+		AggID     string `grove:"agg_id"`
+		Version   int64  `grove:"version"`
+		Payload   string `grove:"payload"`
+	}
+	var events []eventRow
+	if err := s.db.NewRaw(
+		`SELECT aggregate, agg_id, version, payload::text AS payload FROM fabriq_analytics_events
+		 WHERE tenant_id = $1 AND ($2 = '' OR aggregate = $2)`, tenantID, aggregate,
+	).Scan(ctx, &events); err != nil {
+		return total, fmt.Errorf("fabriq: analytics reproject scan events: %w", err)
+	}
+	for _, e := range events {
+		np, err := transform(json.RawMessage(e.Payload))
+		if err != nil {
+			return total, fmt.Errorf("fabriq: analytics reproject event %s/%s/%d: %w", e.Aggregate, e.AggID, e.Version, err)
+		}
+		res, err := s.db.Exec(ctx,
+			`UPDATE fabriq_analytics_events SET payload = $1::jsonb
+			 WHERE tenant_id = $2 AND aggregate = $3 AND agg_id = $4 AND version = $5 AND payload IS DISTINCT FROM $1::jsonb`,
+			string(np), tenantID, e.Aggregate, e.AggID, e.Version)
+		if err != nil {
+			return total, fmt.Errorf("fabriq: analytics reproject update event: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += n
+	}
+	return total, nil
 }
 
 // PurgeTenant hard-deletes all of one tenant's rows across the three analytics

@@ -67,6 +67,21 @@ func TestAnalyticsPurge_NoParent(t *testing.T) {
 	}
 }
 
+// TestAnalyticsReproject_403WhenGateOff verifies the reproject endpoint is
+// capability-gated: 403 without WithAnalyticsAdmin.
+func TestAnalyticsReproject_403WhenGateOff(t *testing.T) {
+	e := NewAdminAPI(nil) // AnalyticsAdmin defaults to false
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/analytics/reproject", map[string]any{"tenant": "acme"})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (analytics admin not enabled)", resp.StatusCode)
+	}
+}
+
 // TestAnalyticsEndpoints_NoParent verifies that with WithAnalyticsAdmin on but
 // no parent forgeext.Extension (so Stores() is unreachable), the backfill
 // endpoint answers 400 (not 500/panic) — the pure-unit path with no Docker, no

@@ -39,6 +39,15 @@ func (c *adminController) registerAnalyticsRoutes(r forge.Router) error {
 		return err
 	}
 
+	reprojectOpts := append([]forge.RouteOption{
+		forge.WithName("fabriq.admin.analytics.reproject"),
+		forge.WithSummary("Re-apply the current redaction allow-list to already-stored rows"),
+		forge.WithTags("Fabriq", "Admin", "Analytics"),
+	}, opts...)
+	if err := r.POST(base+"/analytics/reproject", c.handleAnalyticsReproject, reprojectOpts...); err != nil {
+		return err
+	}
+
 	statusOpts := append([]forge.RouteOption{
 		forge.WithName("fabriq.admin.analytics.status"),
 		forge.WithSummary("Report whether the analytics sink is configured"),
@@ -136,6 +145,62 @@ func (c *adminController) handleAnalyticsBackfill(ctx forge.Context) error {
 		return ctx.JSON(http.StatusOK, backfillResponse{Counts: counts})
 	}
 
+	return forge.BadRequest("request body must set either 'tenant' or 'all'")
+}
+
+// reprojectRequest is the POST {BasePath}/analytics/reproject request body.
+// Exactly one selector: "tenant" (one tenant) or "all" (fleet, bounded by
+// "concurrency").
+type reprojectRequest struct {
+	Tenant      string `json:"tenant,omitempty"`
+	All         bool   `json:"all,omitempty"`
+	Concurrency int    `json:"concurrency,omitempty"`
+}
+
+// reprojectResponse reports rows rewritten per tenant.
+type reprojectResponse struct {
+	Counts map[string]int64 `json:"counts"`
+	Error  string           `json:"error,omitempty"`
+}
+
+// handleAnalyticsReproject serves POST {BasePath}/analytics/reproject: it
+// re-applies each marked entity's current redaction allow-list to already-stored
+// rows (a retroactive privacy correction). Synchronous; gated on analytics.admin.
+func (c *adminController) handleAnalyticsReproject(ctx forge.Context) error {
+	if !c.ext.cfg.AnalyticsAdmin {
+		return forge.Forbidden("analytics admin not enabled (host must opt in via WithAnalyticsAdmin)")
+	}
+	if c.ext.parent == nil || c.ext.parent.Stores() == nil {
+		return forge.BadRequest("analytics reproject requires a started fabriq extension")
+	}
+	rp, rerr := c.ext.parent.Stores().AnalyticsReprojector(c.ext.reg)
+	if rerr != nil {
+		return forge.BadRequest(rerr.Error())
+	}
+	var body reprojectRequest
+	if derr := ctx.BindJSON(&body); derr != nil {
+		return forge.BadRequest("invalid request body: " + derr.Error())
+	}
+	reqCtx := ctx.Request().Context()
+
+	if body.Tenant != "" {
+		n, terr := rp.Tenant(reqCtx, body.Tenant)
+		if terr != nil {
+			return renderError(ctx, terr)
+		}
+		return ctx.JSON(http.StatusOK, reprojectResponse{Counts: map[string]int64{body.Tenant: n}})
+	}
+	if body.All {
+		tenants, terr := c.ext.parent.Stores().AllTenants(reqCtx)
+		if terr != nil {
+			return renderError(ctx, terr)
+		}
+		counts, aerr := rp.AllTenants(reqCtx, tenants, body.Concurrency)
+		if aerr != nil {
+			return ctx.JSON(http.StatusMultiStatus, reprojectResponse{Counts: counts, Error: aerr.Error()})
+		}
+		return ctx.JSON(http.StatusOK, reprojectResponse{Counts: counts})
+	}
 	return forge.BadRequest("request body must set either 'tenant' or 'all'")
 }
 

@@ -127,7 +127,75 @@ func analyticsCommand() cli.Command {
 	purge.AddFlag(cli.NewStringFlag("tenant", "t", "tenant id to erase", ""))
 	purge.AddFlag(cli.NewBoolFlag("yes", "", "confirm the destructive erase", false))
 
+	reproject := cli.NewCommand("reproject", "Re-apply the current redaction allow-list to already-stored rows", func(ctx cli.CommandContext) error {
+		dsn, ok := dsnFromContext(ctx)
+		if !ok {
+			return errMissingDSN
+		}
+		analyticsDSN := ctx.String("analytics-dsn")
+		if analyticsDSN == "" {
+			analyticsDSN = os.Getenv("FABRIQ_ANALYTICS_DSN")
+		}
+		if analyticsDSN == "" {
+			return cliError("--analytics-dsn (or FABRIQ_ANALYTICS_DSN) is required")
+		}
+
+		r := registry.New()
+		if err := domain.RegisterAll(r); err != nil {
+			return err
+		}
+		cfg := fabriq.Config{
+			Postgres:  fabriq.PostgresConfig{DSN: dsn},
+			Analytics: fabriq.AnalyticsConfig{DSN: analyticsDSN},
+		}
+		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = stores.Close() }()
+
+		rp, err := stores.AnalyticsReprojector(r)
+		if err != nil {
+			return err
+		}
+
+		tenants := []string{ctx.String("tenant")}
+		all := ctx.Bool("all-tenants")
+		if all {
+			tenants, err = stores.AllTenants(ctx.Context())
+			if err != nil {
+				return err
+			}
+		} else if tenants[0] == "" {
+			return cliError("--tenant is required (or pass --all-tenants)")
+		}
+
+		if !all {
+			n, err := rp.Tenant(ctx.Context(), tenants[0])
+			if err != nil {
+				return err
+			}
+			ctx.Success(fmt.Sprintf("tenant %s: reprojected %d rows", tenants[0], n))
+			return nil
+		}
+		counts, err := rp.AllTenants(ctx.Context(), tenants, ctx.Int("concurrency"))
+		for _, tenantID := range tenants {
+			ctx.Println(fmt.Sprintf("%-24s reprojected %d rows", tenantID, counts[tenantID]))
+		}
+		if err != nil {
+			return err
+		}
+		ctx.Success(fmt.Sprintf("reprojected %d tenants", len(tenants)))
+		return nil
+	})
+	reproject.AddFlag(cli.NewStringFlag("dsn", "", "Postgres DSN (or FABRIQ_POSTGRES_DSN)", ""))
+	reproject.AddFlag(cli.NewStringFlag("analytics-dsn", "", "analytics sink DSN (or FABRIQ_ANALYTICS_DSN)", ""))
+	reproject.AddFlag(cli.NewStringFlag("tenant", "t", "tenant id", ""))
+	reproject.AddFlag(cli.NewBoolFlag("all-tenants", "", "reproject every tenant", false))
+	reproject.AddFlag(cli.NewIntFlag("concurrency", "", "concurrent tenant reprojections (--all-tenants only)", 4))
+
 	_ = cmd.AddSubcommand(backfill)
 	_ = cmd.AddSubcommand(purge)
+	_ = cmd.AddSubcommand(reproject)
 	return cmd
 }

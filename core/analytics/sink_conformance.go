@@ -149,6 +149,62 @@ func RunSinkConformance(t *testing.T, newSink func() Sink) {
 			t.Fatalf("second purge of t1: n=%d err=%v, want 0/nil", again, err)
 		}
 	})
+
+	t.Run("ReprojectTenantRewritesPayloads", func(t *testing.T) {
+		s := newSink()
+		defer s.Close()
+		// A fact and an event whose payloads carry a field we now want stripped.
+		wide := func(id string) (Fact, Event) {
+			f := Fact{TenantID: "t1", Aggregate: "widget", AggID: id, Version: 1,
+				Payload: json.RawMessage(`{"keep":"y","drop":"secret"}`), At: time.Unix(100, 0).UTC()}
+			e := Event{TenantID: "t1", Aggregate: "widget", AggID: id, Version: 1, Type: "widget.created",
+				Payload: json.RawMessage(`{"keep":"y","drop":"secret"}`), At: time.Unix(100, 0).UTC()}
+			return f, e
+		}
+		f, e := wide("w1")
+		must(t, s.UpsertFacts(ctx, []Fact{f}))
+		must(t, s.AppendEvents(ctx, []Event{e}))
+		// Another tenant's row with the same shape must be untouched.
+		of, oe := wide("w1")
+		of.TenantID, oe.TenantID = "t2", "t2"
+		must(t, s.UpsertFacts(ctx, []Fact{of}))
+		must(t, s.AppendEvents(ctx, []Event{oe}))
+
+		// transform = keep only "keep" (a tightened allow-list), canonical output.
+		keepOnly := func(p json.RawMessage) (json.RawMessage, error) {
+			var in map[string]json.RawMessage
+			if err := json.Unmarshal(p, &in); err != nil {
+				return nil, err
+			}
+			if v, ok := in["keep"]; ok {
+				return json.RawMessage(`{"keep":` + string(v) + `}`), nil
+			}
+			return json.RawMessage(`{}`), nil
+		}
+
+		n, err := s.ReprojectTenant(ctx, "t1", "widget", keepOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 2 { // one fact + one event rewritten
+			t.Fatalf("reproject rewrote %d rows, want 2", n)
+		}
+
+		// Idempotent: a second run rewrites nothing (payloads already narrowed).
+		again, err := s.ReprojectTenant(ctx, "t1", "widget", keepOnly)
+		if err != nil || again != 0 {
+			t.Fatalf("second reproject: n=%d err=%v, want 0/nil", again, err)
+		}
+
+		// t2 was not in scope: its stored payload must still contain "drop".
+		leftN, err := s.ReprojectTenant(ctx, "t2", "widget", keepOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if leftN != 2 {
+			t.Fatalf("t2 reproject rewrote %d rows, want 2 (t2 must have been untouched by the t1 reproject)", leftN)
+		}
+	})
 }
 
 func must(t *testing.T, err error) {

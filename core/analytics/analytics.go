@@ -57,6 +57,14 @@ type Sink interface {
 	// time), in seconds. hasData is false when the sink holds no facts yet
 	// (nothing to be stale). Publishes the fabriq_analytics_lag_seconds gauge.
 	LagSeconds(ctx context.Context) (seconds float64, hasData bool, err error)
+	// ReprojectTenant re-writes stored fact AND event payloads for a tenant in
+	// place, applying transform to each. aggregate "" means every aggregate.
+	// It returns the number of rows whose payload actually changed. Used to
+	// retroactively apply a tightened redaction allow-list to already-stored
+	// data (a privacy correction): the transform re-projects each stored payload
+	// through the entity's current AnalyticsSpec. Idempotent — a second run with
+	// the same transform rewrites nothing.
+	ReprojectTenant(ctx context.Context, tenantID, aggregate string, transform func(payload json.RawMessage) (json.RawMessage, error)) (rowsRewritten int64, err error)
 	// PurgeTenant hard-deletes ALL of one tenant's co-located data — facts,
 	// events, and watermarks — and returns the number of rows removed. It is the
 	// erasure primitive for tenant offboarding and right-to-be-forgotten

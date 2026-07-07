@@ -52,6 +52,13 @@ func (a *Applier) Apply(env event.Envelope) (Fact, Event, bool, error) {
 	return fact, ev, true, nil
 }
 
+// Redact projects a payload down to an AnalyticsSpec's allow-list, exactly as
+// the live applier does at ingest. Exported so the Reprojector can re-apply a
+// (typically tightened) current spec to already-stored payloads. Deterministic.
+func Redact(raw json.RawMessage, spec *registry.AnalyticsSpec) (json.RawMessage, error) {
+	return redact(raw, spec)
+}
+
 // redact projects the payload down to the allow-listed fields. Deterministic:
 // keys are marshaled in sorted order so identical inputs yield identical bytes.
 func redact(raw json.RawMessage, spec *registry.AnalyticsSpec) (json.RawMessage, error) {

@@ -2,6 +2,7 @@ package fabriqtest
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"sync"
@@ -91,6 +92,43 @@ func (s *FakeAnalyticsSink) LagSeconds(_ context.Context) (float64, bool, error)
 		}
 	}
 	return time.Since(newest).Seconds(), true, nil
+}
+
+// ReprojectTenant re-projects stored fact and event payloads for a tenant (and
+// optional aggregate) through transform, in place, returning the count changed.
+func (s *FakeAnalyticsSink) ReprojectTenant(_ context.Context, tenantID, aggregate string, transform func(json.RawMessage) (json.RawMessage, error)) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int64
+	for k, f := range s.facts {
+		if f.TenantID != tenantID || (aggregate != "" && f.Aggregate != aggregate) {
+			continue
+		}
+		np, err := transform(f.Payload)
+		if err != nil {
+			return n, err
+		}
+		if string(np) != string(f.Payload) {
+			f.Payload = np
+			s.facts[k] = f
+			n++
+		}
+	}
+	for k, e := range s.evs {
+		if e.TenantID != tenantID || (aggregate != "" && e.Aggregate != aggregate) {
+			continue
+		}
+		np, err := transform(e.Payload)
+		if err != nil {
+			return n, err
+		}
+		if string(np) != string(e.Payload) {
+			e.Payload = np
+			s.evs[k] = e
+			n++
+		}
+	}
+	return n, nil
 }
 
 // PurgeTenant hard-deletes every fact, event, and watermark for one tenant and

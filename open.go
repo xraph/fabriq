@@ -620,6 +620,17 @@ func (s *Stores) AnalyticsBackfiller(reg *registry.Registry) (*analytics.Backfil
 	}, nil
 }
 
+// AnalyticsReprojector assembles a reprojector that re-applies each marked
+// entity's CURRENT redaction allow-list to already-stored analytics rows — the
+// retroactive privacy correction for a tightened `Include`. Requires a
+// configured analytics sink.
+func (s *Stores) AnalyticsReprojector(reg *registry.Registry) (*analytics.Reprojector, error) {
+	if s.Analytics == nil {
+		return nil, fmt.Errorf("fabriq: analytics reprojector needs an analytics sink configured")
+	}
+	return &analytics.Reprojector{Reg: reg, Sink: s.Analytics}, nil
+}
+
 // GraphRebuilder assembles the blue-green rebuilder for the graph
 // projection (used by `fabriq rebuild` and tests).
 func (s *Stores) GraphRebuilder(reg *registry.Registry) (*projection.Rebuilder, error) {
