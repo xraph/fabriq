@@ -119,8 +119,22 @@ func (s *Sink) UpsertFacts(ctx context.Context, facts []analytics.Fact) error {
 	return batch.Send()
 }
 
+// AppendEvents dedupes on the natural key via the ORDER BY of the events RMT;
+// re-appending the same (tenant, aggregate, agg_id, version) is a no-op. _dedup
+// is 0 at ingest (only reprojection bumps it).
 func (s *Sink) AppendEvents(ctx context.Context, events []analytics.Event) error {
-	return errUnimplemented
+	batch, err := s.conn.PrepareBatch(ctx,
+		"INSERT INTO fabriq_analytics_events (tenant_id, aggregate, agg_id, version, type, payload, at, _dedup)")
+	if err != nil {
+		return fmt.Errorf("fabriq: analytics append event: %w", err)
+	}
+	for _, e := range events {
+		if err := batch.Append(e.TenantID, e.Aggregate, e.AggID, e.Version,
+			e.Type, string(e.Payload), e.At, uint64(0)); err != nil {
+			return fmt.Errorf("fabriq: analytics append event: %w", err)
+		}
+	}
+	return batch.Send()
 }
 
 // Watermark reads the highest applied version (0 if unknown). max() over an
@@ -174,8 +188,27 @@ func (s *Sink) AllWatermarks(ctx context.Context, tenantID string) ([]analytics.
 	return out, rows.Err()
 }
 
+// LagByTenant reports now() - (that tenant's newest fact commit time), in
+// seconds, per tenant. The winning row per aggregate has the newest at, so
+// max(at) needs no FINAL. An empty table yields no rows -> empty map.
 func (s *Sink) LagByTenant(ctx context.Context) (map[string]float64, error) {
-	return nil, errUnimplemented
+	rows, err := s.conn.Query(ctx,
+		`SELECT tenant_id, dateDiff('second', max(at), now64(3))
+		 FROM fabriq_analytics_facts GROUP BY tenant_id`)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: analytics lag: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var tid string
+		var secs int64
+		if err := rows.Scan(&tid, &secs); err != nil {
+			return nil, fmt.Errorf("fabriq: analytics lag scan: %w", err)
+		}
+		out[tid] = float64(secs)
+	}
+	return out, rows.Err()
 }
 
 func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string, transform func(payload json.RawMessage) (json.RawMessage, error)) (rowsRewritten int64, err error) {
