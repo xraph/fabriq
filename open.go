@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"encoding/base64"
 
 	fcache "github.com/xraph/fabriq/adapters/cache"
+	"github.com/xraph/fabriq/adapters/chanalytics"
 	"github.com/xraph/fabriq/adapters/elastic"
 	"github.com/xraph/fabriq/adapters/falkordb"
 	"github.com/xraph/fabriq/adapters/pganalytics"
@@ -298,17 +300,42 @@ func openAnalytics(ctx context.Context, cfg Config, reg *registry.Registry, stor
 			}
 		}
 	}
-	var aopts []pganalytics.Option
-	if cfg.Analytics.PartitionEvents {
-		aopts = append(aopts, pganalytics.WithEventPartitioning())
+	scheme := analyticsScheme(cfg.Analytics.DSN)
+	if cfg.Analytics.PartitionEvents && scheme != "postgres" && scheme != "postgresql" && scheme != "" {
+		return fmt.Errorf("fabriq: analytics PartitionEvents is only supported on the postgres backend (DSN scheme %q)", scheme)
 	}
-	as, err := pganalytics.Open(ctx, cfg.Analytics.DSN, aopts...)
+	var as analytics.Sink
+	var err error
+	switch scheme {
+	case "postgres", "postgresql", "":
+		var aopts []pganalytics.Option
+		if cfg.Analytics.PartitionEvents {
+			aopts = append(aopts, pganalytics.WithEventPartitioning())
+		}
+		as, err = pganalytics.Open(ctx, cfg.Analytics.DSN, aopts...)
+	case "clickhouse":
+		as, err = chanalytics.Open(ctx, cfg.Analytics.DSN)
+	case "duckdb":
+		as, err = openDuckAnalytics(ctx, cfg.Analytics.DSN)
+	default:
+		return fmt.Errorf("fabriq: unknown analytics DSN scheme %q", scheme)
+	}
 	if err != nil {
 		return err
 	}
 	stores.Analytics = as
 	stores.analyticsSalt = cfg.Analytics.HashSalt
 	return nil
+}
+
+// analyticsScheme returns the lowercased URL scheme of an analytics DSN, or ""
+// for a bare Postgres keyword DSN (host=… dbname=…). It selects the sink
+// adapter, mirroring how Storage.StorageDriver picks a blob backend.
+func analyticsScheme(dsn string) string {
+	if i := strings.Index(dsn, "://"); i >= 0 {
+		return strings.ToLower(dsn[:i])
+	}
+	return ""
 }
 
 // validateArchiveConfig fails fast when CRDT history offload is requested —

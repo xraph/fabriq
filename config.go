@@ -136,7 +136,13 @@ func (c CatalogConfig) sharedSchemaOrDefault() string {
 
 // AnalyticsConfig configures the cross-tenant analytics sink.
 type AnalyticsConfig struct {
-	// DSN locates the shared analytics database.
+	// DSN locates the shared analytics database. Its URL scheme selects the
+	// sink backend: "postgres://"/"postgresql://" (or a bare Postgres
+	// keyword DSN, e.g. "host=… dbname=…") dials pganalytics; "clickhouse://"
+	// dials chanalytics; "duckdb://" dials duckanalytics, which is only
+	// compiled in with the "duckdb" build tag (default builds return an
+	// error). PartitionEvents is postgres-only and errors at Open on any
+	// other scheme.
 	DSN string `yaml:"dsn" json:"dsn"`
 	// Batch bounds the backfill write batch size (default 128 when 0).
 	Batch int `yaml:"batch" json:"batch"`
