@@ -154,7 +154,7 @@ var serviceDesc = grpc.ServiceDesc{
 	// here as well as in remote.Handler.DispatchStream / DispatchClientStream.
 	Streams: []grpc.StreamDesc{
 		{StreamName: "Subscribe", Handler: streamHandler(remote.MethodSubscribe), ServerStreams: true},
-		{StreamName: "LiveQuery", Handler: streamHandler(remote.MethodLiveQuery), ServerStreams: true},
+		{StreamName: "LiveQuery", Handler: bidiHandler(remote.MethodLiveQuery), ClientStreams: true, ServerStreams: true},
 		{StreamName: "GetBlob", Handler: streamHandler(remote.MethodGetBlob), ServerStreams: true},
 		{StreamName: "PutBlob", Handler: clientStreamHandler(remote.MethodPutBlob), ClientStreams: true},
 		{StreamName: "BidiEcho", Handler: bidiHandler(remote.MethodBidiEcho), ClientStreams: true, ServerStreams: true},

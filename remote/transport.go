@@ -280,9 +280,8 @@ type loopbackBidiStream struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 
-	mu     sync.Mutex
-	closed bool
-	err    error
+	mu  sync.Mutex
+	err error
 }
 
 func (c *loopbackBidiStream) setErr(err error) {
@@ -315,13 +314,11 @@ func (c *loopbackBidiStream) Recv() ([]byte, error) {
 	return b, nil
 }
 
+// Close tears the bidi stream down by cancelling its context: the handler's
+// recv/send unblock with ctx.Err(). It deliberately does NOT close the inbound
+// channel — a concurrent Send would race a close — so cancellation is the sole
+// teardown signal (there is no half-close on a bidi stream).
 func (c *loopbackBidiStream) Close() error {
-	c.mu.Lock()
-	if !c.closed {
-		c.closed = true
-		close(c.inbound)
-	}
-	c.mu.Unlock()
 	c.cancel()
 	return nil
 }

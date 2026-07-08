@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -40,8 +41,13 @@ type Handler struct {
 // remote LiveQuery plane is enabled; otherwise it returns ErrNotImplemented.
 func NewHandler(fab query.Fabric, reg *registry.Registry) *Handler {
 	h := &Handler{fab: fab, reg: reg}
+	// The facade may satisfy LiveQuerier directly (a test double returning
+	// LiveSubscription) or the concrete shape (*fabriq.Fabriq, returning
+	// *livequery.Handle) which the adapter widens.
 	if lq, ok := fab.(LiveQuerier); ok {
 		h.live = lq
+	} else if clq, ok := fab.(concreteLiveQuerier); ok {
+		h.live = liveQuerierAdapter{c: clq}
 	}
 	return h
 }
@@ -115,8 +121,6 @@ func (h *Handler) DispatchStream(ctx context.Context, method string, in []byte, 
 	switch method {
 	case MethodSubscribe:
 		return h.Subscribe(ctx, in, send)
-	case MethodLiveQuery:
-		return h.LiveQuery(ctx, in, send)
 	case MethodGetBlob:
 		return h.GetBlob(ctx, in, send)
 	default:
@@ -132,6 +136,8 @@ func (h *Handler) DispatchBidi(ctx context.Context, method string, recv func() (
 	switch method {
 	case MethodBidiEcho:
 		return h.BidiEcho(ctx, recv, send)
+	case MethodLiveQuery:
+		return h.LiveQuery(ctx, recv, send)
 	default:
 		return fmt.Errorf("remote: unknown bidi method %q", method)
 	}
@@ -311,52 +317,159 @@ func (h *Handler) Subscribe(ctx context.Context, in []byte, send func([]byte) er
 	}
 }
 
-// LiveQuery is the server side of MethodLiveQuery. It opens a maintained-window
-// subscription on the facade, sends the snapshot as the first frame, then one
-// delta per frame until the channel closes or the client disconnects; on exit it
-// Closes the engine handle. A facade without LiveQuery answers ErrNotImplemented.
-func (h *Handler) LiveQuery(ctx context.Context, in []byte, send func([]byte) error) error {
-	var req fabriqpb.LiveQueryRequest
-	if err := proto.Unmarshal(in, &req); err != nil {
-		return fmt.Errorf("remote: decode live query request: %w", err)
+// LiveQuery is the server side of MethodLiveQuery, a bidirectional stream. The
+// client's first frame carries the query; it opens a maintained-window
+// subscription on the facade, sends the snapshot as the first server frame, then
+// drains deltas to the client in a goroutine. Meanwhile it loops on recv for
+// control frames: a Reanchor frame slides the window (in-process Handle.Reanchor)
+// and returns the fresh snapshot as a server frame. It exits — Closing the engine
+// handle — when the client stops sending (io.EOF), disconnects (ctx.Done), or the
+// delta channel closes. A facade without LiveQuery answers ErrNotImplemented.
+//
+// SendMsg is not safe for concurrent use, so a mutex serializes the delta pump
+// and the reanchor replies onto the single send func.
+func (h *Handler) LiveQuery(ctx context.Context, recv func() ([]byte, error), send func([]byte) error) error {
+	var sendMu sync.Mutex
+	safeSend := func(m proto.Message) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return sendProto(send, m)
+	}
+
+	first, err := recv()
+	if err != nil {
+		return err
+	}
+	var cf fabriqpb.LiveClientFrame
+	if err := proto.Unmarshal(first, &cf); err != nil {
+		return fmt.Errorf("remote: decode live client frame: %w", err)
 	}
 	if h.live == nil {
-		return sendProto(send, &fabriqpb.LiveFrame{Error: errorToProto(fmt.Errorf("remote: live queries not configured: %w", ErrNotImplemented))})
+		return safeSend(&fabriqpb.LiveFrame{Error: errorToProto(fmt.Errorf("remote: live queries not configured: %w", ErrNotImplemented))})
 	}
 	var q livequery.LiveQuery
-	if len(req.Query) > 0 {
-		if err := json.Unmarshal(req.Query, &q); err != nil {
-			return sendProto(send, &fabriqpb.LiveFrame{Error: errorToProto(fmt.Errorf("remote: decode live query: %w", err))})
+	if cf.Query != nil && len(cf.Query.Query) > 0 {
+		if err := json.Unmarshal(cf.Query.Query, &q); err != nil {
+			return safeSend(&fabriqpb.LiveFrame{Error: errorToProto(fmt.Errorf("remote: decode live query: %w", err))})
 		}
 	}
-	snap, deltas, handle, err := h.live.LiveQuery(ctx, q)
+	snap, deltas, sub, err := h.live.LiveQuery(ctx, q)
 	if err != nil {
-		return sendProto(send, &fabriqpb.LiveFrame{Error: errorToProto(err)})
+		return safeSend(&fabriqpb.LiveFrame{Error: errorToProto(err)})
 	}
-	if handle != nil {
-		defer handle.Close()
+	if sub != nil {
+		defer sub.Close()
 	}
 	snapBody, err := json.Marshal(snap)
 	if err != nil {
 		return err
 	}
-	if err := sendProto(send, &fabriqpb.LiveFrame{Snapshot: snapBody}); err != nil {
+	if err := safeSend(&fabriqpb.LiveFrame{Snapshot: snapBody}); err != nil {
 		return err
 	}
+
+	// ctx bounds both the delta pump and the recv reader; either exiting cancels
+	// the other so neither goroutine leaks.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Delta pump: one server frame per delta until the channel closes (clean end)
+	// or a send fails.
+	pumpDone := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				pumpDone <- nil
+				return
+			case d, ok := <-deltas:
+				if !ok {
+					pumpDone <- nil // the subscription ended: clean stream close
+					return
+				}
+				body, merr := json.Marshal(d)
+				if merr != nil {
+					pumpDone <- merr
+					return
+				}
+				if serr := safeSend(&fabriqpb.LiveFrame{Delta: body}); serr != nil {
+					pumpDone <- serr
+					return
+				}
+			}
+		}
+	}()
+
+	// Recv reader: surface each client frame (or the terminal recv error) on a
+	// channel so the control loop can select it against pump completion.
+	type recvResult struct {
+		frame []byte
+		err   error
+	}
+	frames := make(chan recvResult)
+	go func() {
+		for {
+			frame, rerr := recv()
+			select {
+			case frames <- recvResult{frame: frame, err: rerr}:
+			case <-ctx.Done():
+				return
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+
+	// Control loop: a Reanchor client frame slides the window and replies with the
+	// fresh snapshot; io.EOF (client Close) or pump completion ends the stream.
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case d, ok := <-deltas:
-			if !ok {
-				return nil
+		case perr := <-pumpDone:
+			return perr
+		case rr := <-frames:
+			if rr.err != nil {
+				if errors.Is(rr.err, io.EOF) {
+					return nil
+				}
+				return rr.err
 			}
-			body, merr := json.Marshal(d)
+			var ctrl fabriqpb.LiveClientFrame
+			if uerr := proto.Unmarshal(rr.frame, &ctrl); uerr != nil {
+				return fmt.Errorf("remote: decode live control frame: %w", uerr)
+			}
+			if ctrl.Reanchor == nil {
+				continue // ignore unknown/empty control frames
+			}
+			var cursor *livequery.Cursor
+			if len(ctrl.Reanchor.Cursor) > 0 {
+				cursor = &livequery.Cursor{}
+				if uerr := json.Unmarshal(ctrl.Reanchor.Cursor, cursor); uerr != nil {
+					if serr := safeSend(&fabriqpb.LiveFrame{Error: errorToProto(fmt.Errorf("remote: decode reanchor cursor: %w", uerr))}); serr != nil {
+						return serr
+					}
+					continue
+				}
+			}
+			if sub == nil {
+				if serr := safeSend(&fabriqpb.LiveFrame{Error: errorToProto(ErrNotImplemented)}); serr != nil {
+					return serr
+				}
+				continue
+			}
+			rsnap, rerr2 := sub.Reanchor(ctx, cursor, int(ctrl.Reanchor.Limit))
+			if rerr2 != nil {
+				if serr := safeSend(&fabriqpb.LiveFrame{Error: errorToProto(rerr2)}); serr != nil {
+					return serr
+				}
+				continue
+			}
+			rbody, merr := json.Marshal(rsnap)
 			if merr != nil {
 				return merr
 			}
-			if err := sendProto(send, &fabriqpb.LiveFrame{Delta: body}); err != nil {
-				return err
+			if serr := safeSend(&fabriqpb.LiveFrame{Snapshot: rbody}); serr != nil {
+				return serr
 			}
 		}
 	}

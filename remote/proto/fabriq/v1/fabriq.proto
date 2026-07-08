@@ -54,10 +54,12 @@ service Fabriq {
   //     a handshake (open, or a setup error); each subsequent frame is a Delta. ---
   rpc Subscribe(SubscribeRequest) returns (stream SubFrame);
 
-  // --- live query: server-streamed maintained window. The first frame carries
-  //     the snapshot (or a setup error); each subsequent frame is one delta.
-  //     Reanchor (deep scroll) needs the bidi Live RPC below and is a follow-on. ---
-  rpc LiveQuery(LiveQueryRequest) returns (stream LiveFrame);
+  // --- live query: bidirectional maintained window. The client's first frame
+  //     carries the query; each subsequent client frame is a Reanchor control
+  //     (new cursor/limit). The server's first frame carries the snapshot (or a
+  //     setup error); subsequent frames are deltas, with a fresh snapshot frame
+  //     returned in response to each Reanchor. ---
+  rpc LiveQuery(stream LiveClientFrame) returns (stream LiveFrame);
 
   // --- live: bidi. client sends subscribe/reanchor/unsubscribe; server streams
   //     snapshot (as reset+enter) then enter/leave/move/update deltas. ---
@@ -284,10 +286,24 @@ message SubFrame {
 
 // --- live query (maintained, ordered, filtered window) ---
 message LiveQueryRequest { bytes query = 1; } // JSON livequery.LiveQuery
-// LiveFrame: the first frame carries the snapshot (or a setup error); each
-// subsequent frame carries one delta. Bodies are opaque JSON.
+// LiveReanchor slides a maintained window to a new anchor mid-stream: cursor is
+// JSON livequery.Cursor (may be empty for the head), limit the new window size
+// (0 = keep current).
+message LiveReanchor {
+  bytes cursor = 1; // JSON livequery.Cursor
+  int32 limit = 2;
+}
+// LiveClientFrame is the client->server frame on the bidi LiveQuery stream: the
+// first frame carries the query, each subsequent frame a Reanchor control.
+message LiveClientFrame {
+  LiveQueryRequest query = 1;   // first frame
+  LiveReanchor reanchor = 2;    // subsequent control frames
+}
+// LiveFrame is the server->client frame: the first frame carries the snapshot
+// (or a setup error), subsequent frames carry deltas, and a fresh snapshot frame
+// is returned in response to each Reanchor. Bodies are opaque JSON.
 message LiveFrame {
-  bytes snapshot = 1; // JSON livequery.Snapshot (first frame)
+  bytes snapshot = 1; // JSON livequery.Snapshot (initial + each reanchor)
   bytes delta = 2;    // JSON livequery.LiveDelta
   Error error = 3;    // setup error (handshake)
 }

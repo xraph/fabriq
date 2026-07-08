@@ -63,6 +63,7 @@ type fakeFabric struct {
 	liveSnap  livequery.Snapshot
 	liveCh    chan livequery.LiveDelta
 	liveErr   error
+	liveSub   *fakeLiveSub
 	blobStore blob.Store
 	retr      *fakeRetrieval
 	ts        *fakeTS
@@ -89,13 +90,49 @@ func (f *fakeFabric) Subscribe(_ context.Context, _ query.SubscribeScope) (<-cha
 	return f.subCh, nil
 }
 
-// LiveQuery makes fakeFabric satisfy remote.LiveQuerier. The handle is nil — a
-// fake cannot build a *livequery.Handle — which the server tolerates.
-func (f *fakeFabric) LiveQuery(_ context.Context, _ livequery.LiveQuery) (livequery.Snapshot, <-chan livequery.LiveDelta, *livequery.Handle, error) {
+// LiveQuery makes fakeFabric satisfy remote.LiveQuerier. It returns a
+// fakeLiveSub as the control surface so tests can drive Reanchor and inspect the
+// cursor the "engine" saw; when liveSub is nil the subscription is nil (the
+// server tolerates that, mirroring a facade that returns no handle).
+func (f *fakeFabric) LiveQuery(_ context.Context, _ livequery.LiveQuery) (livequery.Snapshot, <-chan livequery.LiveDelta, remote.LiveSubscription, error) {
 	if f.liveErr != nil {
 		return livequery.Snapshot{}, nil, nil, f.liveErr
 	}
+	if f.liveSub != nil {
+		return f.liveSnap, f.liveCh, f.liveSub, nil
+	}
 	return f.liveSnap, f.liveCh, nil, nil
+}
+
+// fakeLiveSub is a test double for the in-process live subscription: it records
+// the cursor/limit each Reanchor received and returns a programmed fresh
+// snapshot, standing in for *livequery.Handle over the bidi wire.
+type fakeLiveSub struct {
+	mu          sync.Mutex
+	reanchSnap  livequery.Snapshot
+	reanchErr   error
+	gotCursor   *livequery.Cursor
+	gotLimit    int
+	reanchorHit int
+	closed      bool
+}
+
+func (s *fakeLiveSub) Reanchor(_ context.Context, cursor *livequery.Cursor, limit int) (livequery.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gotCursor = cursor
+	s.gotLimit = limit
+	s.reanchorHit++
+	if s.reanchErr != nil {
+		return livequery.Snapshot{}, s.reanchErr
+	}
+	return s.reanchSnap, nil
+}
+
+func (s *fakeLiveSub) Close() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 }
 
 func (f *fakeFabric) Blob() blob.Store            { return f.blobStore }
@@ -563,8 +600,10 @@ func TestLoopback_BidiStreamEchoInterleaves(t *testing.T) {
 	if err := conn.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err := conn.Recv(); !errors.Is(err, io.EOF) {
-		t.Fatalf("Recv after Close = %v, want io.EOF", err)
+	// After Close the stream is torn down; Recv reports the terminal error (a
+	// cancellation or io.EOF), never another frame.
+	if _, err := conn.Recv(); err == nil {
+		t.Fatalf("Recv after Close returned a frame, want a terminal error")
 	}
 }
 
@@ -723,15 +762,30 @@ func TestLoopback_LiveQueryStreamsSnapshotAndDeltas(t *testing.T) {
 	if gotSnap.SubID != "s1" || gotSnap.Watermark != "w1" || len(gotSnap.Rows) != 1 || gotSnap.Rows[0].AggID != "a" {
 		t.Fatalf("snapshot lost: %+v", gotSnap)
 	}
-	if _, rerr := h.Reanchor(context.Background(), nil, 20); !errors.Is(rerr, remote.ErrNotImplemented) {
-		t.Errorf("Reanchor err = %v, want ErrNotImplemented", rerr)
-	}
 	ops := make([]livequery.DeltaOp, 0, 2)
 	for d := range live {
 		ops = append(ops, d.Op)
 	}
 	if len(ops) != 2 || ops[0] != livequery.OpEnter || ops[1] != livequery.OpUpdate {
 		t.Fatalf("deltas lost: %+v", ops)
+	}
+}
+
+// TestLoopback_LiveQueryReanchorNotConfigured proves that Reanchor on a live
+// stream whose facade returns no engine subscription is answered over the wire
+// with ErrNotImplemented (the delta channel stays open so the reply is not
+// racing a stream teardown).
+func TestLoopback_LiveQueryReanchorNotConfigured(t *testing.T) {
+	deltas := make(chan livequery.LiveDelta) // never closed: stream stays open
+	client := wire(t, &fakeFabric{liveSnap: livequery.Snapshot{SubID: "s1"}, liveCh: deltas})
+
+	_, _, h, err := client.LiveQuery(context.Background(), livequery.LiveQuery{Entity: "asset", Limit: 10})
+	if err != nil {
+		t.Fatalf("LiveQuery: %v", err)
+	}
+	defer h.Close()
+	if _, rerr := h.Reanchor(context.Background(), nil, 20); !errors.Is(rerr, remote.ErrNotImplemented) {
+		t.Fatalf("Reanchor err = %v, want ErrNotImplemented", rerr)
 	}
 }
 
@@ -744,6 +798,57 @@ func TestLoopback_LiveQueryNotConfigured(t *testing.T) {
 	_, _, _, err := client.LiveQuery(context.Background(), livequery.LiveQuery{Entity: "asset", Limit: 10})
 	if !errors.Is(err, remote.ErrNotImplemented) {
 		t.Fatalf("err = %v, want ErrNotImplemented", err)
+	}
+}
+
+// TestLoopback_LiveQueryReanchor proves the bidirectional Reanchor round-trip:
+// a control frame with a new cursor+limit crosses mid-stream, the fake
+// subscription records it, and the fresh snapshot returns to the caller while
+// deltas keep flowing on the delta channel.
+func TestLoopback_LiveQueryReanchor(t *testing.T) {
+	deltas := make(chan livequery.LiveDelta) // unbuffered: stays open across the reanchor
+	sub := &fakeLiveSub{reanchSnap: livequery.Snapshot{SubID: "s2", Watermark: "w2", Rows: []livequery.Row{{AggID: "b", Version: 5}}}}
+	snap := livequery.Snapshot{SubID: "s1", Watermark: "w1", Rows: []livequery.Row{{AggID: "a", Version: 1}}}
+	client := wire(t, &fakeFabric{liveSnap: snap, liveCh: deltas, liveSub: sub})
+
+	gotSnap, live, h, err := client.LiveQuery(context.Background(), livequery.LiveQuery{Entity: "asset", Limit: 10})
+	if err != nil {
+		t.Fatalf("LiveQuery: %v", err)
+	}
+	defer h.Close()
+	if gotSnap.SubID != "s1" {
+		t.Fatalf("initial snapshot lost: %+v", gotSnap)
+	}
+
+	// A delta arrives; then we reanchor; then another delta — proving the delta
+	// channel survives the reanchor.
+	go func() { deltas <- livequery.LiveDelta{Op: livequery.OpEnter, AggID: "a"} }()
+	if d := <-live; d.Op != livequery.OpEnter {
+		t.Fatalf("pre-reanchor delta = %+v", d)
+	}
+
+	cursor := &livequery.Cursor{Values: []any{"anchor", "b"}}
+	fresh, err := h.Reanchor(context.Background(), cursor, 20)
+	if err != nil {
+		t.Fatalf("Reanchor: %v", err)
+	}
+	if fresh.SubID != "s2" || fresh.Watermark != "w2" || len(fresh.Rows) != 1 || fresh.Rows[0].AggID != "b" {
+		t.Fatalf("reanchor snapshot lost: %+v", fresh)
+	}
+	sub.mu.Lock()
+	gotLimit, hit := sub.gotLimit, sub.reanchorHit
+	gotCursor := sub.gotCursor
+	sub.mu.Unlock()
+	if hit != 1 || gotLimit != 20 {
+		t.Fatalf("engine saw hit=%d limit=%d, want 1 and 20", hit, gotLimit)
+	}
+	if gotCursor == nil || len(gotCursor.Values) != 2 || fmt.Sprint(gotCursor.Values[0]) != "anchor" {
+		t.Fatalf("engine saw cursor = %+v, want values [anchor b]", gotCursor)
+	}
+
+	go func() { deltas <- livequery.LiveDelta{Op: livequery.OpUpdate, AggID: "b", Version: 6} }()
+	if d := <-live; d.Op != livequery.OpUpdate {
+		t.Fatalf("post-reanchor delta = %+v", d)
 	}
 }
 
