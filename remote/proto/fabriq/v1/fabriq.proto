@@ -34,6 +34,14 @@ service Fabriq {
   rpc TSBulkWrite(TSBulkWriteRequest) returns (Ack);
   rpc TSRange(TSRangeRequest) returns (RowReply);
 
+  // --- spatial (core/query.SpatialQuerier): geometry storage + radius search.
+  //     Geometry crosses as WKT + SRID; Get returns a dedicated reply since it
+  //     can't reuse RowReply (geometry + meta + a found/not-found bool). ---
+  rpc SpatialUpsert(SpatialUpsertRequest) returns (Ack);
+  rpc SpatialWithin(SpatialWithinRequest) returns (RowReply);
+  rpc SpatialGet(SpatialGetRequest) returns (SpatialGetReply);
+  rpc SpatialDelete(SpatialDeleteRequest) returns (Ack);
+
   // --- subscribe: server-streamed conflated channel deltas. The first frame is
   //     a handshake (open, or a setup error); each subsequent frame is a Delta. ---
   rpc Subscribe(SubscribeRequest) returns (stream SubFrame);
@@ -152,6 +160,33 @@ message TSBulkWriteRequest {
 }
 message TSRangeRequest {
   bytes query = 1; // JSON query.RangeQuery
+}
+
+// --- spatial (query.SpatialQuerier) ---
+message SpatialUpsertRequest {
+  string entity = 1;
+  string id = 2;
+  string wkt = 3;
+  int32 srid = 4;
+  bytes meta = 5; // JSON map[string]any
+}
+message SpatialWithinRequest {
+  bytes query = 1; // JSON query.SpatialQuery
+}
+message SpatialGetRequest {
+  string entity = 1;
+  string id = 2;
+}
+message SpatialGetReply {
+  string wkt = 1;
+  int32 srid = 2;
+  bytes meta = 3; // JSON map[string]any
+  bool ok = 4;
+  Error error = 5;
+}
+message SpatialDeleteRequest {
+  string entity = 1;
+  string id = 2;
 }
 
 // --- subscribe (conflated channel deltas) ---

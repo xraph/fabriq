@@ -96,7 +96,7 @@ func (r *Fabric) Graph() query.GraphQuerier           { return remoteGraph{t: r.
 func (r *Fabric) Search() query.SearchQuerier         { return remoteSearch{t: r.t} }
 func (r *Fabric) Timeseries() query.TSQuerier         { return remoteTS{t: r.t} }
 func (r *Fabric) Vector() query.VectorQuerier         { return remoteVector{t: r.t} }
-func (r *Fabric) Spatial() query.SpatialQuerier       { return niSpatial{} }
+func (r *Fabric) Spatial() query.SpatialQuerier       { return remoteSpatial{t: r.t} }
 
 // Document returns nil until the document plane is wired. Blob streams bytes
 // (Put/Get) and the presign bypass over the transport; List/Copy are follow-ons.

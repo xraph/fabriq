@@ -66,6 +66,10 @@ const (
 	MethodGraphQuery         = "fabriq.v1.Fabriq/GraphQuery"
 	MethodTSBulkWrite        = "fabriq.v1.Fabriq/TSBulkWrite"
 	MethodTSRange            = "fabriq.v1.Fabriq/TSRange"
+	MethodSpatialUpsert      = "fabriq.v1.Fabriq/SpatialUpsert"
+	MethodSpatialWithin      = "fabriq.v1.Fabriq/SpatialWithin"
+	MethodSpatialGet         = "fabriq.v1.Fabriq/SpatialGet"
+	MethodSpatialDelete      = "fabriq.v1.Fabriq/SpatialDelete"
 )
 
 // Loopback is an in-process Transport that dispatches straight to a Handler —

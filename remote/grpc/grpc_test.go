@@ -59,14 +59,16 @@ type fakeFabric struct {
 	blobStore    blob.Store
 	retr         *fakeRetrieval
 	ts           *fakeTS
+	sp           *fakeSpatial
 	gotTenant    string
 	gotPrincipal string
 }
 
-func (f *fakeFabric) Vector() query.VectorQuerier { return f.retr }
-func (f *fakeFabric) Search() query.SearchQuerier { return f.retr }
-func (f *fakeFabric) Graph() query.GraphQuerier   { return f.retr }
-func (f *fakeFabric) Timeseries() query.TSQuerier { return f.ts }
+func (f *fakeFabric) Vector() query.VectorQuerier   { return f.retr }
+func (f *fakeFabric) Search() query.SearchQuerier   { return f.retr }
+func (f *fakeFabric) Graph() query.GraphQuerier     { return f.retr }
+func (f *fakeFabric) Timeseries() query.TSQuerier   { return f.ts }
+func (f *fakeFabric) Spatial() query.SpatialQuerier { return f.sp }
 
 // fakeRetrieval implements the three projection-read ports for the gRPC channel
 // test.
@@ -127,6 +129,27 @@ func (f *fakeTS) Range(_ context.Context, q query.RangeQuery, into any) error {
 	}
 	return nil
 }
+
+// fakeSpatial implements query.SpatialQuerier for the gRPC spatial round-trip
+// test.
+type fakeSpatial struct {
+	gotGeom query.Geometry
+	gotMeta map[string]any
+	getGeom query.Geometry
+	getMeta map[string]any
+	getOK   bool
+}
+
+func (f *fakeSpatial) Upsert(_ context.Context, _, _ string, geom query.Geometry, meta map[string]any) error {
+	f.gotGeom = geom
+	f.gotMeta = meta
+	return nil
+}
+func (f *fakeSpatial) Within(context.Context, query.SpatialQuery, any) error { return nil }
+func (f *fakeSpatial) Get(_ context.Context, _, _ string) (query.Geometry, map[string]any, bool, error) {
+	return f.getGeom, f.getMeta, f.getOK, nil
+}
+func (f *fakeSpatial) Delete(_ context.Context, _, _ string) error { return nil }
 
 func (f *fakeFabric) LiveQuery(_ context.Context, _ livequery.LiveQuery) (livequery.Snapshot, <-chan livequery.LiveDelta, *livequery.Handle, error) {
 	return f.liveSnap, f.liveCh, nil, nil
@@ -404,5 +427,28 @@ func TestGRPC_TimeseriesRoundTrip(t *testing.T) {
 	}
 	if len(out) != 1 || out[0]["value"] != 2.0 {
 		t.Fatalf("rows = %+v", out)
+	}
+}
+
+// TestGRPC_SpatialRoundTrip proves the spatial port over real gRPC — and that
+// SpatialUpsert/Within/Get/Delete are actually registered in the ServiceDesc
+// (not just reachable over Loopback).
+func TestGRPC_SpatialRoundTrip(t *testing.T) {
+	sp := &fakeSpatial{getGeom: query.Geometry{WKT: "POINT(1 2)", SRID: 4326}, getMeta: map[string]any{"n": "a"}, getOK: true}
+	f := dial(t, &fakeFabric{sp: sp})
+
+	if err := f.Spatial().Upsert(context.Background(), "asset", "a1",
+		query.Geometry{WKT: "POINT(3 4)", SRID: 4326}, map[string]any{"k": "v"}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if sp.gotGeom.WKT != "POINT(3 4)" {
+		t.Fatalf("server geom = %+v", sp.gotGeom)
+	}
+	geom, meta, ok, err := f.Spatial().Get(context.Background(), "asset", "a1")
+	if err != nil || !ok || geom.WKT != "POINT(1 2)" || meta["n"] != "a" {
+		t.Fatalf("Get = %+v %+v %v %v", geom, meta, ok, err)
+	}
+	if err := f.Spatial().Delete(context.Background(), "asset", "a1"); err != nil {
+		t.Fatalf("Delete: %v", err)
 	}
 }

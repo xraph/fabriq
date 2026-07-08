@@ -84,6 +84,14 @@ func (h *Handler) Dispatch(ctx context.Context, method string, in []byte) ([]byt
 		return h.TSBulkWrite(ctx, in)
 	case MethodTSRange:
 		return h.TSRange(ctx, in)
+	case MethodSpatialUpsert:
+		return h.SpatialUpsert(ctx, in)
+	case MethodSpatialWithin:
+		return h.SpatialWithin(ctx, in)
+	case MethodSpatialGet:
+		return h.SpatialGet(ctx, in)
+	case MethodSpatialDelete:
+		return h.SpatialDelete(ctx, in)
 	default:
 		return nil, fmt.Errorf("remote: unknown method %q", method)
 	}
@@ -598,6 +606,71 @@ func (h *Handler) TSRange(ctx context.Context, in []byte) ([]byte, error) {
 		return nil, fmt.Errorf("remote: marshal range rows: %w", err)
 	}
 	return proto.Marshal(&fabriqpb.RowReply{Row: row})
+}
+
+// --- spatial (query.SpatialQuerier): geometry storage + radius search ---
+
+func (h *Handler) SpatialUpsert(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.SpatialUpsertRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode spatialUpsert request: %w", err)
+	}
+	var meta map[string]any
+	if len(req.Meta) > 0 {
+		if err := json.Unmarshal(req.Meta, &meta); err != nil {
+			return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(fmt.Errorf("remote: decode meta: %w", err))})
+		}
+	}
+	geom := query.Geometry{WKT: req.Wkt, SRID: int(req.Srid)}
+	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Spatial().Upsert(ctx, req.Entity, req.Id, geom, meta))})
+}
+
+func (h *Handler) SpatialWithin(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.SpatialWithinRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode spatialWithin request: %w", err)
+	}
+	var q query.SpatialQuery
+	if len(req.Query) > 0 {
+		if err := json.Unmarshal(req.Query, &q); err != nil {
+			return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(fmt.Errorf("remote: decode spatial query: %w", err))})
+		}
+	}
+	var rows []map[string]any
+	if err := h.fab.Spatial().Within(ctx, q, &rows); err != nil {
+		return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(err)})
+	}
+	row, err := json.Marshal(rows)
+	if err != nil {
+		return nil, fmt.Errorf("remote: marshal within rows: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.RowReply{Row: row})
+}
+
+func (h *Handler) SpatialGet(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.SpatialGetRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode spatialGet request: %w", err)
+	}
+	geom, meta, ok, err := h.fab.Spatial().Get(ctx, req.Entity, req.Id)
+	if err != nil {
+		return proto.Marshal(&fabriqpb.SpatialGetReply{Error: errorToProto(err)})
+	}
+	var metaJSON []byte
+	if meta != nil {
+		if metaJSON, err = json.Marshal(meta); err != nil {
+			return nil, fmt.Errorf("remote: marshal spatial meta: %w", err)
+		}
+	}
+	return proto.Marshal(&fabriqpb.SpatialGetReply{Wkt: geom.WKT, Srid: int32(geom.SRID), Meta: metaJSON, Ok: ok})
+}
+
+func (h *Handler) SpatialDelete(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.SpatialDeleteRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode spatialDelete request: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Spatial().Delete(ctx, req.Entity, req.Id))})
 }
 
 func sendProto(send func([]byte) error, m proto.Message) error {

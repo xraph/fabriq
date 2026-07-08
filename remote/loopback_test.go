@@ -63,6 +63,7 @@ type fakeFabric struct {
 	blobStore blob.Store
 	retr      *fakeRetrieval
 	ts        *fakeTS
+	sp        *fakeSpatial
 	gotCmd    command.Command
 	gotCmds   []command.Command
 	result    command.Result
@@ -72,6 +73,8 @@ type fakeFabric struct {
 func (f *fakeFabric) Relational() query.RelationalQuerier { return f.rel }
 
 func (f *fakeFabric) Timeseries() query.TSQuerier { return f.ts }
+
+func (f *fakeFabric) Spatial() query.SpatialQuerier { return f.sp }
 
 func (f *fakeFabric) Subscribe(_ context.Context, _ query.SubscribeScope) (<-chan query.Delta, error) {
 	if f.subErr != nil {
@@ -187,6 +190,35 @@ func (f *fakeTS) Range(_ context.Context, q query.RangeQuery, into any) error {
 	}
 	return nil
 }
+
+// fakeSpatial implements query.SpatialQuerier, recording what it received and
+// returning a canned Get result.
+type fakeSpatial struct {
+	gotGeom   query.Geometry
+	gotMeta   map[string]any
+	gotWithin query.SpatialQuery
+	rows      []map[string]any
+	getGeom   query.Geometry
+	getMeta   map[string]any
+	getOK     bool
+}
+
+func (f *fakeSpatial) Upsert(_ context.Context, _, _ string, geom query.Geometry, meta map[string]any) error {
+	f.gotGeom = geom
+	f.gotMeta = meta
+	return nil
+}
+func (f *fakeSpatial) Within(_ context.Context, q query.SpatialQuery, into any) error {
+	f.gotWithin = q
+	if p, ok := into.(*[]map[string]any); ok {
+		*p = f.rows
+	}
+	return nil
+}
+func (f *fakeSpatial) Get(_ context.Context, _, _ string) (query.Geometry, map[string]any, bool, error) {
+	return f.getGeom, f.getMeta, f.getOK, nil
+}
+func (f *fakeSpatial) Delete(_ context.Context, _, _ string) error { return nil }
 
 // fakeBlob is a minimal in-memory blob.Store (+ Presigner) for the byte-plane
 // tests.
@@ -871,5 +903,25 @@ func TestLoopback_TimeseriesRoundTrip(t *testing.T) {
 	}
 	if ts.gotRange.Agg != "avg" || ts.gotRange.Bucket != time.Minute {
 		t.Fatalf("server saw range %+v", ts.gotRange)
+	}
+}
+
+// TestLoopback_SpatialRoundTrip proves the geometry port: Upsert's geometry
+// crosses to the server and Get's canned geometry/meta/ok scan back, over the
+// Loopback wire.
+func TestLoopback_SpatialRoundTrip(t *testing.T) {
+	sp := &fakeSpatial{getGeom: query.Geometry{WKT: "POINT(1 2)", SRID: 4326}, getMeta: map[string]any{"n": "a"}, getOK: true}
+	rf := remote.New(remote.Loopback{Handler: remote.NewHandler(&fakeFabric{sp: sp}, assetRegistry(t))})
+
+	if err := rf.Spatial().Upsert(context.Background(), "asset", "a1",
+		query.Geometry{WKT: "POINT(3 4)", SRID: 4326}, map[string]any{"k": "v"}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if sp.gotGeom.WKT != "POINT(3 4)" {
+		t.Fatalf("server geom = %+v", sp.gotGeom)
+	}
+	geom, meta, ok, err := rf.Spatial().Get(context.Background(), "asset", "a1")
+	if err != nil || !ok || geom.WKT != "POINT(1 2)" || meta["n"] != "a" {
+		t.Fatalf("Get = %+v %+v %v %v", geom, meta, ok, err)
 	}
 }
