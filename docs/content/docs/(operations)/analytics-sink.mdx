@@ -111,6 +111,91 @@ otherwise. Because the salt is stable, live apply, backfill, and
 reproject all produce the same hash for the same value. A hashed field is
 implicitly included — it need not also appear in `Include`.
 
+## Choosing a backend
+
+`Config.Analytics.DSN`'s URL scheme selects the sink adapter at `Open` —
+there is no separate driver setting:
+
+| Scheme | Adapter | Example |
+| --- | --- | --- |
+| `postgres://`, `postgresql://`, or a bare keyword DSN (no `://`) | `adapters/pganalytics` (default) | `postgres://fabriq_analytics@analytics-db:5432/fabriq_analytics` |
+| `clickhouse://` | `adapters/chanalytics` | `clickhouse://user:pass@analytics-db:9000/fabriq_analytics` |
+| `duckdb://` | `adapters/duckanalytics` | `duckdb:///var/lib/fabriq/analytics.db` or `duckdb://:memory:` |
+
+An unknown scheme fails fast at boot: `fabriq: unknown analytics DSN scheme
+"…"`. All three adapters satisfy the same `core/analytics.Sink` port and run
+through the identical conformance suite, so they are drop-in interchangeable
+at that level — the differences below are operational, not behavioral.
+
+### Postgres (default)
+
+The reference adapter described throughout this page. It is the only
+backend that supports `partitionEvents` (see
+[Partitioning at scale](#partitioning-at-scale)) — DuckDB and ClickHouse
+don't have a native partition-drop primitive wired into the sink, so
+`partitionEvents: true` with a non-postgres DSN scheme is also a boot
+error: `fabriq: analytics PartitionEvents is only supported on the postgres
+backend`.
+
+### ClickHouse
+
+```yaml
+analytics:
+  dsn: clickhouse://user:pass@analytics-db:9000/fabriq_analytics
+```
+
+The three tables are `ReplacingMergeTree`, ClickHouse's columnar
+merge-on-read engine — there is no in-place `UPDATE`, so the version-gate
+described above is enforced by keeping the highest-versioned row per key
+and letting background merges (or a query-time `FINAL`/`argMax`) resolve to
+the winner. This changes how you read the store directly:
+
+- **Point/aggregate reads issued by the sink itself** never need `FINAL` —
+  they use `argMax(col, _dedup)` (facts/events) or plain `max(version)`
+  (watermarks), which is correct without waiting for a background merge.
+- **Ad hoc operator queries** against `fabriq_analytics_facts` or
+  `fabriq_analytics_events` should add `FINAL` to the `FROM` clause (or
+  aggregate with `argMax` the same way) — without it, a query can see both
+  a stale and a current row for the same key until the next merge.
+- `payload` is stored as `String` (ClickHouse's native `JSON` type is still
+  experimental), so query into it with `JSONExtract*` functions, e.g.
+  `JSONExtractString(payload, 'status')`, rather than a JSONB-style `->>`.
+- Prune and purge (`fabriq analytics prune-events`, `PurgeTenant`) issue a
+  lightweight `DELETE FROM … WHERE …`, generally available since
+  **ClickHouse 23.3**. On an older server, enable
+  `allow_experimental_lightweight_delete` or upgrade before relying on
+  those operations.
+
+The ClickHouse driver is pure Go — it ships in the default
+`CGO_ENABLED=0` release binary with no extra build tag.
+
+### DuckDB
+
+```yaml
+analytics:
+  dsn: duckdb:///var/lib/fabriq/analytics.db   # file-backed
+  # dsn: duckdb://:memory:                     # in-process, non-durable
+```
+
+DuckDB is embedded — no server to run, no network hop — and columnar like
+ClickHouse, but with full mutable SQL (`UPDATE`/`DELETE` in place), so its
+adapter reads closer to the Postgres one than the ClickHouse one.
+
+<Callout type="warn">
+**Requires a CGO build.** The DuckDB driver is cgo-linked, so it is compiled
+in only under the `duckdb` build tag with `CGO_ENABLED=1`:
+`CGO_ENABLED=1 go build -tags duckdb ./...`. The default release binary
+(`CGO_ENABLED=0`, no build tag) does not include it — configuring a
+`duckdb://` DSN against that binary fails at boot with `fabriq: duckdb
+analytics support not built into this binary (rebuild with -tags duckdb)`.
+</Callout>
+
+Because it's in-process, a DuckDB sink is tied to the fabriq instance's own
+disk and lifetime — there's no separate database to point a second reader
+at. It suits a single-node deployment or local/edge reporting more than a
+shared fleet-wide store queried by other tools; for that, ClickHouse or
+Postgres remain the better fit.
+
 ## Schema
 
 `adapters/pganalytics` ensures its schema idempotently at `Open` (three
