@@ -102,6 +102,17 @@ func (c *adminController) requireAnalyticsAdmin(_ forge.Context) (*analytics.Bac
 	return bf, nil
 }
 
+// requireAnalyticsRead gates the read-only analytics endpoints. It passes when
+// EITHER the read grant or the admin grant is enabled (admin implies read),
+// and 403s otherwise — mirroring requireAnalyticsAdmin's shape but without the
+// Backfiller resolution (reads do not need it).
+func (c *adminController) requireAnalyticsRead() error {
+	if !c.ext.cfg.AnalyticsRead && !c.ext.cfg.AnalyticsAdmin {
+		return forge.Forbidden("analytics read not enabled (host must opt in via WithAnalyticsRead or WithAnalyticsAdmin)")
+	}
+	return nil
+}
+
 // backfillRequest is the POST {BasePath}/analytics/backfill request body.
 // Exactly one selector must be set: either "tenant" (single-tenant backfill)
 // or "all" (fleet backfill, optionally bounded by "concurrency").
@@ -371,8 +382,8 @@ func (c *adminController) handleAnalyticsPurge(ctx forge.Context) error {
 // whether the analytics sink is configured and how many tenants are known to
 // the catalog, without triggering any backfill work.
 func (c *adminController) handleAnalyticsStatus(ctx forge.Context) error {
-	if !c.ext.cfg.AnalyticsAdmin {
-		return forge.Forbidden("analytics admin not enabled (host must opt in via WithAnalyticsAdmin)")
+	if err := c.requireAnalyticsRead(); err != nil {
+		return err
 	}
 	if c.ext.parent == nil || c.ext.parent.Stores() == nil {
 		return ctx.JSON(http.StatusOK, analyticsStatusResponse{})

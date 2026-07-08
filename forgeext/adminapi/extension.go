@@ -72,6 +72,11 @@ type config struct {
 	// configured and a parent forgeext.Extension is present — see
 	// requireAnalyticsAdmin.
 	AnalyticsAdmin bool
+	// AnalyticsRead enables the READ-ONLY analytics endpoint (GET
+	// /analytics/status, incl. per-tenant freshness) without granting the
+	// mutating operations. Least-privilege companion to WithAnalyticsAdmin (which
+	// implies read). Default false. Mirrors ConnectionsRead.
+	AnalyticsRead bool
 	// ConnectionsRead enables the connection/topology info endpoints (GET
 	// /connections and GET /tenants/:id/connection). Default false: those
 	// endpoints 403 until the host opts in via WithConnectionsRead. It is a
@@ -146,6 +151,11 @@ func WithTenantsAdmin() Option { return func(c *config) { c.TenantsAdmin = true 
 // admin API: backfill replays tenant snapshots into the analytics sink and is
 // an instance-global operation.
 func WithAnalyticsAdmin() Option { return func(c *config) { c.AnalyticsAdmin = true } }
+
+// WithAnalyticsRead enables the read-only analytics status/freshness endpoint
+// (GET /analytics/status) without the mutating operations — a least-privilege
+// gate for a freshness dashboard. WithAnalyticsAdmin implies this.
+func WithAnalyticsRead() Option { return func(c *config) { c.AnalyticsRead = true } }
 
 // WithConnectionsRead enables the connection/topology info endpoints — GET
 // /connections (the tier's stores + cluster topology) and GET
