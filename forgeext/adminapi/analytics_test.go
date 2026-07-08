@@ -298,12 +298,15 @@ func TestSummarizeLag(t *testing.T) {
 	if worst, behind := summarizeLag(map[string]float64{}, 60); worst != 0 || behind != 0 {
 		t.Fatalf("empty: worst=%v behind=%d, want 0,0", worst, behind)
 	}
-	worst, behind := summarizeLag(map[string]float64{"a": 10, "b": 120, "c": 61}, 60)
+	// c is EXACTLY at the threshold: a strict `>` must NOT count it, matching the
+	// worker's fabriq_analytics_tenants_behind gauge so the dashboard and the
+	// alert metric agree at the boundary. Only b (120) is behind.
+	worst, behind := summarizeLag(map[string]float64{"a": 10, "b": 120, "c": 60}, 60)
 	if worst != 120 {
 		t.Fatalf("worst=%v, want 120", worst)
 	}
-	if behind != 2 { // b and c exceed 60; a does not
-		t.Fatalf("behind=%d, want 2", behind)
+	if behind != 1 { // only b exceeds 60; c==60 is the boundary (not >), a is under
+		t.Fatalf("behind=%d, want 1 (strict > threshold, matching the worker gauge)", behind)
 	}
 }
 

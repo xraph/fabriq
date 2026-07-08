@@ -156,14 +156,17 @@ type analyticsStatusResponse struct {
 }
 
 // summarizeLag reduces a per-tenant lag map to the worst-case lag (max seconds,
-// 0 when empty) and the count of tenants at or beyond thresholdSecs — the same
-// two low-cardinality figures the worker's freshness gauges expose.
+// 0 when empty) and the count of tenants STRICTLY beyond thresholdSecs — the
+// same two low-cardinality figures the worker's freshness gauges expose. The
+// strict `>` comparison matches the worker's fabriq_analytics_tenants_behind
+// gauge (forgeext/worker.go, analyticsLagBehindThreshold) so the dashboard and
+// the alert metric agree at the boundary.
 func summarizeLag(lag map[string]float64, thresholdSecs float64) (worst float64, behind int) {
 	for _, secs := range lag {
 		if secs > worst {
 			worst = secs
 		}
-		if secs >= thresholdSecs {
+		if secs > thresholdSecs {
 			behind++
 		}
 	}
