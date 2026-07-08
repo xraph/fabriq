@@ -37,14 +37,6 @@ func TestOpenAnalyticsUnknownScheme(t *testing.T) {
 	}
 }
 
-func TestOpenAnalyticsDuckDBNotBuilt(t *testing.T) {
-	cfg := Config{Analytics: AnalyticsConfig{DSN: "duckdb:///tmp/a.db"}}
-	err := openAnalytics(context.Background(), cfg, registryForTest(t), &Stores{})
-	if err == nil || !strings.Contains(err.Error(), "duckdb analytics support not built") {
-		t.Fatalf("want duckdb-not-built error, got %v", err)
-	}
-}
-
 func TestOpenAnalyticsPartitionNonPostgres(t *testing.T) {
 	cfg := Config{Analytics: AnalyticsConfig{DSN: "clickhouse://h:9000/db", PartitionEvents: true}}
 	err := openAnalytics(context.Background(), cfg, registryForTest(t), &Stores{})

@@ -79,11 +79,8 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
-      # TestOpenAnalyticsDuckDBNotBuilt is excluded: it asserts the !duckdb stub's
-      # "not built" error, which is specific to the default build and always
-      # fails under -tags duckdb (the real adapter is linked in instead).
       - name: Test (duckdb tag, CGO)
-        run: CGO_ENABLED=1 go test -tags duckdb ./adapters/duckanalytics/... ./ -run 'TestDuckAnalytics|TestAnalyticsScheme|TestOpenAnalyticsUnknownScheme|TestOpenAnalyticsPartitionNonPostgres'
+        run: CGO_ENABLED=1 go test -tags duckdb ./adapters/duckanalytics/... ./ -run 'TestDuckAnalytics|TestAnalyticsScheme|TestOpenAnalytics'
 
   # ===========================================================================
   # Integration tests (required gate). testcontainers spins up Postgres+Timescale,
