@@ -106,6 +106,42 @@ func (c *clientUploadStream) Close() error {
 	return nil
 }
 
+// BidiStream implements remote.Transport: it opens a bidirectional gRPC stream
+// (both ClientStreams and ServerStreams) whose Send and Recv are independent.
+// Close cancels the stream, which the server-side handler observes on ctx.Done.
+func (c *Client) BidiStream(ctx context.Context, method string) (remote.BidiStreamConn, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	desc := &grpc.StreamDesc{StreamName: shortName(method), ClientStreams: true, ServerStreams: true}
+	cs, err := c.cc.NewStream(ctx, desc, "/"+method, grpc.CallContentSubtype(codecName))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return &clientBidiStream{cs: cs, cancel: cancel}, nil
+}
+
+type clientBidiStream struct {
+	cs     grpc.ClientStream
+	cancel context.CancelFunc
+}
+
+func (c *clientBidiStream) Send(b []byte) error { return c.cs.SendMsg(b) }
+
+// Recv returns the next server frame, or io.EOF at a clean end (gRPC's RecvMsg
+// surfaces io.EOF on stream completion, matching remote.BidiStreamConn).
+func (c *clientBidiStream) Recv() ([]byte, error) {
+	var b []byte
+	if err := c.cs.RecvMsg(&b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func (c *clientBidiStream) Close() error {
+	c.cancel()
+	return nil
+}
+
 // shortName maps a fully-qualified method ("pkg.Service/Method") to its stream
 // name ("Method").
 func shortName(method string) string {

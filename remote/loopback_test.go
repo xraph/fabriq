@@ -536,6 +536,38 @@ func TestLoopback_SubscribeAuthzErrorSurvivesWire(t *testing.T) {
 	}
 }
 
+// TestLoopback_BidiStreamEchoInterleaves proves the bidirectional transport
+// primitive: the client Sends frames and Recvs the handler's replies
+// independently, interleaved on one open stream, and Recv reports io.EOF once
+// the client stops sending and the handler returns.
+func TestLoopback_BidiStreamEchoInterleaves(t *testing.T) {
+	h := remote.NewHandler(&fakeFabric{}, assetRegistry(t))
+	tr := remote.Loopback{Handler: h}
+
+	conn, err := tr.BidiStream(context.Background(), remote.MethodBidiEcho)
+	if err != nil {
+		t.Fatalf("BidiStream: %v", err)
+	}
+	for _, msg := range []string{"one", "two", "three"} {
+		if err := conn.Send([]byte(msg)); err != nil {
+			t.Fatalf("Send %q: %v", msg, err)
+		}
+		got, rerr := conn.Recv()
+		if rerr != nil {
+			t.Fatalf("Recv after %q: %v", msg, rerr)
+		}
+		if string(got) != "echo:"+msg {
+			t.Fatalf("Recv = %q, want %q", got, "echo:"+msg)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := conn.Recv(); !errors.Is(err, io.EOF) {
+		t.Fatalf("Recv after Close = %v, want io.EOF", err)
+	}
+}
+
 // TestLoopback_GetRoundTrip proves a single read crosses the envelope: the
 // server builds a registry-typed scan target, the row comes back as opaque
 // JSON, and the client scans it into the caller's *testAsset.

@@ -124,6 +124,38 @@ func (h *Handler) DispatchStream(ctx context.Context, method string, in []byte, 
 	}
 }
 
+// DispatchBidi routes a bidirectional call by method name. recv returns the next
+// client frame (io.EOF when the client is done sending); send delivers one frame
+// to the client. The handler returns when the call is over; the transport binding
+// turns a returned error into the stream status.
+func (h *Handler) DispatchBidi(ctx context.Context, method string, recv func() ([]byte, error), send func([]byte) error) error {
+	switch method {
+	case MethodBidiEcho:
+		return h.BidiEcho(ctx, recv, send)
+	default:
+		return fmt.Errorf("remote: unknown bidi method %q", method)
+	}
+}
+
+// BidiEcho is a diagnostic bidirectional handler: it echoes each received frame
+// back to the client prefixed with "echo:", until the client stops sending
+// (io.EOF) or the call is cancelled. It exists to exercise the bidi transport
+// primitive on its own — the live-query plane is the real consumer.
+func (h *Handler) BidiEcho(ctx context.Context, recv func() ([]byte, error), send func([]byte) error) error {
+	for {
+		frame, err := recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := send(append([]byte("echo:"), frame...)); err != nil {
+			return err
+		}
+	}
+}
+
 // Exec decodes one command, rebuilds its registry-typed payload, runs it on the
 // embedded facade, and encodes the result or typed error.
 func (h *Handler) Exec(ctx context.Context, in []byte) ([]byte, error) {

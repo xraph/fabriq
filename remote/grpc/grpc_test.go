@@ -286,6 +286,55 @@ func dial(t *testing.T, fab query.Fabric, opts ...grpc.ServerOption) *remote.Fab
 	return remote.New(remotegrpc.NewClient(cc))
 }
 
+// dialClient stands up the same real gRPC stack as dial but returns the raw
+// *remotegrpc.Client so tests can exercise transport primitives (BidiStream)
+// directly, not just the Fabric facade.
+func dialClient(t *testing.T, fab query.Fabric, opts ...grpc.ServerOption) *remotegrpc.Client {
+	t.Helper()
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer(opts...)
+	remotegrpc.Register(srv, remote.NewHandler(fab, assetRegistry(t)))
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	cc, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = cc.Close() })
+	return remotegrpc.NewClient(cc)
+}
+
+// TestGRPC_BidiStreamEchoInterleaves proves the bidirectional primitive over a
+// real gRPC stream (both ClientStreams and ServerStreams true): frames Sent and
+// Recv'd interleave, and Recv reports io.EOF after CloseSend + handler return.
+func TestGRPC_BidiStreamEchoInterleaves(t *testing.T) {
+	c := dialClient(t, &fakeFabric{})
+
+	conn, err := c.BidiStream(context.Background(), remote.MethodBidiEcho)
+	if err != nil {
+		t.Fatalf("BidiStream: %v", err)
+	}
+	for _, msg := range []string{"alpha", "beta", "gamma"} {
+		if err := conn.Send([]byte(msg)); err != nil {
+			t.Fatalf("Send %q: %v", msg, err)
+		}
+		got, rerr := conn.Recv()
+		if rerr != nil {
+			t.Fatalf("Recv after %q: %v", msg, rerr)
+		}
+		if string(got) != "echo:"+msg {
+			t.Fatalf("Recv = %q, want %q", got, "echo:"+msg)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 // TestGRPC_ExecRoundTrip proves a write crosses a real gRPC connection: the
 // typed payload is decoded server-side and the result returns intact.
 func TestGRPC_ExecRoundTrip(t *testing.T) {

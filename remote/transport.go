@@ -25,6 +25,11 @@ type Transport interface {
 	// ClientStream opens a client-streaming method: the client Sends N frames
 	// then CloseAndRecv for the single response. Used by chunked blob upload.
 	ClientStream(ctx context.Context, method string) (ClientStreamConn, error)
+	// BidiStream opens a bidirectional method: the client and server both Send
+	// and Recv frames independently for the lifetime of the call. Recv returns
+	// io.EOF at a clean server-side end. Used by the live-query plane, where a
+	// Reanchor control frame is sent mid-stream while deltas keep flowing.
+	BidiStream(ctx context.Context, method string) (BidiStreamConn, error)
 }
 
 // Stream is the client view of a server-streaming response.
@@ -40,6 +45,16 @@ type Stream interface {
 type ClientStreamConn interface {
 	Send(frame []byte) error
 	CloseAndRecv() (reply []byte, err error)
+	Close() error
+}
+
+// BidiStreamConn is the client view of a bidirectional call: Send and Recv are
+// independent and may interleave for the life of the stream. Recv returns
+// io.EOF once the server-side handler returns cleanly. Close tears the stream
+// down (the server observes ctx.Done).
+type BidiStreamConn interface {
+	Send(frame []byte) error
+	Recv() ([]byte, error) // io.EOF at clean end
 	Close() error
 }
 
@@ -76,6 +91,10 @@ const (
 	MethodDocSync            = "fabriq.v1.Fabriq/DocSync"
 	MethodDocSnapshot        = "fabriq.v1.Fabriq/DocSnapshot"
 	MethodDocCompact         = "fabriq.v1.Fabriq/DocCompact"
+	// MethodBidiEcho is a diagnostic bidirectional method that echoes each frame
+	// back prefixed with "echo:". It exists to exercise the BidiStream primitive
+	// independently of the live-query plane.
+	MethodBidiEcho = "fabriq.v1.Fabriq/BidiEcho"
 )
 
 // Loopback is an in-process Transport that dispatches straight to a Handler —
@@ -211,6 +230,98 @@ func (c *loopbackClientStream) CloseAndRecv() ([]byte, error) {
 }
 
 func (c *loopbackClientStream) Close() error {
+	c.cancel()
+	return nil
+}
+
+// BidiStream implements Transport: it runs the bidirectional handler in a
+// goroutine wired to two channels — one the caller Sends into (drained by the
+// handler's recv), one the handler sends into (drained by the caller's Recv).
+// It mirrors the ClientStream/ServerStream loopbacks: ctx is cancelled once the
+// handler returns so a pending Send/Recv unblocks instead of leaking, and Recv
+// reports io.EOF (or the handler's error) once the outbound channel closes.
+func (l Loopback) BidiStream(ctx context.Context, method string) (BidiStreamConn, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	c := &loopbackBidiStream{
+		inbound:  make(chan []byte, 16),
+		outbound: make(chan []byte, 16),
+		ctx:      ctx,
+		cancel:   cancel,
+	}
+	go func() {
+		defer close(c.outbound)
+		recv := func() ([]byte, error) {
+			select {
+			case f, ok := <-c.inbound:
+				if !ok {
+					return nil, io.EOF
+				}
+				return f, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		send := func(b []byte) error {
+			select {
+			case c.outbound <- b:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		c.setErr(l.Handler.DispatchBidi(ctx, method, recv, send))
+	}()
+	return c, nil
+}
+
+type loopbackBidiStream struct {
+	inbound  chan []byte
+	outbound chan []byte
+	ctx      context.Context
+	cancel   context.CancelFunc
+
+	mu     sync.Mutex
+	closed bool
+	err    error
+}
+
+func (c *loopbackBidiStream) setErr(err error) {
+	c.mu.Lock()
+	c.err = err
+	c.mu.Unlock()
+}
+
+func (c *loopbackBidiStream) Send(b []byte) error {
+	frame := append([]byte(nil), b...) // copy: the caller may reuse the buffer
+	select {
+	case c.inbound <- frame:
+		return nil
+	case <-c.ctx.Done():
+		return c.ctx.Err()
+	}
+}
+
+func (c *loopbackBidiStream) Recv() ([]byte, error) {
+	b, ok := <-c.outbound
+	if !ok {
+		c.mu.Lock()
+		err := c.err
+		c.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		return nil, io.EOF
+	}
+	return b, nil
+}
+
+func (c *loopbackBidiStream) Close() error {
+	c.mu.Lock()
+	if !c.closed {
+		c.closed = true
+		close(c.inbound)
+	}
+	c.mu.Unlock()
 	c.cancel()
 	return nil
 }

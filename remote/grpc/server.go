@@ -94,6 +94,27 @@ func clientStreamHandler(method string) func(any, grpc.ServerStream) error {
 	}
 }
 
+// bidiHandler builds a bidirectional gRPC handler that pipes the stream's
+// RecvMsg/SendMsg into remote.Handler.DispatchBidi under the given method name.
+// recv surfaces io.EOF when the client CloseSends; send delivers one frame.
+func bidiHandler(method string) func(any, grpc.ServerStream) error {
+	return func(srv any, stream grpc.ServerStream) error {
+		s, ok := srv.(*server)
+		if !ok {
+			return fmt.Errorf("grpc: unexpected server type %T", srv)
+		}
+		recv := func() ([]byte, error) {
+			var b []byte
+			if err := stream.RecvMsg(&b); err != nil {
+				return nil, err // io.EOF when the client CloseSends
+			}
+			return b, nil
+		}
+		send := func(b []byte) error { return stream.SendMsg(b) }
+		return s.h.DispatchBidi(stream.Context(), method, recv, send)
+	}
+}
+
 var serviceDesc = grpc.ServiceDesc{
 	ServiceName: "fabriq.v1.Fabriq",
 	HandlerType: (*fabriqService)(nil),
@@ -136,6 +157,7 @@ var serviceDesc = grpc.ServiceDesc{
 		{StreamName: "LiveQuery", Handler: streamHandler(remote.MethodLiveQuery), ServerStreams: true},
 		{StreamName: "GetBlob", Handler: streamHandler(remote.MethodGetBlob), ServerStreams: true},
 		{StreamName: "PutBlob", Handler: clientStreamHandler(remote.MethodPutBlob), ClientStreams: true},
+		{StreamName: "BidiEcho", Handler: bidiHandler(remote.MethodBidiEcho), ClientStreams: true, ServerStreams: true},
 	},
 	Metadata: "remote/proto/fabriq/v1/fabriq.proto",
 }
