@@ -89,6 +89,16 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     needs: go
+    strategy:
+      fail-fast: false
+      # golangci-lint does not recurse into nested modules, so each go.mod
+      # (the root plus every sub-module, e.g. remote/grpc) is linted as its own
+      # matrix leg. All legs share the root .golangci.yml (golangci-lint walks
+      # up the tree to find it).
+      matrix:
+        module:
+          - .
+          - remote/grpc
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -96,14 +106,15 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: ${{ matrix.module }}/go.mod
           cache: true
-          cache-dependency-path: go.sum
+          cache-dependency-path: ${{ matrix.module }}/go.sum
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: latest
+          working-directory: ${{ matrix.module }}
           args: --timeout 10m
 
   # ===========================================================================

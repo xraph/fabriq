@@ -2,6 +2,7 @@ package remotegrpc
 
 import (
 	"context"
+	"fmt"
 
 	"google.golang.org/grpc"
 
@@ -25,6 +26,10 @@ func Register(s grpc.ServiceRegistrar, h *remote.Handler) {
 
 func unaryHandler(method string) func(any, context.Context, func(any) error, grpc.UnaryServerInterceptor) (any, error) {
 	return func(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+		s, ok := srv.(*server)
+		if !ok {
+			return nil, fmt.Errorf("grpc: unexpected server type %T", srv)
+		}
 		var in []byte
 		if err := dec(&in); err != nil {
 			return nil, err
@@ -33,7 +38,11 @@ func unaryHandler(method string) func(any, context.Context, func(any) error, grp
 		// interceptor, it MUST be called around invoke — exactly as generated
 		// stubs do — or interceptors (auth, etc.) silently never run.
 		invoke := func(ctx context.Context, req any) (any, error) {
-			return srv.(*server).h.Dispatch(ctx, method, req.([]byte))
+			b, ok := req.([]byte)
+			if !ok {
+				return nil, fmt.Errorf("grpc: unexpected request type %T", req)
+			}
+			return s.h.Dispatch(ctx, method, b)
 		}
 		if interceptor == nil {
 			return invoke(ctx, in)
@@ -48,12 +57,16 @@ func unaryHandler(method string) func(any, context.Context, func(any) error, grp
 // given method name.
 func streamHandler(method string) func(any, grpc.ServerStream) error {
 	return func(srv any, stream grpc.ServerStream) error {
+		s, ok := srv.(*server)
+		if !ok {
+			return fmt.Errorf("grpc: unexpected server type %T", srv)
+		}
 		var in []byte
 		if err := stream.RecvMsg(&in); err != nil {
 			return err
 		}
 		send := func(b []byte) error { return stream.SendMsg(b) }
-		return srv.(*server).h.DispatchStream(stream.Context(), method, in, send)
+		return s.h.DispatchStream(stream.Context(), method, in, send)
 	}
 }
 
@@ -62,6 +75,10 @@ func streamHandler(method string) func(any, grpc.ServerStream) error {
 // reply.
 func clientStreamHandler(method string) func(any, grpc.ServerStream) error {
 	return func(srv any, stream grpc.ServerStream) error {
+		s, ok := srv.(*server)
+		if !ok {
+			return fmt.Errorf("grpc: unexpected server type %T", srv)
+		}
 		recv := func() ([]byte, error) {
 			var b []byte
 			if err := stream.RecvMsg(&b); err != nil {
@@ -69,7 +86,7 @@ func clientStreamHandler(method string) func(any, grpc.ServerStream) error {
 			}
 			return b, nil
 		}
-		reply, err := srv.(*server).h.DispatchClientStream(stream.Context(), method, recv)
+		reply, err := s.h.DispatchClientStream(stream.Context(), method, recv)
 		if err != nil {
 			return err
 		}
