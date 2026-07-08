@@ -46,16 +46,20 @@ func (r remoteRelational) GetMany(ctx context.Context, entity string, ids []stri
 }
 
 // List sends the structured filter and scans the returned page into the
-// caller's slice target. The query.ListQuery (a query.Cond struct tree) crosses
-// as an opaque JSON body. NOTE: filter values cross as JSON, so numeric values
-// arrive as float64 server-side — fine for string/bool filters; full numeric
-// fidelity awaits modeling the filter in protobuf (ADR 0009).
+// caller's slice target. The query.ListQuery (a query.Cond struct tree) is
+// sent as BOTH the typed `structured` field (ListQuery/Cond/CondValue, full
+// numeric fidelity) and the legacy opaque-JSON `query` body (kept for one
+// release for rollback — the server prefers `structured` when set).
 func (r remoteRelational) List(ctx context.Context, entity string, q query.ListQuery, into any) error {
 	body, err := json.Marshal(q)
 	if err != nil {
 		return err
 	}
-	in, err := proto.Marshal(&fabriqpb.ListRequest{Entity: entity, Query: body})
+	in, err := proto.Marshal(&fabriqpb.ListRequest{
+		Entity:     entity,
+		Query:      body,
+		Structured: listQueryToProto(q),
+	})
 	if err != nil {
 		return err
 	}

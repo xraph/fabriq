@@ -576,6 +576,24 @@ func TestLoopback_ListRoundTrip(t *testing.T) {
 	}
 }
 
+// TestLoopback_ListFilterPreservesIntType proves the documented int→float64
+// fidelity loss (opaque-JSON filter, JSON has no int) is fixed: a filter value
+// set as int64 arrives server-side still as int64, not float64.
+func TestLoopback_ListFilterPreservesIntType(t *testing.T) {
+	rel := &fakeRelational{}
+	rf := remote.New(remote.Loopback{Handler: remote.NewHandler(&fakeFabric{rel: rel}, assetRegistry(t))})
+
+	var out []*testAsset
+	q := query.ListQuery{Where: query.Where{query.Eq("version", int64(7))}, Limit: 10}
+	if err := rf.Relational().List(context.Background(), "asset", q, &out); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got := rel.gotList.Where[0].Value
+	if _, ok := got.(int64); !ok {
+		t.Fatalf("filter value crossed as %T (%v), want int64 — numeric fidelity lost", got, got)
+	}
+}
+
 // fabricNoLive is a facade that does NOT implement LiveQuerier — used to prove
 // the remote LiveQuery degrades to ErrNotImplemented.
 type fabricNoLive struct{ query.Fabric }

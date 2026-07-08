@@ -111,8 +111,45 @@ message ExecBatchReply {
 // --- reads (body is opaque JSON, like Command.payload) ---
 message GetRequest { string entity = 1; string id = 2; }
 message GetManyRequest { string entity = 1; repeated string ids = 2; }
-message ListRequest { string entity = 1; bytes query = 2; } // query = JSON ListQuery
+// ListRequest.query (opaque JSON) is kept for one release for rollback; the
+// server prefers structured when set, since JSON has no int and degrades
+// numeric filter values to float64 (see CondValue below).
+message ListRequest {
+  string entity = 1;
+  bytes query = 2;          // JSON ListQuery (deprecated: numeric fidelity loss)
+  ListQuery structured = 3; // preferred when non-nil
+}
 message RowReply { bytes row = 1; Error error = 2; }        // row = JSON model
+
+// CondValue is a self-describing scalar (or list) filter value — a oneof so
+// query.Cond.Value (an `any`) keeps its Go type across the wire instead of
+// degrading through opaque JSON (which has no int, only float64).
+message CondValue {
+  oneof v {
+    string string_val = 1;
+    double double_val = 2;
+    int64 int_val = 3;
+    bool bool_val = 4;
+    ValueList list_val = 5;
+  }
+}
+message ValueList { repeated CondValue items = 1; }
+// Cond mirrors core/query.Cond. op is the string form of query.Op (e.g.
+// "eq", "in"). When or is non-empty this is an OR group and
+// column/op/value are ignored, mirroring query.Cond.IsGroup.
+message Cond {
+  string column = 1;
+  string op = 2;
+  CondValue value = 3;
+  repeated Cond or = 4;
+}
+// ListQuery mirrors core/query.ListQuery.
+message ListQuery {
+  repeated Cond where = 1;
+  string order_by = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
 
 // --- knowledge retrieval (vector / search / graph projection reads) ---
 message Ack { Error error = 1; }

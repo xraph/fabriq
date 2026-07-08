@@ -198,9 +198,11 @@ func (h *Handler) GetMany(ctx context.Context, in []byte) ([]byte, error) {
 	return proto.Marshal(&fabriqpb.RowReply{Row: rows})
 }
 
-// List is the server side of MethodList: decode the structured filter (an opaque
-// JSON body), run the real paged read into a registry-typed slice target, and
-// return opaque-JSON rows.
+// List is the server side of MethodList: decode the structured filter —
+// preferring the typed `structured` field (full numeric fidelity) and
+// falling back to the legacy opaque-JSON `query` body when structured is
+// unset (back-compat with pre-Task-C clients for one release) — run the real
+// paged read into a registry-typed slice target, and return opaque-JSON rows.
 func (h *Handler) List(ctx context.Context, in []byte) ([]byte, error) {
 	var req fabriqpb.ListRequest
 	if err := proto.Unmarshal(in, &req); err != nil {
@@ -211,7 +213,14 @@ func (h *Handler) List(ctx context.Context, in []byte) ([]byte, error) {
 		return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(fmt.Errorf("remote: unknown entity %q", req.Entity))})
 	}
 	var q query.ListQuery
-	if len(req.Query) > 0 {
+	switch {
+	case req.Structured != nil:
+		var err error
+		q, err = listQueryFromProto(req.Structured)
+		if err != nil {
+			return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(fmt.Errorf("remote: decode structured list query: %w", err))})
+		}
+	case len(req.Query) > 0:
 		if err := json.Unmarshal(req.Query, &q); err != nil {
 			return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(fmt.Errorf("remote: decode list query: %w", err))})
 		}

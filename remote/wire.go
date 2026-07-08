@@ -166,6 +166,184 @@ func deltaToProto(d query.Delta) *fabriqpb.Delta {
 	return pd
 }
 
+// listQueryToProto builds the structured wire filter from a query.ListQuery.
+// Unlike the opaque-JSON `bytes query` field, every Cond.Value keeps its Go
+// type across the wire via CondValue's oneof — fixing the int→float64
+// fidelity loss JSON causes (JSON has no int).
+func listQueryToProto(q query.ListQuery) *fabriqpb.ListQuery {
+	pq := &fabriqpb.ListQuery{
+		OrderBy: q.OrderBy,
+		Limit:   int32(q.Limit),
+		Offset:  int32(q.Offset),
+	}
+	if len(q.Where) > 0 {
+		pq.Where = condsToProto(q.Where)
+	}
+	return pq
+}
+
+// listQueryFromProto is the inverse of listQueryToProto.
+func listQueryFromProto(pq *fabriqpb.ListQuery) (query.ListQuery, error) {
+	if pq == nil {
+		return query.ListQuery{}, nil
+	}
+	where, err := condsFromProto(pq.Where)
+	if err != nil {
+		return query.ListQuery{}, err
+	}
+	return query.ListQuery{
+		Where:   where,
+		OrderBy: pq.OrderBy,
+		Limit:   int(pq.Limit),
+		Offset:  int(pq.Offset),
+	}, nil
+}
+
+func condsToProto(conds []query.Cond) []*fabriqpb.Cond {
+	out := make([]*fabriqpb.Cond, len(conds))
+	for i, c := range conds {
+		out[i] = condToProto(c)
+	}
+	return out
+}
+
+func condsFromProto(pcs []*fabriqpb.Cond) ([]query.Cond, error) {
+	if len(pcs) == 0 {
+		return nil, nil
+	}
+	out := make([]query.Cond, len(pcs))
+	for i, pc := range pcs {
+		c, err := condFromProto(pc)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = c
+	}
+	return out, nil
+}
+
+// condToProto converts one query.Cond, recursing into Or groups.
+func condToProto(c query.Cond) *fabriqpb.Cond {
+	pc := &fabriqpb.Cond{
+		Column: c.Column,
+		Op:     string(c.Op),
+	}
+	if c.IsGroup() {
+		pc.Or = condsToProto(c.Or)
+		return pc
+	}
+	if c.Value != nil {
+		pc.Value = condValueToProto(c.Value)
+	}
+	return pc
+}
+
+// condFromProto is the inverse of condToProto.
+func condFromProto(pc *fabriqpb.Cond) (query.Cond, error) {
+	if pc == nil {
+		return query.Cond{}, nil
+	}
+	if len(pc.Or) > 0 {
+		or, err := condsFromProto(pc.Or)
+		if err != nil {
+			return query.Cond{}, err
+		}
+		return query.Cond{Or: or}, nil
+	}
+	c := query.Cond{Column: pc.Column, Op: query.Op(pc.Op)}
+	if pc.Value != nil {
+		v, err := condValueFromProto(pc.Value)
+		if err != nil {
+			return query.Cond{}, err
+		}
+		c.Value = v
+	}
+	return c, nil
+}
+
+// condValueToProto converts a query.Cond.Value (an `any`: string/number/bool/
+// []any for In/NotIn) to the wire's self-describing oneof scalar. Unknown
+// types never panic or drop the value — they fall back to a string_val of
+// fmt.Sprint(v).
+func condValueToProto(v any) *fabriqpb.CondValue {
+	switch tv := v.(type) {
+	case int:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
+	case int8:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
+	case int16:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
+	case int32:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
+	case int64:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: tv}}
+	case uint:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
+	case uint8:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
+	case uint16:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
+	case uint32:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
+	case uint64:
+		// Cast to int64 for filter values; overflow guarding is unnecessary here.
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
+	case float32:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_DoubleVal{DoubleVal: float64(tv)}}
+	case float64:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_DoubleVal{DoubleVal: tv}}
+	case string:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_StringVal{StringVal: tv}}
+	case bool:
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_BoolVal{BoolVal: tv}}
+	case []any:
+		items := make([]*fabriqpb.CondValue, len(tv))
+		for i, item := range tv {
+			items[i] = condValueToProto(item)
+		}
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_ListVal{ListVal: &fabriqpb.ValueList{Items: items}}}
+	default:
+		// Unknown type (e.g. a caller-defined named type): never panic or drop
+		// the value — fall back to its string form.
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_StringVal{StringVal: fmt.Sprint(v)}}
+	}
+}
+
+// condValueFromProto is the inverse of condValueToProto: each oneof case maps
+// to the Go type that preserves its wire fidelity (int64, float64, string,
+// bool, []any) — never back to the original Go numeric width, which the wire
+// does not carry.
+func condValueFromProto(pv *fabriqpb.CondValue) (any, error) {
+	if pv == nil {
+		return nil, nil
+	}
+	switch v := pv.V.(type) {
+	case *fabriqpb.CondValue_StringVal:
+		return v.StringVal, nil
+	case *fabriqpb.CondValue_DoubleVal:
+		return v.DoubleVal, nil
+	case *fabriqpb.CondValue_IntVal:
+		return v.IntVal, nil
+	case *fabriqpb.CondValue_BoolVal:
+		return v.BoolVal, nil
+	case *fabriqpb.CondValue_ListVal:
+		items := v.ListVal.GetItems()
+		out := make([]any, len(items))
+		for i, item := range items {
+			iv, err := condValueFromProto(item)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = iv
+		}
+		return out, nil
+	case nil:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("remote: unknown CondValue oneof case %T", v)
+	}
+}
+
 func deltaFromProto(d *fabriqpb.Delta) query.Delta {
 	out := query.Delta{
 		StreamID:  d.StreamId,
