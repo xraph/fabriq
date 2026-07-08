@@ -60,6 +60,29 @@ jobs:
           retention-days: 7
 
   # ===========================================================================
+  # DuckDB analytics sink (not in the required gate). Builds/tests the
+  # `-tags duckdb` variant with CGO enabled — the default `go` job above stays
+  # CGO_ENABLED=0 and must never pull in this build tag.
+  # ===========================================================================
+  duckdb:
+    name: DuckDB analytics (CGO)
+    runs-on: ubuntu-latest
+    needs: go
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Test (duckdb tag, CGO)
+        run: CGO_ENABLED=1 go test -tags duckdb ./adapters/duckanalytics/... ./ -run 'TestDuckAnalytics|TestAnalyticsScheme|TestOpenAnalytics'
+
+  # ===========================================================================
   # Integration tests (required gate). testcontainers spins up Postgres+Timescale,
   # Redis, FalkorDB and Elasticsearch, so this leg needs Docker.
   # ===========================================================================
