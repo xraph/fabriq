@@ -30,16 +30,7 @@ trust-boundary rationale.
 The analytics sink is a **third projection peer** to graph and search — it
 reads the same shared event stream, not a new transport:
 
-```
-command → outbox → relay/sweeper → shared Redis stream
-                                          │
-                    ┌─────────────────────┼─────────────────────┐
-                    ▼                     ▼                     ▼
-             proj:graph groups     proj:search groups     proj:analytics group
-                    │                     │                     │
-                    ▼                     ▼                     ▼
-              graph store            search cluster       analytics database
-```
+<AnalyticsSinkDiagram />
 
 `proj:analytics` is an ordinary Redis consumer group on
 `registry.StreamKey()`, consumed through the exported `projection.Source`

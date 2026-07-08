@@ -21,7 +21,7 @@ const steps = [
   {
     num: "04",
     title: "woven outward",
-    body: "Consumer groups project the event into graph and search, and push live deltas to subscribers — one truth, every engine.",
+    body: "Consumer groups project the event into graph and search, redact it into a cross-tenant analytics read-model, and push live deltas to subscribers — one truth, every engine.",
   },
 ];
 

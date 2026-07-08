@@ -6,6 +6,7 @@ import {
   ArchitectureDiagram,
   DataLifecycleDiagram,
 } from "./architecture-diagram";
+import { AnalyticsSinkDiagram } from "./diagrams/analytics";
 import { BlobGcDiagram } from "./diagrams/blob-gc";
 import {
   CacheInvalidationDiagram,
@@ -23,6 +24,7 @@ export function getMDXComponents(components?: MDXComponents) {
     Tabs,
     ArchitectureDiagram,
     DataLifecycleDiagram,
+    AnalyticsSinkDiagram,
     BlobGcDiagram,
     CacheInvalidationDiagram,
     CacheLayersDiagram,
