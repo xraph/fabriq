@@ -307,6 +307,8 @@ func (c *adminController) handleMeta(ctx forge.Context) error {
 	}
 	if c.ext.cfg.AnalyticsAdmin {
 		caps = append(append([]string(nil), caps...), "analytics.admin", "analytics.read")
+	} else if c.ext.cfg.AnalyticsRead {
+		caps = append(append([]string(nil), caps...), "analytics.read")
 	}
 	resp := metaResponse{
 		Name:         "fabriq-admin-api",

@@ -228,3 +228,106 @@ func waitJob(t *testing.T, j *analyticsJobs, id string) analyticsJob {
 	t.Fatalf("job %s did not reach a terminal state", id)
 	return analyticsJob{}
 }
+
+// TestAnalyticsStatus_200WithReadOnly: WithAnalyticsRead opens the read-only
+// status endpoint (no admin needed). With no parent extension the handler
+// returns 200 with an empty payload — the point is the gate lets it through.
+func TestAnalyticsStatus_200WithReadOnly(t *testing.T) {
+	e := NewAdminAPI(nil, WithAnalyticsRead())
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := getNoTenant(t, srv, "/admin/analytics/status")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (read gate open)", resp.StatusCode)
+	}
+}
+
+// TestAnalyticsBackfill_403WithReadOnly: a read-only grant must NOT unlock a
+// mutating endpoint — backfill still requires analytics.admin.
+func TestAnalyticsBackfill_403WithReadOnly(t *testing.T) {
+	e := NewAdminAPI(nil, WithAnalyticsRead())
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/analytics/backfill", map[string]any{"tenant": "acme"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (read grant must not permit mutation)", resp.StatusCode)
+	}
+}
+
+// TestAnalyticsCaps_ReadVsAdmin: meta advertises analytics.read for a read-only
+// host and both caps for an admin host.
+func TestAnalyticsCaps_ReadVsAdmin(t *testing.T) {
+	capsFor := func(t *testing.T, opts ...Option) []string {
+		e := NewAdminAPI(nil, opts...)
+		srv := buildServer(t, e)
+		defer srv.Close()
+		resp := getNoTenant(t, srv, "/admin/meta")
+		defer resp.Body.Close()
+		var body struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body.Capabilities
+	}
+	has := func(caps []string, c string) bool {
+		for _, x := range caps {
+			if x == c {
+				return true
+			}
+		}
+		return false
+	}
+
+	read := capsFor(t, WithAnalyticsRead())
+	if !has(read, "analytics.read") || has(read, "analytics.admin") {
+		t.Fatalf("read-only caps = %v, want analytics.read but NOT analytics.admin", read)
+	}
+	admin := capsFor(t, WithAnalyticsAdmin())
+	if !has(admin, "analytics.read") || !has(admin, "analytics.admin") {
+		t.Fatalf("admin caps = %v, want BOTH analytics.read and analytics.admin", admin)
+	}
+}
+
+func TestSummarizeLag(t *testing.T) {
+	if worst, behind := summarizeLag(map[string]float64{}, 60); worst != 0 || behind != 0 {
+		t.Fatalf("empty: worst=%v behind=%d, want 0,0", worst, behind)
+	}
+	// c is EXACTLY at the threshold: a strict `>` must NOT count it, matching the
+	// worker's fabriq_analytics_tenants_behind gauge so the dashboard and the
+	// alert metric agree at the boundary. Only b (120) is behind.
+	worst, behind := summarizeLag(map[string]float64{"a": 10, "b": 120, "c": 60}, 60)
+	if worst != 120 {
+		t.Fatalf("worst=%v, want 120", worst)
+	}
+	if behind != 1 { // only b exceeds 60; c==60 is the boundary (not >), a is under
+		t.Fatalf("behind=%d, want 1 (strict > threshold, matching the worker gauge)", behind)
+	}
+}
+
+// TestAnalyticsStatus_FreshnessShapeNoParent: with the read gate on but no
+// parent extension, status is 200 and freshness fields are zero-valued (no sink
+// to query) — proves the handler path compiles and stays best-effort.
+func TestAnalyticsStatus_FreshnessShapeNoParent(t *testing.T) {
+	e := NewAdminAPI(nil, WithAnalyticsRead())
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := getNoTenant(t, srv, "/admin/analytics/status")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body analyticsStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.WorstLagSeconds != 0 || body.TenantsBehind != 0 || len(body.PerTenantLag) != 0 {
+		t.Fatalf("no-parent freshness = %+v, want zero-valued", body)
+	}
+}

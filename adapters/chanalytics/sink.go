@@ -122,6 +122,7 @@ func (s *Sink) UpsertFacts(ctx context.Context, facts []analytics.Fact) error {
 		}
 		if err := batch.Append(f.TenantID, f.Aggregate, f.AggID, f.Version,
 			string(f.Payload), f.At, deleted, packDedup(f.Version)); err != nil {
+			_ = batch.Abort()
 			return fmt.Errorf("fabriq: analytics upsert fact: %w", err)
 		}
 	}
@@ -140,6 +141,7 @@ func (s *Sink) AppendEvents(ctx context.Context, events []analytics.Event) error
 	for _, e := range events {
 		if err := batch.Append(e.TenantID, e.Aggregate, e.AggID, e.Version,
 			e.Type, string(e.Payload), e.At, uint64(0)); err != nil {
+			_ = batch.Abort()
 			return fmt.Errorf("fabriq: analytics append event: %w", err)
 		}
 	}
@@ -170,6 +172,7 @@ func (s *Sink) SetWatermark(ctx context.Context, ws []analytics.Watermark) error
 	}
 	for _, w := range ws {
 		if err := batch.Append(w.TenantID, w.Aggregate, w.AggID, w.Version); err != nil {
+			_ = batch.Abort()
 			return fmt.Errorf("fabriq: analytics set watermark: %w", err)
 		}
 	}
@@ -289,10 +292,12 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 		}
 		for _, r := range factRewrites {
 			if err := batch.Append(tenantID, r.agg, r.aggID, r.version, r.payload, r.at, r.deleted, r.dd+1); err != nil {
+				_ = batch.Abort()
 				return total, fmt.Errorf("fabriq: analytics reproject reinsert facts: %w", err)
 			}
 		}
 		if err := batch.Send(); err != nil {
+			_ = batch.Abort()
 			return total, fmt.Errorf("fabriq: analytics reproject reinsert facts: %w", err)
 		}
 		total += int64(len(factRewrites))
@@ -348,10 +353,12 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 		}
 		for _, r := range eventRewrites {
 			if err := batch.Append(tenantID, r.agg, r.aggID, r.version, r.typ, r.payload, r.at, r.dd+1); err != nil {
+				_ = batch.Abort()
 				return total, fmt.Errorf("fabriq: analytics reproject reinsert events: %w", err)
 			}
 		}
 		if err := batch.Send(); err != nil {
+			_ = batch.Abort()
 			return total, fmt.Errorf("fabriq: analytics reproject reinsert events: %w", err)
 		}
 		total += int64(len(eventRewrites))
