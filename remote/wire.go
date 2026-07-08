@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/xraph/fabriq/core/command"
@@ -303,6 +304,22 @@ func condValueToProto(v any) *fabriqpb.CondValue {
 		}
 		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_ListVal{ListVal: &fabriqpb.ValueList{Items: items}}}
 	default:
+		// Go type switches do not match concrete slice types (e.g. []string)
+		// against `case []any` — every real query.In/NotIn call site passes a
+		// typed slice, not []any. Detect any slice/array kind via reflect (as
+		// core/query/filter.go's In/NotIn validation already does) and recurse
+		// element-by-element into list_val. A []byte is excluded — it is a
+		// scalar blob, not a filter list.
+		if rv := reflect.ValueOf(v); rv.IsValid() &&
+			(rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) &&
+			rv.Type() != reflect.TypeOf([]byte(nil)) {
+			n := rv.Len()
+			items := make([]*fabriqpb.CondValue, n)
+			for i := 0; i < n; i++ {
+				items[i] = condValueToProto(rv.Index(i).Interface())
+			}
+			return &fabriqpb.CondValue{V: &fabriqpb.CondValue_ListVal{ListVal: &fabriqpb.ValueList{Items: items}}}
+		}
 		// Unknown type (e.g. a caller-defined named type): never panic or drop
 		// the value — fall back to its string form.
 		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_StringVal{StringVal: fmt.Sprint(v)}}

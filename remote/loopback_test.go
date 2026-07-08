@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -591,6 +592,29 @@ func TestLoopback_ListFilterPreservesIntType(t *testing.T) {
 	got := rel.gotList.Where[0].Value
 	if _, ok := got.(int64); !ok {
 		t.Fatalf("filter value crossed as %T (%v), want int64 — numeric fidelity lost", got, got)
+	}
+}
+
+// TestLoopback_ListFilterPreservesInSlice proves that a query.In/NotIn filter
+// built with a real typed slice (e.g. []string, not []any) survives the wire
+// as a multi-element list rather than being flattened by the string fallback
+// into a single fmt.Sprint(v) scalar.
+func TestLoopback_ListFilterPreservesInSlice(t *testing.T) {
+	rel := &fakeRelational{}
+	rf := remote.New(remote.Loopback{Handler: remote.NewHandler(&fakeFabric{rel: rel}, assetRegistry(t))})
+
+	var out []*testAsset
+	q := query.ListQuery{Where: query.Where{query.In("kind", []string{"pump", "valve"})}}
+	if err := rf.Relational().List(context.Background(), "asset", q, &out); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got := rel.gotList.Where[0].Value
+	rv := reflect.ValueOf(got)
+	if rv.Kind() != reflect.Slice || rv.Len() != 2 {
+		t.Fatalf("In filter value crossed as %T (%v), want a 2-element slice", got, got)
+	}
+	if fmt.Sprint(rv.Index(0).Interface()) != "pump" || fmt.Sprint(rv.Index(1).Interface()) != "valve" {
+		t.Fatalf("In filter elements = %v, want [pump valve]", got)
 	}
 }
 
