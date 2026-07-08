@@ -124,6 +124,10 @@ var serviceDesc = grpc.ServiceDesc{
 		{MethodName: "SpatialWithin", Handler: unaryHandler(remote.MethodSpatialWithin)},
 		{MethodName: "SpatialGet", Handler: unaryHandler(remote.MethodSpatialGet)},
 		{MethodName: "SpatialDelete", Handler: unaryHandler(remote.MethodSpatialDelete)},
+		{MethodName: "DocApplyUpdate", Handler: unaryHandler(remote.MethodDocApplyUpdate)},
+		{MethodName: "DocSync", Handler: unaryHandler(remote.MethodDocSync)},
+		{MethodName: "DocSnapshot", Handler: unaryHandler(remote.MethodDocSnapshot)},
+		{MethodName: "DocCompact", Handler: unaryHandler(remote.MethodDocCompact)},
 	},
 	// gRPC routes by this table; every new streaming method must be enumerated
 	// here as well as in remote.Handler.DispatchStream / DispatchClientStream.

@@ -17,6 +17,7 @@ import (
 
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/projection"
@@ -60,6 +61,7 @@ type fakeFabric struct {
 	retr         *fakeRetrieval
 	ts           *fakeTS
 	sp           *fakeSpatial
+	doc          *fakeDocStore
 	gotTenant    string
 	gotPrincipal string
 }
@@ -69,6 +71,7 @@ func (f *fakeFabric) Search() query.SearchQuerier   { return f.retr }
 func (f *fakeFabric) Graph() query.GraphQuerier     { return f.retr }
 func (f *fakeFabric) Timeseries() query.TSQuerier   { return f.ts }
 func (f *fakeFabric) Spatial() query.SpatialQuerier { return f.sp }
+func (f *fakeFabric) Document() document.Store      { return f.doc }
 
 // fakeRetrieval implements the three projection-read ports for the gRPC channel
 // test.
@@ -150,6 +153,29 @@ func (f *fakeSpatial) Get(_ context.Context, _, _ string) (query.Geometry, map[s
 	return f.getGeom, f.getMeta, f.getOK, nil
 }
 func (f *fakeSpatial) Delete(_ context.Context, _, _ string) error { return nil }
+
+// fakeDocStore implements document.Store for the gRPC document round-trip
+// test, recording the ApplyUpdate call it received and returning canned
+// Sync/Snapshot replies.
+type fakeDocStore struct {
+	gotApplyDocID  string
+	gotApplyUpdate []byte
+	syncUpdate     []byte
+	snapshot       document.Materialized
+}
+
+func (f *fakeDocStore) ApplyUpdate(_ context.Context, docID string, update []byte) error {
+	f.gotApplyDocID = docID
+	f.gotApplyUpdate = update
+	return nil
+}
+func (f *fakeDocStore) Sync(_ context.Context, _ string, _ []byte) ([]byte, error) {
+	return f.syncUpdate, nil
+}
+func (f *fakeDocStore) Snapshot(_ context.Context, _ string) (document.Materialized, error) {
+	return f.snapshot, nil
+}
+func (f *fakeDocStore) Compact(_ context.Context, _ string) error { return nil }
 
 func (f *fakeFabric) LiveQuery(_ context.Context, _ livequery.LiveQuery) (livequery.Snapshot, <-chan livequery.LiveDelta, *livequery.Handle, error) {
 	return f.liveSnap, f.liveCh, nil, nil
@@ -475,5 +501,43 @@ func TestGRPC_SpatialRoundTrip(t *testing.T) {
 	}
 	if err := f.Spatial().Delete(context.Background(), "asset", "a1"); err != nil {
 		t.Fatalf("Delete: %v", err)
+	}
+}
+
+// TestGRPC_DocumentRoundTrip proves the document plane over real gRPC — and
+// that DocApplyUpdate/DocSync/DocSnapshot/DocCompact are actually registered
+// in the ServiceDesc (not just reachable over Loopback): the server receives
+// the ApplyUpdate bytes, Sync returns the programmed update bytes, and
+// Snapshot returns the programmed Materialized.
+func TestGRPC_DocumentRoundTrip(t *testing.T) {
+	doc := &fakeDocStore{
+		syncUpdate: []byte("update-bytes"),
+		snapshot: document.Materialized{
+			DocID:    "doc-1",
+			Version:  3,
+			Snapshot: []byte(`{"title":"hi"}`),
+		},
+	}
+	f := dial(t, &fakeFabric{doc: doc})
+
+	if err := f.Document().ApplyUpdate(context.Background(), "doc-1", []byte("update-1")); err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	if doc.gotApplyDocID != "doc-1" || string(doc.gotApplyUpdate) != "update-1" {
+		t.Fatalf("server saw ApplyUpdate(%q, %q)", doc.gotApplyDocID, doc.gotApplyUpdate)
+	}
+
+	upd, err := f.Document().Sync(context.Background(), "doc-1", []byte("sv-1"))
+	if err != nil || string(upd) != "update-bytes" {
+		t.Fatalf("Sync = %q, %v", upd, err)
+	}
+
+	mat, err := f.Document().Snapshot(context.Background(), "doc-1")
+	if err != nil || mat.DocID != "doc-1" || mat.Version != 3 || string(mat.Snapshot) != `{"title":"hi"}` {
+		t.Fatalf("Snapshot = %+v, %v", mat, err)
+	}
+
+	if err := f.Document().Compact(context.Background(), "doc-1"); err != nil {
+		t.Fatalf("Compact: %v", err)
 	}
 }

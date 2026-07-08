@@ -98,9 +98,11 @@ func (r *Fabric) Timeseries() query.TSQuerier         { return remoteTS{t: r.t} 
 func (r *Fabric) Vector() query.VectorQuerier         { return remoteVector{t: r.t} }
 func (r *Fabric) Spatial() query.SpatialQuerier       { return remoteSpatial{t: r.t} }
 
-// Document returns nil until the document plane is wired. Blob streams bytes
-// (Put/Get) and the presign bypass over the transport; List/Copy are follow-ons.
-func (r *Fabric) Document() document.Store { return nil }
+// Document returns the base document.Store wired over the transport
+// (ApplyUpdate/Sync/Snapshot/Compact); the optional sub-interfaces
+// (HistoryReader/SegmentLister/HistoryPurger) are a later increment. Blob
+// streams bytes (Put/Get) and the presign bypass over the transport.
+func (r *Fabric) Document() document.Store { return remoteDocStore{t: r.t} }
 func (r *Fabric) Blob() blob.Store         { return remoteBlobStore{t: r.t} }
 
 // Subscribe opens the conflated channel-delta stream. The first frame is a

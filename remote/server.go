@@ -96,6 +96,14 @@ func (h *Handler) Dispatch(ctx context.Context, method string, in []byte) ([]byt
 		return h.SpatialGet(ctx, in)
 	case MethodSpatialDelete:
 		return h.SpatialDelete(ctx, in)
+	case MethodDocApplyUpdate:
+		return h.DocApplyUpdate(ctx, in)
+	case MethodDocSync:
+		return h.DocSync(ctx, in)
+	case MethodDocSnapshot:
+		return h.DocSnapshot(ctx, in)
+	case MethodDocCompact:
+		return h.DocCompact(ctx, in)
 	default:
 		return nil, fmt.Errorf("remote: unknown method %q", method)
 	}
@@ -713,6 +721,50 @@ func (h *Handler) SpatialDelete(ctx context.Context, in []byte) ([]byte, error) 
 		return nil, fmt.Errorf("remote: decode spatialDelete request: %w", err)
 	}
 	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Spatial().Delete(ctx, req.Entity, req.Id))})
+}
+
+func (h *Handler) DocApplyUpdate(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.DocApplyUpdateRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode docApplyUpdate request: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Document().ApplyUpdate(ctx, req.DocId, req.Update))})
+}
+
+func (h *Handler) DocSync(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.DocSyncRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode docSync request: %w", err)
+	}
+	upd, err := h.fab.Document().Sync(ctx, req.DocId, req.StateVector)
+	if err != nil {
+		return proto.Marshal(&fabriqpb.DocSyncReply{Error: errorToProto(err)})
+	}
+	return proto.Marshal(&fabriqpb.DocSyncReply{Update: upd})
+}
+
+func (h *Handler) DocSnapshot(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.DocSnapshotRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode docSnapshot request: %w", err)
+	}
+	mat, err := h.fab.Document().Snapshot(ctx, req.DocId)
+	if err != nil {
+		return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(err)})
+	}
+	row, err := json.Marshal(mat)
+	if err != nil {
+		return nil, fmt.Errorf("remote: marshal materialized: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.RowReply{Row: row})
+}
+
+func (h *Handler) DocCompact(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.DocCompactRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode docCompact request: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Document().Compact(ctx, req.DocId))})
 }
 
 func sendProto(send func([]byte) error, m proto.Message) error {

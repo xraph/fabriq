@@ -3,6 +3,7 @@ package remote_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/projection"
@@ -65,6 +67,7 @@ type fakeFabric struct {
 	retr      *fakeRetrieval
 	ts        *fakeTS
 	sp        *fakeSpatial
+	doc       *fakeDocStore
 	gotCmd    command.Command
 	gotCmds   []command.Command
 	result    command.Result
@@ -76,6 +79,8 @@ func (f *fakeFabric) Relational() query.RelationalQuerier { return f.rel }
 func (f *fakeFabric) Timeseries() query.TSQuerier { return f.ts }
 
 func (f *fakeFabric) Spatial() query.SpatialQuerier { return f.sp }
+
+func (f *fakeFabric) Document() document.Store { return f.doc }
 
 func (f *fakeFabric) Subscribe(_ context.Context, _ query.SubscribeScope) (<-chan query.Delta, error) {
 	if f.subErr != nil {
@@ -220,6 +225,42 @@ func (f *fakeSpatial) Get(_ context.Context, _, _ string) (query.Geometry, map[s
 	return f.getGeom, f.getMeta, f.getOK, nil
 }
 func (f *fakeSpatial) Delete(_ context.Context, _, _ string) error { return nil }
+
+// fakeDocStore implements document.Store, recording the ApplyUpdate/Compact
+// calls it received and returning canned Sync/Snapshot replies.
+type fakeDocStore struct {
+	gotApplyDocID  string
+	gotApplyUpdate []byte
+	gotSyncDocID   string
+	gotSyncSV      []byte
+	syncUpdate     []byte
+	syncErr        error
+	snapshot       document.Materialized
+	snapshotErr    error
+	gotCompactDoc  string
+	compactErr     error
+}
+
+func (f *fakeDocStore) ApplyUpdate(_ context.Context, docID string, update []byte) error {
+	f.gotApplyDocID = docID
+	f.gotApplyUpdate = update
+	return nil
+}
+
+func (f *fakeDocStore) Sync(_ context.Context, docID string, stateVector []byte) ([]byte, error) {
+	f.gotSyncDocID = docID
+	f.gotSyncSV = stateVector
+	return f.syncUpdate, f.syncErr
+}
+
+func (f *fakeDocStore) Snapshot(_ context.Context, docID string) (document.Materialized, error) {
+	return f.snapshot, f.snapshotErr
+}
+
+func (f *fakeDocStore) Compact(_ context.Context, docID string) error {
+	f.gotCompactDoc = docID
+	return f.compactErr
+}
 
 // fakeBlob is a minimal in-memory blob.Store (+ Presigner) for the byte-plane
 // tests.
@@ -989,5 +1030,58 @@ func TestLoopback_SpatialRoundTrip(t *testing.T) {
 	geom, meta, ok, err := rf.Spatial().Get(context.Background(), "asset", "a1")
 	if err != nil || !ok || geom.WKT != "POINT(1 2)" || meta["n"] != "a" {
 		t.Fatalf("Get = %+v %+v %v %v", geom, meta, ok, err)
+	}
+}
+
+// TestLoopback_DocumentRoundTrip proves the document plane: ApplyUpdate's
+// bytes cross to the server, Sync round-trips the state vector and the
+// programmed update, Snapshot returns the programmed Materialized, and
+// Compact reaches the server — all over the Loopback wire.
+func TestLoopback_DocumentRoundTrip(t *testing.T) {
+	doc := &fakeDocStore{
+		syncUpdate: []byte("update-bytes"),
+		snapshot: document.Materialized{
+			DocID:    "doc-1",
+			Version:  3,
+			Snapshot: json.RawMessage(`{"title":"hi"}`),
+		},
+	}
+	rf := remote.New(remote.Loopback{Handler: remote.NewHandler(&fakeFabric{doc: doc}, assetRegistry(t))})
+
+	if rf.Document() == nil {
+		t.Fatal("Document() is nil")
+	}
+
+	if err := rf.Document().ApplyUpdate(context.Background(), "doc-1", []byte("update-1")); err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	if doc.gotApplyDocID != "doc-1" || string(doc.gotApplyUpdate) != "update-1" {
+		t.Fatalf("server saw ApplyUpdate(%q, %q)", doc.gotApplyDocID, doc.gotApplyUpdate)
+	}
+
+	upd, err := rf.Document().Sync(context.Background(), "doc-1", []byte("sv-1"))
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if string(upd) != "update-bytes" {
+		t.Fatalf("Sync update = %q", upd)
+	}
+	if doc.gotSyncDocID != "doc-1" || string(doc.gotSyncSV) != "sv-1" {
+		t.Fatalf("server saw Sync(%q, %q)", doc.gotSyncDocID, doc.gotSyncSV)
+	}
+
+	mat, err := rf.Document().Snapshot(context.Background(), "doc-1")
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if mat.DocID != "doc-1" || mat.Version != 3 || string(mat.Snapshot) != `{"title":"hi"}` {
+		t.Fatalf("Snapshot = %+v", mat)
+	}
+
+	if err := rf.Document().Compact(context.Background(), "doc-1"); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if doc.gotCompactDoc != "doc-1" {
+		t.Fatalf("server saw Compact(%q)", doc.gotCompactDoc)
 	}
 }
