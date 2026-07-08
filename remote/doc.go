@@ -13,9 +13,14 @@
 // metadata, authenticated at the server edge, never trusted from a client
 // field.
 //
-// Scope of this skeleton. The write plane (Exec/ExecBatch) is implemented
-// end-to-end to pressure-test the envelope, including registry-typed payload
-// decoding on the server and the typed-error taxonomy across the wire. The
-// read, live, blob and interactive-transaction planes named in the proto are
-// follow-ons; their accessors return ErrNotImplemented.
+// Scope. The write plane (Exec/ExecBatch), the relational and projection read
+// ports (Get/GetMany/List, Graph/Search/Vector), the Timeseries and Spatial
+// ports, the live plane (Subscribe plus maintained LiveQuery with Reanchor over
+// a bidirectional stream), the blob byte plane (Put/Get/Head/Delete/List/Copy
+// and the presign bypass) and the Document plane are all wired end-to-end, with
+// registry-typed payload decoding and the typed-error taxonomy across the wire.
+// Interactive (multi-round-trip) transactions remain a deliberate non-goal;
+// raw-SQL Query, blob multipart/range, and the optional document history
+// sub-interfaces are the remaining follow-ons (their accessors return
+// ErrNotImplemented).
 package remote
