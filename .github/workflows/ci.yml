@@ -99,6 +99,7 @@ jobs:
         module:
           - .
           - remote/grpc
+          - remote/grpc/cmd/fabriqserver
     steps:
       - name: Checkout
         uses: actions/checkout@v4
