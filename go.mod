@@ -4,17 +4,17 @@ go 1.25.7
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.47.0
-	github.com/elastic/go-elasticsearch/v9 v9.4.1
+	github.com/elastic/go-elasticsearch/v9 v9.4.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/prometheus/client_golang v1.23.2
-	github.com/redis/go-redis/v9 v9.20.1
+	github.com/redis/go-redis/v9 v9.21.0
 	github.com/testcontainers/testcontainers-go v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/clickhouse v0.43.0
-	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
-	github.com/testcontainers/testcontainers-go/modules/redis v0.42.0
+	github.com/testcontainers/testcontainers-go/modules/postgres v0.43.0
+	github.com/testcontainers/testcontainers-go/modules/redis v0.43.0
 	github.com/xraph/confy v0.5.2
 	github.com/xraph/forge v1.8.0
 	github.com/xraph/grove v1.5.9
