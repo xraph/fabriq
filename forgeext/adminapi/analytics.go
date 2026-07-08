@@ -148,8 +148,26 @@ type backfillResponse struct {
 
 // analyticsStatusResponse is the payload for GET {BasePath}/analytics/status.
 type analyticsStatusResponse struct {
-	Enabled     bool `json:"enabled"`
-	TenantCount int  `json:"tenantCount"`
+	Enabled         bool               `json:"enabled"`
+	TenantCount     int                `json:"tenantCount"`
+	WorstLagSeconds float64            `json:"worstLagSeconds"`
+	TenantsBehind   int                `json:"tenantsBehind"`
+	PerTenantLag    map[string]float64 `json:"perTenantLag,omitempty"`
+}
+
+// summarizeLag reduces a per-tenant lag map to the worst-case lag (max seconds,
+// 0 when empty) and the count of tenants at or beyond thresholdSecs — the same
+// two low-cardinality figures the worker's freshness gauges expose.
+func summarizeLag(lag map[string]float64, thresholdSecs float64) (worst float64, behind int) {
+	for _, secs := range lag {
+		if secs > worst {
+			worst = secs
+		}
+		if secs >= thresholdSecs {
+			behind++
+		}
+	}
+	return worst, behind
 }
 
 // handleAnalyticsBackfill serves POST {BasePath}/analytics/backfill. It runs
@@ -394,5 +412,14 @@ func (c *adminController) handleAnalyticsStatus(ctx forge.Context) error {
 	if tenants, terr := stores.AllTenants(ctx.Request().Context()); terr == nil {
 		resp.TenantCount = len(tenants)
 	}
+
+	const lagThresholdSeconds = 60
+	if stores.Analytics != nil {
+		if lag, lerr := stores.Analytics.LagByTenant(ctx.Request().Context()); lerr == nil {
+			resp.PerTenantLag = lag
+			resp.WorstLagSeconds, resp.TenantsBehind = summarizeLag(lag, lagThresholdSeconds)
+		}
+	}
+
 	return ctx.JSON(http.StatusOK, resp)
 }

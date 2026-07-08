@@ -293,3 +293,38 @@ func TestAnalyticsCaps_ReadVsAdmin(t *testing.T) {
 		t.Fatalf("admin caps = %v, want BOTH analytics.read and analytics.admin", admin)
 	}
 }
+
+func TestSummarizeLag(t *testing.T) {
+	if worst, behind := summarizeLag(map[string]float64{}, 60); worst != 0 || behind != 0 {
+		t.Fatalf("empty: worst=%v behind=%d, want 0,0", worst, behind)
+	}
+	worst, behind := summarizeLag(map[string]float64{"a": 10, "b": 120, "c": 61}, 60)
+	if worst != 120 {
+		t.Fatalf("worst=%v, want 120", worst)
+	}
+	if behind != 2 { // b and c exceed 60; a does not
+		t.Fatalf("behind=%d, want 2", behind)
+	}
+}
+
+// TestAnalyticsStatus_FreshnessShapeNoParent: with the read gate on but no
+// parent extension, status is 200 and freshness fields are zero-valued (no sink
+// to query) — proves the handler path compiles and stays best-effort.
+func TestAnalyticsStatus_FreshnessShapeNoParent(t *testing.T) {
+	e := NewAdminAPI(nil, WithAnalyticsRead())
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := getNoTenant(t, srv, "/admin/analytics/status")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body analyticsStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.WorstLagSeconds != 0 || body.TenantsBehind != 0 || len(body.PerTenantLag) != 0 {
+		t.Fatalf("no-parent freshness = %+v, want zero-valued", body)
+	}
+}
