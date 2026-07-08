@@ -335,7 +335,7 @@ func TestGRPC_LiveQueryStreamsSnapshotAndDeltas(t *testing.T) {
 	if snap.SubID != "s1" || len(snap.Rows) != 1 || snap.Rows[0].AggID != "a" {
 		t.Fatalf("snapshot lost over gRPC: %+v", snap)
 	}
-	var ops []livequery.DeltaOp
+	ops := make([]livequery.DeltaOp, 0, 2)
 	for d := range live {
 		ops = append(ops, d.Op)
 	}
@@ -357,7 +357,7 @@ func TestGRPC_SubscribeStreamsDeltas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	var got []string
+	got := make([]string, 0, 2)
 	for d := range out {
 		got = append(got, d.AggID)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/xraph/fabriq/core/provision"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/internal/metrics"
+	"github.com/xraph/fabriq/remote"
 )
 
 // Version is the fabriq forge extension version.
@@ -192,6 +193,20 @@ func (e *Extension) Fabriq() *fabriq.Fabriq {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.fab
+}
+
+// RemoteHandler returns a remote.Handler that serves this extension's embedded
+// facade over the fabriq remote protocol (ADR 0009). It is the grpc-free half of
+// the server topology: a *grpc.Server is stood up over it by remotegrpc.NewServer
+// in the remote/grpc module, keeping google.golang.org/grpc out of this module.
+// Nil before Start (no facade yet), mirroring Fabriq().
+func (e *Extension) RemoteHandler() *remote.Handler {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.fab == nil {
+		return nil
+	}
+	return remote.NewHandler(e.fab, e.reg)
 }
 
 // Stores returns the opened adapters (nil before Start). The gateway extension
