@@ -161,6 +161,9 @@ func (f *fakeFabric) Blob() blob.Store { return f.blobStore }
 type fakeBlob struct {
 	mu   sync.Mutex
 	data map[string][]byte
+
+	listResult []blob.ObjectInfo
+	copyResult blob.ObjectInfo
 }
 
 func (b *fakeBlob) Put(_ context.Context, key string, r io.Reader, o blob.PutOpts) (blob.ObjectInfo, error) {
@@ -190,10 +193,12 @@ func (b *fakeBlob) Get(_ context.Context, key string) (io.ReadCloser, blob.Objec
 func (b *fakeBlob) Head(context.Context, string) (blob.ObjectInfo, error) {
 	return blob.ObjectInfo{}, fabriqerr.ErrNotFound
 }
-func (b *fakeBlob) Delete(context.Context, string) error                    { return nil }
-func (b *fakeBlob) List(context.Context, string) ([]blob.ObjectInfo, error) { return nil, nil }
+func (b *fakeBlob) Delete(context.Context, string) error { return nil }
+func (b *fakeBlob) List(context.Context, string) ([]blob.ObjectInfo, error) {
+	return b.listResult, nil
+}
 func (b *fakeBlob) Copy(context.Context, string, string) (blob.ObjectInfo, error) {
-	return blob.ObjectInfo{}, nil
+	return b.copyResult, nil
 }
 func (b *fakeBlob) Capabilities() blob.Caps { return blob.Caps{} }
 func (b *fakeBlob) PresignGet(context.Context, string, time.Duration) (string, error) {
@@ -356,6 +361,26 @@ func TestGRPC_BlobPutGetRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(got, body) {
 		t.Fatalf("body mismatch over gRPC: got %d bytes, want %d", len(got), len(body))
+	}
+}
+
+// TestGRPC_BlobListCopyRoundTrip proves List/Copy are actually registered in
+// the gRPC ServiceDesc (not just reachable over Loopback).
+func TestGRPC_BlobListCopyRoundTrip(t *testing.T) {
+	fb := &fakeBlob{
+		listResult: []blob.ObjectInfo{{Key: "a", Size: 3}},
+		copyResult: blob.ObjectInfo{Key: "b", Size: 3},
+	}
+	fab := dial(t, &fakeFabric{blobStore: fb})
+	b := fab.Blob()
+
+	got, err := b.List(context.Background(), "pre/")
+	if err != nil || len(got) != 1 || got[0].Key != "a" {
+		t.Fatalf("List over gRPC = %+v %v", got, err)
+	}
+	ci, err := b.Copy(context.Background(), "a", "b")
+	if err != nil || ci.Key != "b" {
+		t.Fatalf("Copy over gRPC = %+v %v", ci, err)
 	}
 }
 

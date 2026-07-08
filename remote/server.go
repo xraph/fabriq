@@ -66,6 +66,10 @@ func (h *Handler) Dispatch(ctx context.Context, method string, in []byte) ([]byt
 		return h.DeleteBlob(ctx, in)
 	case MethodPresignBlob:
 		return h.PresignBlob(ctx, in)
+	case MethodListBlob:
+		return h.ListBlob(ctx, in)
+	case MethodCopyBlob:
+		return h.CopyBlob(ctx, in)
 	case MethodVectorSimilar:
 		return h.VectorSimilar(ctx, in)
 	case MethodVectorUpsert:
@@ -577,6 +581,35 @@ func (h *Handler) PresignBlob(ctx context.Context, in []byte) ([]byte, error) {
 		return proto.Marshal(&fabriqpb.BlobPresignReply{Error: errorToProto(err)})
 	}
 	return proto.Marshal(&fabriqpb.BlobPresignReply{Url: url})
+}
+
+// ListBlob and CopyBlob are unary.
+func (h *Handler) ListBlob(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.ListBlobRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode list blob request: %w", err)
+	}
+	objs, err := h.fab.Blob().List(ctx, req.Prefix)
+	if err != nil {
+		return proto.Marshal(&fabriqpb.ListBlobReply{Error: errorToProto(err)})
+	}
+	pbObjs := make([]*fabriqpb.BlobObjectInfo, len(objs))
+	for i, o := range objs {
+		pbObjs[i] = objectInfoToProto(o)
+	}
+	return proto.Marshal(&fabriqpb.ListBlobReply{Objects: pbObjs})
+}
+
+func (h *Handler) CopyBlob(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.CopyBlobRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode copy blob request: %w", err)
+	}
+	info, err := h.fab.Blob().Copy(ctx, req.SrcKey, req.DstKey)
+	if err != nil {
+		return proto.Marshal(&fabriqpb.BlobInfoReply{Error: errorToProto(err)})
+	}
+	return proto.Marshal(&fabriqpb.BlobInfoReply{Info: objectInfoToProto(info)})
 }
 
 // --- timeseries (query.TSQuerier): telemetry ingest + windowed reads ---

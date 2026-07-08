@@ -109,6 +109,8 @@ var serviceDesc = grpc.ServiceDesc{
 		{MethodName: "HeadBlob", Handler: unaryHandler(remote.MethodHeadBlob)},
 		{MethodName: "DeleteBlob", Handler: unaryHandler(remote.MethodDeleteBlob)},
 		{MethodName: "PresignBlob", Handler: unaryHandler(remote.MethodPresignBlob)},
+		{MethodName: "ListBlob", Handler: unaryHandler(remote.MethodListBlob)},
+		{MethodName: "CopyBlob", Handler: unaryHandler(remote.MethodCopyBlob)},
 		{MethodName: "VectorSimilar", Handler: unaryHandler(remote.MethodVectorSimilar)},
 		{MethodName: "VectorUpsert", Handler: unaryHandler(remote.MethodVectorUpsert)},
 		{MethodName: "VectorDelete", Handler: unaryHandler(remote.MethodVectorDelete)},

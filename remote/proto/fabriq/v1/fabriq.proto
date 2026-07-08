@@ -63,6 +63,8 @@ service Fabriq {
   rpc HeadBlob(BlobKey) returns (BlobInfoReply);
   rpc DeleteBlob(BlobKey) returns (BlobAck);
   rpc PresignBlob(BlobPresign) returns (BlobPresignReply);
+  rpc ListBlob(ListBlobRequest) returns (ListBlobReply);
+  rpc CopyBlob(CopyBlobRequest) returns (BlobInfoReply);
 
   // NOTE: there is deliberately no interactive (multi-round-trip) transaction
   // RPC. fabriq has no held transactions by design — ExecBatch is the
@@ -318,6 +320,16 @@ message BlobPresignReply {
   string url = 1;
   Error error = 2;
 }
+message ListBlobRequest { string prefix = 1; }
+message ListBlobReply {
+  repeated BlobObjectInfo objects = 1;
+  Error error = 2;
+}
+message CopyBlobRequest {
+  string src_key = 1;
+  string dst_key = 2;
+}
+// CopyBlob reuses BlobInfoReply (the same message HeadBlob returns).
 
 // Interactive transactions are a deliberate non-goal (see the service note and
 // ADR 0009); ExecBatch is the transaction surface.

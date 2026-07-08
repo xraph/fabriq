@@ -226,6 +226,9 @@ func (f *fakeSpatial) Delete(_ context.Context, _, _ string) error { return nil 
 type fakeBlob struct {
 	mu   sync.Mutex
 	data map[string][]byte
+
+	listResult []blob.ObjectInfo
+	copyResult blob.ObjectInfo
 }
 
 func (b *fakeBlob) Put(_ context.Context, key string, r io.Reader, o blob.PutOpts) (blob.ObjectInfo, error) {
@@ -269,9 +272,11 @@ func (b *fakeBlob) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-func (b *fakeBlob) List(context.Context, string) ([]blob.ObjectInfo, error) { return nil, nil }
+func (b *fakeBlob) List(context.Context, string) ([]blob.ObjectInfo, error) {
+	return b.listResult, nil
+}
 func (b *fakeBlob) Copy(context.Context, string, string) (blob.ObjectInfo, error) {
-	return blob.ObjectInfo{}, nil
+	return b.copyResult, nil
 }
 func (b *fakeBlob) Capabilities() blob.Caps { return blob.Caps{Presign: true} }
 func (b *fakeBlob) PresignGet(_ context.Context, key string, _ time.Duration) (string, error) {
@@ -726,6 +731,25 @@ func TestLoopback_BlobPresign(t *testing.T) {
 	}
 	if url != "https://store/get/k1" {
 		t.Fatalf("url = %q", url)
+	}
+}
+
+// TestLoopback_BlobListCopyRoundTrip proves the List/Copy unary methods cross
+// the envelope: List returns the canned page, Copy returns the canned result.
+func TestLoopback_BlobListCopyRoundTrip(t *testing.T) {
+	fb := &fakeBlob{
+		listResult: []blob.ObjectInfo{{Key: "a", Size: 3}},
+		copyResult: blob.ObjectInfo{Key: "b", Size: 3},
+	}
+	client := wire(t, &fakeFabric{blobStore: fb})
+
+	got, err := client.Blob().List(context.Background(), "pre/")
+	if err != nil || len(got) != 1 || got[0].Key != "a" {
+		t.Fatalf("List = %+v %v", got, err)
+	}
+	ci, err := client.Blob().Copy(context.Background(), "a", "b")
+	if err != nil || ci.Key != "b" {
+		t.Fatalf("Copy = %+v %v", ci, err)
 	}
 }
 

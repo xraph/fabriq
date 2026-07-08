@@ -57,6 +57,8 @@ const (
 	MethodHeadBlob           = "fabriq.v1.Fabriq/HeadBlob"
 	MethodDeleteBlob         = "fabriq.v1.Fabriq/DeleteBlob"
 	MethodPresignBlob        = "fabriq.v1.Fabriq/PresignBlob"
+	MethodListBlob           = "fabriq.v1.Fabriq/ListBlob"
+	MethodCopyBlob           = "fabriq.v1.Fabriq/CopyBlob"
 	MethodVectorSimilar      = "fabriq.v1.Fabriq/VectorSimilar"
 	MethodVectorUpsert       = "fabriq.v1.Fabriq/VectorUpsert"
 	MethodVectorDelete       = "fabriq.v1.Fabriq/VectorDelete"
