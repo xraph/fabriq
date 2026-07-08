@@ -29,15 +29,20 @@ func WithHTTPClient(hc *http.Client) Option {
 	}
 }
 
-// Connect parses dsn and returns a ready-to-use Client. Only the "http"
-// transport is currently supported; "grpc" (and any other transport) is
-// rejected with an error.
+// Connect parses dsn and returns a ready-to-use Client over the HTTP transport
+// (fabriq://) against the adminapi. The fabriq+grpc:// data-plane transport is
+// dialed by remotegrpc.Dial in the remote/grpc module — which returns a
+// query.Fabric, not this admin SDK — so that google.golang.org/grpc stays out of
+// the core module; Connect rejects it with a pointer there.
 func Connect(ctx context.Context, dsn string, opts ...Option) (*Client, error) {
 	_ = ctx // reserved for future connection-time handshake/ping
 
 	d, err := ParseDSN(dsn)
 	if err != nil {
 		return nil, err
+	}
+	if d.Transport == "grpc" {
+		return nil, fmt.Errorf("client: the grpc transport is dialed by remotegrpc.Dial (github.com/xraph/fabriq/remote/grpc), not client.Connect")
 	}
 	if d.Transport != "http" {
 		return nil, fmt.Errorf("client: unsupported transport: %s", d.Transport)

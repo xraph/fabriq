@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -186,6 +187,12 @@ func TestConnect_UnsupportedTransport(t *testing.T) {
 	_, err := Connect(context.Background(), "fabriq+grpc://fq_k@h.co")
 	if err == nil {
 		t.Fatalf("Connect() expected error for grpc transport, got nil")
+	}
+	// The grpc transport is real but lives in the remote/grpc module (so gRPC
+	// stays out of the core module); the error must point there rather than
+	// reading as "not built".
+	if !strings.Contains(err.Error(), "remotegrpc.Dial") {
+		t.Fatalf("Connect() grpc error = %q, want it to point at remotegrpc.Dial", err.Error())
 	}
 }
 
