@@ -62,6 +62,7 @@ type fakeFabric struct {
 	liveErr   error
 	blobStore blob.Store
 	retr      *fakeRetrieval
+	ts        *fakeTS
 	gotCmd    command.Command
 	gotCmds   []command.Command
 	result    command.Result
@@ -69,6 +70,8 @@ type fakeFabric struct {
 }
 
 func (f *fakeFabric) Relational() query.RelationalQuerier { return f.rel }
+
+func (f *fakeFabric) Timeseries() query.TSQuerier { return f.ts }
 
 func (f *fakeFabric) Subscribe(_ context.Context, _ query.SubscribeScope) (<-chan query.Delta, error) {
 	if f.subErr != nil {
@@ -162,6 +165,26 @@ func (f *fakeRetrieval) Query(_ context.Context, cypher string, _ map[string]any
 	return nil
 }
 func (f *fakeRetrieval) TraverseAndHydrate(context.Context, string, map[string]any, any) error {
+	return nil
+}
+
+// fakeTS implements query.TSQuerier, recording what it received and returning
+// programmed rows for Range.
+type fakeTS struct {
+	gotPoints []query.Point
+	gotRange  query.RangeQuery
+	rows      []map[string]any
+}
+
+func (f *fakeTS) BulkWrite(_ context.Context, _ string, pts []query.Point) error {
+	f.gotPoints = pts
+	return nil
+}
+func (f *fakeTS) Range(_ context.Context, q query.RangeQuery, into any) error {
+	f.gotRange = q
+	if p, ok := into.(*[]map[string]any); ok {
+		*p = f.rows
+	}
 	return nil
 }
 
@@ -818,5 +841,35 @@ func TestLoopback_RecallChannelsAllWired(t *testing.T) {
 	}
 	if len(vm) != 1 || len(hits) != 1 || len(ids) != 1 || len(hydrated) != 1 || hydrated[0].Name != "Pump" {
 		t.Fatalf("a channel dropped: vm=%v hits=%v ids=%v hydrated=%v", vm, hits, ids, hydrated)
+	}
+}
+
+// TestLoopback_TimeseriesRoundTrip proves the telemetry port: BulkWrite's
+// points cross to the server and Range's rows scan back, over the Loopback
+// wire.
+func TestLoopback_TimeseriesRoundTrip(t *testing.T) {
+	ts := &fakeTS{rows: []map[string]any{{"value": 1.5}}}
+	fab := &fakeFabric{ts: ts}
+	rf := remote.New(remote.Loopback{Handler: remote.NewHandler(fab, assetRegistry(t))})
+
+	at := time.Unix(1700000000, 0).UTC()
+	if err := rf.Timeseries().BulkWrite(context.Background(), "tags",
+		[]query.Point{{Key: "t1", At: at, Value: 1.5, Quality: 1}}); err != nil {
+		t.Fatalf("BulkWrite: %v", err)
+	}
+	if len(ts.gotPoints) != 1 || ts.gotPoints[0].Key != "t1" || ts.gotPoints[0].Value != 1.5 {
+		t.Fatalf("server saw points %+v", ts.gotPoints)
+	}
+
+	var out []map[string]any
+	if err := rf.Timeseries().Range(context.Background(),
+		query.RangeQuery{Series: "tags", Key: "t1", From: at, Bucket: time.Minute, Agg: "avg"}, &out); err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if len(out) != 1 || out[0]["value"] != 1.5 {
+		t.Fatalf("rows = %+v", out)
+	}
+	if ts.gotRange.Agg != "avg" || ts.gotRange.Bucket != time.Minute {
+		t.Fatalf("server saw range %+v", ts.gotRange)
 	}
 }

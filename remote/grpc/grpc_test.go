@@ -58,6 +58,7 @@ type fakeFabric struct {
 	rel          *fakeRelational
 	blobStore    blob.Store
 	retr         *fakeRetrieval
+	ts           *fakeTS
 	gotTenant    string
 	gotPrincipal string
 }
@@ -65,6 +66,7 @@ type fakeFabric struct {
 func (f *fakeFabric) Vector() query.VectorQuerier { return f.retr }
 func (f *fakeFabric) Search() query.SearchQuerier { return f.retr }
 func (f *fakeFabric) Graph() query.GraphQuerier   { return f.retr }
+func (f *fakeFabric) Timeseries() query.TSQuerier { return f.ts }
 
 // fakeRetrieval implements the three projection-read ports for the gRPC channel
 // test.
@@ -104,6 +106,25 @@ func (f *fakeRetrieval) Query(_ context.Context, _ string, _ map[string]any, int
 	return nil
 }
 func (f *fakeRetrieval) TraverseAndHydrate(context.Context, string, map[string]any, any) error {
+	return nil
+}
+
+// fakeTS implements query.TSQuerier for the gRPC timeseries round-trip test.
+type fakeTS struct {
+	gotPoints []query.Point
+	gotRange  query.RangeQuery
+	rows      []map[string]any
+}
+
+func (f *fakeTS) BulkWrite(_ context.Context, _ string, pts []query.Point) error {
+	f.gotPoints = pts
+	return nil
+}
+func (f *fakeTS) Range(_ context.Context, q query.RangeQuery, into any) error {
+	f.gotRange = q
+	if p, ok := into.(*[]map[string]any); ok {
+		*p = f.rows
+	}
 	return nil
 }
 
@@ -363,5 +384,25 @@ func TestGRPC_SubscribeStreamsDeltas(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Fatalf("got %v, want [a b]", got)
+	}
+}
+
+// TestGRPC_TimeseriesRoundTrip proves the timeseries port over real gRPC — and
+// that TSBulkWrite/TSRange are actually registered in the ServiceDesc (not just
+// reachable over Loopback).
+func TestGRPC_TimeseriesRoundTrip(t *testing.T) {
+	ts := &fakeTS{rows: []map[string]any{{"value": 2.0}}}
+	f := dial(t, &fakeFabric{ts: ts})
+
+	if err := f.Timeseries().BulkWrite(context.Background(), "tags",
+		[]query.Point{{Key: "t1", At: time.Unix(1, 0), Value: 2.0}}); err != nil {
+		t.Fatalf("BulkWrite: %v", err)
+	}
+	var out []map[string]any
+	if err := f.Timeseries().Range(context.Background(), query.RangeQuery{Series: "tags"}, &out); err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if len(out) != 1 || out[0]["value"] != 2.0 {
+		t.Fatalf("rows = %+v", out)
 	}
 }

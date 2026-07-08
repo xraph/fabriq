@@ -94,7 +94,7 @@ func (r *Fabric) ExecBatch(ctx context.Context, cmds []command.Command) ([]comma
 func (r *Fabric) Relational() query.RelationalQuerier { return remoteRelational{t: r.t} }
 func (r *Fabric) Graph() query.GraphQuerier           { return remoteGraph{t: r.t} }
 func (r *Fabric) Search() query.SearchQuerier         { return remoteSearch{t: r.t} }
-func (r *Fabric) Timeseries() query.TSQuerier         { return niTS{} }
+func (r *Fabric) Timeseries() query.TSQuerier         { return remoteTS{t: r.t} }
 func (r *Fabric) Vector() query.VectorQuerier         { return remoteVector{t: r.t} }
 func (r *Fabric) Spatial() query.SpatialQuerier       { return niSpatial{} }
 

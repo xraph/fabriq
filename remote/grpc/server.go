@@ -116,6 +116,8 @@ var serviceDesc = grpc.ServiceDesc{
 		{MethodName: "VectorGet", Handler: unaryHandler(remote.MethodVectorGet)},
 		{MethodName: "Search", Handler: unaryHandler(remote.MethodSearch)},
 		{MethodName: "GraphQuery", Handler: unaryHandler(remote.MethodGraphQuery)},
+		{MethodName: "TSBulkWrite", Handler: unaryHandler(remote.MethodTSBulkWrite)},
+		{MethodName: "TSRange", Handler: unaryHandler(remote.MethodTSRange)},
 	},
 	// gRPC routes by this table; every new streaming method must be enumerated
 	// here as well as in remote.Handler.DispatchStream / DispatchClientStream.

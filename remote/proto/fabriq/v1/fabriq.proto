@@ -28,6 +28,12 @@ service Fabriq {
   rpc Search(SearchRequest) returns (RowReply);  // rows = JSON []map
   rpc GraphQuery(GraphQueryRequest) returns (RowReply); // rows = JSON []string | []map
 
+  // --- timeseries (core/query.TSQuerier): telemetry ingest + windowed reads.
+  //     BulkWrite bypasses the outbox (see core/query/ports.go); Range rows are
+  //     opaque JSON like the other projection reads. ---
+  rpc TSBulkWrite(TSBulkWriteRequest) returns (Ack);
+  rpc TSRange(TSRangeRequest) returns (RowReply);
+
   // --- subscribe: server-streamed conflated channel deltas. The first frame is
   //     a handshake (open, or a setup error); each subsequent frame is a Delta. ---
   rpc Subscribe(SubscribeRequest) returns (stream SubFrame);
@@ -137,6 +143,15 @@ message GraphQueryRequest {
   string cypher = 1;
   bytes params = 2; // JSON map[string]any
   string mode = 3;  // "ids" → []string, else → []map
+}
+
+// --- timeseries (query.TSQuerier) ---
+message TSBulkWriteRequest {
+  string series = 1;
+  bytes points = 2; // JSON []query.Point
+}
+message TSRangeRequest {
+  bytes query = 1; // JSON query.RangeQuery
 }
 
 // --- subscribe (conflated channel deltas) ---

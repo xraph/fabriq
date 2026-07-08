@@ -80,6 +80,10 @@ func (h *Handler) Dispatch(ctx context.Context, method string, in []byte) ([]byt
 		return h.Search(ctx, in)
 	case MethodGraphQuery:
 		return h.GraphQuery(ctx, in)
+	case MethodTSBulkWrite:
+		return h.TSBulkWrite(ctx, in)
+	case MethodTSRange:
+		return h.TSRange(ctx, in)
 	default:
 		return nil, fmt.Errorf("remote: unknown method %q", method)
 	}
@@ -556,6 +560,44 @@ func (h *Handler) PresignBlob(ctx context.Context, in []byte) ([]byte, error) {
 		return proto.Marshal(&fabriqpb.BlobPresignReply{Error: errorToProto(err)})
 	}
 	return proto.Marshal(&fabriqpb.BlobPresignReply{Url: url})
+}
+
+// --- timeseries (query.TSQuerier): telemetry ingest + windowed reads ---
+
+func (h *Handler) TSBulkWrite(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.TSBulkWriteRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode tsBulkWrite request: %w", err)
+	}
+	var points []query.Point
+	if len(req.Points) > 0 {
+		if err := json.Unmarshal(req.Points, &points); err != nil {
+			return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(fmt.Errorf("remote: decode points: %w", err))})
+		}
+	}
+	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Timeseries().BulkWrite(ctx, req.Series, points))})
+}
+
+func (h *Handler) TSRange(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.TSRangeRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode tsRange request: %w", err)
+	}
+	var q query.RangeQuery
+	if len(req.Query) > 0 {
+		if err := json.Unmarshal(req.Query, &q); err != nil {
+			return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(fmt.Errorf("remote: decode range query: %w", err))})
+		}
+	}
+	var rows []map[string]any
+	if err := h.fab.Timeseries().Range(ctx, q, &rows); err != nil {
+		return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(err)})
+	}
+	row, err := json.Marshal(rows)
+	if err != nil {
+		return nil, fmt.Errorf("remote: marshal range rows: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.RowReply{Row: row})
 }
 
 func sendProto(send func([]byte) error, m proto.Message) error {
