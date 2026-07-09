@@ -2,46 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "admin-demo",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["-C", "/Users/rexraphael/Work/TwinOS/fabriq/.claude/worktrees/doc-compaction", "run", "./cmd/admin-demo"],
+      "port": 8080
+    },
+    {
       "name": "docs",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--dir", "docs", "dev"],
-      "port": 3000,
-      "autoPort": true
-    },
-    {
-      "name": "fabriq-admin-host",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": [
-        "-C",
-        "/Users/rexraphael/Work/TwinOS/fabriq-admin",
-        "--filter",
-        "@fabriq/host",
-        "exec",
-        "vite",
-        "--port",
-        "5174",
-        "--strictPort",
-        "--host"
-      ],
-      "port": 5174
-    },
-    {
-      "name": "fabriq-admin-host-preview",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": [
-        "-C",
-        "/Users/rexraphael/Work/TwinOS/fabriq-admin",
-        "--filter",
-        "@fabriq/host",
-        "exec",
-        "vite",
-        "preview",
-        "--port",
-        "5176",
-        "--strictPort",
-        "--host"
-      ],
-      "port": 5176
+      "port": 3000
     }
   ]
 }
