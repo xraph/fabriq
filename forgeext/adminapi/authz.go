@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/xraph/forge"
 )
@@ -52,6 +53,10 @@ func flagAuthorizer(cfg *config) Authorizer {
 func (c *adminController) requireCap(ctx forge.Context, capability string) error {
 	allowed, err := c.ext.cfg.Authorizer.Authorize(ctx.Request().Context(), capability)
 	if err != nil {
+		// Log the real cause server-side (a flapping authz backend otherwise
+		// surfaces only as a bare 500), but return an opaque message so no
+		// backend internals leak to the client.
+		slog.Error("fabriq.adminapi.authz check failed", "capability", capability, "error", err)
 		return forge.InternalError(errors.New("authorization check failed"))
 	}
 	if !allowed {
