@@ -12,6 +12,11 @@ func TestDefaultMapper(t *testing.T) {
 	cases := []struct{ cap, action, resType string }{
 		{"analytics.admin", "admin", "analytics"},
 		{"connections.read", "read", "connections"},
+		// Dot-less capability: this asserts the mapper's pure OUTPUT only.
+		// A real warden.Engine.Check with an empty Resource.Type errors
+		// (Check requires a non-empty resource type), so Authorize would
+		// fail closed (500) for this input end-to-end — a dot-less
+		// capability needs a custom Mapper, not DefaultMapper.
 		{"query", "query", ""},
 	}
 	for _, tc := range cases {

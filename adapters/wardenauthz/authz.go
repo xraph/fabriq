@@ -81,10 +81,18 @@ func (a *Authorizer) Authorize(ctx context.Context, capability string) (bool, er
 	return res.Allowed, nil
 }
 
-// DefaultMapper splits the capability on the LAST dot: "analytics.admin" →
-// action "admin", resourceType "analytics"; a dot-less capability →
-// action = the whole string, resourceType "". resourceID is always empty (a
-// host wanting tenant-scoped resources supplies its own Mapper).
+// DefaultMapper expects a dotted "resource.action" capability and splits it
+// on the LAST dot: "analytics.admin" → action "admin", resourceType
+// "analytics". resourceID is always empty (a host wanting tenant-scoped
+// resources supplies its own Mapper).
+//
+// A dot-less capability (or one with a leading/trailing dot, e.g. "query",
+// "analytics.", ".read") yields an empty action or resourceType. warden's
+// Engine.Check rejects an empty Action.Name or Resource.Type, so Authorize
+// returns (false, err) — a fail-closed 500, not a clean allow/deny. Fabriq's
+// own capabilities are all dotted, so this never triggers today, but a host
+// whose capabilities are not already "resource.action" must supply a custom
+// Mapper.
 func DefaultMapper(_ context.Context, capability string) (action, resourceType, resourceID string) {
 	if i := strings.LastIndex(capability, "."); i >= 0 {
 		return capability[i+1:], capability[:i], ""

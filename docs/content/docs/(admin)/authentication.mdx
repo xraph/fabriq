@@ -175,22 +175,40 @@ fails at startup, not at the first request. The returned `*wardenauthz.Authorize
 `adminapi.Authorizer` structurally — no interface embedding needed.
 
 **Default capability mapping.** With no options, `wardenauthz` maps a fabriq capability to a
-warden `(action, resourceType)` pair by splitting on the *last* dot:
+warden `(action, resourceType)` pair by splitting on the *last* dot — it expects a dotted
+`resource.action` capability:
 
 | Capability | Action | Resource type |
 | --- | --- | --- |
 | `analytics.admin` | `admin` | `analytics` |
 | `connections.read` | `read` | `connections` |
-| `query` (no dot) | `query` | *(empty)* |
 
 `resourceID` is always empty by default — the adapter checks the capability generically, not
 against a specific tenant-scoped resource instance.
+
+**A dot-less (or leading/trailing-dot) capability is not a supported default.** `query` has
+no dot, so `DefaultMapper` returns action `query` and an *empty* resource type; a trailing
+dot (`analytics.`) empties the action instead, and a leading dot (`.read`) empties the
+resource type. `warden.Engine.Check` rejects an empty `Action.Name` or `Resource.Type`, so
+`Authorize` returns `(false, err)` for these — a fail-closed `500`, not a clean allow/deny.
+Fabriq's own capabilities (`analytics.admin`, `connections.read`, `query.raw`, ...) are all
+dotted, so this never happens with fabriq's built-in gates, but a host whose own capability
+strings are not already `resource.action` must supply a custom `Mapper` rather than relying
+on `DefaultMapper`.
 
 **Default subject.** The adapter reads the caller from `forge.UserIDFromContext(ctx)` and
 checks as `warden.Subject{Kind: warden.SubjectUser, ID: uid}`. When no user id is on the
 context, it checks as the anonymous subject `warden.Subject{Kind: "unknown", ID: "anonymous"}`
 — so an unauthenticated request is whatever warden's policy says `unknown/anonymous` may do,
 not an automatic deny.
+
+**Tenant scope.** Warden resolves the tenant it checks against from its own context scope
+(`warden.WithTenant`) or an explicit `CheckRequest.TenantID` — neither of which `wardenauthz`
+sets, and both are separate from fabriq's own tenant context key — so the host's warden
+middleware must put warden's tenant scope onto the request context before the adminapi
+handler runs (a `Mapper` can't do this: it only returns `action`/`resourceType`/`resourceID`,
+it doesn't get to rewrite the `ctx` that `Authorize` later passes to `Check`), or every check
+runs tenant-less against whatever warden's policy allows with no tenant scoped.
 
 **Overriding the mapping or subject.** A host that wants tenant-scoped resource IDs, a
 different action naming scheme, or a subject resolved from something other than

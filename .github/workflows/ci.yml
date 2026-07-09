@@ -147,6 +147,7 @@ jobs:
           - .
           - remote/grpc
           - remote/grpc/cmd/fabriqserver
+          - adapters/wardenauthz
     steps:
       - name: Checkout
         uses: actions/checkout@v4
