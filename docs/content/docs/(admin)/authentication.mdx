@@ -92,6 +92,66 @@ multi-tenant, the console's tenant switcher selects the working tenant per reque
 `POST {base}/login` is the only route exempt from the verify middleware — it is the way in.
 Everything else, including `/logout`, stays gated.
 
+## Custom authorization (per-user RBAC)
+
+Authentication (above) answers *who is calling*. Authorization answers *what they may
+do*, and it is a separate, opt-in seam. Every admin capability gate — `analytics.admin`,
+`analytics.read`, `schema.admin`, `tenants.admin`, `connections.read` — is routed through
+one `Authorizer`:
+
+```go
+type Authorizer interface {
+	Authorize(ctx context.Context, capability string) (allowed bool, err error)
+}
+```
+
+By default, the adminapi wraps the host-enablement flags (`WithAnalyticsAdmin`,
+`WithSchemaAdmin`, `WithTenantsAdmin`, `WithConnectionsRead`, ...) in a `flagAuthorizer`,
+so a gate is a static, all-or-nothing switch — identical to the pre-RBAC behavior.
+
+`WithAuthorizer` overrides that default with a **per-request** decision:
+
+```go
+ext := adminapi.NewAdminAPI(fabricExt, adminapi.WithAuthorizer(myAuthorizer))
+```
+
+Once set, every gated route calls `Authorize(ctx, capability)` on each request instead of
+reading the static flag. `ctx` is the request context — the resolved tenant and API-key id
+are already on it, along with any principal a host authz middleware stamped before the
+handler ran, so a per-tenant or per-user authz system can read whatever it needs from
+there. Gated routes are always registered — a denial is a `403`, never a `404` — and the
+enablement flags only supply the *default* decision when no `Authorizer` is configured.
+
+**Fail closed.** If `Authorize` returns a non-nil `err`, the gate returns `500` and the
+call is denied — even if `allowed` was also `true`. An authorization backend that is down,
+times out, or panics-and-recovers-into-an-error must never be treated as "allow"; the
+error always dominates.
+
+**`/meta` reflects the caller.** `GET {base}/meta` calls the configured `Authorizer` for
+every gated capability and returns only the ones the current caller is authorized for.
+Two callers hitting the same server with different principals see different
+`capabilities` lists — the console uses this to hide admin affordances the caller can't
+use.
+
+### Reference adapter: warden (not compiled into fabriq)
+
+Fabriq imports **no** authorization system — `Authorizer` is the entire contract. Wiring a
+real RBAC/ABAC engine (e.g. a `warden`-style permission service) is entirely the host's
+job: the host owns both the adapter and the capability → permission mapping. A typical
+adapter is a few lines using `AuthorizerFunc`:
+
+```go
+adminapi.WithAuthorizer(adminapi.AuthorizerFunc(func(ctx context.Context, cap string) (bool, error) {
+    // warden's forge middleware has already put the principal in ctx.
+    return warden.Check(ctx, wardenPermissionFor(cap))
+}))
+```
+
+`wardenPermissionFor` is host code that maps fabriq's capability strings
+(`"analytics.admin"`, `"schema.admin"`, ...) onto whatever permission model warden (or any
+other authz system) uses. This snippet is illustrative only — fabriq does not depend on
+warden, and no such adapter ships in this repo.
+
 ## In the demo
 
 `cmd/admin-demo` wires all of this from the environment:

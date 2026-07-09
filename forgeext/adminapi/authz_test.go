@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 )
@@ -106,5 +107,20 @@ func TestMeta_ReflectsAuthorizer(t *testing.T) {
 	}
 	if !has("entities.read") {
 		t.Fatalf("meta caps %v: base caps must still be present", body.Capabilities)
+	}
+}
+
+// An authorizer that errors must fail CLOSED: the gate returns 500, never allow.
+func TestAuthorizer_ErrorFailsClosed(t *testing.T) {
+	boom := AuthorizerFunc(func(_ context.Context, _ string) (bool, error) {
+		return true, errors.New("authz backend down") // allowed=true but err set
+	})
+	e := NewAdminAPI(nil, WithAnalyticsRead(), WithAuthorizer(boom))
+	srv := buildServer(t, e)
+	defer srv.Close()
+	resp := getNoTenant(t, srv, "/admin/analytics/status")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (authorizer error must fail closed, not allow)", resp.StatusCode)
 	}
 }
