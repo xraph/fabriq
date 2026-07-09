@@ -88,9 +88,9 @@ func (c *adminController) registerAnalyticsRoutes(r forge.Router) error {
 // ctx.JSON write) so that callers' `if err != nil { return err }` early-return
 // actually short-circuits — see requireTenantsAdmin's doc comment for the full
 // rationale.
-func (c *adminController) requireAnalyticsAdmin(_ forge.Context) (*analytics.Backfiller, error) {
-	if !c.ext.cfg.AnalyticsAdmin {
-		return nil, forge.Forbidden("analytics admin not enabled (host must opt in via WithAnalyticsAdmin)")
+func (c *adminController) requireAnalyticsAdmin(ctx forge.Context) (*analytics.Backfiller, error) {
+	if err := c.requireCap(ctx, "analytics.admin"); err != nil {
+		return nil, err
 	}
 	if c.ext.parent == nil || c.ext.parent.Stores() == nil {
 		return nil, forge.BadRequest("analytics backfill requires a started fabriq extension")
@@ -106,11 +106,8 @@ func (c *adminController) requireAnalyticsAdmin(_ forge.Context) (*analytics.Bac
 // EITHER the read grant or the admin grant is enabled (admin implies read),
 // and 403s otherwise — mirroring requireAnalyticsAdmin's shape but without the
 // Backfiller resolution (reads do not need it).
-func (c *adminController) requireAnalyticsRead() error {
-	if !c.ext.cfg.AnalyticsRead && !c.ext.cfg.AnalyticsAdmin {
-		return forge.Forbidden("analytics read not enabled (host must opt in via WithAnalyticsRead or WithAnalyticsAdmin)")
-	}
-	return nil
+func (c *adminController) requireAnalyticsRead(ctx forge.Context) error {
+	return c.requireCap(ctx, "analytics.read")
 }
 
 // backfillRequest is the POST {BasePath}/analytics/backfill request body.
@@ -255,8 +252,8 @@ type analyticsReconcileResponse struct {
 // and heal analytics rows missing/stale vs the source of truth. Gated on
 // analytics.admin. Fleet reconcile supports async (202 + jobId).
 func (c *adminController) handleAnalyticsReconcile(ctx forge.Context) error {
-	if !c.ext.cfg.AnalyticsAdmin {
-		return forge.Forbidden("analytics admin not enabled (host must opt in via WithAnalyticsAdmin)")
+	if err := c.requireCap(ctx, "analytics.admin"); err != nil {
+		return err
 	}
 	if c.ext.parent == nil || c.ext.parent.Stores() == nil {
 		return forge.BadRequest("analytics reconcile requires a started fabriq extension")
@@ -314,8 +311,8 @@ type reprojectResponse struct {
 // re-applies each marked entity's current redaction allow-list to already-stored
 // rows (a retroactive privacy correction). Synchronous; gated on analytics.admin.
 func (c *adminController) handleAnalyticsReproject(ctx forge.Context) error {
-	if !c.ext.cfg.AnalyticsAdmin {
-		return forge.Forbidden("analytics admin not enabled (host must opt in via WithAnalyticsAdmin)")
+	if err := c.requireCap(ctx, "analytics.admin"); err != nil {
+		return err
 	}
 	if c.ext.parent == nil || c.ext.parent.Stores() == nil {
 		return forge.BadRequest("analytics reproject requires a started fabriq extension")
@@ -379,8 +376,8 @@ type purgeResponse struct {
 // analytics sink — the erasure step for tenant offboarding and
 // right-to-be-forgotten. Destructive; gated on analytics.admin.
 func (c *adminController) handleAnalyticsPurge(ctx forge.Context) error {
-	if !c.ext.cfg.AnalyticsAdmin {
-		return forge.Forbidden("analytics admin not enabled (host must opt in via WithAnalyticsAdmin)")
+	if err := c.requireCap(ctx, "analytics.admin"); err != nil {
+		return err
 	}
 	if c.ext.parent == nil || c.ext.parent.Stores() == nil || c.ext.parent.Stores().Analytics == nil {
 		return forge.BadRequest("analytics purge requires a started fabriq extension with an analytics sink configured")
@@ -403,7 +400,7 @@ func (c *adminController) handleAnalyticsPurge(ctx forge.Context) error {
 // whether the analytics sink is configured and how many tenants are known to
 // the catalog, without triggering any backfill work.
 func (c *adminController) handleAnalyticsStatus(ctx forge.Context) error {
-	if err := c.requireAnalyticsRead(); err != nil {
+	if err := c.requireAnalyticsRead(ctx); err != nil {
 		return err
 	}
 	if c.ext.parent == nil || c.ext.parent.Stores() == nil {

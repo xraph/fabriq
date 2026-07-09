@@ -75,8 +75,8 @@ func (j *analyticsJobs) get(id string) (*analyticsJob, bool) {
 
 // handleAnalyticsJob serves GET {BasePath}/analytics/jobs/:id — poll one job.
 func (c *adminController) handleAnalyticsJob(ctx forge.Context) error {
-	if !c.ext.cfg.AnalyticsAdmin {
-		return forge.Forbidden("analytics admin not enabled (host must opt in via WithAnalyticsAdmin)")
+	if err := c.requireCap(ctx, "analytics.admin"); err != nil {
+		return err
 	}
 	job, ok := c.analyticsJobs.get(ctx.Param("id"))
 	if !ok {
@@ -92,8 +92,8 @@ func (c *adminController) handleAnalyticsJob(ctx forge.Context) error {
 // SSE stream of the job's state (every ~500ms) until it reaches a terminal
 // state (done|failed) or the client disconnects.
 func (c *adminController) handleAnalyticsJobStream(ctx forge.Context) error {
-	if !c.ext.cfg.AnalyticsAdmin {
-		return forge.Forbidden("analytics admin not enabled (host must opt in via WithAnalyticsAdmin)")
+	if err := c.requireCap(ctx, "analytics.admin"); err != nil {
+		return err
 	}
 	job, ok := c.analyticsJobs.get(ctx.Param("id"))
 	if !ok {
