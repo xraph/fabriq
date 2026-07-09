@@ -34,7 +34,7 @@ jobs:
       packages: write # push the container image to ghcr.io
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0 # full history so the changelog can diff tags
 
@@ -77,7 +77,7 @@ jobs:
       CHART_DIR: deploy/helm/fabriq
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Helm
         uses: azure/setup-helm@v4
