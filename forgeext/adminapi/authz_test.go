@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 )
@@ -65,5 +66,45 @@ func TestAuthorizer_DeniesSchemaAdminDespiteFlag(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 (authorizer denies schema.admin despite the flag)", resp.StatusCode)
+	}
+}
+
+func TestMeta_ReflectsAuthorizer(t *testing.T) {
+	// Allow base caps + analytics.read; deny the other gated admin caps.
+	auth := AuthorizerFunc(func(_ context.Context, cap string) (bool, error) {
+		switch cap {
+		case "analytics.admin", "schema.admin", "tenants.admin", "connections.read":
+			return false, nil
+		default:
+			return true, nil // base caps + analytics.read
+		}
+	})
+	e := NewAdminAPI(nil, WithAuthorizer(auth))
+	srv := buildServer(t, e)
+	defer srv.Close()
+	resp := getNoTenant(t, srv, "/admin/meta")
+	defer resp.Body.Close()
+	var body struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	has := func(c string) bool {
+		for _, x := range body.Capabilities {
+			if x == c {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("analytics.read") {
+		t.Fatalf("meta caps %v: want analytics.read (authorizer allowed it)", body.Capabilities)
+	}
+	if has("analytics.admin") || has("schema.admin") {
+		t.Fatalf("meta caps %v: must NOT include denied gated caps", body.Capabilities)
+	}
+	if !has("entities.read") {
+		t.Fatalf("meta caps %v: base caps must still be present", body.Capabilities)
 	}
 }

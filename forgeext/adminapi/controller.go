@@ -22,6 +22,10 @@ const maxLimit = 200
 // capabilities lists the static feature set this admin API supports.
 var capabilities = []string{"entities.read", "entities.write", "schema.read", "schema.write", "plugins.crud", "capabilities.read", "search.read", "vector.read", "spatial.read", "graph.read", "files.read", "files.write", "crdt.read", "live.read", "distill.read", "recall.read", "timeseries.read", "events.read", "vector.write", "command.exec", "agent.remember", "projections.read", "projections.admin", "cache.read", "cache.write", "query.raw"}
 
+// gatedCaps are the capabilities advertised only when the Authorizer permits
+// them for the caller (the historical flag-gated admin caps).
+var gatedCaps = []string{"schema.admin", "tenants.admin", "connections.read", "analytics.admin", "analytics.read"}
+
 // metaResponse is the payload for GET {BasePath}/meta.
 type metaResponse struct {
 	Name         string   `json:"name"`
@@ -293,20 +297,17 @@ func (c *adminController) requireTenantsAdmin(ctx forge.Context) (tenantAdminOps
 
 // handleMeta serves GET {BasePath}/meta.
 func (c *adminController) handleMeta(ctx forge.Context) error {
-	caps := capabilities
-	if c.ext.cfg.SchemaAdmin {
-		caps = append(append([]string(nil), capabilities...), "schema.admin")
+	reqCtx := ctx.Request().Context()
+	caps := make([]string, 0, len(capabilities)+len(gatedCaps))
+	for _, cap := range capabilities {
+		if ok, err := c.ext.cfg.Authorizer.Authorize(reqCtx, cap); err == nil && ok {
+			caps = append(caps, cap)
+		}
 	}
-	if c.ext.cfg.TenantsAdmin {
-		caps = append(append([]string(nil), caps...), "tenants.admin")
-	}
-	if c.ext.cfg.ConnectionsRead {
-		caps = append(append([]string(nil), caps...), "connections.read")
-	}
-	if c.ext.cfg.AnalyticsAdmin {
-		caps = append(append([]string(nil), caps...), "analytics.admin", "analytics.read")
-	} else if c.ext.cfg.AnalyticsRead {
-		caps = append(append([]string(nil), caps...), "analytics.read")
+	for _, cap := range gatedCaps {
+		if ok, err := c.ext.cfg.Authorizer.Authorize(reqCtx, cap); err == nil && ok {
+			caps = append(caps, cap)
+		}
 	}
 	resp := metaResponse{
 		Name:         "fabriq-admin-api",
