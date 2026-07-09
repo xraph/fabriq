@@ -58,6 +58,14 @@ func customerSpec() registry.EntitySpec {
 				{Name: "country", Type: registry.ColText},
 			},
 		},
+		// Analytics: name/tier/country cross the trust boundary; EMAIL is
+		// pseudonymized (salted hash) so operators can count-distinct / join on it
+		// across tenants without co-locating the raw address. Everything else is
+		// stripped. This is the Privacy showcase in the Analytics console.
+		Analytics: &registry.AnalyticsSpec{
+			Include: []string{"name", "tier", "country"},
+			Hash:    []string{"email"},
+		},
 		Search: registry.SearchSpec{
 			Index:  customerSearchIndex,
 			Fields: []string{"name", "email", "tier", "country"},
@@ -104,6 +112,14 @@ func orderSpec() registry.EntitySpec {
 				{Name: "status", Type: registry.ColText},
 				{Name: "created_at", Type: registry.ColText},
 			},
+		},
+		// Analytics: status/total/product_id cross the trust boundary; CUSTOMER_ID
+		// is pseudonymized so orders can be grouped per customer across the fleet
+		// without co-locating the raw id (the same salted hash the customer spec
+		// applies to email, so cross-entity joins on the pseudonym still work).
+		Analytics: &registry.AnalyticsSpec{
+			Include: []string{"status", "total", "product_id"},
+			Hash:    []string{"customer_id"},
 		},
 		Search: registry.SearchSpec{
 			Index:  orderSearchIndex,

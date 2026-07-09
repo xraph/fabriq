@@ -4,7 +4,7 @@
     {
       "name": "admin-demo",
       "runtimeExecutable": "go",
-      "runtimeArgs": ["-C", "/Users/rexraphael/Work/TwinOS/fabriq/.claude/worktrees/doc-compaction", "run", "./cmd/admin-demo"],
+      "runtimeArgs": ["-C", "/Users/rexraphael/Work/TwinOS/fabriq", "run", "-tags", "duckdb", "./cmd/admin-demo"],
       "port": 8080
     },
     {

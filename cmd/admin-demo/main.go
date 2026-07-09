@@ -75,6 +75,11 @@ const (
 // orders, places, graph, files, docs, distill, telemetry) iterates over.
 var demoTenants = []string{"acme-corp", "globex"}
 
+// demoAnalyticsSalt pseudonymizes the Hash fields of the customer/order analytics
+// specs (email, customer_id). A real deployment keeps this secret and stable; the
+// demo pins a fixed value so hashes are reproducible across restarts.
+const demoAnalyticsSalt = "fabriq-admin-demo-analytics-salt-v1"
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatalf("admin-demo: %v", err)
@@ -120,6 +125,24 @@ func run() error {
 	blobDSN := os.Getenv("ADMIN_DEMO_BLOB_DSN")
 	if blobDSN == "" {
 		blobDSN = "file://" + filepath.Join(os.TempDir(), "fabriq-admin-demo-blobs")
+	}
+
+	// Analytics: the columnar read model that backs the fabriq-admin Analytics
+	// console (Freshness / Operations / Privacy). The DSN scheme selects the sink —
+	// duckdb:// (the demo default under -tags duckdb), postgres:// or clickhouse://
+	// via ADMIN_DEMO_ANALYTICS_DSN. dataDir holds the embedded-DuckDB file; an empty
+	// DSN (untagged build with no override) leaves analytics disabled and the demo
+	// still runs. See analytics_duckdb.go / analytics_noduckdb.go for the seam.
+	dataDir := os.Getenv("ADMIN_DEMO_DATA_DIR")
+	if dataDir == "" {
+		dataDir = filepath.Join(os.TempDir(), "fabriq-admin-demo")
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return err
+	}
+	analyticsDSN := os.Getenv("ADMIN_DEMO_ANALYTICS_DSN")
+	if analyticsDSN == "" {
+		analyticsDSN = defaultAnalyticsDSN(dataDir)
 	}
 
 	// The demo embedder is deterministic and NON-semantic (see embedder.go). It
@@ -236,6 +259,11 @@ func run() error {
 			DefaultBucket: blobBucket,
 			EnableCas:     true,
 		},
+		// Analytics wires the opt-in columnar sink + proj:analytics consumer. An
+		// empty DSN disables it, so the untagged build (analyticsDSN == "") simply
+		// runs without analytics. HashSalt is set because the customer/order specs
+		// mark Hash fields (email, customer_id) — required by Validate when enabled.
+		Analytics: fabriq.AnalyticsConfig{DSN: analyticsDSN, HashSalt: demoAnalyticsSalt},
 	}
 	f, stores, err := fabriq.Open(ctx, reg, cfg)
 	if err != nil {
@@ -440,9 +468,35 @@ func run() error {
 		telemetryPointsTotal += tp
 	}
 
-	// The prep fabric has done its job (migrations, DDL, seeding). The serving
-	// fabric is opened independently by the forgeext extension at app.Start;
-	// close the prep handle so we don't hold a redundant pool.
+	// Populate the analytics read model from the just-seeded aggregates so the
+	// Analytics console has facts immediately, rather than only after the live
+	// proj:analytics consumer (in the serving worker) catches up. Backfill is
+	// idempotent (version-gated upserts), so re-running on every boot is a no-op.
+	// Only runs when analytics is configured; skipped for the untagged/off build.
+	analyticsFactsTotal := 0
+	if analyticsDSN != "" {
+		bf, bferr := stores.AnalyticsBackfiller(reg)
+		if bferr != nil {
+			_ = f.Close()
+			return bferr
+		}
+		counts, bferr := bf.AllTenants(ctx, demoTenants, 2)
+		if bferr != nil {
+			_ = f.Close()
+			return bferr
+		}
+		for _, n := range counts {
+			analyticsFactsTotal += n
+		}
+		log.Printf("  analytics: backfilled %d fact(s) across %d tenant(s) into %s", analyticsFactsTotal, len(demoTenants), analyticsDSN)
+	} else {
+		log.Printf("  analytics: DISABLED (set ADMIN_DEMO_ANALYTICS_DSN=postgres://… or rebuild with -tags duckdb for embedded DuckDB)")
+	}
+
+	// The prep fabric has done its job (migrations, DDL, seeding, analytics
+	// backfill). Closing it releases the analytics sink's handle too (e.g. the
+	// embedded-DuckDB file lock) BEFORE the serving fabric — opened independently
+	// by the forgeext extension at app.Start — reopens the same DSN.
 	if err := f.Close(); err != nil {
 		return err
 	}
@@ -490,6 +544,15 @@ func run() error {
 		// Enable the privileged schema-ops surface (run/rollback migrations,
 		// ad-hoc DDL) so the demo exercises the Migrations console end to end.
 		adminapi.WithSchemaAdmin(),
+		// Analytics console: Read gates the Freshness/status dashboard; Admin
+		// unlocks the Operations (backfill/reconcile) and Privacy (reproject/purge)
+		// actions. Backed by the analytics sink configured in cfg.Analytics above.
+		adminapi.WithAnalyticsRead(),
+		adminapi.WithAnalyticsAdmin(),
+		// Connection-pool observability (GET /admin/connections) and tenant
+		// management, so those console surfaces are live against the demo too.
+		adminapi.WithConnectionsRead(),
+		adminapi.WithTenantsAdmin(),
 	}
 	if os.Getenv("ADMIN_DEMO_AUTH") == "0" {
 		// Opt out: keyless admin API. The extension is auth-agnostic when
@@ -593,6 +656,13 @@ func productSpec() registry.EntitySpec {
 		// the indexed document and validated as multi_match / filter targets. This
 		// is what makes fab.Search() accept "product" and the per-type capability
 		// probe report search:true for the type.
+		// Analytics opts product into the columnar analytics sink: name/sku/price/
+		// status cross the trust boundary (no PII here, so no Hash). Deny-by-default
+		// means only these listed fields are projected — the Analytics console's
+		// Freshness/Operations views read the resulting facts.
+		Analytics: &registry.AnalyticsSpec{
+			Include: []string{"name", "sku", "price", "status"},
+		},
 		Search: registry.SearchSpec{
 			Index:  productSearchIndex,
 			Fields: []string{"name", "sku", "status"},
