@@ -282,7 +282,7 @@ type provisionBody struct {
 // pollable jobId. The provisioning itself runs detached from the request
 // (context.Background()) so it survives the response being written.
 func (c *adminController) handleTenantProvision(ctx forge.Context) error {
-	if err := c.ensureTenantsAdmin(); err != nil {
+	if err := c.ensureTenantsAdmin(ctx); err != nil {
 		return err
 	}
 	var body provisionBody

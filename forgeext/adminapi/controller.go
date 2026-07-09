@@ -231,10 +231,8 @@ func (c *adminController) Routes(r forge.Router) error {
 // requireSchemaAdmin returns a 403 error when the privileged schema-ops gate is
 // off; handlers call it before any migration-execution or DDL mutation.
 func (c *adminController) requireSchemaAdmin(ctx forge.Context) error {
-	if !c.ext.cfg.SchemaAdmin {
-		return ctx.JSON(http.StatusForbidden, map[string]string{
-			"error": "schema admin not enabled (host must opt in via WithSchemaAdmin)",
-		})
+	if err := c.requireCap(ctx, "schema.admin"); err != nil {
+		return err
 	}
 	return nil
 }
@@ -266,9 +264,9 @@ type tenantAdminOps interface {
 
 // ensureTenantsAdmin runs the capability + catalog-mode gate shared by every
 // tenant-admin handler.
-func (c *adminController) ensureTenantsAdmin() error {
-	if !c.ext.cfg.TenantsAdmin {
-		return forge.Forbidden("tenant admin not enabled (host must opt in via WithTenantsAdmin)")
+func (c *adminController) ensureTenantsAdmin(ctx forge.Context) error {
+	if err := c.requireCap(ctx, "tenants.admin"); err != nil {
+		return err
 	}
 	if c.ext.parent == nil {
 		return forge.BadRequest("tenant management requires catalog mode (db-per-tenant)")
@@ -276,8 +274,8 @@ func (c *adminController) ensureTenantsAdmin() error {
 	return nil
 }
 
-func (c *adminController) requireTenantsAdmin(_ forge.Context) (tenantAdminOps, error) {
-	if err := c.ensureTenantsAdmin(); err != nil {
+func (c *adminController) requireTenantsAdmin(ctx forge.Context) (tenantAdminOps, error) {
+	if err := c.ensureTenantsAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if c.ext.parent.SchemaMode() {

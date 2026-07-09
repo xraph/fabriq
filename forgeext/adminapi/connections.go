@@ -258,9 +258,9 @@ func modeOf(cfg fabriq.Config) string {
 //
 // Like requireTenantsAdmin it returns a real forge.IHTTPError so callers'
 // early return actually short-circuits before dereferencing the config.
-func (c *adminController) requireConnectionsRead(_ forge.Context) (fabriq.Config, error) {
-	if !c.ext.cfg.ConnectionsRead {
-		return fabriq.Config{}, forge.Forbidden("connection info not enabled (host must opt in via WithConnectionsRead)")
+func (c *adminController) requireConnectionsRead(ctx forge.Context) (fabriq.Config, error) {
+	if err := c.requireCap(ctx, "connections.read"); err != nil {
+		return fabriq.Config{}, err
 	}
 	if c.ext.parent == nil {
 		return fabriq.Config{}, forge.BadRequest("connection info requires a started fabriq extension")

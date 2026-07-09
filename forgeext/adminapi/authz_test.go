@@ -51,3 +51,19 @@ func TestAuthorizer_DeniesAnalyticsAdminDespiteFlag(t *testing.T) {
 		t.Fatalf("status = %d, want 403 (authorizer denies analytics.admin despite the flag)", resp.StatusCode)
 	}
 }
+
+// A denying authorizer must 403 a schema-admin endpoint even with WithSchemaAdmin().
+func TestAuthorizer_DeniesSchemaAdminDespiteFlag(t *testing.T) {
+	deny := AuthorizerFunc(func(_ context.Context, cap string) (bool, error) {
+		return cap != "schema.admin", nil
+	})
+	e := NewAdminAPI(nil, WithSchemaAdmin(), WithAuthorizer(deny))
+	srv := buildServer(t, e)
+	defer srv.Close()
+	// The migrations run endpoint is schema.admin-gated.
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/migrations/up", map[string]any{})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (authorizer denies schema.admin despite the flag)", resp.StatusCode)
+	}
+}
