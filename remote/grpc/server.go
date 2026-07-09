@@ -94,6 +94,27 @@ func clientStreamHandler(method string) func(any, grpc.ServerStream) error {
 	}
 }
 
+// bidiHandler builds a bidirectional gRPC handler that pipes the stream's
+// RecvMsg/SendMsg into remote.Handler.DispatchBidi under the given method name.
+// recv surfaces io.EOF when the client CloseSends; send delivers one frame.
+func bidiHandler(method string) func(any, grpc.ServerStream) error {
+	return func(srv any, stream grpc.ServerStream) error {
+		s, ok := srv.(*server)
+		if !ok {
+			return fmt.Errorf("grpc: unexpected server type %T", srv)
+		}
+		recv := func() ([]byte, error) {
+			var b []byte
+			if err := stream.RecvMsg(&b); err != nil {
+				return nil, err // io.EOF when the client CloseSends
+			}
+			return b, nil
+		}
+		send := func(b []byte) error { return stream.SendMsg(b) }
+		return s.h.DispatchBidi(stream.Context(), method, recv, send)
+	}
+}
+
 var serviceDesc = grpc.ServiceDesc{
 	ServiceName: "fabriq.v1.Fabriq",
 	HandlerType: (*fabriqService)(nil),
@@ -109,6 +130,8 @@ var serviceDesc = grpc.ServiceDesc{
 		{MethodName: "HeadBlob", Handler: unaryHandler(remote.MethodHeadBlob)},
 		{MethodName: "DeleteBlob", Handler: unaryHandler(remote.MethodDeleteBlob)},
 		{MethodName: "PresignBlob", Handler: unaryHandler(remote.MethodPresignBlob)},
+		{MethodName: "ListBlob", Handler: unaryHandler(remote.MethodListBlob)},
+		{MethodName: "CopyBlob", Handler: unaryHandler(remote.MethodCopyBlob)},
 		{MethodName: "VectorSimilar", Handler: unaryHandler(remote.MethodVectorSimilar)},
 		{MethodName: "VectorUpsert", Handler: unaryHandler(remote.MethodVectorUpsert)},
 		{MethodName: "VectorDelete", Handler: unaryHandler(remote.MethodVectorDelete)},
@@ -116,14 +139,25 @@ var serviceDesc = grpc.ServiceDesc{
 		{MethodName: "VectorGet", Handler: unaryHandler(remote.MethodVectorGet)},
 		{MethodName: "Search", Handler: unaryHandler(remote.MethodSearch)},
 		{MethodName: "GraphQuery", Handler: unaryHandler(remote.MethodGraphQuery)},
+		{MethodName: "TSBulkWrite", Handler: unaryHandler(remote.MethodTSBulkWrite)},
+		{MethodName: "TSRange", Handler: unaryHandler(remote.MethodTSRange)},
+		{MethodName: "SpatialUpsert", Handler: unaryHandler(remote.MethodSpatialUpsert)},
+		{MethodName: "SpatialWithin", Handler: unaryHandler(remote.MethodSpatialWithin)},
+		{MethodName: "SpatialGet", Handler: unaryHandler(remote.MethodSpatialGet)},
+		{MethodName: "SpatialDelete", Handler: unaryHandler(remote.MethodSpatialDelete)},
+		{MethodName: "DocApplyUpdate", Handler: unaryHandler(remote.MethodDocApplyUpdate)},
+		{MethodName: "DocSync", Handler: unaryHandler(remote.MethodDocSync)},
+		{MethodName: "DocSnapshot", Handler: unaryHandler(remote.MethodDocSnapshot)},
+		{MethodName: "DocCompact", Handler: unaryHandler(remote.MethodDocCompact)},
 	},
 	// gRPC routes by this table; every new streaming method must be enumerated
 	// here as well as in remote.Handler.DispatchStream / DispatchClientStream.
 	Streams: []grpc.StreamDesc{
 		{StreamName: "Subscribe", Handler: streamHandler(remote.MethodSubscribe), ServerStreams: true},
-		{StreamName: "LiveQuery", Handler: streamHandler(remote.MethodLiveQuery), ServerStreams: true},
+		{StreamName: "LiveQuery", Handler: bidiHandler(remote.MethodLiveQuery), ClientStreams: true, ServerStreams: true},
 		{StreamName: "GetBlob", Handler: streamHandler(remote.MethodGetBlob), ServerStreams: true},
 		{StreamName: "PutBlob", Handler: clientStreamHandler(remote.MethodPutBlob), ClientStreams: true},
+		{StreamName: "BidiEcho", Handler: bidiHandler(remote.MethodBidiEcho), ClientStreams: true, ServerStreams: true},
 	},
 	Metadata: "remote/proto/fabriq/v1/fabriq.proto",
 }

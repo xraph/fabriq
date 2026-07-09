@@ -28,14 +28,38 @@ service Fabriq {
   rpc Search(SearchRequest) returns (RowReply);  // rows = JSON []map
   rpc GraphQuery(GraphQueryRequest) returns (RowReply); // rows = JSON []string | []map
 
+  // --- timeseries (core/query.TSQuerier): telemetry ingest + windowed reads.
+  //     BulkWrite bypasses the outbox (see core/query/ports.go); Range rows are
+  //     opaque JSON like the other projection reads. ---
+  rpc TSBulkWrite(TSBulkWriteRequest) returns (Ack);
+  rpc TSRange(TSRangeRequest) returns (RowReply);
+
+  // --- spatial (core/query.SpatialQuerier): geometry storage + radius search.
+  //     Geometry crosses as WKT + SRID; Get returns a dedicated reply since it
+  //     can't reuse RowReply (geometry + meta + a found/not-found bool). ---
+  rpc SpatialUpsert(SpatialUpsertRequest) returns (Ack);
+  rpc SpatialWithin(SpatialWithinRequest) returns (RowReply);
+  rpc SpatialGet(SpatialGetRequest) returns (SpatialGetReply);
+  rpc SpatialDelete(SpatialDeleteRequest) returns (Ack);
+
+  // --- document (core/document.Store): the CRDT plane. Snapshot's
+  //     Materialized crosses as opaque JSON in RowReply.row; Sync has a
+  //     dedicated reply since update bytes aren't a "row". ---
+  rpc DocApplyUpdate(DocApplyUpdateRequest) returns (Ack);
+  rpc DocSync(DocSyncRequest) returns (DocSyncReply);
+  rpc DocSnapshot(DocSnapshotRequest) returns (RowReply); // row = JSON document.Materialized
+  rpc DocCompact(DocCompactRequest) returns (Ack);
+
   // --- subscribe: server-streamed conflated channel deltas. The first frame is
   //     a handshake (open, or a setup error); each subsequent frame is a Delta. ---
   rpc Subscribe(SubscribeRequest) returns (stream SubFrame);
 
-  // --- live query: server-streamed maintained window. The first frame carries
-  //     the snapshot (or a setup error); each subsequent frame is one delta.
-  //     Reanchor (deep scroll) needs the bidi Live RPC below and is a follow-on. ---
-  rpc LiveQuery(LiveQueryRequest) returns (stream LiveFrame);
+  // --- live query: bidirectional maintained window. The client's first frame
+  //     carries the query; each subsequent client frame is a Reanchor control
+  //     (new cursor/limit). The server's first frame carries the snapshot (or a
+  //     setup error); subsequent frames are deltas, with a fresh snapshot frame
+  //     returned in response to each Reanchor. ---
+  rpc LiveQuery(stream LiveClientFrame) returns (stream LiveFrame);
 
   // --- live: bidi. client sends subscribe/reanchor/unsubscribe; server streams
   //     snapshot (as reset+enter) then enter/leave/move/update deltas. ---
@@ -49,6 +73,8 @@ service Fabriq {
   rpc HeadBlob(BlobKey) returns (BlobInfoReply);
   rpc DeleteBlob(BlobKey) returns (BlobAck);
   rpc PresignBlob(BlobPresign) returns (BlobPresignReply);
+  rpc ListBlob(ListBlobRequest) returns (ListBlobReply);
+  rpc CopyBlob(CopyBlobRequest) returns (BlobInfoReply);
 
   // NOTE: there is deliberately no interactive (multi-round-trip) transaction
   // RPC. fabriq has no held transactions by design — ExecBatch is the
@@ -97,8 +123,45 @@ message ExecBatchReply {
 // --- reads (body is opaque JSON, like Command.payload) ---
 message GetRequest { string entity = 1; string id = 2; }
 message GetManyRequest { string entity = 1; repeated string ids = 2; }
-message ListRequest { string entity = 1; bytes query = 2; } // query = JSON ListQuery
+// ListRequest.query (opaque JSON) is kept for one release for rollback; the
+// server prefers structured when set, since JSON has no int and degrades
+// numeric filter values to float64 (see CondValue below).
+message ListRequest {
+  string entity = 1;
+  bytes query = 2;          // JSON ListQuery (deprecated: numeric fidelity loss)
+  ListQuery structured = 3; // preferred when non-nil
+}
 message RowReply { bytes row = 1; Error error = 2; }        // row = JSON model
+
+// CondValue is a self-describing scalar (or list) filter value — a oneof so
+// query.Cond.Value (an `any`) keeps its Go type across the wire instead of
+// degrading through opaque JSON (which has no int, only float64).
+message CondValue {
+  oneof v {
+    string string_val = 1;
+    double double_val = 2;
+    int64 int_val = 3;
+    bool bool_val = 4;
+    ValueList list_val = 5;
+  }
+}
+message ValueList { repeated CondValue items = 1; }
+// Cond mirrors core/query.Cond. op is the string form of query.Op (e.g.
+// "eq", "in"). When or is non-empty this is an OR group and
+// column/op/value are ignored, mirroring query.Cond.IsGroup.
+message Cond {
+  string column = 1;
+  string op = 2;
+  CondValue value = 3;
+  repeated Cond or = 4;
+}
+// ListQuery mirrors core/query.ListQuery.
+message ListQuery {
+  repeated Cond where = 1;
+  string order_by = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
 
 // --- knowledge retrieval (vector / search / graph projection reads) ---
 message Ack { Error error = 1; }
@@ -139,6 +202,62 @@ message GraphQueryRequest {
   string mode = 3;  // "ids" → []string, else → []map
 }
 
+// --- timeseries (query.TSQuerier) ---
+message TSBulkWriteRequest {
+  string series = 1;
+  bytes points = 2; // JSON []query.Point
+}
+message TSRangeRequest {
+  bytes query = 1; // JSON query.RangeQuery
+}
+
+// --- spatial (query.SpatialQuerier) ---
+message SpatialUpsertRequest {
+  string entity = 1;
+  string id = 2;
+  string wkt = 3;
+  int32 srid = 4;
+  bytes meta = 5; // JSON map[string]any
+}
+message SpatialWithinRequest {
+  bytes query = 1; // JSON query.SpatialQuery
+}
+message SpatialGetRequest {
+  string entity = 1;
+  string id = 2;
+}
+message SpatialGetReply {
+  string wkt = 1;
+  int32 srid = 2;
+  bytes meta = 3; // JSON map[string]any
+  bool ok = 4;
+  Error error = 5;
+}
+message SpatialDeleteRequest {
+  string entity = 1;
+  string id = 2;
+}
+
+// --- document (query.Fabric's Document plane, core/document.Store) ---
+message DocApplyUpdateRequest {
+  string doc_id = 1;
+  bytes update = 2;
+}
+message DocSyncRequest {
+  string doc_id = 1;
+  bytes state_vector = 2;
+}
+message DocSyncReply {
+  bytes update = 1;
+  Error error = 2;
+}
+message DocSnapshotRequest {
+  string doc_id = 1;
+}
+message DocCompactRequest {
+  string doc_id = 1;
+}
+
 // --- subscribe (conflated channel deltas) ---
 message SubscribeRequest { SubscribeScope scope = 1; }
 message SubscribeScope {
@@ -167,10 +286,24 @@ message SubFrame {
 
 // --- live query (maintained, ordered, filtered window) ---
 message LiveQueryRequest { bytes query = 1; } // JSON livequery.LiveQuery
-// LiveFrame: the first frame carries the snapshot (or a setup error); each
-// subsequent frame carries one delta. Bodies are opaque JSON.
+// LiveReanchor slides a maintained window to a new anchor mid-stream: cursor is
+// JSON livequery.Cursor (may be empty for the head), limit the new window size
+// (0 = keep current).
+message LiveReanchor {
+  bytes cursor = 1; // JSON livequery.Cursor
+  int32 limit = 2;
+}
+// LiveClientFrame is the client->server frame on the bidi LiveQuery stream: the
+// first frame carries the query, each subsequent frame a Reanchor control.
+message LiveClientFrame {
+  LiveQueryRequest query = 1;   // first frame
+  LiveReanchor reanchor = 2;    // subsequent control frames
+}
+// LiveFrame is the server->client frame: the first frame carries the snapshot
+// (or a setup error), subsequent frames carry deltas, and a fresh snapshot frame
+// is returned in response to each Reanchor. Bodies are opaque JSON.
 message LiveFrame {
-  bytes snapshot = 1; // JSON livequery.Snapshot (first frame)
+  bytes snapshot = 1; // JSON livequery.Snapshot (initial + each reanchor)
   bytes delta = 2;    // JSON livequery.LiveDelta
   Error error = 3;    // setup error (handshake)
 }
@@ -231,6 +364,16 @@ message BlobPresignReply {
   string url = 1;
   Error error = 2;
 }
+message ListBlobRequest { string prefix = 1; }
+message ListBlobReply {
+  repeated BlobObjectInfo objects = 1;
+  Error error = 2;
+}
+message CopyBlobRequest {
+  string src_key = 1;
+  string dst_key = 2;
+}
+// CopyBlob reuses BlobInfoReply (the same message HeadBlob returns).
 
 // Interactive transactions are a deliberate non-goal (see the service note and
 // ADR 0009); ExecBatch is the transaction surface.

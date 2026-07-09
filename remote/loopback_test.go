@@ -3,9 +3,11 @@ package remote_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/projection"
@@ -60,8 +63,12 @@ type fakeFabric struct {
 	liveSnap  livequery.Snapshot
 	liveCh    chan livequery.LiveDelta
 	liveErr   error
+	liveSub   *fakeLiveSub
 	blobStore blob.Store
 	retr      *fakeRetrieval
+	ts        *fakeTS
+	sp        *fakeSpatial
+	doc       *fakeDocStore
 	gotCmd    command.Command
 	gotCmds   []command.Command
 	result    command.Result
@@ -70,6 +77,12 @@ type fakeFabric struct {
 
 func (f *fakeFabric) Relational() query.RelationalQuerier { return f.rel }
 
+func (f *fakeFabric) Timeseries() query.TSQuerier { return f.ts }
+
+func (f *fakeFabric) Spatial() query.SpatialQuerier { return f.sp }
+
+func (f *fakeFabric) Document() document.Store { return f.doc }
+
 func (f *fakeFabric) Subscribe(_ context.Context, _ query.SubscribeScope) (<-chan query.Delta, error) {
 	if f.subErr != nil {
 		return nil, f.subErr
@@ -77,13 +90,49 @@ func (f *fakeFabric) Subscribe(_ context.Context, _ query.SubscribeScope) (<-cha
 	return f.subCh, nil
 }
 
-// LiveQuery makes fakeFabric satisfy remote.LiveQuerier. The handle is nil — a
-// fake cannot build a *livequery.Handle — which the server tolerates.
-func (f *fakeFabric) LiveQuery(_ context.Context, _ livequery.LiveQuery) (livequery.Snapshot, <-chan livequery.LiveDelta, *livequery.Handle, error) {
+// LiveQuery makes fakeFabric satisfy remote.LiveQuerier. It returns a
+// fakeLiveSub as the control surface so tests can drive Reanchor and inspect the
+// cursor the "engine" saw; when liveSub is nil the subscription is nil (the
+// server tolerates that, mirroring a facade that returns no handle).
+func (f *fakeFabric) LiveQuery(_ context.Context, _ livequery.LiveQuery) (livequery.Snapshot, <-chan livequery.LiveDelta, remote.LiveSubscription, error) {
 	if f.liveErr != nil {
 		return livequery.Snapshot{}, nil, nil, f.liveErr
 	}
+	if f.liveSub != nil {
+		return f.liveSnap, f.liveCh, f.liveSub, nil
+	}
 	return f.liveSnap, f.liveCh, nil, nil
+}
+
+// fakeLiveSub is a test double for the in-process live subscription: it records
+// the cursor/limit each Reanchor received and returns a programmed fresh
+// snapshot, standing in for *livequery.Handle over the bidi wire.
+type fakeLiveSub struct {
+	mu          sync.Mutex
+	reanchSnap  livequery.Snapshot
+	reanchErr   error
+	gotCursor   *livequery.Cursor
+	gotLimit    int
+	reanchorHit int
+	closed      bool
+}
+
+func (s *fakeLiveSub) Reanchor(_ context.Context, cursor *livequery.Cursor, limit int) (livequery.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gotCursor = cursor
+	s.gotLimit = limit
+	s.reanchorHit++
+	if s.reanchErr != nil {
+		return livequery.Snapshot{}, s.reanchErr
+	}
+	return s.reanchSnap, nil
+}
+
+func (s *fakeLiveSub) Close() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 }
 
 func (f *fakeFabric) Blob() blob.Store            { return f.blobStore }
@@ -165,11 +214,99 @@ func (f *fakeRetrieval) TraverseAndHydrate(context.Context, string, map[string]a
 	return nil
 }
 
+// fakeTS implements query.TSQuerier, recording what it received and returning
+// programmed rows for Range.
+type fakeTS struct {
+	gotPoints []query.Point
+	gotRange  query.RangeQuery
+	rows      []map[string]any
+}
+
+func (f *fakeTS) BulkWrite(_ context.Context, _ string, pts []query.Point) error {
+	f.gotPoints = pts
+	return nil
+}
+func (f *fakeTS) Range(_ context.Context, q query.RangeQuery, into any) error {
+	f.gotRange = q
+	if p, ok := into.(*[]map[string]any); ok {
+		*p = f.rows
+	}
+	return nil
+}
+
+// fakeSpatial implements query.SpatialQuerier, recording what it received and
+// returning a canned Get result.
+type fakeSpatial struct {
+	gotGeom   query.Geometry
+	gotMeta   map[string]any
+	gotWithin query.SpatialQuery
+	rows      []map[string]any
+	getGeom   query.Geometry
+	getMeta   map[string]any
+	getOK     bool
+}
+
+func (f *fakeSpatial) Upsert(_ context.Context, _, _ string, geom query.Geometry, meta map[string]any) error {
+	f.gotGeom = geom
+	f.gotMeta = meta
+	return nil
+}
+func (f *fakeSpatial) Within(_ context.Context, q query.SpatialQuery, into any) error {
+	f.gotWithin = q
+	if p, ok := into.(*[]map[string]any); ok {
+		*p = f.rows
+	}
+	return nil
+}
+func (f *fakeSpatial) Get(_ context.Context, _, _ string) (query.Geometry, map[string]any, bool, error) {
+	return f.getGeom, f.getMeta, f.getOK, nil
+}
+func (f *fakeSpatial) Delete(_ context.Context, _, _ string) error { return nil }
+
+// fakeDocStore implements document.Store, recording the ApplyUpdate/Compact
+// calls it received and returning canned Sync/Snapshot replies.
+type fakeDocStore struct {
+	gotApplyDocID  string
+	gotApplyUpdate []byte
+	gotSyncDocID   string
+	gotSyncSV      []byte
+	syncUpdate     []byte
+	syncErr        error
+	snapshot       document.Materialized
+	snapshotErr    error
+	gotCompactDoc  string
+	compactErr     error
+}
+
+func (f *fakeDocStore) ApplyUpdate(_ context.Context, docID string, update []byte) error {
+	f.gotApplyDocID = docID
+	f.gotApplyUpdate = update
+	return nil
+}
+
+func (f *fakeDocStore) Sync(_ context.Context, docID string, stateVector []byte) ([]byte, error) {
+	f.gotSyncDocID = docID
+	f.gotSyncSV = stateVector
+	return f.syncUpdate, f.syncErr
+}
+
+func (f *fakeDocStore) Snapshot(_ context.Context, docID string) (document.Materialized, error) {
+	return f.snapshot, f.snapshotErr
+}
+
+func (f *fakeDocStore) Compact(_ context.Context, docID string) error {
+	f.gotCompactDoc = docID
+	return f.compactErr
+}
+
 // fakeBlob is a minimal in-memory blob.Store (+ Presigner) for the byte-plane
 // tests.
 type fakeBlob struct {
 	mu   sync.Mutex
 	data map[string][]byte
+
+	listResult []blob.ObjectInfo
+	copyResult blob.ObjectInfo
 }
 
 func (b *fakeBlob) Put(_ context.Context, key string, r io.Reader, o blob.PutOpts) (blob.ObjectInfo, error) {
@@ -213,9 +350,11 @@ func (b *fakeBlob) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-func (b *fakeBlob) List(context.Context, string) ([]blob.ObjectInfo, error) { return nil, nil }
+func (b *fakeBlob) List(context.Context, string) ([]blob.ObjectInfo, error) {
+	return b.listResult, nil
+}
 func (b *fakeBlob) Copy(context.Context, string, string) (blob.ObjectInfo, error) {
-	return blob.ObjectInfo{}, nil
+	return b.copyResult, nil
 }
 func (b *fakeBlob) Capabilities() blob.Caps { return blob.Caps{Presign: true} }
 func (b *fakeBlob) PresignGet(_ context.Context, key string, _ time.Duration) (string, error) {
@@ -434,6 +573,40 @@ func TestLoopback_SubscribeAuthzErrorSurvivesWire(t *testing.T) {
 	}
 }
 
+// TestLoopback_BidiStreamEchoInterleaves proves the bidirectional transport
+// primitive: the client Sends frames and Recvs the handler's replies
+// independently, interleaved on one open stream, and Recv reports io.EOF once
+// the client stops sending and the handler returns.
+func TestLoopback_BidiStreamEchoInterleaves(t *testing.T) {
+	h := remote.NewHandler(&fakeFabric{}, assetRegistry(t))
+	tr := remote.Loopback{Handler: h}
+
+	conn, err := tr.BidiStream(context.Background(), remote.MethodBidiEcho)
+	if err != nil {
+		t.Fatalf("BidiStream: %v", err)
+	}
+	for _, msg := range []string{"one", "two", "three"} {
+		if err := conn.Send([]byte(msg)); err != nil {
+			t.Fatalf("Send %q: %v", msg, err)
+		}
+		got, rerr := conn.Recv()
+		if rerr != nil {
+			t.Fatalf("Recv after %q: %v", msg, rerr)
+		}
+		if string(got) != "echo:"+msg {
+			t.Fatalf("Recv = %q, want %q", got, "echo:"+msg)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// After Close the stream is torn down; Recv reports the terminal error (a
+	// cancellation or io.EOF), never another frame.
+	if _, err := conn.Recv(); err == nil {
+		t.Fatalf("Recv after Close returned a frame, want a terminal error")
+	}
+}
+
 // TestLoopback_GetRoundTrip proves a single read crosses the envelope: the
 // server builds a registry-typed scan target, the row comes back as opaque
 // JSON, and the client scans it into the caller's *testAsset.
@@ -521,6 +694,47 @@ func TestLoopback_ListRoundTrip(t *testing.T) {
 	}
 }
 
+// TestLoopback_ListFilterPreservesIntType proves the documented int→float64
+// fidelity loss (opaque-JSON filter, JSON has no int) is fixed: a filter value
+// set as int64 arrives server-side still as int64, not float64.
+func TestLoopback_ListFilterPreservesIntType(t *testing.T) {
+	rel := &fakeRelational{}
+	rf := remote.New(remote.Loopback{Handler: remote.NewHandler(&fakeFabric{rel: rel}, assetRegistry(t))})
+
+	var out []*testAsset
+	q := query.ListQuery{Where: query.Where{query.Eq("version", int64(7))}, Limit: 10}
+	if err := rf.Relational().List(context.Background(), "asset", q, &out); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got := rel.gotList.Where[0].Value
+	if _, ok := got.(int64); !ok {
+		t.Fatalf("filter value crossed as %T (%v), want int64 — numeric fidelity lost", got, got)
+	}
+}
+
+// TestLoopback_ListFilterPreservesInSlice proves that a query.In/NotIn filter
+// built with a real typed slice (e.g. []string, not []any) survives the wire
+// as a multi-element list rather than being flattened by the string fallback
+// into a single fmt.Sprint(v) scalar.
+func TestLoopback_ListFilterPreservesInSlice(t *testing.T) {
+	rel := &fakeRelational{}
+	rf := remote.New(remote.Loopback{Handler: remote.NewHandler(&fakeFabric{rel: rel}, assetRegistry(t))})
+
+	var out []*testAsset
+	q := query.ListQuery{Where: query.Where{query.In("kind", []string{"pump", "valve"})}}
+	if err := rf.Relational().List(context.Background(), "asset", q, &out); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got := rel.gotList.Where[0].Value
+	rv := reflect.ValueOf(got)
+	if rv.Kind() != reflect.Slice || rv.Len() != 2 {
+		t.Fatalf("In filter value crossed as %T (%v), want a 2-element slice", got, got)
+	}
+	if fmt.Sprint(rv.Index(0).Interface()) != "pump" || fmt.Sprint(rv.Index(1).Interface()) != "valve" {
+		t.Fatalf("In filter elements = %v, want [pump valve]", got)
+	}
+}
+
 // fabricNoLive is a facade that does NOT implement LiveQuerier — used to prove
 // the remote LiveQuery degrades to ErrNotImplemented.
 type fabricNoLive struct{ query.Fabric }
@@ -548,15 +762,30 @@ func TestLoopback_LiveQueryStreamsSnapshotAndDeltas(t *testing.T) {
 	if gotSnap.SubID != "s1" || gotSnap.Watermark != "w1" || len(gotSnap.Rows) != 1 || gotSnap.Rows[0].AggID != "a" {
 		t.Fatalf("snapshot lost: %+v", gotSnap)
 	}
-	if _, rerr := h.Reanchor(context.Background(), nil, 20); !errors.Is(rerr, remote.ErrNotImplemented) {
-		t.Errorf("Reanchor err = %v, want ErrNotImplemented", rerr)
-	}
 	ops := make([]livequery.DeltaOp, 0, 2)
 	for d := range live {
 		ops = append(ops, d.Op)
 	}
 	if len(ops) != 2 || ops[0] != livequery.OpEnter || ops[1] != livequery.OpUpdate {
 		t.Fatalf("deltas lost: %+v", ops)
+	}
+}
+
+// TestLoopback_LiveQueryReanchorNotConfigured proves that Reanchor on a live
+// stream whose facade returns no engine subscription is answered over the wire
+// with ErrNotImplemented (the delta channel stays open so the reply is not
+// racing a stream teardown).
+func TestLoopback_LiveQueryReanchorNotConfigured(t *testing.T) {
+	deltas := make(chan livequery.LiveDelta) // never closed: stream stays open
+	client := wire(t, &fakeFabric{liveSnap: livequery.Snapshot{SubID: "s1"}, liveCh: deltas})
+
+	_, _, h, err := client.LiveQuery(context.Background(), livequery.LiveQuery{Entity: "asset", Limit: 10})
+	if err != nil {
+		t.Fatalf("LiveQuery: %v", err)
+	}
+	defer h.Close()
+	if _, rerr := h.Reanchor(context.Background(), nil, 20); !errors.Is(rerr, remote.ErrNotImplemented) {
+		t.Fatalf("Reanchor err = %v, want ErrNotImplemented", rerr)
 	}
 }
 
@@ -569,6 +798,57 @@ func TestLoopback_LiveQueryNotConfigured(t *testing.T) {
 	_, _, _, err := client.LiveQuery(context.Background(), livequery.LiveQuery{Entity: "asset", Limit: 10})
 	if !errors.Is(err, remote.ErrNotImplemented) {
 		t.Fatalf("err = %v, want ErrNotImplemented", err)
+	}
+}
+
+// TestLoopback_LiveQueryReanchor proves the bidirectional Reanchor round-trip:
+// a control frame with a new cursor+limit crosses mid-stream, the fake
+// subscription records it, and the fresh snapshot returns to the caller while
+// deltas keep flowing on the delta channel.
+func TestLoopback_LiveQueryReanchor(t *testing.T) {
+	deltas := make(chan livequery.LiveDelta) // unbuffered: stays open across the reanchor
+	sub := &fakeLiveSub{reanchSnap: livequery.Snapshot{SubID: "s2", Watermark: "w2", Rows: []livequery.Row{{AggID: "b", Version: 5}}}}
+	snap := livequery.Snapshot{SubID: "s1", Watermark: "w1", Rows: []livequery.Row{{AggID: "a", Version: 1}}}
+	client := wire(t, &fakeFabric{liveSnap: snap, liveCh: deltas, liveSub: sub})
+
+	gotSnap, live, h, err := client.LiveQuery(context.Background(), livequery.LiveQuery{Entity: "asset", Limit: 10})
+	if err != nil {
+		t.Fatalf("LiveQuery: %v", err)
+	}
+	defer h.Close()
+	if gotSnap.SubID != "s1" {
+		t.Fatalf("initial snapshot lost: %+v", gotSnap)
+	}
+
+	// A delta arrives; then we reanchor; then another delta — proving the delta
+	// channel survives the reanchor.
+	go func() { deltas <- livequery.LiveDelta{Op: livequery.OpEnter, AggID: "a"} }()
+	if d := <-live; d.Op != livequery.OpEnter {
+		t.Fatalf("pre-reanchor delta = %+v", d)
+	}
+
+	cursor := &livequery.Cursor{Values: []any{"anchor", "b"}}
+	fresh, err := h.Reanchor(context.Background(), cursor, 20)
+	if err != nil {
+		t.Fatalf("Reanchor: %v", err)
+	}
+	if fresh.SubID != "s2" || fresh.Watermark != "w2" || len(fresh.Rows) != 1 || fresh.Rows[0].AggID != "b" {
+		t.Fatalf("reanchor snapshot lost: %+v", fresh)
+	}
+	sub.mu.Lock()
+	gotLimit, hit := sub.gotLimit, sub.reanchorHit
+	gotCursor := sub.gotCursor
+	sub.mu.Unlock()
+	if hit != 1 || gotLimit != 20 {
+		t.Fatalf("engine saw hit=%d limit=%d, want 1 and 20", hit, gotLimit)
+	}
+	if gotCursor == nil || len(gotCursor.Values) != 2 || fmt.Sprint(gotCursor.Values[0]) != "anchor" {
+		t.Fatalf("engine saw cursor = %+v, want values [anchor b]", gotCursor)
+	}
+
+	go func() { deltas <- livequery.LiveDelta{Op: livequery.OpUpdate, AggID: "b", Version: 6} }()
+	if d := <-live; d.Op != livequery.OpUpdate {
+		t.Fatalf("post-reanchor delta = %+v", d)
 	}
 }
 
@@ -629,6 +909,25 @@ func TestLoopback_BlobPresign(t *testing.T) {
 	}
 	if url != "https://store/get/k1" {
 		t.Fatalf("url = %q", url)
+	}
+}
+
+// TestLoopback_BlobListCopyRoundTrip proves the List/Copy unary methods cross
+// the envelope: List returns the canned page, Copy returns the canned result.
+func TestLoopback_BlobListCopyRoundTrip(t *testing.T) {
+	fb := &fakeBlob{
+		listResult: []blob.ObjectInfo{{Key: "a", Size: 3}},
+		copyResult: blob.ObjectInfo{Key: "b", Size: 3},
+	}
+	client := wire(t, &fakeFabric{blobStore: fb})
+
+	got, err := client.Blob().List(context.Background(), "pre/")
+	if err != nil || len(got) != 1 || got[0].Key != "a" {
+		t.Fatalf("List = %+v %v", got, err)
+	}
+	ci, err := client.Blob().Copy(context.Background(), "a", "b")
+	if err != nil || ci.Key != "b" {
+		t.Fatalf("Copy = %+v %v", ci, err)
 	}
 }
 
@@ -818,5 +1117,108 @@ func TestLoopback_RecallChannelsAllWired(t *testing.T) {
 	}
 	if len(vm) != 1 || len(hits) != 1 || len(ids) != 1 || len(hydrated) != 1 || hydrated[0].Name != "Pump" {
 		t.Fatalf("a channel dropped: vm=%v hits=%v ids=%v hydrated=%v", vm, hits, ids, hydrated)
+	}
+}
+
+// TestLoopback_TimeseriesRoundTrip proves the telemetry port: BulkWrite's
+// points cross to the server and Range's rows scan back, over the Loopback
+// wire.
+func TestLoopback_TimeseriesRoundTrip(t *testing.T) {
+	ts := &fakeTS{rows: []map[string]any{{"value": 1.5}}}
+	fab := &fakeFabric{ts: ts}
+	rf := remote.New(remote.Loopback{Handler: remote.NewHandler(fab, assetRegistry(t))})
+
+	at := time.Unix(1700000000, 0).UTC()
+	if err := rf.Timeseries().BulkWrite(context.Background(), "tags",
+		[]query.Point{{Key: "t1", At: at, Value: 1.5, Quality: 1}}); err != nil {
+		t.Fatalf("BulkWrite: %v", err)
+	}
+	if len(ts.gotPoints) != 1 || ts.gotPoints[0].Key != "t1" || ts.gotPoints[0].Value != 1.5 {
+		t.Fatalf("server saw points %+v", ts.gotPoints)
+	}
+
+	var out []map[string]any
+	if err := rf.Timeseries().Range(context.Background(),
+		query.RangeQuery{Series: "tags", Key: "t1", From: at, Bucket: time.Minute, Agg: "avg"}, &out); err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if len(out) != 1 || out[0]["value"] != 1.5 {
+		t.Fatalf("rows = %+v", out)
+	}
+	if ts.gotRange.Agg != "avg" || ts.gotRange.Bucket != time.Minute {
+		t.Fatalf("server saw range %+v", ts.gotRange)
+	}
+}
+
+// TestLoopback_SpatialRoundTrip proves the geometry port: Upsert's geometry
+// crosses to the server and Get's canned geometry/meta/ok scan back, over the
+// Loopback wire.
+func TestLoopback_SpatialRoundTrip(t *testing.T) {
+	sp := &fakeSpatial{getGeom: query.Geometry{WKT: "POINT(1 2)", SRID: 4326}, getMeta: map[string]any{"n": "a"}, getOK: true}
+	rf := remote.New(remote.Loopback{Handler: remote.NewHandler(&fakeFabric{sp: sp}, assetRegistry(t))})
+
+	if err := rf.Spatial().Upsert(context.Background(), "asset", "a1",
+		query.Geometry{WKT: "POINT(3 4)", SRID: 4326}, map[string]any{"k": "v"}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if sp.gotGeom.WKT != "POINT(3 4)" {
+		t.Fatalf("server geom = %+v", sp.gotGeom)
+	}
+	geom, meta, ok, err := rf.Spatial().Get(context.Background(), "asset", "a1")
+	if err != nil || !ok || geom.WKT != "POINT(1 2)" || meta["n"] != "a" {
+		t.Fatalf("Get = %+v %+v %v %v", geom, meta, ok, err)
+	}
+}
+
+// TestLoopback_DocumentRoundTrip proves the document plane: ApplyUpdate's
+// bytes cross to the server, Sync round-trips the state vector and the
+// programmed update, Snapshot returns the programmed Materialized, and
+// Compact reaches the server — all over the Loopback wire.
+func TestLoopback_DocumentRoundTrip(t *testing.T) {
+	doc := &fakeDocStore{
+		syncUpdate: []byte("update-bytes"),
+		snapshot: document.Materialized{
+			DocID:    "doc-1",
+			Version:  3,
+			Snapshot: json.RawMessage(`{"title":"hi"}`),
+		},
+	}
+	rf := remote.New(remote.Loopback{Handler: remote.NewHandler(&fakeFabric{doc: doc}, assetRegistry(t))})
+
+	if rf.Document() == nil {
+		t.Fatal("Document() is nil")
+	}
+
+	if err := rf.Document().ApplyUpdate(context.Background(), "doc-1", []byte("update-1")); err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	if doc.gotApplyDocID != "doc-1" || string(doc.gotApplyUpdate) != "update-1" {
+		t.Fatalf("server saw ApplyUpdate(%q, %q)", doc.gotApplyDocID, doc.gotApplyUpdate)
+	}
+
+	upd, err := rf.Document().Sync(context.Background(), "doc-1", []byte("sv-1"))
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if string(upd) != "update-bytes" {
+		t.Fatalf("Sync update = %q", upd)
+	}
+	if doc.gotSyncDocID != "doc-1" || string(doc.gotSyncSV) != "sv-1" {
+		t.Fatalf("server saw Sync(%q, %q)", doc.gotSyncDocID, doc.gotSyncSV)
+	}
+
+	mat, err := rf.Document().Snapshot(context.Background(), "doc-1")
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if mat.DocID != "doc-1" || mat.Version != 3 || string(mat.Snapshot) != `{"title":"hi"}` {
+		t.Fatalf("Snapshot = %+v", mat)
+	}
+
+	if err := rf.Document().Compact(context.Background(), "doc-1"); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if doc.gotCompactDoc != "doc-1" {
+		t.Fatalf("server saw Compact(%q)", doc.gotCompactDoc)
 	}
 }

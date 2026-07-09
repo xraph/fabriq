@@ -17,9 +17,10 @@ import (
 const blobChunkSize = 256 * 1024 // 256 KiB
 
 // remoteBlobStore is the client face of blob.Store. Put streams the body up in
-// chunks, Get streams it down; Head, Delete and the presign bypass are unary.
-// List, Copy and multipart/range are follow-ons (ErrNotImplemented; the reported
-// caps advertise only presign).
+// chunks, Get streams it down; Head, Delete, List, Copy and the presign bypass
+// are unary. Multipart/Range are a separate follow-on (ErrNotImplemented; the
+// reported caps advertise only presign — blob.Caps has no List/Copy flag, so
+// they are always available regardless of Capabilities()).
 type remoteBlobStore struct{ t Transport }
 
 var (
@@ -141,13 +142,48 @@ func (b remoteBlobStore) Delete(ctx context.Context, key string) error {
 	return errorFromProto(reply.Error)
 }
 
-// List and Copy are follow-ons.
-func (b remoteBlobStore) List(context.Context, string) ([]blob.ObjectInfo, error) {
-	return nil, ErrNotImplemented
+// List returns the objects under prefix.
+func (b remoteBlobStore) List(ctx context.Context, prefix string) ([]blob.ObjectInfo, error) {
+	in, err := proto.Marshal(&fabriqpb.ListBlobRequest{Prefix: prefix})
+	if err != nil {
+		return nil, err
+	}
+	out, err := b.t.Unary(ctx, MethodListBlob, in)
+	if err != nil {
+		return nil, err
+	}
+	var reply fabriqpb.ListBlobReply
+	if err := proto.Unmarshal(out, &reply); err != nil {
+		return nil, fmt.Errorf("remote: decode list reply: %w", err)
+	}
+	if reply.Error != nil {
+		return nil, errorFromProto(reply.Error)
+	}
+	objs := make([]blob.ObjectInfo, len(reply.Objects))
+	for i, o := range reply.Objects {
+		objs[i] = objectInfoFromProto(o)
+	}
+	return objs, nil
 }
 
-func (b remoteBlobStore) Copy(context.Context, string, string) (blob.ObjectInfo, error) {
-	return blob.ObjectInfo{}, ErrNotImplemented
+// Copy duplicates srcKey to dstKey server-side.
+func (b remoteBlobStore) Copy(ctx context.Context, srcKey, dstKey string) (blob.ObjectInfo, error) {
+	in, err := proto.Marshal(&fabriqpb.CopyBlobRequest{SrcKey: srcKey, DstKey: dstKey})
+	if err != nil {
+		return blob.ObjectInfo{}, err
+	}
+	out, err := b.t.Unary(ctx, MethodCopyBlob, in)
+	if err != nil {
+		return blob.ObjectInfo{}, err
+	}
+	var reply fabriqpb.BlobInfoReply
+	if err := proto.Unmarshal(out, &reply); err != nil {
+		return blob.ObjectInfo{}, fmt.Errorf("remote: decode copy reply: %w", err)
+	}
+	if reply.Error != nil {
+		return blob.ObjectInfo{}, errorFromProto(reply.Error)
+	}
+	return objectInfoFromProto(reply.Info), nil
 }
 
 // Capabilities reports what the REMOTE store wires: presign is, multipart/range

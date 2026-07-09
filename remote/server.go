@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -40,8 +41,13 @@ type Handler struct {
 // remote LiveQuery plane is enabled; otherwise it returns ErrNotImplemented.
 func NewHandler(fab query.Fabric, reg *registry.Registry) *Handler {
 	h := &Handler{fab: fab, reg: reg}
+	// The facade may satisfy LiveQuerier directly (a test double returning
+	// LiveSubscription) or the concrete shape (*fabriq.Fabriq, returning
+	// *livequery.Handle) which the adapter widens.
 	if lq, ok := fab.(LiveQuerier); ok {
 		h.live = lq
+	} else if clq, ok := fab.(concreteLiveQuerier); ok {
+		h.live = liveQuerierAdapter{c: clq}
 	}
 	return h
 }
@@ -66,6 +72,10 @@ func (h *Handler) Dispatch(ctx context.Context, method string, in []byte) ([]byt
 		return h.DeleteBlob(ctx, in)
 	case MethodPresignBlob:
 		return h.PresignBlob(ctx, in)
+	case MethodListBlob:
+		return h.ListBlob(ctx, in)
+	case MethodCopyBlob:
+		return h.CopyBlob(ctx, in)
 	case MethodVectorSimilar:
 		return h.VectorSimilar(ctx, in)
 	case MethodVectorUpsert:
@@ -80,6 +90,26 @@ func (h *Handler) Dispatch(ctx context.Context, method string, in []byte) ([]byt
 		return h.Search(ctx, in)
 	case MethodGraphQuery:
 		return h.GraphQuery(ctx, in)
+	case MethodTSBulkWrite:
+		return h.TSBulkWrite(ctx, in)
+	case MethodTSRange:
+		return h.TSRange(ctx, in)
+	case MethodSpatialUpsert:
+		return h.SpatialUpsert(ctx, in)
+	case MethodSpatialWithin:
+		return h.SpatialWithin(ctx, in)
+	case MethodSpatialGet:
+		return h.SpatialGet(ctx, in)
+	case MethodSpatialDelete:
+		return h.SpatialDelete(ctx, in)
+	case MethodDocApplyUpdate:
+		return h.DocApplyUpdate(ctx, in)
+	case MethodDocSync:
+		return h.DocSync(ctx, in)
+	case MethodDocSnapshot:
+		return h.DocSnapshot(ctx, in)
+	case MethodDocCompact:
+		return h.DocCompact(ctx, in)
 	default:
 		return nil, fmt.Errorf("remote: unknown method %q", method)
 	}
@@ -91,12 +121,44 @@ func (h *Handler) DispatchStream(ctx context.Context, method string, in []byte, 
 	switch method {
 	case MethodSubscribe:
 		return h.Subscribe(ctx, in, send)
-	case MethodLiveQuery:
-		return h.LiveQuery(ctx, in, send)
 	case MethodGetBlob:
 		return h.GetBlob(ctx, in, send)
 	default:
 		return fmt.Errorf("remote: unknown stream method %q", method)
+	}
+}
+
+// DispatchBidi routes a bidirectional call by method name. recv returns the next
+// client frame (io.EOF when the client is done sending); send delivers one frame
+// to the client. The handler returns when the call is over; the transport binding
+// turns a returned error into the stream status.
+func (h *Handler) DispatchBidi(ctx context.Context, method string, recv func() ([]byte, error), send func([]byte) error) error {
+	switch method {
+	case MethodBidiEcho:
+		return h.BidiEcho(ctx, recv, send)
+	case MethodLiveQuery:
+		return h.LiveQuery(ctx, recv, send)
+	default:
+		return fmt.Errorf("remote: unknown bidi method %q", method)
+	}
+}
+
+// BidiEcho is a diagnostic bidirectional handler: it echoes each received frame
+// back to the client prefixed with "echo:", until the client stops sending
+// (io.EOF) or the call is cancelled. It exists to exercise the bidi transport
+// primitive on its own — the live-query plane is the real consumer.
+func (h *Handler) BidiEcho(ctx context.Context, recv func() ([]byte, error), send func([]byte) error) error {
+	for {
+		frame, err := recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := send(append([]byte("echo:"), frame...)); err != nil {
+			return err
+		}
 	}
 }
 
@@ -186,9 +248,11 @@ func (h *Handler) GetMany(ctx context.Context, in []byte) ([]byte, error) {
 	return proto.Marshal(&fabriqpb.RowReply{Row: rows})
 }
 
-// List is the server side of MethodList: decode the structured filter (an opaque
-// JSON body), run the real paged read into a registry-typed slice target, and
-// return opaque-JSON rows.
+// List is the server side of MethodList: decode the structured filter —
+// preferring the typed `structured` field (full numeric fidelity) and
+// falling back to the legacy opaque-JSON `query` body when structured is
+// unset (back-compat with pre-Task-C clients for one release) — run the real
+// paged read into a registry-typed slice target, and return opaque-JSON rows.
 func (h *Handler) List(ctx context.Context, in []byte) ([]byte, error) {
 	var req fabriqpb.ListRequest
 	if err := proto.Unmarshal(in, &req); err != nil {
@@ -199,7 +263,14 @@ func (h *Handler) List(ctx context.Context, in []byte) ([]byte, error) {
 		return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(fmt.Errorf("remote: unknown entity %q", req.Entity))})
 	}
 	var q query.ListQuery
-	if len(req.Query) > 0 {
+	switch {
+	case req.Structured != nil:
+		var err error
+		q, err = listQueryFromProto(req.Structured)
+		if err != nil {
+			return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(fmt.Errorf("remote: decode structured list query: %w", err))})
+		}
+	case len(req.Query) > 0:
 		if err := json.Unmarshal(req.Query, &q); err != nil {
 			return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(fmt.Errorf("remote: decode list query: %w", err))})
 		}
@@ -246,52 +317,159 @@ func (h *Handler) Subscribe(ctx context.Context, in []byte, send func([]byte) er
 	}
 }
 
-// LiveQuery is the server side of MethodLiveQuery. It opens a maintained-window
-// subscription on the facade, sends the snapshot as the first frame, then one
-// delta per frame until the channel closes or the client disconnects; on exit it
-// Closes the engine handle. A facade without LiveQuery answers ErrNotImplemented.
-func (h *Handler) LiveQuery(ctx context.Context, in []byte, send func([]byte) error) error {
-	var req fabriqpb.LiveQueryRequest
-	if err := proto.Unmarshal(in, &req); err != nil {
-		return fmt.Errorf("remote: decode live query request: %w", err)
+// LiveQuery is the server side of MethodLiveQuery, a bidirectional stream. The
+// client's first frame carries the query; it opens a maintained-window
+// subscription on the facade, sends the snapshot as the first server frame, then
+// drains deltas to the client in a goroutine. Meanwhile it loops on recv for
+// control frames: a Reanchor frame slides the window (in-process Handle.Reanchor)
+// and returns the fresh snapshot as a server frame. It exits — Closing the engine
+// handle — when the client stops sending (io.EOF), disconnects (ctx.Done), or the
+// delta channel closes. A facade without LiveQuery answers ErrNotImplemented.
+//
+// SendMsg is not safe for concurrent use, so a mutex serializes the delta pump
+// and the reanchor replies onto the single send func.
+func (h *Handler) LiveQuery(ctx context.Context, recv func() ([]byte, error), send func([]byte) error) error {
+	var sendMu sync.Mutex
+	safeSend := func(m proto.Message) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return sendProto(send, m)
+	}
+
+	first, err := recv()
+	if err != nil {
+		return err
+	}
+	var cf fabriqpb.LiveClientFrame
+	if err := proto.Unmarshal(first, &cf); err != nil {
+		return fmt.Errorf("remote: decode live client frame: %w", err)
 	}
 	if h.live == nil {
-		return sendProto(send, &fabriqpb.LiveFrame{Error: errorToProto(fmt.Errorf("remote: live queries not configured: %w", ErrNotImplemented))})
+		return safeSend(&fabriqpb.LiveFrame{Error: errorToProto(fmt.Errorf("remote: live queries not configured: %w", ErrNotImplemented))})
 	}
 	var q livequery.LiveQuery
-	if len(req.Query) > 0 {
-		if err := json.Unmarshal(req.Query, &q); err != nil {
-			return sendProto(send, &fabriqpb.LiveFrame{Error: errorToProto(fmt.Errorf("remote: decode live query: %w", err))})
+	if cf.Query != nil && len(cf.Query.Query) > 0 {
+		if err := json.Unmarshal(cf.Query.Query, &q); err != nil {
+			return safeSend(&fabriqpb.LiveFrame{Error: errorToProto(fmt.Errorf("remote: decode live query: %w", err))})
 		}
 	}
-	snap, deltas, handle, err := h.live.LiveQuery(ctx, q)
+	snap, deltas, sub, err := h.live.LiveQuery(ctx, q)
 	if err != nil {
-		return sendProto(send, &fabriqpb.LiveFrame{Error: errorToProto(err)})
+		return safeSend(&fabriqpb.LiveFrame{Error: errorToProto(err)})
 	}
-	if handle != nil {
-		defer handle.Close()
+	if sub != nil {
+		defer sub.Close()
 	}
 	snapBody, err := json.Marshal(snap)
 	if err != nil {
 		return err
 	}
-	if err := sendProto(send, &fabriqpb.LiveFrame{Snapshot: snapBody}); err != nil {
+	if err := safeSend(&fabriqpb.LiveFrame{Snapshot: snapBody}); err != nil {
 		return err
 	}
+
+	// ctx bounds both the delta pump and the recv reader; either exiting cancels
+	// the other so neither goroutine leaks.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Delta pump: one server frame per delta until the channel closes (clean end)
+	// or a send fails.
+	pumpDone := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				pumpDone <- nil
+				return
+			case d, ok := <-deltas:
+				if !ok {
+					pumpDone <- nil // the subscription ended: clean stream close
+					return
+				}
+				body, merr := json.Marshal(d)
+				if merr != nil {
+					pumpDone <- merr
+					return
+				}
+				if serr := safeSend(&fabriqpb.LiveFrame{Delta: body}); serr != nil {
+					pumpDone <- serr
+					return
+				}
+			}
+		}
+	}()
+
+	// Recv reader: surface each client frame (or the terminal recv error) on a
+	// channel so the control loop can select it against pump completion.
+	type recvResult struct {
+		frame []byte
+		err   error
+	}
+	frames := make(chan recvResult)
+	go func() {
+		for {
+			frame, rerr := recv()
+			select {
+			case frames <- recvResult{frame: frame, err: rerr}:
+			case <-ctx.Done():
+				return
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+
+	// Control loop: a Reanchor client frame slides the window and replies with the
+	// fresh snapshot; io.EOF (client Close) or pump completion ends the stream.
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case d, ok := <-deltas:
-			if !ok {
-				return nil
+		case perr := <-pumpDone:
+			return perr
+		case rr := <-frames:
+			if rr.err != nil {
+				if errors.Is(rr.err, io.EOF) {
+					return nil
+				}
+				return rr.err
 			}
-			body, merr := json.Marshal(d)
+			var ctrl fabriqpb.LiveClientFrame
+			if uerr := proto.Unmarshal(rr.frame, &ctrl); uerr != nil {
+				return fmt.Errorf("remote: decode live control frame: %w", uerr)
+			}
+			if ctrl.Reanchor == nil {
+				continue // ignore unknown/empty control frames
+			}
+			var cursor *livequery.Cursor
+			if len(ctrl.Reanchor.Cursor) > 0 {
+				cursor = &livequery.Cursor{}
+				if uerr := json.Unmarshal(ctrl.Reanchor.Cursor, cursor); uerr != nil {
+					if serr := safeSend(&fabriqpb.LiveFrame{Error: errorToProto(fmt.Errorf("remote: decode reanchor cursor: %w", uerr))}); serr != nil {
+						return serr
+					}
+					continue
+				}
+			}
+			if sub == nil {
+				if serr := safeSend(&fabriqpb.LiveFrame{Error: errorToProto(ErrNotImplemented)}); serr != nil {
+					return serr
+				}
+				continue
+			}
+			rsnap, rerr2 := sub.Reanchor(ctx, cursor, int(ctrl.Reanchor.Limit))
+			if rerr2 != nil {
+				if serr := safeSend(&fabriqpb.LiveFrame{Error: errorToProto(rerr2)}); serr != nil {
+					return serr
+				}
+				continue
+			}
+			rbody, merr := json.Marshal(rsnap)
 			if merr != nil {
 				return merr
 			}
-			if err := sendProto(send, &fabriqpb.LiveFrame{Delta: body}); err != nil {
-				return err
+			if serr := safeSend(&fabriqpb.LiveFrame{Snapshot: rbody}); serr != nil {
+				return serr
 			}
 		}
 	}
@@ -556,6 +734,182 @@ func (h *Handler) PresignBlob(ctx context.Context, in []byte) ([]byte, error) {
 		return proto.Marshal(&fabriqpb.BlobPresignReply{Error: errorToProto(err)})
 	}
 	return proto.Marshal(&fabriqpb.BlobPresignReply{Url: url})
+}
+
+// ListBlob and CopyBlob are unary.
+func (h *Handler) ListBlob(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.ListBlobRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode list blob request: %w", err)
+	}
+	objs, err := h.fab.Blob().List(ctx, req.Prefix)
+	if err != nil {
+		return proto.Marshal(&fabriqpb.ListBlobReply{Error: errorToProto(err)})
+	}
+	pbObjs := make([]*fabriqpb.BlobObjectInfo, len(objs))
+	for i, o := range objs {
+		pbObjs[i] = objectInfoToProto(o)
+	}
+	return proto.Marshal(&fabriqpb.ListBlobReply{Objects: pbObjs})
+}
+
+func (h *Handler) CopyBlob(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.CopyBlobRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode copy blob request: %w", err)
+	}
+	info, err := h.fab.Blob().Copy(ctx, req.SrcKey, req.DstKey)
+	if err != nil {
+		return proto.Marshal(&fabriqpb.BlobInfoReply{Error: errorToProto(err)})
+	}
+	return proto.Marshal(&fabriqpb.BlobInfoReply{Info: objectInfoToProto(info)})
+}
+
+// --- timeseries (query.TSQuerier): telemetry ingest + windowed reads ---
+
+func (h *Handler) TSBulkWrite(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.TSBulkWriteRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode tsBulkWrite request: %w", err)
+	}
+	var points []query.Point
+	if len(req.Points) > 0 {
+		if err := json.Unmarshal(req.Points, &points); err != nil {
+			return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(fmt.Errorf("remote: decode points: %w", err))})
+		}
+	}
+	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Timeseries().BulkWrite(ctx, req.Series, points))})
+}
+
+func (h *Handler) TSRange(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.TSRangeRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode tsRange request: %w", err)
+	}
+	var q query.RangeQuery
+	if len(req.Query) > 0 {
+		if err := json.Unmarshal(req.Query, &q); err != nil {
+			return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(fmt.Errorf("remote: decode range query: %w", err))})
+		}
+	}
+	var rows []map[string]any
+	if err := h.fab.Timeseries().Range(ctx, q, &rows); err != nil {
+		return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(err)})
+	}
+	row, err := json.Marshal(rows)
+	if err != nil {
+		return nil, fmt.Errorf("remote: marshal range rows: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.RowReply{Row: row})
+}
+
+// --- spatial (query.SpatialQuerier): geometry storage + radius search ---
+
+func (h *Handler) SpatialUpsert(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.SpatialUpsertRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode spatialUpsert request: %w", err)
+	}
+	var meta map[string]any
+	if len(req.Meta) > 0 {
+		if err := json.Unmarshal(req.Meta, &meta); err != nil {
+			return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(fmt.Errorf("remote: decode meta: %w", err))})
+		}
+	}
+	geom := query.Geometry{WKT: req.Wkt, SRID: int(req.Srid)}
+	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Spatial().Upsert(ctx, req.Entity, req.Id, geom, meta))})
+}
+
+func (h *Handler) SpatialWithin(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.SpatialWithinRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode spatialWithin request: %w", err)
+	}
+	var q query.SpatialQuery
+	if len(req.Query) > 0 {
+		if err := json.Unmarshal(req.Query, &q); err != nil {
+			return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(fmt.Errorf("remote: decode spatial query: %w", err))})
+		}
+	}
+	var rows []map[string]any
+	if err := h.fab.Spatial().Within(ctx, q, &rows); err != nil {
+		return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(err)})
+	}
+	row, err := json.Marshal(rows)
+	if err != nil {
+		return nil, fmt.Errorf("remote: marshal within rows: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.RowReply{Row: row})
+}
+
+func (h *Handler) SpatialGet(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.SpatialGetRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode spatialGet request: %w", err)
+	}
+	geom, meta, ok, err := h.fab.Spatial().Get(ctx, req.Entity, req.Id)
+	if err != nil {
+		return proto.Marshal(&fabriqpb.SpatialGetReply{Error: errorToProto(err)})
+	}
+	var metaJSON []byte
+	if meta != nil {
+		if metaJSON, err = json.Marshal(meta); err != nil {
+			return nil, fmt.Errorf("remote: marshal spatial meta: %w", err)
+		}
+	}
+	return proto.Marshal(&fabriqpb.SpatialGetReply{Wkt: geom.WKT, Srid: int32(geom.SRID), Meta: metaJSON, Ok: ok})
+}
+
+func (h *Handler) SpatialDelete(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.SpatialDeleteRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode spatialDelete request: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Spatial().Delete(ctx, req.Entity, req.Id))})
+}
+
+func (h *Handler) DocApplyUpdate(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.DocApplyUpdateRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode docApplyUpdate request: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Document().ApplyUpdate(ctx, req.DocId, req.Update))})
+}
+
+func (h *Handler) DocSync(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.DocSyncRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode docSync request: %w", err)
+	}
+	upd, err := h.fab.Document().Sync(ctx, req.DocId, req.StateVector)
+	if err != nil {
+		return proto.Marshal(&fabriqpb.DocSyncReply{Error: errorToProto(err)})
+	}
+	return proto.Marshal(&fabriqpb.DocSyncReply{Update: upd})
+}
+
+func (h *Handler) DocSnapshot(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.DocSnapshotRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode docSnapshot request: %w", err)
+	}
+	mat, err := h.fab.Document().Snapshot(ctx, req.DocId)
+	if err != nil {
+		return proto.Marshal(&fabriqpb.RowReply{Error: errorToProto(err)})
+	}
+	row, err := json.Marshal(mat)
+	if err != nil {
+		return nil, fmt.Errorf("remote: marshal materialized: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.RowReply{Row: row})
+}
+
+func (h *Handler) DocCompact(ctx context.Context, in []byte) ([]byte, error) {
+	var req fabriqpb.DocCompactRequest
+	if err := proto.Unmarshal(in, &req); err != nil {
+		return nil, fmt.Errorf("remote: decode docCompact request: %w", err)
+	}
+	return proto.Marshal(&fabriqpb.Ack{Error: errorToProto(h.fab.Document().Compact(ctx, req.DocId))})
 }
 
 func sendProto(send func([]byte) error, m proto.Message) error {
