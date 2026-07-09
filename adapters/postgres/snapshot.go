@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/xraph/grove/driver"
 	"github.com/xraph/grove/drivers/pgdriver"
 
 	"github.com/xraph/fabriq/core/event"
@@ -37,6 +38,12 @@ func (a *Adapter) SnapshotEntities(ctx context.Context, tenantID string, fn func
 }
 
 func (a *Adapter) snapshotEntity(tctx context.Context, tenantID string, ent *registry.Entity, fn func(env event.Envelope) error) error {
+	// Dynamic (DynamicSchema) entities have no Go model type, so the reflection
+	// path below (reflect.PointerTo(ModelType())) would panic. Read them
+	// map-natively instead, exactly like the RelationalQuerier dynamic reads.
+	if ent.Binding.IsDynamic() {
+		return a.snapshotDynamicEntity(tctx, tenantID, ent, fn)
+	}
 	const pageSize = 500
 	lastID := ""
 	sliceType := reflect.SliceOf(reflect.PointerTo(ent.Binding.ModelType()))
@@ -71,6 +78,54 @@ func (a *Adapter) snapshotEntity(tctx context.Context, tenantID string, ent *reg
 			}
 		}
 		if rows.Len() < pageSize {
+			return nil
+		}
+	}
+}
+
+// snapshotDynamicEntity streams a dynamic entity's rows the same way
+// snapshotEntity does for Go-model entities, but reads each ds_ table row into a
+// map[string]any (there is no struct to reflect). It pages by id inside stamped
+// dynamic-tenant transactions — the same read shape RelationalQuerier.Get/List
+// use — so live and rebuilt projections of a dynamic aggregate stay identical.
+func (a *Adapter) snapshotDynamicEntity(tctx context.Context, tenantID string, ent *registry.Entity, fn func(env event.Envelope) error) error {
+	if !ddlValid(ent.Binding.Table) {
+		return fmt.Errorf("fabriq: dynamic table name %q failed ddl validation", ent.Binding.Table)
+	}
+	const pageSize = 500
+	table := quoteIdent(ent.Binding.Table)
+	lastID := ""
+	for {
+		var maps []map[string]any
+		err := a.inDynamicTenantTx(tctx, func(tid string, tx driver.Tx) error {
+			sql := fmt.Sprintf(
+				`SELECT * FROM %s WHERE %s = $1 AND %s > $2 ORDER BY "id" ASC LIMIT %d`,
+				table, registry.ColumnTenant, registry.ColumnID, pageSize)
+			rows, qerr := tx.Query(tctx, sql, tid, lastID)
+			if qerr != nil {
+				return qerr
+			}
+			m, serr := scanMaps(rows)
+			if serr != nil {
+				return serr
+			}
+			maps = m
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		for _, vals := range maps {
+			env, err := snapshotEnvelope(tenantID, ent, vals)
+			if err != nil {
+				return err
+			}
+			lastID = env.AggID
+			if err := fn(env); err != nil {
+				return err
+			}
+		}
+		if len(maps) < pageSize {
 			return nil
 		}
 	}
