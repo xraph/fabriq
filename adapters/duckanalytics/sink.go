@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/marcboeker/go-duckdb/v2"
+	_ "github.com/duckdb/duckdb-go/v2"
 
 	"github.com/xraph/fabriq/core/analytics"
 )
@@ -94,7 +94,7 @@ func TruncateForTest(ctx context.Context, s *Sink) error {
 }
 
 // UpsertFacts version-gates: a row is updated only when the incoming version
-// is strictly greater than the stored one. go-duckdb's ON CONFLICT does not
+// is strictly greater than the stored one. duckdb-go's ON CONFLICT does not
 // support a WHERE predicate on the DO UPDATE clause, so the gate is expressed
 // as a CASE in each assigned column instead — a stale-version upsert becomes a
 // no-op UPDATE (every column reassigned to its current value).
@@ -212,7 +212,7 @@ func (s *Sink) LagByTenant(ctx context.Context) (map[string]float64, error) {
 // optional aggregate) through transform, in place. Change detection is
 // semantic (payload IS DISTINCT FROM), so a re-run with the same transform is
 // a no-op. Row counts come from RETURNING 1 (scanned), not RowsAffected —
-// go-duckdb's RowsAffected is not relied upon here.
+// duckdb-go's RowsAffected is not relied upon here.
 func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string, transform func(json.RawMessage) (json.RawMessage, error)) (int64, error) {
 	var total int64
 
@@ -300,7 +300,7 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string, 
 }
 
 // countReturned runs a DML query with RETURNING and counts the rows returned.
-// Used instead of sql.Result.RowsAffected, whose go-duckdb accuracy is not
+// Used instead of sql.Result.RowsAffected, whose duckdb-go accuracy is not
 // relied upon.
 func (s *Sink) countReturned(ctx context.Context, q string, args ...any) (int64, error) {
 	rows, err := s.db.QueryContext(ctx, q, args...)
