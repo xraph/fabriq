@@ -149,8 +149,74 @@ adminapi.WithAuthorizer(adminapi.AuthorizerFunc(func(ctx context.Context, cap st
 
 `wardenPermissionFor` is host code that maps fabriq's capability strings
 (`"analytics.admin"`, `"schema.admin"`, ...) onto whatever permission model warden (or any
-other authz system) uses. This snippet is illustrative only — fabriq does not depend on
-warden, and no such adapter ships in this repo.
+other authz system) uses. The roll-your-own snippet above is illustrative — fabriq does not
+depend on warden. For hosts that *do* run [`warden`](https://github.com/xraph/warden), a
+compiled adapter ships alongside fabriq instead.
+
+### Compiled adapter: `adapters/wardenauthz`
+
+`github.com/xraph/fabriq/adapters/wardenauthz` is a separate, opt-in Go module (its own
+`go.mod`, nested under `adapters/wardenauthz` in this repo) that bridges `adminapi.Authorizer`
+to a `*warden.Engine`. Fabriq core still imports no warden — only a host that pulls in this
+module, in addition to fabriq, links warden in.
+
+```go
+import (
+    "github.com/xraph/fabriq/adapters/wardenauthz"
+    "github.com/xraph/fabriq/forgeext/adminapi"
+)
+
+ext := adminapi.NewAdminAPI(fabricExt, adminapi.WithAuthorizer(wardenauthz.New(engine)))
+```
+
+`engine` is the host's own `*warden.Engine`; `New` panics on a `nil` engine so miswiring
+fails at startup, not at the first request. The returned `*wardenauthz.Authorizer` exposes
+`Authorize(ctx context.Context, capability string) (bool, error)` and so satisfies
+`adminapi.Authorizer` structurally — no interface embedding needed.
+
+**Default capability mapping.** With no options, `wardenauthz` maps a fabriq capability to a
+warden `(action, resourceType)` pair by splitting on the *last* dot:
+
+| Capability | Action | Resource type |
+| --- | --- | --- |
+| `analytics.admin` | `admin` | `analytics` |
+| `connections.read` | `read` | `connections` |
+| `query` (no dot) | `query` | *(empty)* |
+
+`resourceID` is always empty by default — the adapter checks the capability generically, not
+against a specific tenant-scoped resource instance.
+
+**Default subject.** The adapter reads the caller from `forge.UserIDFromContext(ctx)` and
+checks as `warden.Subject{Kind: warden.SubjectUser, ID: uid}`. When no user id is on the
+context, it checks as the anonymous subject `warden.Subject{Kind: "unknown", ID: "anonymous"}`
+— so an unauthenticated request is whatever warden's policy says `unknown/anonymous` may do,
+not an automatic deny.
+
+**Overriding the mapping or subject.** A host that wants tenant-scoped resource IDs, a
+different action naming scheme, or a subject resolved from something other than
+`forge.UserIDFromContext` supplies its own `Mapper` and/or `SubjectFunc`:
+
+```go
+ext := adminapi.NewAdminAPI(fabricExt, adminapi.WithAuthorizer(
+    wardenauthz.New(engine,
+        wardenauthz.WithMapper(func(ctx context.Context, capability string) (action, resourceType, resourceID string) {
+            action, resourceType, _ = wardenauthz.DefaultMapper(ctx, capability)
+            return action, resourceType, tenantIDFromContext(ctx) // scope the resource to the caller's tenant
+        }),
+        wardenauthz.WithSubjectFunc(func(ctx context.Context) warden.Subject {
+            return warden.Subject{Kind: warden.SubjectUser, ID: principalFromContext(ctx)}
+        }),
+    ),
+))
+```
+
+`Mapper` is `func(ctx context.Context, capability string) (action, resourceType, resourceID string)`;
+`SubjectFunc` is `func(ctx context.Context) warden.Subject`. Both options are no-ops when
+passed `nil`, so partial overrides (mapper only, or subject only) are safe.
+
+As with any `Authorizer`, a warden error propagates as `(false, err)` and fabriq's gate turns
+that into a fail-closed `500` — see **Fail closed**, above. An ordinary "not allowed" (no
+error, `Allowed: false`) is the usual `403`.
 
 ## In the demo
 
