@@ -102,6 +102,10 @@ type config struct {
 	// authDisabled turns OFF secure-by-default auth provisioning. Set via
 	// WithAuthDisabled. See resolveAuthDefaults for the full decision table.
 	authDisabled bool
+	// Authorizer decides per-request whether a capability is permitted. When nil,
+	// NewAdminAPI installs a flagAuthorizer that reproduces the global-flag gates.
+	// Set a host authorizer (e.g. a warden adapter) via WithAuthorizer for per-user RBAC.
+	Authorizer Authorizer
 }
 
 // Option configures the adminapi extension.
@@ -165,6 +169,11 @@ func WithAnalyticsRead() Option { return func(c *config) { c.AnalyticsRead = tru
 // WithTenantsAdmin so a topology viewer can be granted without provisioning
 // rights; leave OFF unless the host guards the admin API.
 func WithConnectionsRead() Option { return func(c *config) { c.ConnectionsRead = true } }
+
+// WithAuthorizer overrides the default flag-based capability gating with a
+// host-supplied Authorizer — the seam for per-user RBAC (e.g. bridging warden).
+// fabriq itself imports no authz system; the host wires the adapter.
+func WithAuthorizer(a Authorizer) Option { return func(c *config) { c.Authorizer = a } }
 
 // WithAuth sets the instance-global API key store, enabling the /admin/keys
 // issue/list/revoke management routes (registered only when the store is
@@ -281,7 +290,13 @@ func NewAdminAPI(fab *forgeext.Extension, opts ...Option) *Extension {
 	if cfg.BasePath == "" {
 		cfg.BasePath = "/admin"
 	}
-	return &Extension{parent: fab, cfg: cfg}
+	e := &Extension{parent: fab, cfg: cfg}
+	if e.cfg.Authorizer == nil {
+		// Default to the flag-based authorizer, closing over the EXTENSION's config
+		// (not the local cfg copy) so it reads the stored flags.
+		e.cfg.Authorizer = flagAuthorizer(&e.cfg)
+	}
+	return e
 }
 
 // Name implements forge.Extension.
