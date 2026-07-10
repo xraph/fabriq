@@ -157,7 +157,11 @@ var serviceDesc = grpc.ServiceDesc{
 		{StreamName: "LiveQuery", Handler: bidiHandler(remote.MethodLiveQuery), ClientStreams: true, ServerStreams: true},
 		{StreamName: "GetBlob", Handler: streamHandler(remote.MethodGetBlob), ServerStreams: true},
 		{StreamName: "PutBlob", Handler: clientStreamHandler(remote.MethodPutBlob), ClientStreams: true},
-		{StreamName: "BidiEcho", Handler: bidiHandler(remote.MethodBidiEcho), ClientStreams: true, ServerStreams: true},
+		// NOTE: the diagnostic BidiEcho method is deliberately NOT registered
+		// here — it is a test-only exerciser of the bidi primitive and must not
+		// ship on the production service surface. Tests register it via the
+		// test-only RegisterWithBidiEcho (see export_test.go). The real bidi
+		// consumer (LiveQuery, above) stays on the prod surface.
 	},
 	Metadata: "remote/proto/fabriq/v1/fabriq.proto",
 }

@@ -15,8 +15,11 @@ service Fabriq {
 
   // --- reads ---
   rpc Get(GetRequest) returns (RowReply);
-  rpc List(ListRequest) returns (stream RowReply);       // cursor-paged stream
-  rpc GetMany(GetManyRequest) returns (stream RowReply); // batched; no N+1
+  // List and GetMany are UNARY: the reply row is the whole page/batch as opaque
+  // JSON (a JSON array), not a per-row server stream. Registered unary in the
+  // gRPC serviceDesc and dispatched unary end-to-end.
+  rpc List(ListRequest) returns (RowReply);       // cursor-paged; row = JSON page
+  rpc GetMany(GetManyRequest) returns (RowReply); // batched; row = JSON []model
 
   // --- knowledge retrieval: the projection-read channels the agent toolkit's
   //     recall fuses (semantic / lexical / graph). Reply rows are opaque JSON. ---
@@ -60,10 +63,6 @@ service Fabriq {
   //     setup error); subsequent frames are deltas, with a fresh snapshot frame
   //     returned in response to each Reanchor. ---
   rpc LiveQuery(stream LiveClientFrame) returns (stream LiveFrame);
-
-  // --- live: bidi. client sends subscribe/reanchor/unsubscribe; server streams
-  //     snapshot (as reset+enter) then enter/leave/move/update deltas. ---
-  rpc Live(stream ClientCommand) returns (stream Frame);
 
   // --- blobs (core/blob.Store): bytes stream, metadata is unary. PutBlob /
   //     GetBlob never buffer a whole object. PresignBlob returns a short-lived
@@ -306,24 +305,6 @@ message LiveFrame {
   bytes snapshot = 1; // JSON livequery.Snapshot (initial + each reanchor)
   bytes delta = 2;    // JSON livequery.LiveDelta
   Error error = 3;    // setup error (handshake)
-}
-
-// --- live (mirrors gateway/protocol.go) ---
-message ClientCommand {
-  string action = 1; // "subscribe" | "reanchor" | "unsubscribe"
-  bytes query = 2;   // JSON LiveQuery (subscribe)
-  bytes cursor = 3;  // JSON Cursor (reanchor)
-  int32 limit = 4;
-}
-message Frame {
-  string op = 1; // "enter" | "leave" | "move" | "update" | "reset"
-  string agg_id = 2;
-  int64 version = 3;
-  bytes row = 4;
-  int32 old_index = 5;
-  int32 new_index = 6;
-  bytes cursor = 7;
-  string stream_id = 8;
 }
 
 // --- blobs (core/blob.Store) ---

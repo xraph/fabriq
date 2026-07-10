@@ -314,12 +314,14 @@ func dial(t *testing.T, fab query.Fabric, opts ...grpc.ServerOption) *remote.Fab
 
 // dialClient stands up the same real gRPC stack as dial but returns the raw
 // *remotegrpc.Client so tests can exercise transport primitives (BidiStream)
-// directly, not just the Fabric facade.
+// directly, not just the Fabric facade. It registers the diagnostic BidiEcho
+// stream (test-only) so the bidi primitive can be driven over real gRPC even
+// though BidiEcho is absent from the production serviceDesc.
 func dialClient(t *testing.T, fab query.Fabric, opts ...grpc.ServerOption) *remotegrpc.Client {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer(opts...)
-	remotegrpc.Register(srv, remote.NewHandler(fab, assetRegistry(t)))
+	remotegrpc.RegisterWithBidiEcho(srv, remote.NewHandler(fab, assetRegistry(t)))
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 
