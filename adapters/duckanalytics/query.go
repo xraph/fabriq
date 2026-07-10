@@ -19,6 +19,9 @@ func SetMaxAnalyticsQueryRowsForTest(n int) { maxAnalyticsQueryRows = n }
 // adminapi caller) against the DuckDB analytics store and returns a dynamic
 // result set. DuckDB on a read-write handle has no per-statement read-only tx;
 // read-only-ness is the caller's precheck + the ctx timeout + the row cap.
+// File-access table functions (read_csv/read_parquet/read_text/parquet_scan/
+// glob/etc.) are blocked at the adminapi precheck, not here; the pg adapter
+// has no such exposure since it has no local filesystem to read from.
 func (s *Sink) QueryReadOnly(ctx context.Context, query string, args ...any) (rows []map[string]any, cols []string, truncated bool, err error) {
 	r, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

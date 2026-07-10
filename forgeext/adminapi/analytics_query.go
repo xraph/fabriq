@@ -33,6 +33,14 @@ type analyticsQueryRequest struct {
 // model, and the endpoint is gated on analytics.read.
 var analyticsWriteKeywordRe = regexp.MustCompile(`(?i)\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|merge|vacuum)\b`)
 
+// analyticsFileFuncRe matches DuckDB file-access table functions in call
+// position (read_csv/read_parquet/read_json/read_text/read_blob/parquet_scan/
+// glob, etc.). They are reads, so the write-keyword denylist misses them, but
+// they can exfiltrate server-local files; block them for the analytics query
+// surface. Matches the function name followed by "(" so a similarly-named
+// column (e.g. read_count) is not falsely rejected.
+var analyticsFileFuncRe = regexp.MustCompile(`(?i)\b(read_[a-z0-9_]+|parquet_scan|glob)\s*\(`)
+
 // analyticsQueryTimeout bounds one analytics query.
 const analyticsQueryTimeout = 15 * time.Second
 
@@ -45,6 +53,9 @@ func precheckAnalyticsReadOnly(sql string) error {
 	stripped := sqlSkipRe.ReplaceAllString(sql, " ")
 	if analyticsWriteKeywordRe.MatchString(stripped) {
 		return fmt.Errorf("only read-only queries are allowed (data-modifying keyword found)")
+	}
+	if analyticsFileFuncRe.MatchString(stripped) {
+		return fmt.Errorf("file-access functions are not allowed")
 	}
 	return nil
 }

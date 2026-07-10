@@ -39,6 +39,17 @@ func TestAnalyticsQuery_400OnWriteCTE(t *testing.T) {
 	}
 }
 
+func TestAnalyticsQuery_400OnFileRead(t *testing.T) {
+	e := NewAdminAPI(nil, WithAnalyticsRead())
+	srv := buildServer(t, e)
+	defer srv.Close()
+	resp := doWrite(t, http.MethodPost, srv.URL+"/admin/analytics/query", map[string]any{"sql": "SELECT * FROM read_text('/etc/passwd')"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (file-access function)", resp.StatusCode)
+	}
+}
+
 func TestAnalyticsQuery_501WhenNoSink(t *testing.T) {
 	e := NewAdminAPI(nil, WithAnalyticsRead())
 	srv := buildServer(t, e)

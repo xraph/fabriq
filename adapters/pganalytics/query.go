@@ -24,7 +24,7 @@ func (s *Sink) QueryReadOnly(ctx context.Context, query string, args ...any) (ro
 	defer func() { _ = tx.Rollback() }()
 	r, qerr := tx.Query(ctx, query, args...)
 	if qerr != nil {
-		return nil, nil, false, qerr
+		return nil, nil, false, fmt.Errorf("fabriq: analytics query: %w", qerr)
 	}
 	return scanDriverMapsCapped(r, maxAnalyticsQueryRows)
 }
