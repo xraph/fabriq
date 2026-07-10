@@ -65,6 +65,11 @@ const ports = [
     body: "Transparent two-level read-through cache — per-id rows and query result-sets — behind the read ports, write-invalidated, with an optional in-process L1.",
     engine: "Redis · grove kv",
   },
+  {
+    method: "Analytics sink",
+    body: "A write-side projection, not a facade port: the event stream is redacted into a cross-tenant read model for fleet-wide reporting — the one opt-in exception to per-tenant isolation. Read it operator-side with read-only SQL over facts and events.",
+    engine: "DuckDB · Postgres · ClickHouse",
+  },
 ];
 
 export function Ports() {
