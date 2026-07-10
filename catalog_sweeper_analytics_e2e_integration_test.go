@@ -49,8 +49,8 @@ func cmRegistryAnalytics(t *testing.T) *registry.Registry {
 func TestCatalogMode_SweeperAnalyticsAcrossTenantDBs(t *testing.T) {
 	ctx := context.Background()
 	dsn := fabriqtest.StartPostgres(t)          // control DB + cluster maintenance DSN
-	redisAddr := fabriqtest.StartRedis(t)        // the shared event stream
-	analyticsDSN := fabriqtest.StartPostgres(t)  // the ONE shared analytics database
+	redisAddr := fabriqtest.StartRedis(t)       // the shared event stream
+	analyticsDSN := fabriqtest.StartPostgres(t) // the ONE shared analytics database
 
 	// Provision two tenants, each in its own dedicated database, and apply the
 	// app-owned entity DDL inside each.

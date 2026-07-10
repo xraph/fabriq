@@ -5,6 +5,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/xraph/fabriq/adapters/shard"
 	"github.com/xraph/fabriq/internal/metrics"
 )
