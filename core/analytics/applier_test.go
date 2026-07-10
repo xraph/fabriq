@@ -24,16 +24,16 @@ func regWith(spec *registry.AnalyticsSpec) *registry.Registry {
 	return r
 }
 
-func env(agg, typ string, v int64, payload string) event.Envelope {
+func env(typ string, v int64, payload string) event.Envelope {
 	return event.Envelope{
-		TenantID: "t1", Aggregate: agg, AggID: "w1", Version: v, Type: typ,
+		TenantID: "t1", Aggregate: "widget", AggID: "w1", Version: v, Type: typ,
 		At: time.Unix(100, 0).UTC(), Payload: json.RawMessage(payload),
 	}
 }
 
 func TestApply_DenyByDefault(t *testing.T) {
 	a := analytics.NewApplier(regWith(nil))
-	_, _, ok, err := a.Apply(env("widget", "widget.updated", 1, `{"name":"a","ssn":"secret"}`))
+	_, _, ok, err := a.Apply(env("widget.updated", 1, `{"name":"a","ssn":"secret"}`))
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestApply_DenyByDefault(t *testing.T) {
 
 func TestApply_IncludeProjectsAllowedFields(t *testing.T) {
 	a := analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}}))
-	fact, ev, ok, err := a.Apply(env("widget", "widget.updated", 3, `{"name":"a","ssn":"secret"}`))
+	fact, ev, ok, err := a.Apply(env("widget.updated", 3, `{"name":"a","ssn":"secret"}`))
 	if err != nil || !ok {
 		t.Fatalf("apply ok=%v err=%v", ok, err)
 	}
@@ -63,7 +63,7 @@ func TestApply_IncludeProjectsAllowedFields(t *testing.T) {
 
 func TestApply_IncludeAllPassesWholePayload(t *testing.T) {
 	a := analytics.NewApplier(regWith(&registry.AnalyticsSpec{IncludeAll: true}))
-	fact, _, ok, _ := a.Apply(env("widget", "widget.updated", 1, `{"name":"a","ssn":"secret"}`))
+	fact, _, ok, _ := a.Apply(env("widget.updated", 1, `{"name":"a","ssn":"secret"}`))
 	if !ok {
 		t.Fatal("expected records")
 	}
@@ -76,7 +76,7 @@ func TestApply_IncludeAllPassesWholePayload(t *testing.T) {
 
 func TestApply_DeleteMarksDeletedEmptyPayload(t *testing.T) {
 	a := analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}}))
-	fact, _, ok, _ := a.Apply(env("widget", "widget.deleted", 5, `{}`))
+	fact, _, ok, _ := a.Apply(env("widget.deleted", 5, `{}`))
 	if !ok || !fact.Deleted {
 		t.Fatalf("delete not marked: ok=%v deleted=%v", ok, fact.Deleted)
 	}
@@ -85,7 +85,7 @@ func TestApply_DeleteMarksDeletedEmptyPayload(t *testing.T) {
 func TestApply_HashPseudonymizesField(t *testing.T) {
 	reg := regWith(&registry.AnalyticsSpec{Include: []string{"name"}, Hash: []string{"ssn"}})
 	a := analytics.NewApplier(reg, analytics.WithHashSalt("pepper"))
-	fact, _, ok, err := a.Apply(env("widget", "widget.updated", 1, `{"name":"a","ssn":"secret"}`))
+	fact, _, ok, err := a.Apply(env("widget.updated", 1, `{"name":"a","ssn":"secret"}`))
 	if err != nil || !ok {
 		t.Fatalf("apply ok=%v err=%v", ok, err)
 	}
@@ -99,7 +99,7 @@ func TestApply_HashPseudonymizesField(t *testing.T) {
 		t.Fatalf("ssn should be a non-empty hash, not the raw value: %s", fact.Payload)
 	}
 	// Same value + salt -> same hash (referential integrity for group-by).
-	fact2, _, _, _ := a.Apply(env("widget", "widget.updated", 1, `{"name":"b","ssn":"secret"}`))
+	fact2, _, _, _ := a.Apply(env("widget.updated", 1, `{"name":"b","ssn":"secret"}`))
 	var got2 map[string]any
 	_ = json.Unmarshal(fact2.Payload, &got2)
 	if got2["ssn"] != h {
@@ -107,7 +107,7 @@ func TestApply_HashPseudonymizesField(t *testing.T) {
 	}
 	// Different salt -> different hash.
 	a2 := analytics.NewApplier(reg, analytics.WithHashSalt("other"))
-	fact3, _, _, _ := a2.Apply(env("widget", "widget.updated", 1, `{"name":"a","ssn":"secret"}`))
+	fact3, _, _, _ := a2.Apply(env("widget.updated", 1, `{"name":"a","ssn":"secret"}`))
 	var got3 map[string]any
 	_ = json.Unmarshal(fact3.Payload, &got3)
 	if got3["ssn"] == h {
@@ -119,7 +119,7 @@ func TestApply_NestedPathInclude(t *testing.T) {
 	// Include a nested leaf and drop everything else, including a sibling PII field.
 	reg := regWith(&registry.AnalyticsSpec{Include: []string{"name", "meta.region"}})
 	a := analytics.NewApplier(reg)
-	fact, _, ok, err := a.Apply(env("widget", "widget.updated", 1,
+	fact, _, ok, err := a.Apply(env("widget.updated", 1,
 		`{"name":"a","meta":{"region":"us","ssn":"secret"},"other":9}`))
 	if err != nil || !ok {
 		t.Fatalf("apply ok=%v err=%v", ok, err)
@@ -133,7 +133,7 @@ func TestApply_NestedPathInclude(t *testing.T) {
 func TestApply_NestedPathHash(t *testing.T) {
 	reg := regWith(&registry.AnalyticsSpec{Include: []string{"name"}, Hash: []string{"meta.userId"}})
 	a := analytics.NewApplier(reg, analytics.WithHashSalt("s"))
-	fact, _, ok, _ := a.Apply(env("widget", "widget.updated", 1,
+	fact, _, ok, _ := a.Apply(env("widget.updated", 1,
 		`{"name":"a","meta":{"userId":"u-42","email":"x@y.z"}}`))
 	if !ok {
 		t.Fatal("expected records")
@@ -157,7 +157,7 @@ func TestApply_NestedPathMissingSegmentDropped(t *testing.T) {
 	// A path whose intermediate segment isn't an object contributes nothing.
 	reg := regWith(&registry.AnalyticsSpec{Include: []string{"name", "meta.region"}})
 	a := analytics.NewApplier(reg)
-	fact, _, ok, _ := a.Apply(env("widget", "widget.updated", 1, `{"name":"a","meta":"not-an-object"}`))
+	fact, _, ok, _ := a.Apply(env("widget.updated", 1, `{"name":"a","meta":"not-an-object"}`))
 	if !ok {
 		t.Fatal("expected records")
 	}
@@ -168,7 +168,7 @@ func TestApply_NestedPathMissingSegmentDropped(t *testing.T) {
 
 func TestApply_HashOnlySpecIncludesHashedField(t *testing.T) {
 	a := analytics.NewApplier(regWith(&registry.AnalyticsSpec{Hash: []string{"ssn"}}), analytics.WithHashSalt("s"))
-	fact, _, ok, err := a.Apply(env("widget", "widget.updated", 1, `{"name":"a","ssn":"x"}`))
+	fact, _, ok, err := a.Apply(env("widget.updated", 1, `{"name":"a","ssn":"x"}`))
 	if err != nil || !ok {
 		t.Fatalf("apply ok=%v err=%v", ok, err)
 	}
@@ -184,7 +184,7 @@ func TestApply_HashOnlySpecIncludesHashedField(t *testing.T) {
 
 func TestApply_Deterministic(t *testing.T) {
 	a := analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}}))
-	e := env("widget", "widget.updated", 1, `{"name":"a","ssn":"x"}`)
+	e := env("widget.updated", 1, `{"name":"a","ssn":"x"}`)
 	f1, _, _, _ := a.Apply(e)
 	f2, _, _, _ := a.Apply(e)
 	if string(f1.Payload) != string(f2.Payload) {

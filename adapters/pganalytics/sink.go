@@ -147,6 +147,8 @@ func monthStart(t time.Time) time.Time {
 // whose entire range is older than now-retention — the instant-reclaim path
 // that replaces a delete-scan. Returns (created, dropped). A no-op when the sink
 // is not partitioned.
+//
+//nolint:gocritic // multi-value result; naming would collide with body error locals
 func (s *Sink) MaintainPartitions(ctx context.Context, retention time.Duration) (int, int, error) {
 	if !s.partitioned {
 		return 0, 0, nil

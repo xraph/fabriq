@@ -104,7 +104,7 @@ func (h *LiveHandle) Reanchor(ctx context.Context, cursor *livequery.Cursor, lim
 		}
 	}
 	frame, err := proto.Marshal(&fabriqpb.LiveClientFrame{
-		Reanchor: &fabriqpb.LiveReanchor{Cursor: cursorJSON, Limit: int32(limit)},
+		Reanchor: &fabriqpb.LiveReanchor{Cursor: cursorJSON, Limit: int32(limit)}, //nolint:gosec // limit is a caller-supplied window size, always small and non-negative
 	})
 	if err != nil {
 		return livequery.Snapshot{}, err
@@ -143,7 +143,7 @@ func (r *Fabric) LiveQuery(ctx context.Context, q livequery.LiveQuery) (livequer
 	if err != nil {
 		return livequery.Snapshot{}, nil, nil, err
 	}
-	if err := stream.Send(queryFrame); err != nil {
+	if err = stream.Send(queryFrame); err != nil {
 		_ = stream.Close()
 		return livequery.Snapshot{}, nil, nil, err
 	}

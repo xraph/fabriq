@@ -44,10 +44,11 @@ func NewHandler(fab query.Fabric, reg *registry.Registry) *Handler {
 	// The facade may satisfy LiveQuerier directly (a test double returning
 	// LiveSubscription) or the concrete shape (*fabriq.Fabriq, returning
 	// *livequery.Handle) which the adapter widens.
-	if lq, ok := fab.(LiveQuerier); ok {
-		h.live = lq
-	} else if clq, ok := fab.(concreteLiveQuerier); ok {
-		h.live = liveQuerierAdapter{c: clq}
+	switch f := fab.(type) {
+	case LiveQuerier:
+		h.live = f
+	case concreteLiveQuerier:
+		h.live = liveQuerierAdapter{c: f}
 	}
 	return h
 }
@@ -147,7 +148,7 @@ func (h *Handler) DispatchBidi(ctx context.Context, method string, recv func() (
 // back to the client prefixed with "echo:", until the client stops sending
 // (io.EOF) or the call is cancelled. It exists to exercise the bidi transport
 // primitive on its own — the live-query plane is the real consumer.
-func (h *Handler) BidiEcho(ctx context.Context, recv func() ([]byte, error), send func([]byte) error) error {
+func (h *Handler) BidiEcho(_ context.Context, recv func() ([]byte, error), send func([]byte) error) error {
 	for {
 		frame, err := recv()
 		if errors.Is(err, io.EOF) {
@@ -341,7 +342,7 @@ func (h *Handler) LiveQuery(ctx context.Context, recv func() ([]byte, error), se
 		return err
 	}
 	var cf fabriqpb.LiveClientFrame
-	if err := proto.Unmarshal(first, &cf); err != nil {
+	if err = proto.Unmarshal(first, &cf); err != nil {
 		return fmt.Errorf("remote: decode live client frame: %w", err)
 	}
 	if h.live == nil {
@@ -349,7 +350,7 @@ func (h *Handler) LiveQuery(ctx context.Context, recv func() ([]byte, error), se
 	}
 	var q livequery.LiveQuery
 	if cf.Query != nil && len(cf.Query.Query) > 0 {
-		if err := json.Unmarshal(cf.Query.Query, &q); err != nil {
+		if err = json.Unmarshal(cf.Query.Query, &q); err != nil {
 			return safeSend(&fabriqpb.LiveFrame{Error: errorToProto(fmt.Errorf("remote: decode live query: %w", err))})
 		}
 	}
@@ -857,7 +858,7 @@ func (h *Handler) SpatialGet(ctx context.Context, in []byte) ([]byte, error) {
 			return nil, fmt.Errorf("remote: marshal spatial meta: %w", err)
 		}
 	}
-	return proto.Marshal(&fabriqpb.SpatialGetReply{Wkt: geom.WKT, Srid: int32(geom.SRID), Meta: metaJSON, Ok: ok})
+	return proto.Marshal(&fabriqpb.SpatialGetReply{Wkt: geom.WKT, Srid: int32(geom.SRID), Meta: metaJSON, Ok: ok}) //nolint:gosec // SRID is a small EPSG spatial-reference code, always within int32
 }
 
 func (h *Handler) SpatialDelete(ctx context.Context, in []byte) ([]byte, error) {

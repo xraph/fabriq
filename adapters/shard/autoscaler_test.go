@@ -177,10 +177,8 @@ func TestAutoscaler_FloorClampsToMinAndHeld(t *testing.T) {
 	c := testAutoCfg()
 	c.Min = 4
 	a := newAutoscaler(c)
-	// Slack but held=6 keeps the floor at 6, not Min=4.
-	sig := poolSignals{acquires: 1, open: 6, held: 6, cap: 6}
-	// open==cap here → not slack; use open<cap with high held instead.
-	sig = poolSignals{acquires: 1, open: 7, held: 6, cap: 8}
+	// open<cap with high held keeps the floor at held=6, not Min=4.
+	sig := poolSignals{acquires: 1, open: 7, held: 6, cap: 8}
 	a.decide(sig)
 	newCap, dir, _ := a.decide(sig)
 	if dir == scaleShrink && newCap < 6 {

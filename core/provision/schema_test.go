@@ -28,7 +28,7 @@ func newFakeSchemaOps() *fakeSchemaOps {
 	}
 }
 
-func (f *fakeSchemaOps) EnsureBootstrap(_ context.Context, clusterID, database, shared string) error {
+func (f *fakeSchemaOps) EnsureBootstrap(_ context.Context, clusterID, database, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.failOn["bootstrap"]; err != nil {
@@ -48,7 +48,7 @@ func (f *fakeSchemaOps) CreateSchema(_ context.Context, clusterID, database, sch
 	return nil
 }
 
-func (f *fakeSchemaOps) MigrateSchema(_ context.Context, clusterID, database, schema, shared string) (string, error) {
+func (f *fakeSchemaOps) MigrateSchema(_ context.Context, clusterID, database, schema, _ string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.failOn["migrate"]; err != nil {

@@ -233,7 +233,7 @@ func TestPoolManager_CountersTrackHitMissEvictWaitTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	// timeout: cap 1, "a" held, "b" cannot get capacity.
-	if _, _, err := p.Acquire(ctx, "b"); fabriqerr.CodeOf(err) != fabriqerr.CodeUnavailable {
+	if _, _, err = p.Acquire(ctx, "b"); fabriqerr.CodeOf(err) != fabriqerr.CodeUnavailable {
 		t.Fatalf("want CodeUnavailable, got %v", err)
 	}
 	rel() // release "a" so it becomes idle-evictable

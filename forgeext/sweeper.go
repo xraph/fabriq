@@ -135,11 +135,11 @@ func (e *Extension) runCatalogSweeper() error {
 			supervise(runCtx, logger, "proj:analytics", func(c context.Context) error { return cons.Run(c, consumer) })
 		}()
 		if e.metrics != nil {
-			m, sink := e.metrics, stores.Analytics
+			met, sink := e.metrics, stores.Analytics
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				pollAnalyticsLag(runCtx, m, sink)
+				pollAnalyticsLag(runCtx, met, sink)
 			}()
 		}
 	} else if stores.Analytics != nil && stores.Redis != nil {
@@ -148,11 +148,11 @@ func (e *Extension) runCatalogSweeper() error {
 		}
 	}
 	if stores.Analytics != nil && (e.cfg.Fabriq.Analytics.EventRetention > 0 || e.cfg.Fabriq.Analytics.PartitionEvents) {
-		m, sink, retention := e.metrics, stores.Analytics, e.cfg.Fabriq.Analytics.EventRetention
+		met, sink, retention := e.metrics, stores.Analytics, e.cfg.Fabriq.Analytics.EventRetention
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			analyticsRetentionLoop(runCtx, m, sink, retention)
+			analyticsRetentionLoop(runCtx, met, sink, retention)
 		}()
 	}
 

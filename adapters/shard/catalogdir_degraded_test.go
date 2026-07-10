@@ -13,7 +13,7 @@ import (
 // can prove the directory did NOT cache the degraded negative.
 type degradingCat struct{ calls int }
 
-func (d *degradingCat) Get(_ context.Context, id string) (catalog.Entry, error) {
+func (d *degradingCat) Get(_ context.Context, _ string) (catalog.Entry, error) {
 	d.calls++
 	return catalog.Entry{}, fabriqerr.New(fabriqerr.CodeNotFound, "stale",
 		fabriqerr.WithMeta(fabriqerr.Meta{Detail: map[string]string{"catalog": "degraded"}}))

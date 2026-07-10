@@ -174,8 +174,8 @@ func deltaToProto(d query.Delta) *fabriqpb.Delta {
 func listQueryToProto(q query.ListQuery) *fabriqpb.ListQuery {
 	pq := &fabriqpb.ListQuery{
 		OrderBy: q.OrderBy,
-		Limit:   int32(q.Limit),
-		Offset:  int32(q.Offset),
+		Limit:   int32(q.Limit),  //nolint:gosec // pagination limit; caller-bounded small non-negative value
+		Offset:  int32(q.Offset), //nolint:gosec // pagination offset; caller-bounded small non-negative value
 	}
 	if len(q.Where) > 0 {
 		pq.Where = condsToProto(q.Where)
@@ -279,7 +279,7 @@ func condValueToProto(v any) *fabriqpb.CondValue {
 	case int64:
 		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: tv}}
 	case uint:
-		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}} //nolint:gosec // filter comparison value; wrap-around is acceptable for an opaque cond operand
 	case uint8:
 		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
 	case uint16:
@@ -288,7 +288,7 @@ func condValueToProto(v any) *fabriqpb.CondValue {
 		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
 	case uint64:
 		// Cast to int64 for filter values; overflow guarding is unnecessary here.
-		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}}
+		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_IntVal{IntVal: int64(tv)}} //nolint:gosec // filter comparison value; wrap-around is acceptable for an opaque cond operand
 	case float32:
 		return &fabriqpb.CondValue{V: &fabriqpb.CondValue_DoubleVal{DoubleVal: float64(tv)}}
 	case float64:

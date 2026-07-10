@@ -28,7 +28,7 @@ func (r remoteSpatial) Upsert(ctx context.Context, entity, id string, geom query
 		}
 		metaJSON = b
 	}
-	in, err := proto.Marshal(&fabriqpb.SpatialUpsertRequest{Entity: entity, Id: id, Wkt: geom.WKT, Srid: int32(geom.SRID), Meta: metaJSON})
+	in, err := proto.Marshal(&fabriqpb.SpatialUpsertRequest{Entity: entity, Id: id, Wkt: geom.WKT, Srid: int32(geom.SRID), Meta: metaJSON}) //nolint:gosec // SRID is a small EPSG spatial-reference code, always within int32
 	if err != nil {
 		return err
 	}
@@ -55,6 +55,7 @@ func (r remoteSpatial) Within(ctx context.Context, q query.SpatialQuery, into an
 	return scanRowReply(out, into)
 }
 
+//nolint:gocritic // multi-value result; the body returns explicit values and naming would collide with err/meta locals
 func (r remoteSpatial) Get(ctx context.Context, entity, id string) (query.Geometry, map[string]any, bool, error) {
 	in, err := proto.Marshal(&fabriqpb.SpatialGetRequest{Entity: entity, Id: id})
 	if err != nil {

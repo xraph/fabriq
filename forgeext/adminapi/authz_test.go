@@ -41,8 +41,8 @@ func TestFlagAuthorizer_Parity(t *testing.T) {
 // A denying authorizer must 403 a mutating analytics endpoint EVEN with
 // WithAnalyticsAdmin() set — the authorizer overrides the global flag.
 func TestAuthorizer_DeniesAnalyticsAdminDespiteFlag(t *testing.T) {
-	deny := AuthorizerFunc(func(_ context.Context, cap string) (bool, error) {
-		return cap != "analytics.admin", nil
+	deny := AuthorizerFunc(func(_ context.Context, capName string) (bool, error) {
+		return capName != "analytics.admin", nil
 	})
 	e := NewAdminAPI(nil, WithAnalyticsAdmin(), WithAuthorizer(deny))
 	srv := buildServer(t, e)
@@ -56,8 +56,8 @@ func TestAuthorizer_DeniesAnalyticsAdminDespiteFlag(t *testing.T) {
 
 // A denying authorizer must 403 a schema-admin endpoint even with WithSchemaAdmin().
 func TestAuthorizer_DeniesSchemaAdminDespiteFlag(t *testing.T) {
-	deny := AuthorizerFunc(func(_ context.Context, cap string) (bool, error) {
-		return cap != "schema.admin", nil
+	deny := AuthorizerFunc(func(_ context.Context, capName string) (bool, error) {
+		return capName != "schema.admin", nil
 	})
 	e := NewAdminAPI(nil, WithSchemaAdmin(), WithAuthorizer(deny))
 	srv := buildServer(t, e)
@@ -72,8 +72,8 @@ func TestAuthorizer_DeniesSchemaAdminDespiteFlag(t *testing.T) {
 
 func TestMeta_ReflectsAuthorizer(t *testing.T) {
 	// Allow base caps + analytics.read; deny the other gated admin caps.
-	auth := AuthorizerFunc(func(_ context.Context, cap string) (bool, error) {
-		switch cap {
+	auth := AuthorizerFunc(func(_ context.Context, capName string) (bool, error) {
+		switch capName {
 		case "analytics.admin", "schema.admin", "tenants.admin", "connections.read":
 			return false, nil
 		default:

@@ -239,7 +239,7 @@ func heapInUse() uint64 {
 }
 
 // defaultTicker is the production ticker seam.
-func defaultTicker(d time.Duration) (<-chan time.Time, func()) {
+func defaultTicker(d time.Duration) (ch <-chan time.Time, stop func()) {
 	t := time.NewTicker(d)
 	return t.C, t.Stop
 }

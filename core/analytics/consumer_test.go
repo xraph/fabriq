@@ -15,7 +15,7 @@ import (
 type fakeSource struct{ envs []event.Envelope }
 
 func (f *fakeSource) EnsureGroup(context.Context, string) error { return nil }
-func (f *fakeSource) Consume(ctx context.Context, _, _ string, handle func(string, event.Envelope) error) error {
+func (f *fakeSource) Consume(_ context.Context, _, _ string, handle func(string, event.Envelope) error) error {
 	for i, e := range f.envs {
 		if err := handle(itoaTest(i), e); err != nil {
 			return err
@@ -29,7 +29,7 @@ func TestConsumer_AppliesMarkedEntity(t *testing.T) {
 	sink := fabriqtest.NewFakeAnalyticsSink()
 	c := &analytics.Consumer{
 		Group:   "proj:analytics",
-		Source:  &fakeSource{envs: []event.Envelope{env("widget", "widget.updated", 1, `{"name":"a","ssn":"x"}`)}},
+		Source:  &fakeSource{envs: []event.Envelope{env("widget.updated", 1, `{"name":"a","ssn":"x"}`)}},
 		Applier: analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}})),
 		Sink:    sink,
 	}
@@ -45,7 +45,7 @@ func TestConsumer_SkipsUnmarked(t *testing.T) {
 	sink := fabriqtest.NewFakeAnalyticsSink()
 	c := &analytics.Consumer{
 		Group:   "proj:analytics",
-		Source:  &fakeSource{envs: []event.Envelope{env("widget", "widget.updated", 1, `{}`)}},
+		Source:  &fakeSource{envs: []event.Envelope{env("widget.updated", 1, `{}`)}},
 		Applier: analytics.NewApplier(regWith(nil)),
 		Sink:    sink,
 	}
@@ -71,7 +71,7 @@ func TestConsumer_InvokesHooks(t *testing.T) {
 		var applied, failed int
 		c := &analytics.Consumer{
 			Group:     "proj:analytics",
-			Source:    &fakeSource{envs: []event.Envelope{env("widget", "widget.updated", 1, `{"name":"a","ssn":"x"}`)}},
+			Source:    &fakeSource{envs: []event.Envelope{env("widget.updated", 1, `{"name":"a","ssn":"x"}`)}},
 			Applier:   analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}})),
 			Sink:      sink,
 			OnApplied: func() { applied++ },
@@ -93,7 +93,7 @@ func TestConsumer_InvokesHooks(t *testing.T) {
 		var applied, failed int
 		c := &analytics.Consumer{
 			Group:     "proj:analytics",
-			Source:    &fakeSource{envs: []event.Envelope{env("widget", "widget.updated", 1, `{"name":"a"}`)}},
+			Source:    &fakeSource{envs: []event.Envelope{env("widget.updated", 1, `{"name":"a"}`)}},
 			Applier:   analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}})),
 			Sink:      sink,
 			OnApplied: func() { applied++ },
@@ -114,8 +114,8 @@ func TestConsumer_InvokesHooks(t *testing.T) {
 func TestConsumer_ReplayIdempotent(t *testing.T) {
 	sink := fabriqtest.NewFakeAnalyticsSink()
 	src := &fakeSource{envs: []event.Envelope{
-		env("widget", "widget.updated", 2, `{"name":"a"}`),
-		env("widget", "widget.updated", 2, `{"name":"a"}`), // redelivery
+		env("widget.updated", 2, `{"name":"a"}`),
+		env("widget.updated", 2, `{"name":"a"}`), // redelivery
 	}}
 	c := &analytics.Consumer{Group: "proj:analytics", Source: src,
 		Applier: analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}})), Sink: sink}

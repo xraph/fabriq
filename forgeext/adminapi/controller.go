@@ -235,10 +235,7 @@ func (c *adminController) Routes(r forge.Router) error {
 // requireSchemaAdmin returns a 403 error when the privileged schema-ops gate is
 // off; handlers call it before any migration-execution or DDL mutation.
 func (c *adminController) requireSchemaAdmin(ctx forge.Context) error {
-	if err := c.requireCap(ctx, "schema.admin"); err != nil {
-		return err
-	}
-	return nil
+	return c.requireCap(ctx, "schema.admin")
 }
 
 // requireTenantsAdmin gates the tenant-management endpoints. It checks the

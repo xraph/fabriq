@@ -142,7 +142,7 @@ func TestFailover_PutNeverTouchesReplica(t *testing.T) {
 
 // A Failover with NO replicas must behave exactly like its primary.
 func TestFailover_NoReplicas_PassesContract(t *testing.T) {
-	catalogtest.Run(t, func(t *testing.T) catalog.Catalog {
+	catalogtest.Run(t, func(_ *testing.T) catalog.Catalog {
 		return catalog.NewFailover(fabriqtest.NewFakeCatalog())
 	})
 }

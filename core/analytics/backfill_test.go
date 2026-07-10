@@ -25,7 +25,7 @@ func TestBackfill_MaterializesMarkedRows(t *testing.T) {
 	sink := fabriqtest.NewFakeAnalyticsSink()
 	b := &analytics.Backfiller{
 		Snapshot: snapshotOf(
-			env("widget", "widget.updated", 4, `{"name":"a","ssn":"x"}`),
+			env("widget.updated", 4, `{"name":"a","ssn":"x"}`),
 		),
 		Applier: analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}})),
 		Sink:    sink,
@@ -43,7 +43,7 @@ func TestBackfill_IdempotentWithLiveVersion(t *testing.T) {
 	sink := fabriqtest.NewFakeAnalyticsSink()
 	_ = sink.UpsertFacts(context.Background(), []analytics.Fact{{TenantID: "t1", Aggregate: "widget", AggID: "w1", Version: 9, Payload: []byte(`{}`)}})
 	b := &analytics.Backfiller{
-		Snapshot: snapshotOf(env("widget", "widget.updated", 4, `{"name":"a"}`)), // older snapshot
+		Snapshot: snapshotOf(env("widget.updated", 4, `{"name":"a"}`)), // older snapshot
 		Applier:  analytics.NewApplier(regWith(&registry.AnalyticsSpec{Include: []string{"name"}})),
 		Sink:     sink,
 	}

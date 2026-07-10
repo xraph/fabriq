@@ -31,7 +31,7 @@ var _ analytics.Sink = (*Sink)(nil)
 // versions up to ~2^44 and ~2^20 reprojections.
 const dedupShift = 20
 
-func packDedup(version int64) uint64 { return uint64(version) << dedupShift }
+func packDedup(version int64) uint64 { return uint64(version) << dedupShift } //nolint:gosec // version is a non-negative monotonic domain version (see dedupShift); no overflow in practice
 
 // Open dials ClickHouse and ensures the schema. Ping proves reachability.
 func Open(ctx context.Context, dsn string) (*Sink, error) {
@@ -241,7 +241,7 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 	var total int64
 
 	// --- facts ---
-	fr, err := s.conn.Query(ctx,
+	fr, qErr := s.conn.Query(ctx,
 		`SELECT aggregate, agg_id,
 		        argMax(payload, _dedup)  AS payload,
 		        argMax(version, _dedup)  AS version,
@@ -251,8 +251,8 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 		 FROM fabriq_analytics_facts
 		 WHERE tenant_id = ? AND (? = '' OR aggregate = ?)
 		 GROUP BY aggregate, agg_id`, tenantID, aggregate, aggregate)
-	if err != nil {
-		return 0, fmt.Errorf("fabriq: analytics reproject scan facts: %w", err)
+	if qErr != nil {
+		return 0, fmt.Errorf("fabriq: analytics reproject scan facts: %w", qErr)
 	}
 	type factRewrite struct {
 		agg, aggID string
@@ -304,7 +304,7 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 	}
 
 	// --- events ---
-	er, err := s.conn.Query(ctx,
+	er, qErr := s.conn.Query(ctx,
 		`SELECT aggregate, agg_id, version,
 		        argMax(payload, _dedup) AS payload,
 		        argMax(type, _dedup)    AS type,
@@ -313,8 +313,8 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 		 FROM fabriq_analytics_events
 		 WHERE tenant_id = ? AND (? = '' OR aggregate = ?)
 		 GROUP BY aggregate, agg_id, version`, tenantID, aggregate, aggregate)
-	if err != nil {
-		return total, fmt.Errorf("fabriq: analytics reproject scan events: %w", err)
+	if qErr != nil {
+		return total, fmt.Errorf("fabriq: analytics reproject scan events: %w", qErr)
 	}
 	type eventRewrite struct {
 		agg, aggID, typ string
@@ -387,7 +387,7 @@ func (s *Sink) PruneEvents(ctx context.Context, olderThan time.Time) (int64, err
 	return int64(n), nil
 }
 
-func (s *Sink) MaintainPartitions(ctx context.Context, retention time.Duration) (created, dropped int, err error) {
+func (s *Sink) MaintainPartitions(_ context.Context, _ time.Duration) (created, dropped int, err error) {
 	return 0, 0, nil
 }
 

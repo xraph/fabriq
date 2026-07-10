@@ -72,9 +72,9 @@ func analyticsCommand() cli.Command {
 		}
 
 		if !all {
-			n, err := bf.Tenant(ctx.Context(), tenants[0])
-			if err != nil {
-				return err
+			n, terr := bf.Tenant(ctx.Context(), tenants[0])
+			if terr != nil {
+				return terr
 			}
 			ctx.Success(fmt.Sprintf("tenant %s: backfilled %d rows", tenants[0], n))
 			return nil
@@ -172,9 +172,9 @@ func analyticsCommand() cli.Command {
 		}
 
 		if !all {
-			n, err := rp.Tenant(ctx.Context(), tenants[0])
-			if err != nil {
-				return err
+			n, terr := rp.Tenant(ctx.Context(), tenants[0])
+			if terr != nil {
+				return terr
 			}
 			ctx.Success(fmt.Sprintf("tenant %s: reprojected %d rows", tenants[0], n))
 			return nil

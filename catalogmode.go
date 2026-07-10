@@ -298,24 +298,24 @@ func adaptiveConfig(cc CatalogConfig, staticMax int) *shard.AutoscaleConfig {
 	if !cc.Adaptive.Enabled {
 		return nil
 	}
-	min := cc.Adaptive.Min
-	if min <= 0 {
-		min = 8
+	lo := cc.Adaptive.Min
+	if lo <= 0 {
+		lo = 8
 	}
-	max := cc.Adaptive.Max
-	if max <= 0 {
+	hi := cc.Adaptive.Max
+	if hi <= 0 {
 		if staticMax > 0 {
-			max = staticMax
+			hi = staticMax
 		} else {
-			max = 128
+			hi = 128
 		}
 	}
-	if max < min {
-		max = min
+	if hi < lo {
+		hi = lo
 	}
 	return &shard.AutoscaleConfig{
-		Min:           min,
-		Max:           max,
+		Min:           lo,
+		Max:           hi,
 		Interval:      cc.Adaptive.Interval,
 		ConnBudget:    cc.Adaptive.ConnBudget,
 		PerShardConns: cc.Adaptive.PerShardConns,

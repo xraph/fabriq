@@ -290,7 +290,7 @@ func (f *fakeDocStore) Sync(_ context.Context, docID string, stateVector []byte)
 	return f.syncUpdate, f.syncErr
 }
 
-func (f *fakeDocStore) Snapshot(_ context.Context, docID string) (document.Materialized, error) {
+func (f *fakeDocStore) Snapshot(_ context.Context, _ string) (document.Materialized, error) {
 	return f.snapshot, f.snapshotErr
 }
 

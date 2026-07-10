@@ -24,7 +24,7 @@ func TestCustomerAnalyticsSpec_Redaction(t *testing.T) {
 		t.Fatalf("Redact: %v", err)
 	}
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err = json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("unmarshal redacted: %v", err)
 	}
 

@@ -137,7 +137,7 @@ func run() error {
 	if dataDir == "" {
 		dataDir = filepath.Join(os.TempDir(), "fabriq-admin-demo")
 	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o750); err != nil { //nolint:gosec // demo data dir from operator-supplied env or a fixed temp path; not attacker-controlled
 		return err
 	}
 	analyticsDSN := os.Getenv("ADMIN_DEMO_ANALYTICS_DSN")

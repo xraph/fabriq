@@ -21,7 +21,8 @@ func TestLockKeyFor_RoleInHighBits(t *testing.T) {
 }
 
 func TestLockKeyFor_StableAndDistinct(t *testing.T) {
-	if LockKeyRelayFor("tenant_a") != LockKeyRelayFor("tenant_a") {
+	first, second := LockKeyRelayFor("tenant_a"), LockKeyRelayFor("tenant_a")
+	if first != second {
 		t.Fatal("unstable key")
 	}
 	if LockKeyRelayFor("tenant_a") == LockKeyRelayFor("tenant_b") {

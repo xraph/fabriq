@@ -64,16 +64,16 @@ func (rc *Reconciler) Tenant(ctx context.Context, tenantID string) (Report, erro
 		default:
 			return nil // analytics is current for this aggregate — nothing to heal
 		}
-		if err := rc.Sink.UpsertFacts(ctx, []Fact{fact}); err != nil {
-			return err
+		if ferr := rc.Sink.UpsertFacts(ctx, []Fact{fact}); ferr != nil {
+			return ferr
 		}
-		if err := rc.Sink.AppendEvents(ctx, []Event{ev}); err != nil {
-			return err
+		if eerr := rc.Sink.AppendEvents(ctx, []Event{ev}); eerr != nil {
+			return eerr
 		}
-		if err := rc.Sink.SetWatermark(ctx, []Watermark{{
+		if werr := rc.Sink.SetWatermark(ctx, []Watermark{{
 			TenantID: env.TenantID, Aggregate: env.Aggregate, AggID: env.AggID, Version: env.Version,
-		}}); err != nil {
-			return err
+		}}); werr != nil {
+			return werr
 		}
 		rep.Healed++
 		return nil

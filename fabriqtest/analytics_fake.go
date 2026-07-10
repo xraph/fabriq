@@ -167,7 +167,7 @@ func (s *FakeAnalyticsSink) PruneEvents(_ context.Context, olderThan time.Time) 
 }
 
 // MaintainPartitions is a no-op for the in-memory fake (it does not partition).
-func (s *FakeAnalyticsSink) MaintainPartitions(_ context.Context, _ time.Duration) (int, int, error) {
+func (s *FakeAnalyticsSink) MaintainPartitions(_ context.Context, _ time.Duration) (created, dropped int, err error) {
 	return 0, 0, nil
 }
 
