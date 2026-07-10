@@ -10,6 +10,7 @@ const surfaces = [
   "Outbox & live",
   "Recall & distillation",
   "Read-only SQL",
+  "Analytics — freshness & SQL",
   "Runtime plugins",
 ];
 
