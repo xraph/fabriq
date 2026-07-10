@@ -70,6 +70,15 @@ func (c *adminController) registerAnalyticsRoutes(r forge.Router) error {
 		return err
 	}
 
+	queryOpts := append([]forge.RouteOption{
+		forge.WithName("fabriq.admin.analytics.query"),
+		forge.WithSummary("Run a read-only SQL query against the analytics sink"),
+		forge.WithTags("Fabriq", "Admin", "Analytics"),
+	}, opts...)
+	if err := r.POST(base+"/analytics/query", c.handleAnalyticsQuery, queryOpts...); err != nil {
+		return err
+	}
+
 	statusOpts := append([]forge.RouteOption{
 		forge.WithName("fabriq.admin.analytics.status"),
 		forge.WithSummary("Report whether the analytics sink is configured"),
