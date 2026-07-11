@@ -9,6 +9,7 @@ import (
 	"github.com/xraph/grove/driver"
 	"github.com/xraph/grove/drivers/pgdriver"
 
+	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/tenant"
 )
@@ -172,4 +173,37 @@ func (i *InsightsAdapter) QueryRaw(ctx context.Context, into any, sql string, ar
 		return classifyQueryErr(serr)
 	}
 	return assignMapsDest(into, maps)
+}
+
+// var _ insights.FactSink asserts *InsightsAdapter also implements the
+// proj:insights consumer's write port, alongside query.AnalyticsQuerier
+// above — both live on this receiver for cohesion.
+var _ insights.FactSink = (*InsightsAdapter)(nil)
+
+// UpsertInsightFacts implements insights.FactSink — version-gated upsert of
+// projected domain facts into the tenant's own fabriq_insights_facts table.
+// Goes through i.a.inTenantTx (not the dynamic-tx path Query/QueryRaw use)
+// so RLS contains the write to the caller's tenant, mirroring the operator
+// sink's UpsertFacts (adapters/pganalytics/sink.go) but tenant-scoped: the
+// tenant is derived from ctx (via inTenantTx), not carried per-fact.
+func (i *InsightsAdapter) UpsertInsightFacts(ctx context.Context, facts []insights.Fact) error {
+	if len(facts) == 0 {
+		return nil
+	}
+	return i.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		for _, f := range facts {
+			const q = `INSERT INTO fabriq_insights_facts
+				(tenant_id, scope_id, entity, agg_id, version, payload, at, deleted)
+				VALUES ($1, NULLIF($2,''), $3, $4, $5, $6::jsonb, $7, $8)
+				ON CONFLICT (tenant_id, entity, agg_id) DO UPDATE
+				SET version = EXCLUDED.version, payload = EXCLUDED.payload,
+				    at = EXCLUDED.at, deleted = EXCLUDED.deleted
+				WHERE EXCLUDED.version > fabriq_insights_facts.version`
+			if _, err := tx.NewRaw(q, f.TenantID, tenant.ScopeOrEmpty(ctx), f.Entity, f.AggID,
+				f.Version, string(f.Payload), f.At, f.Deleted).Exec(ctx); err != nil {
+				return fmt.Errorf("fabriq: insights upsert fact: %w", err)
+			}
+		}
+		return nil
+	})
 }
