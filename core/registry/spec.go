@@ -192,6 +192,14 @@ type EntitySpec struct {
 	// analytics store — deny-by-default. When set, only the declared fields
 	// (or the whole payload if IncludeAll) cross the trust boundary.
 	Analytics *AnalyticsSpec
+
+	// Insights opts the entity into the per-tenant customer-facing analytics
+	// store (projected facts). Nil = not projected. Distinct from Analytics
+	// (the cross-tenant operator sink) — Insights stays inside the tenant DB.
+	Insights *InsightsSpec
+
+	// Metrics declares named, typed cube queries for this entity's Source.
+	Metrics []MetricSpec
 }
 
 // LiveSpec opts an entity into the live query engine (nil = disabled).
@@ -253,4 +261,38 @@ type AnalyticsSpec struct {
 	// co-locating the sensitive value. A hashed field is implicitly included
 	// (it need not also appear in Include). Requires Config.Analytics.HashSalt.
 	Hash []string
+}
+
+// InsightsSpec opts a domain entity into the PER-TENANT customer-facing
+// analytics store: on each change the entity is projected (version-gated) into
+// the tenant's own fabriq_insights_facts table for on-demand aggregation.
+// Unlike AnalyticsSpec (the cross-tenant operator sink) there is NO redaction —
+// the data never leaves the tenant's own database. Nil = not projected.
+type InsightsSpec struct {
+	// Measures are numeric columns aggregatable via Sum/Avg/Min/Max in a cube
+	// Query. Each must be a column of the entity.
+	Measures []string
+	// Dimensions are columns usable as group-by keys. Each must be a column.
+	Dimensions []string
+}
+
+// MetricSpec is an optional named, typed cube query a tenant can invoke by
+// name (query.AnalyticsQuery{Source: metric.Name}). Declaring a metric makes it
+// rollup-ready in phase 2. Schemaless events remain queryable without any
+// MetricSpec.
+type MetricSpec struct {
+	Name          string
+	Source        string          // event name or entity name
+	Measures      []MetricMeasure // at least one
+	Dimensions    []string
+	DefaultBucket time.Duration // optional default TimeBucket
+}
+
+// MetricMeasure mirrors query.Measure at the registry layer (registry must not
+// import core/query). Kind is one of "count"/"sum"/"avg"/"min"/"max"/
+// "count_distinct".
+type MetricMeasure struct {
+	Kind  string
+	Field string
+	As    string
 }
