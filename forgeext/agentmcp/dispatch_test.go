@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
@@ -46,6 +47,11 @@ func (f *fakeFabric) Vector() query.VectorQuerier         { return f.w.Vector }
 func (f *fakeFabric) Spatial() query.SpatialQuerier       { return f.w.Spatial }
 func (f *fakeFabric) Document() document.Store            { return f.w.Docs }
 func (f *fakeFabric) Blob() blob.Store                    { return f.w.Blob }
+
+// Analytics implements query.Fabric with a package-local not-configured stub;
+// no dispatch test exercises analytics.
+func (f *fakeFabric) Analytics() query.AnalyticsQuerier { return notConfiguredAnalytics{} }
+
 func (f *fakeFabric) Subscribe(context.Context, query.SubscribeScope) (<-chan query.Delta, error) {
 	if f.subCh == nil {
 		f.subCh = make(chan query.Delta, 16)
@@ -64,6 +70,22 @@ func (f *fakeFabric) WaitForProjection(context.Context, string, string, string, 
 }
 
 var _ query.Fabric = (*fakeFabric)(nil)
+
+// notConfiguredAnalytics is a package-local stand-in for query.AnalyticsQuerier
+// (this test package predates the analytics port).
+type notConfiguredAnalytics struct{}
+
+func (notConfiguredAnalytics) Track(context.Context, []query.AnalyticsEvent) error {
+	return fabriqerr.ErrStoreNotConfigured
+}
+
+func (notConfiguredAnalytics) Query(context.Context, query.AnalyticsQuery, any) error {
+	return fabriqerr.ErrStoreNotConfigured
+}
+
+func (notConfiguredAnalytics) QueryRaw(context.Context, any, string, ...any) error {
+	return fabriqerr.ErrStoreNotConfigured
+}
 
 type mcpDoc struct {
 	grove.BaseModel `grove:"table:mcpdocs"`

@@ -115,3 +115,15 @@ func (notConfiguredBlob) Copy(context.Context, string, string) (blob.ObjectInfo,
 	return blob.ObjectInfo{}, errPort("blob")
 }
 func (notConfiguredBlob) Capabilities() blob.Caps { return blob.Caps{} }
+
+type notConfiguredAnalytics struct{}
+
+func (notConfiguredAnalytics) Track(context.Context, []query.AnalyticsEvent) error {
+	return errPort("analytics")
+}
+func (notConfiguredAnalytics) Query(context.Context, query.AnalyticsQuery, any) error {
+	return errPort("analytics")
+}
+func (notConfiguredAnalytics) QueryRaw(context.Context, any, string, ...any) error {
+	return errPort("analytics")
+}

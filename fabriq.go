@@ -48,6 +48,10 @@ type Ports struct {
 	CAS             blob.CAS
 	ProjectionState projection.StateReader
 
+	// Analytics is the per-tenant customer-facing analytics port; nil degrades
+	// to ErrStoreNotConfigured.
+	Analytics query.AnalyticsQuerier
+
 	// Live is the snapshot/refill oracle for live queries; when set (and a
 	// tailer is configured) the facade exposes LiveQuery.
 	Live LiveReader
@@ -276,6 +280,14 @@ func (f *Fabriq) Blob() blob.Store {
 		return notConfiguredBlob{}
 	}
 	return f.ports.Blob
+}
+
+// Analytics implements query.Fabric.
+func (f *Fabriq) Analytics() query.AnalyticsQuerier {
+	if f.ports.Analytics == nil {
+		return notConfiguredAnalytics{}
+	}
+	return f.ports.Analytics
 }
 
 // Subscribe implements query.Fabric: authz hook, server-side channel
