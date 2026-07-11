@@ -7,7 +7,6 @@ import (
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
-	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/query"
 )
 
@@ -49,10 +48,8 @@ func (f *fakeFabric) Spatial() query.SpatialQuerier       { return f.w.Spatial }
 func (f *fakeFabric) Document() document.Store            { return f.w.Docs }
 func (f *fakeFabric) Blob() blob.Store                    { return f.w.Blob }
 
-// Analytics implements query.Fabric. World has no analytics fake yet
-// (Task 3 adds FakeAnalytics); until then this degrades like an unconfigured
-// port.
-func (f *fakeFabric) Analytics() query.AnalyticsQuerier { return notConfiguredAnalytics{} }
+// Analytics implements query.Fabric, returning the World's FakeAnalytics.
+func (f *fakeFabric) Analytics() query.AnalyticsQuerier { return f.w.Analytics }
 
 func (f *fakeFabric) Subscribe(_ context.Context, _ query.SubscribeScope) (<-chan query.Delta, error) {
 	return make(chan query.Delta), nil
@@ -63,19 +60,3 @@ func (f *fakeFabric) WaitForProjection(_ context.Context, _, _, _ string, _ int6
 }
 
 var _ query.Fabric = (*fakeFabric)(nil)
-
-// notConfiguredAnalytics is a package-local stand-in for query.AnalyticsQuerier
-// until Task 3 lands FakeAnalytics on World.
-type notConfiguredAnalytics struct{}
-
-func (notConfiguredAnalytics) Track(context.Context, []query.AnalyticsEvent) error {
-	return fabriqerr.ErrStoreNotConfigured
-}
-
-func (notConfiguredAnalytics) Query(context.Context, query.AnalyticsQuery, any) error {
-	return fabriqerr.ErrStoreNotConfigured
-}
-
-func (notConfiguredAnalytics) QueryRaw(context.Context, any, string, ...any) error {
-	return fabriqerr.ErrStoreNotConfigured
-}
