@@ -94,7 +94,10 @@ err := f.Analytics().Track(ctx, []query.AnalyticsEvent{
 event name or a new prop key. `DedupKey`, when set, makes a retry safe: a
 second `Track` call with the same `(tenant, DedupKey)` is silently ignored
 (a partial unique index enforces this; `NULL` dedup keys never conflict, so
-most events need not set one at all).
+most events need not set one at all). Dedup keys are **tenant-wide**: they are
+deduplicated across the whole tenant, not per scope, so two different scopes
+that reuse the same `DedupKey` collide and only the first event lands. Choose
+keys that are unique within the tenant (e.g. prefix them with the scope).
 
 ## Querying with the cube
 

@@ -49,7 +49,9 @@ Yes — a new facade port, `f.Analytics()`, backed by a store that lives
   - `Track(ctx, events []AnalyticsEvent) error` — bulk, outbox-bypass ingest
     of schemaless customer events, mirroring `TSQuerier.BulkWrite`. One
     multi-row `INSERT` per call; an optional `DedupKey` gives idempotent
-    retries via a partial unique index.
+    retries via a partial unique index. Dedup keys are keyed
+    `(tenant_id, dedup_key)` — tenant-wide, not per-scope — so two scopes
+    reusing one key collide and only the first event lands.
   - `Query(ctx, AnalyticsQuery, into any) error` — an engine-neutral cube
     aggregation (`Measures` × `Dimensions` × `TimeBucket`, filtered by the
     existing `Where` vocabulary), computed on-demand.
