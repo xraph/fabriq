@@ -1,0 +1,286 @@
+---
+title: Analytics
+description: The per-tenant, RLS-scoped customer analytics port — event ingest, a structured cube query, and a raw-SQL escape hatch, all reachable through f.Analytics().
+---
+
+<Callout type="info">
+**This is tenant-facing analytics.** `f.Analytics()` is scoped to the caller's
+own tenant like every other fabriq port — a tenant's own application queries
+its own data. It is a completely different capability from the operator-only
+[Analytics sink](/docs/analytics-sink) (`POST /admin/analytics/query`, ADR
+0013), which deliberately co-locates a redacted slice of **every** tenant's
+data in one shared store for fleet-wide operator reporting. The two share no
+table, DSN, consumer group, or query path — see
+[ADR 0014](/docs/decisions/0014-tenant-analytics) for the full boundary.
+</Callout>
+
+The analytics plane is for a tenant's own product analytics: custom event
+tracking (`"order_placed"`, `"button_clicked"`) plus aggregation over the
+tenant's own opt-in domain entities — through one typed surface, isolated to
+that tenant exactly like every other fabriq port.
+
+```go
+type AnalyticsQuerier interface {
+	Track(ctx context.Context, events []AnalyticsEvent) error
+	Query(ctx context.Context, q AnalyticsQuery, into any) error
+	QueryRaw(ctx context.Context, into any, sql string, args ...any) error
+}
+```
+
+Reach it through `f.Analytics()`.
+
+## Enabling it
+
+Analytics is off by default. Turn it on with one config flag — there is no
+separate DSN to configure, because the store lives inside the tenant's own
+database/schema/shard, alongside every other tenant table:
+
+```yaml
+insights:
+  enabled: true
+```
+
+```go
+cfg := fabriq.Config{
+	// ...
+	Insights: fabriq.InsightsConfig{Enabled: true},
+}
+```
+
+With `Insights.Enabled: false` (the default), `f.Analytics()` degrades every
+method to `fabriq.ErrStoreNotConfigured`, the same discipline every other
+optional port follows.
+
+Migration `202607100031` (`insights`) creates the two tables this plane uses
+— `fabriq_insights_events` and `fabriq_insights_facts` — with the same
+row-level-security policies as every other in-tenant table. Turning on
+`Insights.Enabled` does not by itself start the domain-projection consumer
+(`proj:insights`); that also requires at least one registered entity to opt
+in via `InsightsSpec` (see [Opting a domain entity in](#opting-a-domain-entity-in)
+below). Enabling `Insights` with no entity marked logs a warning: nothing
+would flow into any tenant's store — `Track`/`Query`/`QueryRaw` still work
+for schemaless events regardless.
+
+## Ingesting events with Track
+
+`Track` is a bulk, fire-and-forget ingest path — like `TSQuerier.BulkWrite`,
+it bypasses the outbox entirely (no event, no aggregate) and writes straight
+into the tenant's `fabriq_insights_events` table:
+
+```go
+type AnalyticsEvent struct {
+	Name     string         // "order_placed", "button_clicked"
+	At       time.Time      // event time
+	Props    map[string]any // arbitrary dimensions/measures -> JSONB
+	DedupKey string         // optional: idempotent retries
+}
+```
+
+```go
+err := f.Analytics().Track(ctx, []query.AnalyticsEvent{
+	{
+		Name: "order_placed",
+		At:   time.Now(),
+		Props: map[string]any{
+			"amount":   42.50,
+			"status":   "paid",
+			"category": "widgets",
+		},
+	},
+})
+```
+
+`Props` is schemaless — no registration is required to start tracking a new
+event name or a new prop key. `DedupKey`, when set, makes a retry safe: a
+second `Track` call with the same `(tenant, DedupKey)` is silently ignored
+(a partial unique index enforces this; `NULL` dedup keys never conflict, so
+most events need not set one at all).
+
+## Querying with the cube
+
+`Query` runs a structured aggregation — measures grouped by dimensions,
+optionally bucketed over time — without hand-writing SQL:
+
+```go
+type AnalyticsQuery struct {
+	Source        string        // event name (see note below)
+	Measures      []Measure     // at least one
+	Dimensions    []string      // group-by keys
+	TimeBucket    time.Duration // 0 = no time grouping
+	Filter        Where         // reuses the relational Where vocabulary
+	Having        Where         // NOT implemented yet — see Known limitations
+	From, To      time.Time     // bound the event time window
+	OrderBy       string
+	Limit, Offset int
+}
+```
+
+A worked example — total revenue and order count, by status, bucketed by
+day, for orders over $10 in the last 30 days:
+
+```go
+type row struct {
+	Status string  `json:"status"`
+	Bucket string  `json:"bucket"`
+	Total  float64 `json:"sum_amount"`
+	Count  int64   `json:"count"`
+}
+
+var rows []row
+err := f.Analytics().Query(ctx, query.AnalyticsQuery{
+	Source:     "order_placed",
+	Measures:   []query.Measure{
+		{Kind: query.MeasureSum, Field: "amount"}, // -> column "sum_amount"
+		{Kind: query.MeasureCount},                // -> column "count"
+	},
+	Dimensions: []string{"status"},
+	TimeBucket: 24 * time.Hour,
+	Filter:     query.Where{query.Gt("amount", 10)},
+	From:       time.Now().AddDate(0, 0, -30),
+}, &rows)
+```
+
+Each result row carries one column per dimension (named after the dimension
+key), one `bucket` column when `TimeBucket > 0`, and one column per measure
+(named `<kind>_<field>`, e.g. `sum_amount`, or `count` for `MeasureCount` —
+override with `Measure.As`). `Query` scans into `*[]T` (a struct or a
+`map[string]any`), the same map-native scanning every dynamic-entity read in
+fabriq uses.
+
+Available measure kinds: `MeasureCount`, `MeasureSum`, `MeasureAvg`,
+`MeasureMin`, `MeasureMax`, `MeasureCountDistinct`.
+
+`Filter` reuses the same `Where` vocabulary as every other query port
+(`Eq`/`In`/`Gt`/`Or`/…). Range comparisons (`Gt`/`Gte`/`Lt`/`Lte`) against a
+**numeric** Go value compare numerically; against a **string** value they
+compare lexicographically (the prop is stored as JSONB text under the hood) —
+by design, since dimensions can be either numbers or strings.
+
+### Known limitations of Query
+
+<Callout type="warn">
+- **Events only, in phase 1.** `Query`'s `Source` currently names a customer
+  event (the `Name` you passed to `Track`) — it reads
+  `fabriq_insights_events` exclusively. Domain entities opted in via
+  `InsightsSpec` (below) **are** projected into `fabriq_insights_facts`, but
+  querying those projected facts through the cube (`Source` = an entity
+  name) is not wired yet. Read `fabriq_insights_facts` directly via
+  `QueryRaw` in the meantime.
+- **`Having` is not implemented.** Post-aggregation filtering
+  (`AnalyticsQuery.Having`) returns an explicit error today rather than being
+  silently dropped — do not set it. Filter before aggregation with `Filter`
+  instead.
+- **Declared metrics are not yet resolvable by name.** A `MetricSpec`
+  registered on an entity (see below) validates at registration but does not
+  expand when passed as `Query.Source` — spell out the full
+  `Measures`/`Dimensions`/`TimeBucket` on every call for now.
+- **No percentile measures.** `p95`-style aggregation is not in phase 1.
+- **No materialized rollups.** Every `Query` computes on-demand; there is no
+  continuous-aggregate/rollup routing yet. The query shape is designed to
+  need no API change when rollups land.
+
+See [ADR 0014](/docs/decisions/0014-tenant-analytics#known-gaps-phase-1) for
+the full, authoritative gaps list.
+</Callout>
+
+## QueryRaw: the SQL escape hatch
+
+For aggregations the cube can't express — window functions, complex joins,
+reading `fabriq_insights_facts` directly — `QueryRaw` runs a read-only,
+RLS-scoped SQL statement:
+
+```go
+var out []struct {
+	Entity string `json:"entity"`
+	Count  int64  `json:"count"`
+}
+err := f.Analytics().QueryRaw(ctx, &out, `
+	SELECT entity, count(*) AS count
+	FROM fabriq_insights_facts
+	WHERE NOT deleted
+	GROUP BY entity
+`)
+```
+
+`QueryRaw` runs inside a genuine Postgres `READ ONLY` transaction (so any
+data-modifying statement fails at the database, not just at a precheck) and
+is additionally guarded by a statement precheck that rejects writes, DDL,
+and file-access functions before the query ever reaches Postgres. It is
+tenant-stamped the same way every other in-tenant query is — `tenant_id`
+and `scope_id` are `SET LOCAL` on the transaction, so RLS scopes every read
+to the caller's own tenant regardless of what the SQL text says.
+
+## Opting a domain entity in
+
+Beyond custom events, a tenant's existing domain entities can be projected
+into the analytics store so their history is aggregatable too. Mark an
+entity with `registry.InsightsSpec`:
+
+```go
+r.Register(registry.EntitySpec{
+	Name: "order",
+	// ...
+	Insights: &registry.InsightsSpec{
+		Measures:   []string{"amount"},          // aggregatable numeric columns
+		Dimensions: []string{"status", "region"}, // group-by columns
+	},
+})
+```
+
+Deny-by-default: an entity with no `Insights` field (the zero value, `nil`)
+is never projected. A spec naming neither `Measures` nor `Dimensions` is
+rejected at registration time — a marked-but-empty spec would silently
+project nothing, which is worse than a startup error. Every named column
+must be a real column of the entity's binding, also checked at registration.
+
+Unlike the operator sink's `AnalyticsSpec`, **there is no `Include`/`Hash`
+redaction** on `InsightsSpec` — the projected payload keeps exactly the
+declared measure and dimension columns, unredacted, because this data never
+leaves the tenant's own database.
+
+Once at least one entity carries an `InsightsSpec` (and `Insights.Enabled`
+is true, and Redis is configured), the `proj:insights` consumer starts
+automatically alongside the worker or catalog sweeper: on every change to an
+opted-in entity, a version-gated `Fact` lands in that tenant's own
+`fabriq_insights_facts` table. Redelivery is always safe — the upsert only
+applies when the incoming version is newer than what's stored.
+
+### Declaring named metrics (optional)
+
+For typed, reusable cube queries, declare a `MetricSpec` alongside
+`Insights`:
+
+```go
+r.Register(registry.EntitySpec{
+	Name: "order",
+	// ...
+	Insights: &registry.InsightsSpec{
+		Measures:   []string{"amount"},
+		Dimensions: []string{"status"},
+	},
+	Metrics: []registry.MetricSpec{
+		{
+			Name:          "daily_revenue",
+			Source:        "order_placed",
+			Measures:      []registry.MetricMeasure{{Kind: "sum", Field: "amount"}},
+			Dimensions:    []string{"status"},
+			DefaultBucket: 24 * time.Hour,
+		},
+	},
+})
+```
+
+A `MetricSpec` validates at registration (a non-empty `Name`, at least one
+`MetricMeasure`, and every non-`count` measure field is a real column) and
+makes the metric discoverable, typed metadata — and a rollup candidate for
+phase 2. As noted above, it is **not yet callable by name**: you cannot pass
+`Query.Source = "daily_revenue"` and have it expand into the declared
+measures/dimensions/bucket. Until that lands, build the equivalent
+`AnalyticsQuery` by hand, as shown in [Querying with the cube](#querying-with-the-cube).
+
+<Cards>
+  <Card title="ADR 0014" href="/docs/decisions/0014-tenant-analytics">The design decisions and the hard boundary vs. the operator sink.</Card>
+  <Card title="Analytics sink" href="/docs/analytics-sink">The operator-only, cross-tenant counterpart (ADR 0013).</Card>
+  <Card title="Registry" href="/docs/registry">EntitySpec and how opt-in specs like InsightsSpec are validated.</Card>
+  <Card title="Tenancy" href="/docs/tenancy">The RLS and structural-stamping layers this plane inherits.</Card>
+</Cards>
