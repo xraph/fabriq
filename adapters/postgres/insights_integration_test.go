@@ -10,6 +10,8 @@ package postgres_test
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -168,4 +170,164 @@ func truncateInsights(t *testing.T, ctx context.Context, owner *postgres.Adapter
 	if _, err := owner.Driver().Exec(ctx, `TRUNCATE fabriq_insights_events, fabriq_insights_facts`); err != nil {
 		t.Fatalf("truncate insights tables: %v", err)
 	}
+}
+
+// TestInsights_UpsertFactsVersionGate proves (*postgres.InsightsAdapter).
+// UpsertInsightFacts — the proj:insights write path — against a real
+// Postgres: the version gate (an older write is a silent no-op, a newer
+// write replaces the row), the NULLIF($2,”) scope handling (unscoped writes
+// store scope_id NULL, scoped writes store the literal scope id), and tenant
+// isolation (RLS contains each tenant's writes to its own rows), all read
+// back via the RLS-bypassing owner adapter exactly as TestInsights_TrackDedup
+// reads back Track's rows.
+func TestInsights_UpsertFactsVersionGate(t *testing.T) {
+	a, owner := newInsightsHarness(t)
+	ia := postgres.NewInsightsAdapter(a)
+
+	acmeCtx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+
+	// 1. Version gate: v2 then an older v1 for the same (tenant, entity,
+	// agg_id) — the older write must be a no-op, leaving v2 in place.
+	v2Payload := json.RawMessage(`{"total":200}`)
+	if err := ia.UpsertInsightFacts(acmeCtx, []insights.Fact{{
+		TenantID: "acme", Entity: "order", AggID: "o1",
+		Version: 2, Payload: v2Payload, At: now,
+	}}); err != nil {
+		t.Fatalf("upsert v2: %v", err)
+	}
+	v1Payload := json.RawMessage(`{"total":100}`)
+	if err := ia.UpsertInsightFacts(acmeCtx, []insights.Fact{{
+		TenantID: "acme", Entity: "order", AggID: "o1",
+		Version: 1, Payload: v1Payload, At: now,
+	}}); err != nil {
+		t.Fatalf("upsert older v1 (should be a silent no-op, not an error): %v", err)
+	}
+	gotVersion, gotPayload, _ := readInsightFact(t, owner, "acme", "order", "o1")
+	if gotVersion != 2 {
+		t.Fatalf("version gate: want version 2 to survive an older v1 write, got %d", gotVersion)
+	}
+	if !jsonEqual(t, gotPayload, v2Payload) {
+		t.Fatalf("version gate: want v2 payload to survive, got %s", gotPayload)
+	}
+
+	// 2. Newer version: v3 must replace both version and payload.
+	v3Payload := json.RawMessage(`{"total":300}`)
+	if err := ia.UpsertInsightFacts(acmeCtx, []insights.Fact{{
+		TenantID: "acme", Entity: "order", AggID: "o1",
+		Version: 3, Payload: v3Payload, At: now,
+	}}); err != nil {
+		t.Fatalf("upsert v3: %v", err)
+	}
+	gotVersion, gotPayload, _ = readInsightFact(t, owner, "acme", "order", "o1")
+	if gotVersion != 3 {
+		t.Fatalf("want version 3 after a newer write, got %d", gotVersion)
+	}
+	if !jsonEqual(t, gotPayload, v3Payload) {
+		t.Fatalf("want v3 payload after a newer write, got %s", gotPayload)
+	}
+
+	// 3. Scope handling: a fact written under a scoped ctx lands with
+	// scope_id = 's1'; a fact written unscoped (acmeCtx above) lands with
+	// scope_id IS NULL.
+	scopedCtx, err := tenant.WithScope(acmeCtx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ia.UpsertInsightFacts(scopedCtx, []insights.Fact{{
+		TenantID: "acme", Entity: "invoice", AggID: "i1",
+		Version: 1, Payload: json.RawMessage(`{}`), At: now,
+	}}); err != nil {
+		t.Fatalf("upsert scoped fact: %v", err)
+	}
+	_, _, gotScope := readInsightFact(t, owner, "acme", "invoice", "i1")
+	if gotScope != "s1" {
+		t.Fatalf("want scope_id 's1' for a fact written under a scoped ctx, got %q", gotScope)
+	}
+	_, _, unscoped := readInsightFact(t, owner, "acme", "order", "o1")
+	if unscoped != "" {
+		t.Fatalf("want scope_id NULL for a fact written under an unscoped ctx, got %q", unscoped)
+	}
+
+	// 4. Tenant isolation: a fact written under tenant t1 must not appear
+	// under tenant t2's rows, even for the same (entity, agg_id) — RLS
+	// contains the write's visibility to its own tenant.
+	t1Ctx, err := tenant.WithTenant(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t2Ctx, err := tenant.WithTenant(context.Background(), "t2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ia.UpsertInsightFacts(t1Ctx, []insights.Fact{{
+		TenantID: "t1", Entity: "order", AggID: "shared",
+		Version: 1, Payload: json.RawMessage(`{"who":"t1"}`), At: now,
+	}}); err != nil {
+		t.Fatalf("upsert under t1: %v", err)
+	}
+	if err := ia.UpsertInsightFacts(t2Ctx, []insights.Fact{{
+		TenantID: "t2", Entity: "order", AggID: "shared",
+		Version: 1, Payload: json.RawMessage(`{"who":"t2"}`), At: now,
+	}}); err != nil {
+		t.Fatalf("upsert under t2: %v", err)
+	}
+	t1Version, t1Payload, _ := readInsightFact(t, owner, "t1", "order", "shared")
+	if t1Version != 1 || !jsonEqual(t, t1Payload, json.RawMessage(`{"who":"t1"}`)) {
+		t.Fatalf("t1 row missing or wrong: version=%d payload=%s", t1Version, t1Payload)
+	}
+	t2Version, t2Payload, _ := readInsightFact(t, owner, "t2", "order", "shared")
+	if t2Version != 1 || !jsonEqual(t, t2Payload, json.RawMessage(`{"who":"t2"}`)) {
+		t.Fatalf("t2 row missing or wrong: version=%d payload=%s", t2Version, t2Payload)
+	}
+	if countInsightsFactsForTenant(t, owner, "t1") != 1 {
+		t.Fatalf("want exactly 1 fact row visible under tenant_id='t1'")
+	}
+}
+
+// jsonEqual compares two JSON documents by decoded value rather than by raw
+// bytes: Postgres's jsonb re-serializes payloads (e.g. inserting a space
+// after ':'), so a byte-exact comparison against the literal we wrote would
+// spuriously fail.
+func jsonEqual(t *testing.T, a, b json.RawMessage) bool {
+	t.Helper()
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		t.Fatalf("unmarshal %s: %v", a, err)
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		t.Fatalf("unmarshal %s: %v", b, err)
+	}
+	return reflect.DeepEqual(av, bv)
+}
+
+// readInsightFact reads back one fabriq_insights_facts row via the
+// RLS-bypassing owner connection, mirroring countInsightsEvents/
+// countAllInsightsEvents above.
+func readInsightFact(t *testing.T, owner *postgres.Adapter, tenantID, entity, aggID string) (version int64, payload json.RawMessage, scopeID string) {
+	t.Helper()
+	row := owner.Driver().QueryRow(context.Background(),
+		`SELECT version, payload, coalesce(scope_id, '') FROM fabriq_insights_facts
+		 WHERE tenant_id = $1 AND entity = $2 AND agg_id = $3`,
+		tenantID, entity, aggID)
+	if err := row.Scan(&version, &payload, &scopeID); err != nil {
+		t.Fatalf("read back fact (tenant=%s entity=%s agg_id=%s): %v", tenantID, entity, aggID, err)
+	}
+	return version, payload, scopeID
+}
+
+// countInsightsFactsForTenant counts fabriq_insights_facts rows visible
+// under tenant_id, via the RLS-bypassing owner connection.
+func countInsightsFactsForTenant(t *testing.T, owner *postgres.Adapter, tenantID string) int {
+	t.Helper()
+	var n int
+	row := owner.Driver().QueryRow(context.Background(),
+		`SELECT count(*) FROM fabriq_insights_facts WHERE tenant_id = $1`, tenantID)
+	if err := row.Scan(&n); err != nil {
+		t.Fatalf("count facts for tenant %s: %v", tenantID, err)
+	}
+	return n
 }
