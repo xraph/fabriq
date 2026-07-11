@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -25,6 +26,28 @@ func propAccessor(key string) (string, error) {
 		return "", fmt.Errorf("fabriq: invalid insights key %q", key)
 	}
 	return fmt.Sprintf("props ->> '%s'", key), nil
+}
+
+// isNumericValue reports whether v is a Go numeric type, as opposed to a
+// string or other kind, so mapCondToProp knows whether a Gt/Gte/Lt/Lte bound
+// warrants a numeric cast on its JSONB accessor. Mirrors the int/uint/float
+// family fabriqtest's toFloat (fabriqtest/filter.go) coerces — the same
+// numeric-detection the in-memory fake's evalConds relies on for these ops —
+// plus json.Number for condition values that arrived via a JSON round-trip
+// (e.g. core/insights/conformance.go's toFloatT handles the same case for
+// decoded query results). adapters/postgres does not import fabriqtest or
+// core/insights (both pull in "testing"), so the switch is duplicated here
+// rather than shared.
+func isNumericValue(v any) bool {
+	switch v.(type) {
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64,
+		json.Number:
+		return true
+	default:
+		return false
+	}
 }
 
 // measureAlias computes the (possibly defaulted) output column name for a
@@ -119,7 +142,21 @@ func mapCondToProp(c query.Cond, argN *int) (frag string, args []any, err error)
 		return p
 	}
 	switch c.Op {
-	case query.OpEq, query.OpNe, query.OpGt, query.OpGte, query.OpLt, query.OpLte, query.OpLike, query.OpILike:
+	case query.OpGt, query.OpGte, query.OpLt, query.OpLte:
+		// Range comparisons over a JSONB prop default to a TEXT comparison
+		// (props ->> 'col' is already ::text), which is lexicographic — "50"
+		// > "100" as strings — and silently returns wrong rows for numeric
+		// data. Measures on the same field already cast to numeric
+		// (measureExpr); mirror that here whenever the bound value itself is
+		// numeric, so `Gt("amount", 100)` compares numerically. A
+		// string-valued bound (e.g. comparing a status/version string field)
+		// keeps the plain text comparison.
+		col := acc
+		if isNumericValue(c.Value) {
+			col = "(" + acc + ")::numeric"
+		}
+		return fmt.Sprintf("%s %s %s", col, sqlOp[c.Op], ph()), []any{c.Value}, nil
+	case query.OpEq, query.OpNe, query.OpLike, query.OpILike:
 		return fmt.Sprintf("%s %s %s", acc, sqlOp[c.Op], ph()), []any{c.Value}, nil
 	case query.OpIn:
 		return fmt.Sprintf("%s = ANY(%s)", acc, ph()), []any{c.Value}, nil

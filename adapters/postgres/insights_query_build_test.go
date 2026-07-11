@@ -93,6 +93,48 @@ func TestBuildInsightsSQL_FilterBindsValueRewritesColumn(t *testing.T) {
 	}
 }
 
+func TestBuildInsightsSQL_NumericRangeFilterCastsToNumeric(t *testing.T) {
+	sql, args, err := buildInsightsSQL(query.AnalyticsQuery{
+		Source:   "order",
+		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		Filter:   query.Where{query.Gt("amount", 100)},
+	}, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A numeric-valued Gt must cast the JSONB accessor to numeric before
+	// comparing, or "50" > "100" wins lexicographically and silently returns
+	// wrong rows (see measureExpr, which casts the same field for measures).
+	if !strings.Contains(sql, "(props ->> 'amount')::numeric > $3") {
+		t.Fatalf("expected numeric-cast comparison for numeric Gt bound:\n%s", sql)
+	}
+	if args[2] != 100 {
+		t.Fatalf("expected filter value bound as $3, got args=%v", args)
+	}
+}
+
+func TestBuildInsightsSQL_StringRangeFilterStaysText(t *testing.T) {
+	sql, args, err := buildInsightsSQL(query.AnalyticsQuery{
+		Source:   "order",
+		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		Filter:   query.Where{query.Gt("col", "m")},
+	}, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A string-valued Gt must stay a plain text comparison, with no numeric
+	// cast, so range filters over genuinely string-typed fields still work.
+	if !strings.Contains(sql, "props ->> 'col' > $3") {
+		t.Fatalf("expected plain text comparison for string Gt bound:\n%s", sql)
+	}
+	if strings.Contains(sql, "(props ->> 'col')::numeric") {
+		t.Fatalf("did not expect numeric cast for string-valued Gt:\n%s", sql)
+	}
+	if args[2] != "m" {
+		t.Fatalf("expected filter value bound as $3, got args=%v", args)
+	}
+}
+
 func TestBuildInsightsSQL_RejectsInjectionInFilterColumn(t *testing.T) {
 	_, _, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source:   "x",
