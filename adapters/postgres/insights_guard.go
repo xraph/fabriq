@@ -7,7 +7,7 @@ import (
 )
 
 // insightsSkipRe matches regions the write/file-func denylists must treat as
-// opaque: single-quoted string literals (with '' escapes), line comments, and
+// opaque: single-quoted string literals (with ” escapes), line comments, and
 // block comments — so a word like "delete" inside a literal or comment never
 // falsely trips the guard.
 var insightsSkipRe = regexp.MustCompile(`'(?:[^']|'')*'|--[^\n]*|/\*[\s\S]*?\*/`)
