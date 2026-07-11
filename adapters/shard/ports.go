@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/query"
 )
 
@@ -40,6 +41,7 @@ var (
 	_ query.SpatialQuerier    = (*Spatial)(nil)
 	_ query.SpatialCoverer    = (*Spatial)(nil)
 	_ query.AnalyticsQuerier  = (*Analytics)(nil)
+	_ insights.FactSink       = (*Analytics)(nil)
 )
 
 // NewStore wraps a Set as a routing command.Store.
@@ -266,4 +268,26 @@ func (a *Analytics) QueryRaw(ctx context.Context, into any, sql string, args ...
 	}
 	defer release()
 	return sh.Analytics.QueryRaw(sctx, into, sql, args...)
+}
+
+// UpsertInsightFacts implements insights.FactSink by routing a proj:insights
+// fact batch to the ctx tenant's shard: Acquire resolves the shard from the
+// tenant already stamped on ctx (the consumer's handle stamps tenant+scope
+// before calling the sink), so this lands on the same shard — and through
+// the same inTenantTx/RLS containment — as every other per-tenant analytics
+// call the Track/Query/QueryRaw methods above make. sh.Analytics is typed
+// query.AnalyticsQuerier on the Shard struct, but the concrete adapter
+// (*postgres.InsightsAdapter) also implements insights.FactSink; the type
+// assertion recovers that second facet.
+func (a *Analytics) UpsertInsightFacts(ctx context.Context, facts []insights.Fact) error {
+	sh, sctx, release, err := a.set.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	sink, ok := sh.Analytics.(insights.FactSink)
+	if !ok {
+		return fmt.Errorf("fabriq: shard %q analytics adapter does not implement insights.FactSink", sh.ID)
+	}
+	return sink.UpsertInsightFacts(sctx, facts)
 }

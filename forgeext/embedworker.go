@@ -32,6 +32,17 @@ func hasAnalyticsEntity(reg *registry.Registry) bool {
 	return false
 }
 
+// hasInsightsEntity reports whether any registered entity opts into the
+// per-tenant customer-facing insights projection.
+func hasInsightsEntity(reg *registry.Registry) bool {
+	for _, ent := range reg.All() {
+		if ent.Spec.Insights != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // embedHandler is the per-event consumer callback: it derives a tenant-scoped
 // context from the envelope and indexes the event.
 //

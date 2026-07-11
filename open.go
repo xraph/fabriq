@@ -26,6 +26,7 @@ import (
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/crypto"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/subscribe"
@@ -647,6 +648,42 @@ func (s *Stores) AnalyticsConsumer(reg *registry.Registry, upcasters *event.Upca
 		Applier:   analytics.NewApplier(reg, analytics.WithHashSalt(s.analyticsSalt)),
 		Sink:      s.Analytics,
 		Upcasters: upcasters,
+	}, nil
+}
+
+// InsightsConsumer assembles the per-tenant proj:insights projection
+// consumer: the shared Redis stream -> registry-driven applier -> the
+// caller tenant's own store. Unlike AnalyticsConsumer (one shared
+// cross-tenant sink), the FactSink here is resolved PER TENANT from the
+// shard set/router — the same routing static Store/Relational/Vector/
+// Timeseries/Spatial/Analytics ports use (adapters/shard/ports.go), so the
+// write lands on the ctx tenant's shard and goes through inTenantTx/RLS
+// exactly as every other per-tenant write does. Run one per worker replica.
+// Requires redis; the shard router is always present once Open succeeds
+// (static Shards or catalog-mode router), so this only fails if Redis is
+// unconfigured.
+func (s *Stores) InsightsConsumer(reg *registry.Registry) (*insights.Consumer, error) {
+	if s.Redis == nil {
+		return nil, fmt.Errorf("fabriq: insights consumer needs redis configured")
+	}
+	router := s.router
+	if router == nil {
+		router = s.Shards
+	}
+	if router == nil {
+		return nil, fmt.Errorf("fabriq: insights consumer needs a shard router configured")
+	}
+	// shard.NewAnalytics wraps the router as a query.AnalyticsQuerier AND
+	// (via its UpsertInsightFacts passthrough) an insights.FactSink: each
+	// call resolves the ctx tenant's shard and delegates to that shard's
+	// *postgres.InsightsAdapter, so this is the same per-tenant routing
+	// mechanism f.Analytics() uses for Track/Query/QueryRaw.
+	sink := shard.NewAnalytics(router)
+	return &insights.Consumer{
+		Group:   "proj:insights",
+		Source:  s.Redis,
+		Applier: insights.NewApplier(reg),
+		Sink:    sink,
 	}, nil
 }
 
