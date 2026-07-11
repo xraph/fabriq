@@ -98,7 +98,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		}
 		shardPG[sc.ID] = a
 		ids = append(ids, sc.ID)
-		shardList = append(shardList, shard.Shard{ID: sc.ID, Store: a, Relational: a, Vector: postgres.NewVectorAdapter(a), Timeseries: a, Spatial: postgres.NewSpatialAdapter(a)})
+		shardList = append(shardList, shard.Shard{ID: sc.ID, Store: a, Relational: a, Vector: postgres.NewVectorAdapter(a), Timeseries: a, Spatial: postgres.NewSpatialAdapter(a), Analytics: postgres.NewInsightsAdapter(a)})
 	}
 	sort.Strings(ids)
 	pg := shardPG[ids[0]] // primary: health, migrations CLI, document plane
@@ -132,6 +132,9 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		Spatial:         shard.NewSpatial(set),
 		Documents:       docStore,
 		ProjectionState: stores.state,
+	}
+	if cfg.Insights.Enabled {
+		ports.Analytics = shard.NewAnalytics(set)
 	}
 	if len(shardList) == 1 {
 		// Live queries read snapshots/refills straight from the single shard's

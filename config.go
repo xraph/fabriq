@@ -39,7 +39,11 @@ type Config struct {
 	// Analytics enables the opt-in cross-tenant analytics sink (spec
 	// 2026-07-03). Empty DSN = disabled. The DSN MUST point at a database
 	// separate from tenant DBs and the catalog control DB.
-	Analytics     AnalyticsConfig     `yaml:"analytics" json:"analytics"`
+	Analytics AnalyticsConfig `yaml:"analytics" json:"analytics"`
+	// Insights enables the opt-in PER-TENANT customer-facing analytics port
+	// (f.Analytics()). In-tenant, RLS-scoped — unrelated to Analytics (the
+	// cross-tenant operator sink). Disabled when Enabled is false.
+	Insights      InsightsConfig      `yaml:"insights" json:"insights"`
 	Redis         RedisConfig         `yaml:"redis" json:"redis"`
 	FalkorDB      FalkorDBConfig      `yaml:"falkordb" json:"falkordb"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
@@ -164,6 +168,13 @@ type AnalyticsConfig struct {
 
 // Enabled reports whether analytics is configured.
 func (c AnalyticsConfig) Enabled() bool { return c.DSN != "" }
+
+// InsightsConfig configures the per-tenant customer-facing analytics port. The
+// store is in-tenant (no separate DSN), so this is just an on/off switch in
+// phase 1.
+type InsightsConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+}
 
 // ValidateAnalyticsConfig rejects an analytics DSN that collides with a
 // tenant, shard, or catalog control DSN — the analytics store MUST be a
