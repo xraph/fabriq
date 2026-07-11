@@ -95,12 +95,57 @@ func project(raw json.RawMessage, spec *registry.InsightsSpec) (json.RawMessage,
 			out[k] = v
 		}
 	}
-	return marshalCanonical(out), nil
+	return marshalCanonical(deepConvert(out)), nil
 }
 
-// marshalCanonical marshals a flat map[string]json.RawMessage with keys in
-// sorted order — deterministic regardless of Go map iteration order.
-func marshalCanonical(m map[string]json.RawMessage) json.RawMessage {
+// deepConvert turns a parsed object into the nested map[string]any output
+// shape, recursing into nested objects and keeping other values (arrays,
+// scalars) as exact leaf bytes. Copied from core/analytics' deepConvert
+// rather than imported — the dependency fence above forbids importing
+// core/analytics from this package.
+func deepConvert(top map[string]json.RawMessage) map[string]any {
+	out := make(map[string]any, len(top))
+	for k, v := range top {
+		if child, err := parseObject(v); err == nil && looksLikeObject(v) {
+			out[k] = deepConvert(child)
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// looksLikeObject reports whether raw is a JSON object (first non-space byte '{').
+func looksLikeObject(raw json.RawMessage) bool {
+	for _, b := range raw {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// parseObject unmarshals a JSON object into a key→raw map (empty for empty input).
+func parseObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	m := map[string]json.RawMessage{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+	}
+	return m, nil
+}
+
+// marshalCanonical marshals a nested map[string]any (leaves are
+// json.RawMessage, branches are map[string]any) with recursively sorted
+// keys — deterministic regardless of Go map iteration order, at every
+// nesting depth, not just the top level.
+func marshalCanonical(m map[string]any) json.RawMessage {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -115,7 +160,12 @@ func marshalCanonical(m map[string]json.RawMessage) json.RawMessage {
 		kb, _ := json.Marshal(k)
 		b.Write(kb)
 		b.WriteByte(':')
-		b.Write(m[k])
+		switch v := m[k].(type) {
+		case map[string]any:
+			b.Write(marshalCanonical(v))
+		case json.RawMessage:
+			b.Write(v)
+		}
 	}
 	b.WriteByte('}')
 	return json.RawMessage(b.String())

@@ -61,6 +61,12 @@ func (c *Consumer) handle(ctx context.Context, env event.Envelope) error {
 	if err != nil {
 		return nil // un-derivable tenant can never apply
 	}
+	if env.ScopeID != "" {
+		tctx, err = tenant.WithScope(tctx, env.ScopeID)
+		if err != nil {
+			return nil // un-derivable scope can never apply
+		}
+	}
 	tctx = otel.ContextWithTraceparent(tctx, env.Traceparent)
 
 	if err := c.Sink.UpsertInsightFacts(tctx, []Fact{fact}); err != nil {
