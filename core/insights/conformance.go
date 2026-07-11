@@ -7,6 +7,8 @@ package insights
 import (
 	"context"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,6 +186,57 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 		}
 	})
 
+	t.Run("FilterGtNumeric", func(t *testing.T) {
+		q := newQ()
+		must(t, q.Track(ctx1, []query.AnalyticsEvent{
+			{Name: "order", At: base, Props: map[string]any{"amount": 50}},
+			{Name: "order", At: base, Props: map[string]any{"amount": 100}},
+			{Name: "order", At: base, Props: map[string]any{"amount": 150}},
+			{Name: "order", At: base, Props: map[string]any{"amount": 200}},
+		}))
+		var gt []map[string]any
+		must(t, q.Query(ctx1, query.AnalyticsQuery{
+			Source:   "order",
+			Filter:   query.Where{query.Gt("amount", 100)},
+			Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		}, &gt))
+		// Strictly greater than 100 straddles the boundary: 150 and 200 match,
+		// 50 and 100 (the boundary value itself) do not.
+		if len(gt) != 1 || asInt(gt[0]["n"]) != 2 {
+			t.Fatalf("gt filter wrong: %+v", gt)
+		}
+
+		var gte []map[string]any
+		must(t, q.Query(ctx1, query.AnalyticsQuery{
+			Source:   "order",
+			Filter:   query.Where{query.Gte("amount", 100)},
+			Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		}, &gte))
+		if len(gte) != 1 || asInt(gte[0]["n"]) != 3 {
+			t.Fatalf("gte filter wrong: %+v", gte)
+		}
+
+		var lt []map[string]any
+		must(t, q.Query(ctx1, query.AnalyticsQuery{
+			Source:   "order",
+			Filter:   query.Where{query.Lt("amount", 100)},
+			Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		}, &lt))
+		if len(lt) != 1 || asInt(lt[0]["n"]) != 1 {
+			t.Fatalf("lt filter wrong: %+v", lt)
+		}
+
+		var lte []map[string]any
+		must(t, q.Query(ctx1, query.AnalyticsQuery{
+			Source:   "order",
+			Filter:   query.Where{query.Lte("amount", 100)},
+			Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		}, &lte))
+		if len(lte) != 1 || asInt(lte[0]["n"]) != 2 {
+			t.Fatalf("lte filter wrong: %+v", lte)
+		}
+	})
+
 	t.Run("LimitBoundsRows", func(t *testing.T) {
 		q := newQ()
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{
@@ -260,16 +313,38 @@ func findRow(rows []map[string]any, column string, value any) map[string]any {
 	return nil
 }
 
-// toFloatT coerces common numeric representations (as they appear after a
-// JSON round-trip: float64, json.Number, or Go-native ints/floats before one)
-// to float64.
+// toFloatT coerces common numeric representations to float64. Beyond the
+// JSON-round-trip shapes (float64, json.Number, Go-native ints/floats before
+// one), it also handles what a real SQL adapter's map-scan can hand back for
+// a SUM/AVG/MIN/MAX over a numeric column:
+//
+//   - string / []byte: some drivers scan `numeric` as text.
+//   - a decimal type that implements json.Marshaler (e.g. pgx's
+//     pgtype.Numeric, which round-trips through MarshalJSON as a bare
+//     number token, not a quoted string): marshal it and parse the result.
+//     This keeps core/insights free of any driver import (the dependency
+//     fence — core never imports a specific adapter's driver package) while
+//     still being able to read whatever numeric shape that driver produces.
+//
+// This is representation-robustness only: it never changes what value is
+// considered correct, only what Go types are accepted to carry it.
 func toFloatT(v any) (float64, bool) {
 	switch n := v.(type) {
 	case int:
 		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
 	case int32:
 		return float64(n), true
 	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
 		return float64(n), true
 	case float32:
 		return float64(n), true
@@ -278,7 +353,25 @@ func toFloatT(v any) (float64, bool) {
 	case json.Number:
 		f, err := n.Float64()
 		return f, err == nil
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return f, err == nil
+	case []byte:
+		f, err := strconv.ParseFloat(strings.TrimSpace(string(n)), 64)
+		return f, err == nil
 	default:
+		// Decimal types that don't natively satisfy any of the above (e.g.
+		// pgx's pgtype.Numeric) still implement json.Marshaler and emit a
+		// bare numeric JSON token for a valid, non-NaN value. Use that
+		// instead of importing the driver package directly.
+		if m, ok := v.(interface{ MarshalJSON() ([]byte, error) }); ok {
+			buf, err := m.MarshalJSON()
+			if err != nil {
+				return 0, false
+			}
+			f, perr := strconv.ParseFloat(strings.TrimSpace(string(buf)), 64)
+			return f, perr == nil
+		}
 		return 0, false
 	}
 }

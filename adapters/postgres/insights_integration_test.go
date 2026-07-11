@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/adapters/postgres"
+	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
@@ -126,4 +127,45 @@ func countAllInsightsEvents(t *testing.T, a *postgres.Adapter, tenantID string) 
 		t.Fatalf("count all rows: %v", err)
 	}
 	return n
+}
+
+// TestPgInsights_Conformance gates the real Postgres adapter against the
+// SAME behavioral suite (insights.RunConformance) that already passes
+// against fabriqtest.NewFakeAnalytics — the drift gate for Track/Query
+// semantics. It reuses newInsightsHarness (the exact opener + migrate-to-head
+// setup TestInsights_TrackDedup uses above), which also runs domain.DemoDDL
+// as a side effect — the only thing in this suite's setup path that issues
+// `CREATE EXTENSION IF NOT EXISTS timescaledb` (see domain/demo.go), which
+// TimeBucketGroups' use of time_bucket() depends on.
+//
+// One adapter instance is opened once and reused across every RunConformance
+// sub-test: query.AnalyticsQuerier is stateless per call (tenant travels on
+// ctx, stamped fresh by inTenantTx/inDynamicTenantTx per call), so unlike a
+// pooled resource that needs a fresh handle per sub-test, the SAME
+// *postgres.InsightsAdapter can simply be returned every time the factory is
+// invoked. Isolation between sub-tests instead comes from truncating the
+// insights tables before each factory call, mirroring the noCloseSink +
+// truncating-factory idiom in
+// adapters/pganalytics/conformance_integration_test.go.
+func TestPgInsights_Conformance(t *testing.T) {
+	a, owner := newInsightsHarness(t)
+	ctx := context.Background()
+	ia := postgres.NewInsightsAdapter(a)
+
+	insights.RunConformance(t, func() query.AnalyticsQuerier {
+		truncateInsights(t, ctx, owner)
+		return ia
+	})
+}
+
+// truncateInsights empties both insights tables via the superuser/owner
+// connection. The app role (what `a` in newInsightsHarness connects as) is
+// only granted SELECT/INSERT/UPDATE/DELETE — not TRUNCATE — so this must run
+// as owner, which also bypasses RLS and can see rows from every tenant the
+// previous sub-test wrote.
+func truncateInsights(t *testing.T, ctx context.Context, owner *postgres.Adapter) {
+	t.Helper()
+	if _, err := owner.Driver().Exec(ctx, `TRUNCATE fabriq_insights_events, fabriq_insights_facts`); err != nil {
+		t.Fatalf("truncate insights tables: %v", err)
+	}
 }
