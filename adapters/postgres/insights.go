@@ -73,13 +73,12 @@ func (a *Adapter) Track(ctx context.Context, events []query.AnalyticsEvent) erro
 // the existing *Adapter method for backward compat; Query, which collides,
 // is implemented directly here instead of on *Adapter.
 //
-// QueryRaw (the read-only SQL escape hatch, Task 8) is not implemented yet,
-// so InsightsAdapter does not yet satisfy query.AnalyticsQuerier in full —
-// intentionally no `var _ query.AnalyticsQuerier = (*InsightsAdapter)(nil)`
-// assertion here; add it once QueryRaw lands.
+// QueryRaw (the read-only SQL escape hatch) rounds out the interface below.
 type InsightsAdapter struct {
 	a *Adapter
 }
+
+var _ query.AnalyticsQuerier = (*InsightsAdapter)(nil)
 
 // NewInsightsAdapter wraps an existing Postgres adapter for the customer-facing
 // analytics port.
@@ -120,4 +119,57 @@ func (i *InsightsAdapter) Query(ctx context.Context, q query.AnalyticsQuery, int
 		}
 		return assignMapsDest(into, maps)
 	})
+}
+
+// QueryRaw implements query.AnalyticsQuerier — the read-only SQL escape hatch
+// for aggregations the cube (Query, above) can't express. Modeled on
+// (*Adapter).QueryDynamicReadOnly (adapter.go:582-617), the exact same
+// tenant-stamped READ ONLY transaction pattern: Postgres itself rejects any
+// write/DDL in a read-only tx, and RLS contains the reads to the caller's
+// tenant. precheckInsightsReadOnly runs first as a cheap, fail-fast guard —
+// defense-in-depth on top of the transaction, not a substitute for it.
+//
+// This lives on *InsightsAdapter, not *Adapter, for the same reason Query
+// does: *Adapter already has a Query method for query.RelationalQuerier with
+// a different signature. QueryRaw has no such collision (RelationalQuerier
+// has no QueryRaw), but it is kept here so all three AnalyticsQuerier methods
+// live together on one receiver type.
+func (i *InsightsAdapter) QueryRaw(ctx context.Context, into any, sql string, args ...any) error {
+	if err := precheckInsightsReadOnly(sql); err != nil {
+		return err
+	}
+	if err := i.a.backstop.guardRawSQL(sql); err != nil {
+		return err
+	}
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return err
+	}
+	tx, err := i.a.pg.BeginTx(ctx, &driver.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("fabriq: insights raw begin ro tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// SET and set_config are permitted in a read-only transaction; only data
+	// writes are blocked.
+	if _, err = tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tid); err != nil {
+		return fmt.Errorf("fabriq: stamp tenant: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `SELECT set_config('app.scope_id', $1, true)`, tenant.ScopeOrEmpty(ctx)); err != nil {
+		return fmt.Errorf("fabriq: stamp scope: %w", err)
+	}
+	if _, err = tx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = '%dms'`, RawQueryTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("fabriq: set timeout: %w", err)
+	}
+
+	rows, qerr := tx.Query(ctx, sql, args...)
+	if qerr != nil {
+		return classifyQueryErr(qerr)
+	}
+	maps, _, _, serr := scanMapsCapped(rows, maxRawQueryRows)
+	if serr != nil {
+		return classifyQueryErr(serr)
+	}
+	return assignMapsDest(into, maps)
 }
