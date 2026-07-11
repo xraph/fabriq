@@ -7,6 +7,12 @@ func TestPrecheckInsightsReadOnly(t *testing.T) {
 		"SELECT count(*) FROM fabriq_insights_events",
 		"WITH x AS (SELECT 1) SELECT * FROM x",
 		"select props ->> 'a' from fabriq_insights_events;",
+		// A single statement with a ';' inside a string literal must not be
+		// mistaken for statement stacking (literals are stripped before the
+		// multi-statement check runs).
+		"SELECT props ->> 'referrer' FROM fabriq_insights_events WHERE props->>'q' = 'a;b'",
+		// A single trailing semicolon must still be allowed.
+		"SELECT props ->> 'referrer' FROM fabriq_insights_events;",
 	}
 	for _, s := range ok {
 		if err := precheckInsightsReadOnly(s); err != nil {
@@ -17,6 +23,10 @@ func TestPrecheckInsightsReadOnly(t *testing.T) {
 		"DELETE FROM fabriq_insights_events",
 		"INSERT INTO fabriq_insights_events VALUES (1)",
 		"SELECT 1; DROP TABLE fabriq_insights_events",
+		// A genuine stacked pair of otherwise-innocuous SELECTs must still be
+		// rejected as multiple statements, independent of the write-keyword
+		// check above.
+		"SELECT 1; SELECT 2",
 		"WITH x AS (DELETE FROM fabriq_insights_events RETURNING *) SELECT * FROM x",
 		"SELECT read_csv('/etc/passwd')",
 		"UPDATE fabriq_insights_facts SET version = 0",

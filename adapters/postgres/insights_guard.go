@@ -37,15 +37,21 @@ func precheckInsightsReadOnly(sql string) error {
 	if s == "" {
 		return fmt.Errorf("fabriq: empty query")
 	}
-	// Reject statement stacking; allow a single trailing semicolon.
-	if strings.Contains(strings.TrimSuffix(s, ";"), ";") {
-		return fmt.Errorf("fabriq: multiple statements are not allowed")
-	}
+	// Prefix detection runs on the original (unstripped) text: it only looks
+	// at the leading keyword, which stripping never touches, and stripping
+	// costs nothing to skip here.
 	lower := strings.ToLower(s)
 	if !hasInsightsPrefix(lower, "select") && !hasInsightsPrefix(lower, "with") {
 		return fmt.Errorf("fabriq: only read-only SELECT/WITH queries are allowed")
 	}
+	// Strip string literals/comments BEFORE the multi-statement check — a
+	// legitimate single statement can contain a literal ';' (e.g. a string
+	// comparison like `props->>'q' = 'a;b'`), which must not be mistaken for
+	// statement stacking. Allow a single trailing semicolon.
 	stripped := insightsSkipRe.ReplaceAllString(s, " ")
+	if strings.Contains(strings.TrimSuffix(strings.TrimSpace(stripped), ";"), ";") {
+		return fmt.Errorf("fabriq: multiple statements are not allowed")
+	}
 	if insightsWriteRe.MatchString(stripped) {
 		return fmt.Errorf("fabriq: data-modifying keyword found")
 	}
