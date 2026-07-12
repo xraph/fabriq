@@ -1,0 +1,315 @@
+package postgres
+
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/xraph/fabriq/core/query"
+)
+
+// insightsIdentRe is the injection guard for every JSONB prop key (dimension,
+// measure field) and every output alias (measure As, OrderBy column) that
+// buildInsightsSQL interpolates into the emitted SQL. These are the ONLY
+// non-bound tokens in the query; everything else — tenant, source, filter
+// values, time-bucket interval, from/to — travels as a $N parameter. A key
+// or alias that fails this check is rejected outright, never sanitized.
+var insightsIdentRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// propAccessor renders a JSONB prop key as `props ->> 'key'` after checking
+// it against insightsIdentRe. Every dimension and every non-count measure
+// field goes through this before appearing in SQL.
+func propAccessor(key string) (string, error) {
+	if !insightsIdentRe.MatchString(key) {
+		return "", fmt.Errorf("fabriq: invalid insights key %q", key)
+	}
+	return fmt.Sprintf("props ->> '%s'", key), nil
+}
+
+// isNumericValue reports whether v is a Go numeric type, as opposed to a
+// string or other kind, so mapCondToProp knows whether a Gt/Gte/Lt/Lte bound
+// warrants a numeric cast on its JSONB accessor. Mirrors the int/uint/float
+// family fabriqtest's toFloat (fabriqtest/filter.go) coerces — the same
+// numeric-detection the in-memory fake's evalConds relies on for these ops —
+// plus json.Number for condition values that arrived via a JSON round-trip
+// (e.g. core/insights/conformance.go's toFloatT handles the same case for
+// decoded query results). adapters/postgres does not import fabriqtest or
+// core/insights (both pull in "testing"), so the switch is duplicated here
+// rather than shared.
+func isNumericValue(v any) bool {
+	switch v.(type) {
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64,
+		json.Number:
+		return true
+	default:
+		return false
+	}
+}
+
+// measureAlias computes the (possibly defaulted) output column name for a
+// measure and checks it against insightsIdentRe. Shared by measureExpr
+// (which quotes it into the SELECT list) and buildInsightsSQL (which adds it
+// to the set of columns OrderBy may reference).
+func measureAlias(m query.Measure) (string, error) {
+	alias := m.As
+	if alias == "" {
+		if m.Kind == query.MeasureCount {
+			alias = "count"
+		} else {
+			alias = string(m.Kind) + "_" + m.Field
+		}
+	}
+	if !insightsIdentRe.MatchString(alias) {
+		return "", fmt.Errorf("fabriq: invalid measure alias %q", alias)
+	}
+	return alias, nil
+}
+
+// measureExpr renders one Measure as a SELECT-list aggregate expression.
+func measureExpr(m query.Measure) (string, error) {
+	alias, err := measureAlias(m)
+	if err != nil {
+		return "", err
+	}
+	if m.Kind == query.MeasureCount {
+		return fmt.Sprintf("COUNT(*) AS %q", alias), nil
+	}
+	acc, err := propAccessor(m.Field)
+	if err != nil {
+		return "", err
+	}
+	num := "(" + acc + ")::numeric"
+	var fn string
+	switch m.Kind {
+	case query.MeasureSum:
+		fn = "SUM(" + num + ")"
+	case query.MeasureAvg:
+		fn = "AVG(" + num + ")"
+	case query.MeasureMin:
+		fn = "MIN(" + num + ")"
+	case query.MeasureMax:
+		fn = "MAX(" + num + ")"
+	case query.MeasureCountDistinct:
+		fn = "COUNT(DISTINCT " + acc + ")"
+	default:
+		return "", fmt.Errorf("fabriq: unknown measure kind %q", m.Kind)
+	}
+	return fmt.Sprintf("%s AS %q", fn, alias), nil
+}
+
+// mapCondToProp renders one filter condition against a JSONB prop, mirroring
+// condSQLPositional's operator handling (adapters/postgres/filter.go) but
+// with the column rewritten to its `props ->> 'key'` accessor instead of a
+// quoted table column.
+//
+// This deliberately does NOT reuse condSQLPositional by pre-rewriting
+// c.Column to the accessor string and passing it through: condSQLPositional
+// quotes its column via quoteIdent, which wraps the ENTIRE string in double
+// quotes and strips embedded `"` — given a multi-token expression like
+// `props ->> 'status'` that produces a single malformed (and semantically
+// wrong) identifier, not valid SQL. Re-implementing the same op switch here
+// with propAccessor in place of quoteIdent keeps the same injection guard —
+// column via an identifier-checked accessor, value always via a bound $N
+// placeholder — while emitting correct SQL for the JSONB case.
+func mapCondToProp(c query.Cond, argN *int) (frag string, args []any, err error) {
+	if c.IsGroup() {
+		if len(c.Or) == 0 {
+			return "", nil, fmt.Errorf("fabriq: empty OR group in insights filter")
+		}
+		var parts []string
+		for _, sub := range c.Or {
+			f, a, serr := mapCondToProp(sub, argN)
+			if serr != nil {
+				return "", nil, serr
+			}
+			parts = append(parts, f)
+			args = append(args, a...)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", args, nil
+	}
+
+	acc, err := propAccessor(c.Column)
+	if err != nil {
+		return "", nil, err
+	}
+	ph := func() string {
+		p := fmt.Sprintf("$%d", *argN)
+		*argN++
+		return p
+	}
+	switch c.Op {
+	case query.OpGt, query.OpGte, query.OpLt, query.OpLte:
+		// Range comparisons over a JSONB prop default to a TEXT comparison
+		// (props ->> 'col' is already ::text), which is lexicographic — "50"
+		// > "100" as strings — and silently returns wrong rows for numeric
+		// data. Measures on the same field already cast to numeric
+		// (measureExpr); mirror that here whenever the bound value itself is
+		// numeric, so `Gt("amount", 100)` compares numerically. A
+		// string-valued bound (e.g. comparing a status/version string field)
+		// keeps the plain text comparison.
+		col := acc
+		if isNumericValue(c.Value) {
+			col = "(" + acc + ")::numeric"
+		}
+		return fmt.Sprintf("%s %s %s", col, sqlOp[c.Op], ph()), []any{c.Value}, nil
+	case query.OpEq, query.OpNe, query.OpLike, query.OpILike:
+		return fmt.Sprintf("%s %s %s", acc, sqlOp[c.Op], ph()), []any{c.Value}, nil
+	case query.OpIn:
+		return fmt.Sprintf("%s = ANY(%s)", acc, ph()), []any{c.Value}, nil
+	case query.OpNotIn:
+		return fmt.Sprintf("NOT (%s = ANY(%s))", acc, ph()), []any{c.Value}, nil
+	case query.OpIsNull:
+		return fmt.Sprintf("%s IS NULL", acc), nil, nil
+	case query.OpIsNotNull:
+		return fmt.Sprintf("%s IS NOT NULL", acc), nil, nil
+	default:
+		return "", nil, fmt.Errorf("fabriq: unsupported filter operator %q", c.Op)
+	}
+}
+
+// buildInsightsOrder validates and renders an OrderBy clause. Each
+// comma-separated term is "col" or "col ASC|DESC"; col must be a member of
+// allowed — the set of declared dimension names, "bucket" (only when
+// time-bucketing), and measure output aliases assembled by
+// buildInsightsSQL. Anything else is rejected: this is the injection guard
+// for the ORDER BY clause, mirroring propAccessor's role for JSONB keys.
+// Members of allowed already passed insightsIdentRe when they were declared,
+// so a match here is sufficient to interpolate col safely.
+func buildInsightsOrder(orderBy string, allowed map[string]bool) (string, error) {
+	terms := strings.Split(orderBy, ",")
+	out := make([]string, 0, len(terms))
+	for _, t := range terms {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		fields := strings.Fields(t)
+		if len(fields) == 0 || len(fields) > 2 {
+			return "", fmt.Errorf("fabriq: invalid order by term %q", t)
+		}
+		col := fields[0]
+		if !allowed[col] {
+			return "", fmt.Errorf("fabriq: order by references unknown column %q", col)
+		}
+		dir := ""
+		if len(fields) == 2 {
+			d := strings.ToUpper(fields[1])
+			if d != "ASC" && d != "DESC" {
+				return "", fmt.Errorf("fabriq: invalid order by direction %q", fields[1])
+			}
+			dir = d
+		}
+		if dir != "" {
+			out = append(out, fmt.Sprintf("%q %s", col, dir))
+		} else {
+			out = append(out, fmt.Sprintf("%q", col))
+		}
+	}
+	if len(out) == 0 {
+		return "", fmt.Errorf("fabriq: empty order by")
+	}
+	return strings.Join(out, ", "), nil
+}
+
+// buildInsightsSQL builds the cube aggregation SQL and its positional args
+// for one AnalyticsQuery scoped to tenant tid. $1 = tenant_id, $2 = Source
+// (the event name); time-window, time-bucket-interval, and filter values
+// continue from $3. See insightsIdentRe for the injection-guard contract.
+//
+// Having (post-aggregation filtering) is a documented phase-1 gap — it is
+// rejected explicitly rather than silently ignored (see Task 12 follow-up).
+func buildInsightsSQL(q query.AnalyticsQuery, tid string) (sql string, args []any, err error) {
+	if len(q.Having) > 0 {
+		return "", nil, fmt.Errorf("fabriq: insights Having is not implemented yet")
+	}
+	if len(q.Measures) == 0 {
+		return "", nil, fmt.Errorf("fabriq: insights query needs at least one measure")
+	}
+
+	args = []any{tid, q.Source}
+	argN := 3
+
+	// allowedOrder collects every output column name OrderBy may reference:
+	// declared dimensions, "bucket" (only if time-bucketing), and measure
+	// aliases. Built alongside the SELECT list so it can only contain names
+	// that already passed insightsIdentRe.
+	allowedOrder := map[string]bool{}
+
+	var selects, groups []string
+	for _, d := range q.Dimensions {
+		acc, err := propAccessor(d)
+		if err != nil {
+			return "", nil, err
+		}
+		selects = append(selects, fmt.Sprintf("%s AS %q", acc, d))
+		groups = append(groups, acc)
+		allowedOrder[d] = true
+	}
+	if q.TimeBucket > 0 {
+		// time_bucket takes an interval; bind the duration as a "N seconds"
+		// literal rather than interpolating it.
+		selects = append(selects, fmt.Sprintf(`time_bucket($%d::interval, at) AS bucket`, argN))
+		groups = append(groups, "bucket")
+		args = append(args, fmt.Sprintf("%d seconds", int64(q.TimeBucket/time.Second)))
+		argN++
+		allowedOrder["bucket"] = true
+	}
+	for _, m := range q.Measures {
+		me, err := measureExpr(m)
+		if err != nil {
+			return "", nil, err
+		}
+		selects = append(selects, me)
+		alias, err := measureAlias(m)
+		if err != nil {
+			return "", nil, err
+		}
+		allowedOrder[alias] = true
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "SELECT %s FROM fabriq_insights_events WHERE tenant_id = $1 AND name = $2",
+		strings.Join(selects, ", "))
+	if !q.From.IsZero() {
+		fmt.Fprintf(&sb, " AND at >= $%d", argN)
+		args = append(args, q.From)
+		argN++
+	}
+	if !q.To.IsZero() {
+		fmt.Fprintf(&sb, " AND at < $%d", argN)
+		args = append(args, q.To)
+		argN++
+	}
+	for _, c := range q.Filter {
+		frag, fargs, cerr := mapCondToProp(c, &argN)
+		if cerr != nil {
+			return "", nil, cerr
+		}
+		sb.WriteString(" AND ")
+		sb.WriteString(frag)
+		args = append(args, fargs...)
+	}
+	if len(groups) > 0 {
+		fmt.Fprintf(&sb, " GROUP BY %s", strings.Join(groups, ", "))
+	}
+	if q.OrderBy != "" {
+		ord, err := buildInsightsOrder(q.OrderBy, allowedOrder)
+		if err != nil {
+			return "", nil, err
+		}
+		fmt.Fprintf(&sb, " ORDER BY %s", ord)
+	} else if len(groups) > 0 {
+		fmt.Fprintf(&sb, " ORDER BY %s", strings.Join(groups, ", "))
+	}
+	if q.Limit > 0 {
+		fmt.Fprintf(&sb, " LIMIT %d", q.Limit)
+	}
+	if q.Offset > 0 {
+		fmt.Fprintf(&sb, " OFFSET %d", q.Offset)
+	}
+	return sb.String(), args, nil
+}

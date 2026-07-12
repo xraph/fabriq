@@ -64,6 +64,7 @@ func Group() *migrate.Group {
 			migration0028APIKeyExpiresAt,
 			migration0029FsNodeDropPath,
 			migration0030NamespaceRename,
+			migration0031Insights,
 		)
 	})
 	return group

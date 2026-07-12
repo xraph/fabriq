@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/query"
 )
 
@@ -28,6 +29,10 @@ type Timeseries struct{ set Router }
 // Spatial routes query.SpatialQuerier (geometry upsert/search/delete).
 type Spatial struct{ set Router }
 
+// Analytics routes query.AnalyticsQuerier (per-tenant customer-facing
+// analytics: event ingest, cube query, raw SQL escape hatch).
+type Analytics struct{ set Router }
+
 var (
 	_ command.Store           = (*Store)(nil)
 	_ query.RelationalQuerier = (*Relational)(nil)
@@ -35,6 +40,8 @@ var (
 	_ query.TSQuerier         = (*Timeseries)(nil)
 	_ query.SpatialQuerier    = (*Spatial)(nil)
 	_ query.SpatialCoverer    = (*Spatial)(nil)
+	_ query.AnalyticsQuerier  = (*Analytics)(nil)
+	_ insights.FactSink       = (*Analytics)(nil)
 )
 
 // NewStore wraps a Set as a routing command.Store.
@@ -51,6 +58,9 @@ func NewTimeseries(set Router) *Timeseries { return &Timeseries{set: set} }
 
 // NewSpatial wraps a Set as a routing query.SpatialQuerier.
 func NewSpatial(set Router) *Spatial { return &Spatial{set: set} }
+
+// NewAnalytics wraps a Set as a routing query.AnalyticsQuerier.
+func NewAnalytics(set Router) *Analytics { return &Analytics{set: set} }
 
 // InTenantTx routes the write transaction to the tenant's shard. The whole
 // transaction (aggregate row + event + outbox) runs there, so atomicity is
@@ -228,4 +238,56 @@ func (s *Spatial) Delete(ctx context.Context, entity, id string) error {
 	}
 	defer release()
 	return sh.Spatial.Delete(sctx, entity, id)
+}
+
+// Track routes a customer-analytics event batch to the tenant's shard.
+func (a *Analytics) Track(ctx context.Context, events []query.AnalyticsEvent) error {
+	sh, sctx, release, err := a.set.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return sh.Analytics.Track(sctx, events)
+}
+
+// Query routes a cube aggregation to the tenant's shard.
+func (a *Analytics) Query(ctx context.Context, q query.AnalyticsQuery, into any) error {
+	sh, sctx, release, err := a.set.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return sh.Analytics.Query(sctx, q, into)
+}
+
+// QueryRaw routes the raw-SQL escape hatch to the tenant's shard.
+func (a *Analytics) QueryRaw(ctx context.Context, into any, sql string, args ...any) error {
+	sh, sctx, release, err := a.set.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return sh.Analytics.QueryRaw(sctx, into, sql, args...)
+}
+
+// UpsertInsightFacts implements insights.FactSink by routing a proj:insights
+// fact batch to the ctx tenant's shard: Acquire resolves the shard from the
+// tenant already stamped on ctx (the consumer's handle stamps tenant+scope
+// before calling the sink), so this lands on the same shard — and through
+// the same inTenantTx/RLS containment — as every other per-tenant analytics
+// call the Track/Query/QueryRaw methods above make. sh.Analytics is typed
+// query.AnalyticsQuerier on the Shard struct, but the concrete adapter
+// (*postgres.InsightsAdapter) also implements insights.FactSink; the type
+// assertion recovers that second facet.
+func (a *Analytics) UpsertInsightFacts(ctx context.Context, facts []insights.Fact) error {
+	sh, sctx, release, err := a.set.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	sink, ok := sh.Analytics.(insights.FactSink)
+	if !ok {
+		return fmt.Errorf("fabriq: shard %q analytics adapter does not implement insights.FactSink", sh.ID)
+	}
+	return sink.UpsertInsightFacts(sctx, facts)
 }

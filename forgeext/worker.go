@@ -204,6 +204,22 @@ func (e *Extension) Run(ctx context.Context) error {
 			analyticsRetentionLoop(runCtx, m, sink, retention)
 		}()
 	}
+	if e.cfg.Fabriq.Insights.Enabled && stores.Redis != nil && hasInsightsEntity(e.reg) {
+		cons, err := stores.InsightsConsumer(e.reg)
+		if err != nil {
+			cancel()
+			return err
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "proj:insights", func(c context.Context) error { return cons.Run(c, consumer) })
+		}()
+	} else if e.cfg.Fabriq.Insights.Enabled && stores.Redis != nil {
+		if logger != nil {
+			logger.Warn("fabriq: insights is enabled but no entity is marked for it; nothing will flow to any tenant's insights store")
+		}
+	}
 
 	// Embedding worker: one consumer per replica, no election needed.
 	if e.cfg.Embedder != nil && stores.Redis != nil && hasEmbeddableEntity(e.reg) {

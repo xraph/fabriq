@@ -105,6 +105,11 @@ func (r *Fabric) Spatial() query.SpatialQuerier       { return remoteSpatial{t: 
 func (r *Fabric) Document() document.Store { return remoteDocStore{t: r.t} }
 func (r *Fabric) Blob() blob.Store         { return remoteBlobStore{t: r.t} }
 
+// Analytics returns the client face of query.AnalyticsQuerier over the
+// transport. Wiring the calls onto the transport is a later increment (ADR
+// 0009 sequencing); until then every method returns ErrNotImplemented.
+func (r *Fabric) Analytics() query.AnalyticsQuerier { return remoteAnalytics{t: r.t} }
+
 // Subscribe opens the conflated channel-delta stream. The first frame is a
 // handshake: a setup error (authz / scope resolution) returns synchronously,
 // mirroring the in-process contract; otherwise a goroutine drains delta frames

@@ -64,6 +64,7 @@ type World struct {
 	Docs        *FakeDocumentStore
 	Projections *FakeProjectionState
 	Blob        *FakeBlob
+	Analytics   *FakeAnalytics
 }
 
 // NewWorld builds the linked fake set for a registry.
@@ -82,6 +83,7 @@ func NewWorld(reg *registry.Registry) *World {
 		Docs:        &FakeDocumentStore{},
 		Projections: &FakeProjectionState{applied: map[string]int64{}},
 		Blob:        NewFakeBlob(),
+		Analytics:   NewFakeAnalytics(),
 	}
 }
 

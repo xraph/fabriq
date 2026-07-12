@@ -142,6 +142,35 @@ func (r *Registry) validateAndBind(spec EntitySpec) (*Binding, error) {
 	if spec.Analytics != nil && !spec.Analytics.IncludeAll && len(spec.Analytics.Include) == 0 && len(spec.Analytics.Hash) == 0 {
 		return nil, fmt.Errorf("fabriq: entity %q: Analytics spec has no Include or Hash fields and IncludeAll is false (nothing would be analyticized)", spec.Name)
 	}
+	if spec.Insights != nil && len(spec.Insights.Measures) == 0 && len(spec.Insights.Dimensions) == 0 {
+		return nil, fmt.Errorf("fabriq: entity %q: Insights spec has no Measures or Dimensions (nothing to project)", spec.Name)
+	}
+	if spec.Insights != nil {
+		for _, c := range spec.Insights.Measures {
+			if !binding.HasColumn(c) {
+				return nil, fmt.Errorf("fabriq: entity %q: Insights measure %q is not a column of %s", spec.Name, c, binding.Table)
+			}
+		}
+		for _, c := range spec.Insights.Dimensions {
+			if !binding.HasColumn(c) {
+				return nil, fmt.Errorf("fabriq: entity %q: Insights dimension %q is not a column of %s", spec.Name, c, binding.Table)
+			}
+		}
+	}
+	for _, m := range spec.Metrics {
+		if m.Name == "" {
+			return nil, fmt.Errorf("fabriq: entity %q: MetricSpec has an empty Name", spec.Name)
+		}
+		if len(m.Measures) == 0 {
+			return nil, fmt.Errorf("fabriq: entity %q: metric %q has no Measures", spec.Name, m.Name)
+		}
+		for _, mm := range m.Measures {
+			// count needs no field; every other kind requires a real column.
+			if mm.Kind != "count" && !binding.HasColumn(mm.Field) {
+				return nil, fmt.Errorf("fabriq: entity %q: metric %q measure field %q is not a column of %s", spec.Name, m.Name, mm.Field, binding.Table)
+			}
+		}
+	}
 
 	return binding, nil
 }

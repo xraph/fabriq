@@ -7,6 +7,7 @@
     "timeseries",
     "vector",
     "spatial",
-    "documents"
+    "documents",
+    "analytics"
   ]
 }

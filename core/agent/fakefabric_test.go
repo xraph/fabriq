@@ -53,6 +53,11 @@ func (f *fakeFabric) Vector() query.VectorQuerier         { return f.w.Vector }
 func (f *fakeFabric) Spatial() query.SpatialQuerier       { return f.w.Spatial }
 func (f *fakeFabric) Document() document.Store            { return f.w.Docs }
 func (f *fakeFabric) Blob() blob.Store                    { return f.w.Blob }
+
+// Analytics implements query.Fabric with a package-local not-configured stub;
+// no phase-1a test exercises analytics.
+func (f *fakeFabric) Analytics() query.AnalyticsQuerier { return notConfiguredAnalytics{} }
+
 func (f *fakeFabric) Subscribe(_ context.Context, scope query.SubscribeScope) (<-chan query.Delta, error) {
 	f.lastSubscribeScope = scope
 	if f.subCh == nil {
@@ -73,6 +78,22 @@ func (f *fakeFabric) WaitForProjection(context.Context, string, string, string, 
 }
 
 var _ query.Fabric = (*fakeFabric)(nil)
+
+// notConfiguredAnalytics is a package-local stand-in for query.AnalyticsQuerier
+// (this test package predates the analytics port).
+type notConfiguredAnalytics struct{}
+
+func (notConfiguredAnalytics) Track(context.Context, []query.AnalyticsEvent) error {
+	return errNotImplemented
+}
+
+func (notConfiguredAnalytics) Query(context.Context, query.AnalyticsQuery, any) error {
+	return errNotImplemented
+}
+
+func (notConfiguredAnalytics) QueryRaw(context.Context, any, string, ...any) error {
+	return errNotImplemented
+}
 
 // tDoc is the shared test aggregate.
 type tDoc struct {

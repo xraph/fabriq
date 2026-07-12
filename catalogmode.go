@@ -170,6 +170,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 			ID: shardID, Store: a, Relational: a,
 			Vector: postgres.NewVectorAdapter(a), Timeseries: a,
 			Spatial:     postgres.NewSpatialAdapter(a),
+			Analytics:   postgres.NewInsightsAdapter(a),
 			Documents:   ds,
 			Maintenance: postgres.NewMaintenance(a, reg, pub, ds),
 			Projection:  a.ProjectionState(),
@@ -208,6 +209,9 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		// Projection bookkeeping routes on its tenant argument to the
 		// tenant's own database (WaitForProjection, engine state).
 		ProjectionState: stores.state,
+	}
+	if cfg.Insights.Enabled {
+		ports.Analytics = shard.NewAnalytics(router)
 	}
 
 	// Live queries route per tenant (Postgres is the exact-top-N oracle in

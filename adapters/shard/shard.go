@@ -36,6 +36,12 @@ type Shard struct {
 	Vector     query.VectorQuerier
 	Timeseries query.TSQuerier
 	Spatial    query.SpatialQuerier
+	// Analytics is the shard's per-tenant customer-facing analytics port
+	// (Task 4+). Static deployments and catalog mode both fill it with the
+	// postgres insights adapter; nil until Config.Insights.Enabled routes it
+	// through the shard set (f.Analytics() degrades to
+	// notConfiguredAnalytics{} until then).
+	Analytics query.AnalyticsQuerier
 	// Documents is the shard's CRDT document plane. Static deployments
 	// leave it nil (the primary's doc store serves, ADR 0007 step 2);
 	// catalog mode fills it per tenant database.

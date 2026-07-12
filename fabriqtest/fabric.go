@@ -48,6 +48,9 @@ func (f *fakeFabric) Spatial() query.SpatialQuerier       { return f.w.Spatial }
 func (f *fakeFabric) Document() document.Store            { return f.w.Docs }
 func (f *fakeFabric) Blob() blob.Store                    { return f.w.Blob }
 
+// Analytics implements query.Fabric, returning the World's FakeAnalytics.
+func (f *fakeFabric) Analytics() query.AnalyticsQuerier { return f.w.Analytics }
+
 func (f *fakeFabric) Subscribe(_ context.Context, _ query.SubscribeScope) (<-chan query.Delta, error) {
 	return make(chan query.Delta), nil
 }

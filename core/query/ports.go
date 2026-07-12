@@ -33,6 +33,8 @@ type Fabric interface {
 	Spatial() SpatialQuerier
 	Document() document.Store
 	Blob() blob.Store
+	// Analytics is the per-tenant customer-facing analytics port.
+	Analytics() AnalyticsQuerier
 
 	// Subscribe resolves the scope to a channel server-side (authz hook
 	// included) and returns a conflated delta stream.
