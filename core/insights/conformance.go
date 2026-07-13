@@ -319,6 +319,21 @@ func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.Analyt
 		}
 	})
 
+	t.Run("RejectsBadPercentile", func(t *testing.T) {
+		q := newQ(reg)
+		must(t, q.Track(ctx1, []query.AnalyticsEvent{
+			{Name: "latency3", At: base, Props: map[string]any{"ms": 10}},
+		}))
+		var rows []map[string]any
+		err := q.Query(ctx1, query.AnalyticsQuery{
+			Source:   "latency3",
+			Measures: []query.Measure{{Kind: query.MeasurePercentile, Field: "ms", Percentile: 1.5}},
+		}, &rows)
+		if err == nil {
+			t.Fatal("want error: percentile fraction 1.5 is out of (0,1) range")
+		}
+	})
+
 	t.Run("HavingFiltersGroups", func(t *testing.T) {
 		q := newQ(reg)
 		events := make([]query.AnalyticsEvent, 0, 8)
@@ -373,6 +388,22 @@ func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.Analyt
 		}
 		if med, ok := toFloatT(rows[0]["med"]); !ok || med != 150 {
 			t.Fatalf("having-over-percentile med wrong: %+v", rows[0])
+		}
+	})
+
+	t.Run("RejectsHavingUnknownAlias", func(t *testing.T) {
+		q := newQ(reg)
+		must(t, q.Track(ctx1, []query.AnalyticsEvent{
+			{Name: "order", At: base, Props: map[string]any{"status": "paid"}},
+		}))
+		var rows []map[string]any
+		err := q.Query(ctx1, query.AnalyticsQuery{
+			Source:   "order",
+			Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+			Having:   query.Where{query.Gt("ghost", 1)},
+		}, &rows)
+		if err == nil {
+			t.Fatal("want error: having references unknown measure alias \"ghost\"")
 		}
 	})
 

@@ -120,6 +120,9 @@ func (f *FakeAnalytics) Query(ctx context.Context, q query.AnalyticsQuery, into 
 	if verr := checkInsightsColumns(d, measures, dimensions, q.Filter); verr != nil {
 		return verr
 	}
+	if verr := checkPercentileFractions(measures); verr != nil {
+		return verr
+	}
 
 	var rows []query.AnalyticsEvent
 	if d.Kind == insights.SourceFacts {
@@ -191,6 +194,9 @@ func (f *FakeAnalytics) Query(ctx context.Context, q query.AnalyticsQuery, into 
 	// unchanged; numeric measure values are float64/int64, which
 	// evalConds/toFloat already coerce.
 	if len(q.Having) > 0 {
+		if verr := checkHavingAliases(q.Having, measures); verr != nil {
+			return verr
+		}
 		kept := make([]map[string]any, 0, len(out))
 		for _, row := range out {
 			ok, err := evalConds(row, q.Having)
@@ -294,6 +300,57 @@ func checkAllowedInWhere(where query.Where, allowed map[string]bool) error {
 		}
 	}
 	return nil
+}
+
+// checkPercentileFractions rejects any MeasurePercentile whose Percentile
+// fraction is not in the open interval (0,1), mirroring the real adapter's
+// identical guard in measureAggExpr (adapters/postgres/insights_query_build.go),
+// including its exact error wording. Without this upfront check, foldMeasure's
+// MeasurePercentile case computes h=Percentile*(n-1) and indexes vals[floor(h)]/
+// vals[ceil(h)] unguarded — a fraction outside (0,1) (e.g. 1.5, or a negative
+// value) produces an out-of-range index and PANICS instead of erroring, which
+// is exactly the fake/adapter error-path divergence this guard closes.
+func checkPercentileFractions(measures []query.Measure) error {
+	for _, m := range measures {
+		if m.Kind == query.MeasurePercentile && !(m.Percentile > 0 && m.Percentile < 1) {
+			return fmt.Errorf("fabriq: percentile must be in (0,1), got %v", m.Percentile)
+		}
+	}
+	return nil
+}
+
+// checkHavingAliases rejects any Having condition (recursing into OR groups)
+// whose Column is not one of the query's own emitted measure output-aliases
+// (measureName), mirroring the real adapter's mapHavingCond, which looks
+// c.Column up in its alias->aggExpr map and errors with the same wording on a
+// miss — including for a bare dimension name, which is never a valid HAVING
+// column in either implementation (HAVING filters post-aggregation measure
+// values, not group-by keys). Without this check the fake's Having path
+// (evalConds against the output-row map) treats an unknown alias as "column
+// absent from row" and evaluates every condition false, silently dropping
+// every row, where the adapter errors — the other fake/adapter divergence
+// this file closes.
+func checkHavingAliases(having query.Where, measures []query.Measure) error {
+	aliases := make(map[string]bool, len(measures))
+	for _, m := range measures {
+		aliases[measureName(m)] = true
+	}
+	var check func(query.Where) error
+	check = func(w query.Where) error {
+		for _, c := range w {
+			if c.IsGroup() {
+				if err := check(c.Or); err != nil {
+					return err
+				}
+				continue
+			}
+			if !aliases[c.Column] {
+				return fmt.Errorf("fabriq: having references unknown measure alias %q", c.Column)
+			}
+		}
+		return nil
+	}
+	return check(having)
 }
 
 // assignJSON marshals src to JSON and unmarshals it into dst (typically a
