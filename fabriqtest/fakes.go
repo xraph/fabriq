@@ -83,7 +83,7 @@ func NewWorld(reg *registry.Registry) *World {
 		Docs:        &FakeDocumentStore{},
 		Projections: &FakeProjectionState{applied: map[string]int64{}},
 		Blob:        NewFakeBlob(),
-		Analytics:   NewFakeAnalytics(),
+		Analytics:   NewFakeAnalytics(reg),
 	}
 }
 

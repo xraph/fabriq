@@ -149,12 +149,23 @@ func countAllInsightsEvents(t *testing.T, a *postgres.Adapter, tenantID string) 
 // insights tables before each factory call, mirroring the noCloseSink +
 // truncating-factory idiom in
 // adapters/pganalytics/conformance_integration_test.go.
+//
+// The factory's reg parameter (RunConformance's own, currently-empty suite
+// registry) is intentionally unused here: ia's *postgres.Adapter is already
+// bound to newInsightsHarness's registry (domain.RegisterAll's entities, none
+// of which collide with any event name this suite tracks — "order", "hit",
+// "visit", "signup", "page_view", "x" — so insights.ResolveSource resolves
+// every Source the same way against either registry: SourceEvent). Tasks 6/7,
+// which register facts-projected entities/metrics into the suite's reg, will
+// need to reconcile this — either registering the same entities into the
+// harness's own registry, or rebinding ia to the suite's reg — before their
+// facts/metric subtests can exercise the real adapter here.
 func TestPgInsights_Conformance(t *testing.T) {
 	a, owner := newInsightsHarness(t)
 	ctx := context.Background()
 	ia := postgres.NewInsightsAdapter(a)
 
-	insights.RunConformance(t, func() query.AnalyticsQuerier {
+	insights.RunConformance(t, func(reg *registry.Registry) query.AnalyticsQuerier {
 		truncateInsights(t, ctx, owner)
 		return ia
 	})

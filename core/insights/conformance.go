@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 )
 
@@ -23,13 +24,24 @@ import (
 // It exercises Track + Query only. QueryRaw has no portable in-memory
 // contract (raw SQL is dialect-specific): the adapter's own test suite
 // exercises QueryRaw separately.
-func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
+//
+// newQ is invoked once per sub-test (some fakes truncate state per-call) and
+// is handed the suite's registry so it can wire the querier under test
+// (fake or real adapter) with the same reg every time — the registry the
+// insights.ResolveSource routing decisions are made against. The suite's own
+// existing event-only subtests need nothing registered in reg; Tasks 6/7 add
+// entities/metrics to it for the facts/metric subtests they introduce.
+func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.AnalyticsQuerier) {
+	reg := registry.New()
+	if err := reg.Validate(); err != nil {
+		t.Fatalf("conformance suite registry: %v", err)
+	}
 	ctx1 := mustTenant(t, "t1")
 	ctx2 := mustTenant(t, "t2")
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	t.Run("CountBySingleDimension", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{
 			{Name: "order", At: base, Props: map[string]any{"status": "paid", "amount": 10}},
 			{Name: "order", At: base, Props: map[string]any{"status": "paid", "amount": 5}},
@@ -55,7 +67,7 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 	})
 
 	t.Run("TimeBucketGroups", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{
 			{Name: "hit", At: base, Props: map[string]any{}},
 			{Name: "hit", At: base.Add(90 * time.Minute), Props: map[string]any{}},
@@ -76,7 +88,7 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 	})
 
 	t.Run("TimeWindowFrom_To", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{
 			{Name: "hit", At: base, Props: map[string]any{}},
 			{Name: "hit", At: base.Add(time.Hour), Props: map[string]any{}},
@@ -95,7 +107,7 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 	})
 
 	t.Run("FilterNarrows", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{
 			{Name: "order", At: base, Props: map[string]any{"status": "paid"}},
 			{Name: "order", At: base, Props: map[string]any{"status": "void"}},
@@ -112,7 +124,7 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 	})
 
 	t.Run("FilterIn", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{
 			{Name: "order", At: base, Props: map[string]any{"status": "paid"}},
 			{Name: "order", At: base, Props: map[string]any{"status": "void"}},
@@ -130,7 +142,7 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 	})
 
 	t.Run("MinMaxAvg", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{
 			{Name: "order", At: base, Props: map[string]any{"amount": 10}},
 			{Name: "order", At: base, Props: map[string]any{"amount": 20}},
@@ -158,7 +170,7 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 	})
 
 	t.Run("CountDistinct", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{
 			{Name: "visit", At: base, Props: map[string]any{"user": "a"}},
 			{Name: "visit", At: base, Props: map[string]any{"user": "a"}},
@@ -175,7 +187,7 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 	})
 
 	t.Run("DedupKeyIgnoresReplays", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		ev := query.AnalyticsEvent{Name: "order", At: base, Props: map[string]any{}, DedupKey: "k1"}
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{ev}))
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{ev})) // replay
@@ -187,7 +199,7 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 	})
 
 	t.Run("FilterGtNumeric", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{
 			{Name: "order", At: base, Props: map[string]any{"amount": 50}},
 			{Name: "order", At: base, Props: map[string]any{"amount": 100}},
@@ -238,7 +250,7 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 	})
 
 	t.Run("LimitBoundsRows", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{
 			{Name: "order", At: base, Props: map[string]any{"status": "a"}},
 			{Name: "order", At: base, Props: map[string]any{"status": "b"}},
@@ -262,7 +274,7 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 	})
 
 	t.Run("TenantIsolation", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{{Name: "order", At: base, Props: map[string]any{}}}))
 		var rows []map[string]any
 		must(t, q.Query(ctx2, query.AnalyticsQuery{Source: "order", Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}}}, &rows))
@@ -276,7 +288,7 @@ func RunConformance(t *testing.T, newQ func() query.AnalyticsQuerier) {
 	})
 
 	t.Run("NoTenantErrors", func(t *testing.T) {
-		q := newQ()
+		q := newQ(reg)
 		if err := q.Track(context.Background(), []query.AnalyticsEvent{{Name: "x"}}); err == nil {
 			t.Fatal("want error tracking without a tenant on ctx")
 		}

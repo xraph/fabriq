@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 )
 
@@ -16,13 +18,18 @@ import (
 // keyed tenant-first so cross-tenant reads are structurally impossible.
 type FakeAnalytics struct {
 	mu   sync.Mutex
+	reg  *registry.Registry
 	data map[string][]query.AnalyticsEvent // tenant -> events
 	seen map[string]bool                   // tenant|dedupKey -> true
 }
 
-// NewFakeAnalytics returns an empty FakeAnalytics.
-func NewFakeAnalytics() *FakeAnalytics {
-	return &FakeAnalytics{data: map[string][]query.AnalyticsEvent{}, seen: map[string]bool{}}
+// NewFakeAnalytics returns an empty FakeAnalytics that resolves Query.Source
+// against reg via insights.ResolveSource — the same resolver the real
+// Postgres adapter uses, so routing (metric > entity > event) can't drift
+// between the fake and the adapter. reg may be nil, in which case every
+// source resolves to an event descriptor (the prior back-compat behavior).
+func NewFakeAnalytics(reg *registry.Registry) *FakeAnalytics {
+	return &FakeAnalytics{reg: reg, data: map[string][]query.AnalyticsEvent{}, seen: map[string]bool{}}
 }
 
 // Track implements query.AnalyticsQuerier. Events sharing a non-empty
@@ -66,6 +73,17 @@ func (f *FakeAnalytics) Query(ctx context.Context, q query.AnalyticsQuery, into 
 	if err != nil {
 		return err
 	}
+	d, err := insights.ResolveSource(f.reg, q.Source)
+	if err != nil {
+		return err
+	}
+	if d.Kind == insights.SourceFacts {
+		// TODO(Task 6): in-memory facts read path. No existing conformance
+		// subtest exercises SourceFacts yet, so this is intentionally a stub —
+		// return an empty result rather than guessing at behavior Task 6 owns.
+		return assignJSON(into, []map[string]any{})
+	}
+
 	f.mu.Lock()
 	rows := append([]query.AnalyticsEvent(nil), f.data[tid]...)
 	f.mu.Unlock()
@@ -73,7 +91,7 @@ func (f *FakeAnalytics) Query(ctx context.Context, q query.AnalyticsQuery, into 
 	// 1. filter by Source (event name), time window, and Filter predicates.
 	var filtered []query.AnalyticsEvent
 	for _, e := range rows {
-		if q.Source != "" && e.Name != q.Source {
+		if d.KeyValue != "" && e.Name != d.KeyValue {
 			continue
 		}
 		if !q.From.IsZero() && e.At.Before(q.From) {

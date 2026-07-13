@@ -5,15 +5,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/query"
 )
+
+// evtDesc builds the event Descriptor insights.ResolveSource would produce
+// for source when no registry entity/metric claims it — the shape every
+// buildInsightsSQL unit test in this file exercises (they predate
+// insights.ResolveSource and test the builder in isolation from the
+// resolver).
+func evtDesc(source string) insights.Descriptor {
+	return insights.Descriptor{
+		Kind:       insights.SourceEvent,
+		Table:      "fabriq_insights_events",
+		JSONColumn: "props",
+		KeyColumn:  "name",
+		KeyValue:   source,
+	}
+}
 
 func TestBuildInsightsSQL_CountByDimension(t *testing.T) {
 	sql, args, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source:     "order",
 		Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}, {Kind: query.MeasureSum, Field: "amount", As: "total"}},
 		Dimensions: []string{"status"},
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +56,7 @@ func TestBuildInsightsSQL_TimeBucket(t *testing.T) {
 	sql, _, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source: "hit", TimeBucket: time.Hour,
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
-	}, "t1")
+	}, "t1", evtDesc("hit"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +66,7 @@ func TestBuildInsightsSQL_TimeBucket(t *testing.T) {
 }
 
 func TestBuildInsightsSQL_RejectsNoMeasures(t *testing.T) {
-	if _, _, err := buildInsightsSQL(query.AnalyticsQuery{Source: "x"}, "t1"); err == nil {
+	if _, _, err := buildInsightsSQL(query.AnalyticsQuery{Source: "x"}, "t1", evtDesc("x")); err == nil {
 		t.Fatal("want error with no measures")
 	}
 }
@@ -59,7 +75,7 @@ func TestBuildInsightsSQL_RejectsInjectionInDimension(t *testing.T) {
 	_, _, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source: "x", Measures: []query.Measure{{Kind: query.MeasureCount}},
 		Dimensions: []string{"status'; DROP TABLE users;--"},
-	}, "t1")
+	}, "t1", evtDesc("x"))
 	if err == nil {
 		t.Fatal("want rejection of non-identifier dimension")
 	}
@@ -70,7 +86,7 @@ func TestBuildInsightsSQL_RejectsHaving(t *testing.T) {
 		Source:   "x",
 		Measures: []query.Measure{{Kind: query.MeasureCount}},
 		Having:   query.Where{query.Gt("count", 10)},
-	}, "t1")
+	}, "t1", evtDesc("x"))
 	if err == nil {
 		t.Fatal("want explicit rejection of Having (phase-1 gap)")
 	}
@@ -81,7 +97,7 @@ func TestBuildInsightsSQL_FilterBindsValueRewritesColumn(t *testing.T) {
 		Source:   "order",
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Filter:   query.Where{query.Eq("status", "paid")},
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +114,7 @@ func TestBuildInsightsSQL_NumericRangeFilterCastsToNumeric(t *testing.T) {
 		Source:   "order",
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Filter:   query.Where{query.Gt("amount", 100)},
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +134,7 @@ func TestBuildInsightsSQL_StringRangeFilterStaysText(t *testing.T) {
 		Source:   "order",
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Filter:   query.Where{query.Gt("col", "m")},
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +156,7 @@ func TestBuildInsightsSQL_RejectsInjectionInFilterColumn(t *testing.T) {
 		Source:   "x",
 		Measures: []query.Measure{{Kind: query.MeasureCount}},
 		Filter:   query.Where{query.Eq("status'; DROP TABLE users;--", "paid")},
-	}, "t1")
+	}, "t1", evtDesc("x"))
 	if err == nil {
 		t.Fatal("want rejection of non-identifier filter column")
 	}
@@ -150,7 +166,7 @@ func TestBuildInsightsSQL_RejectsInjectionInMeasureAlias(t *testing.T) {
 	_, _, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source:   "x",
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n; DROP TABLE users;--"}},
-	}, "t1")
+	}, "t1", evtDesc("x"))
 	if err == nil {
 		t.Fatal("want rejection of non-identifier measure alias")
 	}
@@ -163,7 +179,7 @@ func TestBuildInsightsSQL_OrderByValidatesAgainstDeclaredColumns(t *testing.T) {
 		Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Dimensions: []string{"status"},
 		OrderBy:    "status ASC, n DESC",
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +193,7 @@ func TestBuildInsightsSQL_OrderByValidatesAgainstDeclaredColumns(t *testing.T) {
 		Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Dimensions: []string{"status"},
 		OrderBy:    "not_a_column",
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err == nil {
 		t.Fatal("want rejection of order by referencing an undeclared column")
 	}
@@ -188,7 +204,7 @@ func TestBuildInsightsSQL_DefaultOrderByGroupsWhenNoOrderBySpecified(t *testing.
 		Source:     "order",
 		Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Dimensions: []string{"status"},
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +221,7 @@ func TestBuildInsightsSQL_FromToWindow(t *testing.T) {
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		From:     from,
 		To:       to,
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +239,7 @@ func TestBuildInsightsSQL_LimitOffset(t *testing.T) {
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Limit:    10,
 		Offset:   5,
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}

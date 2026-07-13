@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/query"
 )
 
@@ -18,14 +19,16 @@ import (
 // or alias that fails this check is rejected outright, never sanitized.
 var insightsIdentRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// propAccessor renders a JSONB prop key as `props ->> 'key'` after checking
-// it against insightsIdentRe. Every dimension and every non-count measure
-// field goes through this before appearing in SQL.
-func propAccessor(key string) (string, error) {
+// propAccessor renders a JSONB prop key as `<jsonCol> ->> 'key'` after
+// checking it against insightsIdentRe. Every dimension and every non-count
+// measure field goes through this before appearing in SQL. jsonCol is
+// "props" for events, "payload" for facts — a resolver-produced constant,
+// never user input, so it is interpolated directly.
+func propAccessor(jsonCol, key string) (string, error) {
 	if !insightsIdentRe.MatchString(key) {
 		return "", fmt.Errorf("fabriq: invalid insights key %q", key)
 	}
-	return fmt.Sprintf("props ->> '%s'", key), nil
+	return fmt.Sprintf("%s ->> '%s'", jsonCol, key), nil
 }
 
 // isNumericValue reports whether v is a Go numeric type, as opposed to a
@@ -70,7 +73,10 @@ func measureAlias(m query.Measure) (string, error) {
 }
 
 // measureExpr renders one Measure as a SELECT-list aggregate expression.
-func measureExpr(m query.Measure) (string, error) {
+// jsonCol is the JSONB column to accessor into ("props" for events, "payload"
+// for facts). allowed, when non-nil, is the resolver's column allow-list for
+// this source (facts only); a measure field not in it is rejected.
+func measureExpr(m query.Measure, jsonCol string, allowed map[string]bool) (string, error) {
 	alias, err := measureAlias(m)
 	if err != nil {
 		return "", err
@@ -78,9 +84,12 @@ func measureExpr(m query.Measure) (string, error) {
 	if m.Kind == query.MeasureCount {
 		return fmt.Sprintf("COUNT(*) AS %q", alias), nil
 	}
-	acc, err := propAccessor(m.Field)
+	acc, err := propAccessor(jsonCol, m.Field)
 	if err != nil {
 		return "", err
+	}
+	if allowed != nil && !allowed[m.Field] {
+		return "", fmt.Errorf("fabriq: insights column %q is not declared for this source", m.Field)
 	}
 	num := "(" + acc + ")::numeric"
 	var fn string
@@ -115,14 +124,14 @@ func measureExpr(m query.Measure) (string, error) {
 // with propAccessor in place of quoteIdent keeps the same injection guard —
 // column via an identifier-checked accessor, value always via a bound $N
 // placeholder — while emitting correct SQL for the JSONB case.
-func mapCondToProp(c query.Cond, argN *int) (frag string, args []any, err error) {
+func mapCondToProp(c query.Cond, argN *int, jsonCol string, allowed map[string]bool) (frag string, args []any, err error) {
 	if c.IsGroup() {
 		if len(c.Or) == 0 {
 			return "", nil, fmt.Errorf("fabriq: empty OR group in insights filter")
 		}
 		var parts []string
 		for _, sub := range c.Or {
-			f, a, serr := mapCondToProp(sub, argN)
+			f, a, serr := mapCondToProp(sub, argN, jsonCol, allowed)
 			if serr != nil {
 				return "", nil, serr
 			}
@@ -132,9 +141,12 @@ func mapCondToProp(c query.Cond, argN *int) (frag string, args []any, err error)
 		return "(" + strings.Join(parts, " OR ") + ")", args, nil
 	}
 
-	acc, err := propAccessor(c.Column)
+	acc, err := propAccessor(jsonCol, c.Column)
 	if err != nil {
 		return "", nil, err
+	}
+	if allowed != nil && !allowed[c.Column] {
+		return "", nil, fmt.Errorf("fabriq: insights column %q is not declared for this source", c.Column)
 	}
 	ph := func() string {
 		p := fmt.Sprintf("$%d", *argN)
@@ -216,13 +228,18 @@ func buildInsightsOrder(orderBy string, allowed map[string]bool) (string, error)
 }
 
 // buildInsightsSQL builds the cube aggregation SQL and its positional args
-// for one AnalyticsQuery scoped to tenant tid. $1 = tenant_id, $2 = Source
-// (the event name); time-window, time-bucket-interval, and filter values
-// continue from $3. See insightsIdentRe for the injection-guard contract.
+// for one AnalyticsQuery scoped to tenant tid, against the source resolved by
+// insights.ResolveSource. $1 = tenant_id, $2 = d.KeyValue (the event name or
+// projected entity name); time-window, time-bucket-interval, and filter
+// values continue from $3. d.Table, d.KeyColumn, d.JSONColumn, and
+// d.ExtraWhere are constants produced by the resolver — never user input —
+// so they are interpolated directly; d.KeyValue always travels bound as $2.
+// See insightsIdentRe for the injection-guard contract on user-supplied
+// identifiers (dimension/measure/filter keys, OrderBy columns).
 //
 // Having (post-aggregation filtering) is a documented phase-1 gap — it is
 // rejected explicitly rather than silently ignored (see Task 12 follow-up).
-func buildInsightsSQL(q query.AnalyticsQuery, tid string) (sql string, args []any, err error) {
+func buildInsightsSQL(q query.AnalyticsQuery, tid string, d insights.Descriptor) (sql string, args []any, err error) {
 	if len(q.Having) > 0 {
 		return "", nil, fmt.Errorf("fabriq: insights Having is not implemented yet")
 	}
@@ -230,7 +247,7 @@ func buildInsightsSQL(q query.AnalyticsQuery, tid string) (sql string, args []an
 		return "", nil, fmt.Errorf("fabriq: insights query needs at least one measure")
 	}
 
-	args = []any{tid, q.Source}
+	args = []any{tid, d.KeyValue}
 	argN := 3
 
 	// allowedOrder collects every output column name OrderBy may reference:
@@ -240,14 +257,17 @@ func buildInsightsSQL(q query.AnalyticsQuery, tid string) (sql string, args []an
 	allowedOrder := map[string]bool{}
 
 	var selects, groups []string
-	for _, d := range q.Dimensions {
-		acc, err := propAccessor(d)
+	for _, dim := range q.Dimensions {
+		acc, err := propAccessor(d.JSONColumn, dim)
 		if err != nil {
 			return "", nil, err
 		}
-		selects = append(selects, fmt.Sprintf("%s AS %q", acc, d))
+		if d.AllowedColumns != nil && !d.AllowedColumns[dim] {
+			return "", nil, fmt.Errorf("fabriq: insights dimension %q is not declared for this source", dim)
+		}
+		selects = append(selects, fmt.Sprintf("%s AS %q", acc, dim))
 		groups = append(groups, acc)
-		allowedOrder[d] = true
+		allowedOrder[dim] = true
 	}
 	if q.TimeBucket > 0 {
 		// time_bucket takes an interval; bind the duration as a "N seconds"
@@ -259,7 +279,7 @@ func buildInsightsSQL(q query.AnalyticsQuery, tid string) (sql string, args []an
 		allowedOrder["bucket"] = true
 	}
 	for _, m := range q.Measures {
-		me, err := measureExpr(m)
+		me, err := measureExpr(m, d.JSONColumn, d.AllowedColumns)
 		if err != nil {
 			return "", nil, err
 		}
@@ -272,8 +292,11 @@ func buildInsightsSQL(q query.AnalyticsQuery, tid string) (sql string, args []an
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "SELECT %s FROM fabriq_insights_events WHERE tenant_id = $1 AND name = $2",
-		strings.Join(selects, ", "))
+	fmt.Fprintf(&sb, "SELECT %s FROM %s WHERE tenant_id = $1 AND %s = $2",
+		strings.Join(selects, ", "), d.Table, d.KeyColumn)
+	if d.ExtraWhere != "" {
+		fmt.Fprintf(&sb, " AND %s", d.ExtraWhere)
+	}
 	if !q.From.IsZero() {
 		fmt.Fprintf(&sb, " AND at >= $%d", argN)
 		args = append(args, q.From)
@@ -285,7 +308,7 @@ func buildInsightsSQL(q query.AnalyticsQuery, tid string) (sql string, args []an
 		argN++
 	}
 	for _, c := range q.Filter {
-		frag, fargs, cerr := mapCondToProp(c, &argN)
+		frag, fargs, cerr := mapCondToProp(c, &argN, d.JSONColumn, d.AllowedColumns)
 		if cerr != nil {
 			return "", nil, cerr
 		}

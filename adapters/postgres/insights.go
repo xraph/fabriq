@@ -105,8 +105,12 @@ func (i *InsightsAdapter) Track(ctx context.Context, events []query.AnalyticsEve
 // assignMapsDest projects it into into, exactly as List's dynamic-entity
 // path does.
 func (i *InsightsAdapter) Query(ctx context.Context, q query.AnalyticsQuery, into any) error {
+	d, err := insights.ResolveSource(i.a.reg, q.Source)
+	if err != nil {
+		return err
+	}
 	return i.a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
-		sql, args, err := buildInsightsSQL(q, tid)
+		sql, args, err := buildInsightsSQL(q, tid, d)
 		if err != nil {
 			return err
 		}
