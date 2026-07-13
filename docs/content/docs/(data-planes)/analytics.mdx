@@ -106,12 +106,12 @@ optionally bucketed over time — without hand-writing SQL:
 
 ```go
 type AnalyticsQuery struct {
-	Source        string        // event name (see note below)
-	Measures      []Measure     // at least one
-	Dimensions    []string      // group-by keys
-	TimeBucket    time.Duration // 0 = no time grouping
+	Source        string        // event name, InsightsSpec entity name, or MetricSpec name
+	Measures      []Measure     // at least one (omit when Source names a metric)
+	Dimensions    []string      // group-by keys (omit when Source names a metric)
+	TimeBucket    time.Duration // 0 = no time grouping; overrides a metric's DefaultBucket
 	Filter        Where         // reuses the relational Where vocabulary
-	Having        Where         // NOT implemented yet — see Known limitations
+	Having        Where         // post-aggregation filter over measure output aliases
 	From, To      time.Time     // bound the event time window
 	OrderBy       string
 	Limit, Offset int
@@ -151,7 +151,7 @@ override with `Measure.As`). `Query` scans into `*[]T` (a struct or a
 fabriq uses.
 
 Available measure kinds: `MeasureCount`, `MeasureSum`, `MeasureAvg`,
-`MeasureMin`, `MeasureMax`, `MeasureCountDistinct`.
+`MeasureMin`, `MeasureMax`, `MeasureCountDistinct`, `MeasurePercentile`.
 
 `Filter` reuses the same `Where` vocabulary as every other query port
 (`Eq`/`In`/`Gt`/`Or`/…). Range comparisons (`Gt`/`Gte`/`Lt`/`Lte`) against a
@@ -159,32 +159,116 @@ Available measure kinds: `MeasureCount`, `MeasureSum`, `MeasureAvg`,
 compare lexicographically (the prop is stored as JSONB text under the hood) —
 by design, since dimensions can be either numbers or strings.
 
+### Percentile measures
+
+```go
+var rows []struct {
+	Status string  `json:"status"`
+	P95    float64 `json:"p95_latencyMs"`
+}
+err := f.Analytics().Query(ctx, query.AnalyticsQuery{
+	Source: "request_completed",
+	Measures: []query.Measure{
+		{Kind: query.MeasurePercentile, Field: "latencyMs", Percentile: 0.95}, // -> "p95_latencyMs"
+	},
+	Dimensions: []string{"route"},
+}, &rows)
+```
+
+`Percentile` is a fraction in `(0, 1)` — `0.95` for p95, `0.5` for the
+median. The default output column is `pNN_field` (the percentile × 100,
+rounded, then the field name — `0.95` + `latencyMs` becomes `p95_latencyMs`);
+set `Measure.As` to override. See [Known limitations](#known-limitations-of-query)
+for why percentiles can't be rolled up the way a sum or count can.
+
+### Having: filtering on aggregated output
+
+`Having` filters aggregated rows by a measure's **output alias** — the same
+`Where` vocabulary as `Filter`, evaluated after aggregation instead of
+before it:
+
+```go
+err := f.Analytics().Query(ctx, query.AnalyticsQuery{
+	Source: "order_placed",
+	Measures: []query.Measure{
+		{Kind: query.MeasureCount, As: "orders"},
+	},
+	Dimensions: []string{"status"},
+	Having:     query.Where{query.Gt("orders", 100)},
+}, &rows)
+```
+
+Only statuses with more than 100 orders come back. `Having` works over any
+measure's output alias, including a `MeasurePercentile` alias — e.g.
+`query.Where{query.Gt("p95_latencyMs", 500)}` keeps only groups whose p95
+latency exceeds 500ms.
+
+### Querying projected facts (Source = entity name)
+
+Set `Source` to an entity name that declared `registry.InsightsSpec` (see
+[Opting a domain entity in](#opting-a-domain-entity-in)) to aggregate that
+entity's projected facts — the rows the `proj:insights` consumer already
+wrote to `fabriq_insights_facts` — instead of customer events:
+
+```go
+err := f.Analytics().Query(ctx, query.AnalyticsQuery{
+	Source:     "order", // entity name, not an event name
+	Measures:   []query.Measure{{Kind: query.MeasureSum, Field: "amount"}},
+	Dimensions: []string{"status", "region"},
+}, &rows)
+```
+
+`Measures` and `Dimensions` must be columns declared in that entity's
+`InsightsSpec` (`Measures`/`Dimensions`) — a column the entity didn't
+declare is rejected before the query runs.
+
+### Invoking a declared metric by name
+
+Set `Source` to a `registry.MetricSpec.Name` to reuse its declared
+`Measures`/`Dimensions`/`DefaultBucket` — the caller still controls
+`Filter`, `From`/`To`, `OrderBy`, `Limit`/`Offset`, and `Having`:
+
+```go
+err := f.Analytics().Query(ctx, query.AnalyticsQuery{
+	Source: "daily_revenue", // registry.MetricSpec.Name
+	Filter: query.Where{query.Eq("status", "paid")},
+	From:   time.Now().AddDate(0, 0, -7),
+}, &rows)
+```
+
+Passing explicit `Measures` or `Dimensions` alongside a metric `Source` is a
+query-time **error** — a metric owns its shape, the caller owns filtering.
+
 ### Known limitations of Query
 
 <Callout type="warn">
-- **Events only, in phase 1.** `Query`'s `Source` currently names a customer
-  event (the `Name` you passed to `Track`) — it reads
-  `fabriq_insights_events` exclusively. Domain entities opted in via
-  `InsightsSpec` (below) **are** projected into `fabriq_insights_facts`, but
-  querying those projected facts through the cube (`Source` = an entity
-  name) is not wired yet. Read `fabriq_insights_facts` directly via
-  `QueryRaw` in the meantime.
-- **`Having` is not implemented.** Post-aggregation filtering
-  (`AnalyticsQuery.Having`) returns an explicit error today rather than being
-  silently dropped — do not set it. Filter before aggregation with `Filter`
-  instead.
-- **Declared metrics are not yet resolvable by name.** A `MetricSpec`
-  registered on an entity (see below) validates at registration but does not
-  expand when passed as `Query.Source` — spell out the full
-  `Measures`/`Dimensions`/`TimeBucket` on every call for now.
-- **No percentile measures.** `p95`-style aggregation is not in phase 1.
 - **No materialized rollups.** Every `Query` computes on-demand; there is no
-  continuous-aggregate/rollup routing yet. The query shape is designed to
-  need no API change when rollups land.
-
-See [ADR 0014](/docs/decisions/0014-tenant-analytics#known-gaps-phase-1) for
-the full, authoritative gaps list.
+  continuous-aggregate/rollup routing yet — phase 2b. Percentiles in
+  particular are **non-additive**: unlike a sum or count, a stored p95 can't
+  be rolled up from partial p95s, so a future rollup has to treat percentile
+  measures specially (recompute from raw facts, or switch to an approximate
+  structure).
+- **No approximate/t-digest percentiles.** Today's `MeasurePercentile` is
+  Postgres's exact `percentile_cont`, computed over every matching row —
+  fine at moderate cardinality, but it doesn't scale the way an approximate
+  (t-digest/HLL-style) percentile would. Approximate percentiles are
+  phase 2b.
+- **One source per query.** `Query.Source` names exactly one event, entity,
+  or metric — there's no way to join customer events with projected facts
+  (or facts from two different entities) in a single cube `Query`. Reach
+  for `QueryRaw` for cross-source aggregation.
+- **The remote/gRPC transport doesn't carry `AnalyticsQuerier` yet.**
+  Analytics only works against an in-process `f.Analytics()`; the
+  `fabriq+grpc://` transport (ADR 0009) returns `ErrNotImplemented` for
+  `Track`/`Query`/`QueryRaw` today.
+- **A `MetricSpec` cannot declare a percentile measure yet.**
+  `MetricMeasure.Kind = "percentile"` is rejected at registration — declare
+  percentile measures inline on the `AnalyticsQuery` (as shown above)
+  instead of through a metric, until that capability is added.
 </Callout>
+
+See [ADR 0014](/docs/decisions/0014-tenant-analytics) for the full,
+authoritative gaps list.
 
 ## QueryRaw: the SQL escape hatch
 
@@ -276,10 +360,12 @@ r.Register(registry.EntitySpec{
 A `MetricSpec` validates at registration (a non-empty `Name`, at least one
 `MetricMeasure`, and every non-`count` measure field is a real column) and
 makes the metric discoverable, typed metadata — and a rollup candidate for
-phase 2. As noted above, it is **not yet callable by name**: you cannot pass
-`Query.Source = "daily_revenue"` and have it expand into the declared
-measures/dimensions/bucket. Until that lands, build the equivalent
-`AnalyticsQuery` by hand, as shown in [Querying with the cube](#querying-with-the-cube).
+phase 2b. It **is** callable by name: pass `Query.Source = "daily_revenue"`
+and the cube expands it into the declared measures/dimensions/bucket, as
+shown in [Invoking a declared metric by name](#invoking-a-declared-metric-by-name).
+One current restriction: `MetricMeasure.Kind` cannot be `"percentile"` —
+declare percentile measures inline on the `AnalyticsQuery` instead, until
+metrics grow that capability.
 
 <Cards>
   <Card title="ADR 0014" href="/docs/decisions/0014-tenant-analytics">The design decisions and the hard boundary vs. the operator sink.</Card>
