@@ -233,6 +233,32 @@ func TestBuildInsightsSQL_FromToWindow(t *testing.T) {
 	}
 }
 
+func TestBuildInsightsSQL_Percentile(t *testing.T) {
+	sql, args, err := buildInsightsSQL(query.AnalyticsQuery{
+		Source:   "latency",
+		Measures: []query.Measure{{Kind: query.MeasurePercentile, Field: "ms", Percentile: 0.95, As: "p95"}},
+	}, "t1", evtDesc("latency"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, `percentile_cont($3) WITHIN GROUP (ORDER BY (props ->> 'ms')::numeric) AS "p95"`) {
+		t.Fatalf("percentile sql wrong:\n%s", sql)
+	}
+	if args[2] != 0.95 {
+		t.Fatalf("percentile fraction not bound: %v", args)
+	}
+}
+
+func TestBuildInsightsSQL_RejectsBadPercentile(t *testing.T) {
+	for _, p := range []float64{0, 1, -0.1, 1.5} {
+		if _, _, err := buildInsightsSQL(query.AnalyticsQuery{
+			Source: "latency", Measures: []query.Measure{{Kind: query.MeasurePercentile, Field: "ms", Percentile: p}},
+		}, "t1", evtDesc("latency")); err == nil {
+			t.Fatalf("percentile %v should be rejected", p)
+		}
+	}
+}
+
 func TestBuildInsightsSQL_LimitOffset(t *testing.T) {
 	sql, _, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source:   "order",

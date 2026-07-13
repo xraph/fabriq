@@ -60,9 +60,12 @@ func isNumericValue(v any) bool {
 func measureAlias(m query.Measure) (string, error) {
 	alias := m.As
 	if alias == "" {
-		if m.Kind == query.MeasureCount {
+		switch {
+		case m.Kind == query.MeasureCount:
 			alias = "count"
-		} else {
+		case m.Kind == query.MeasurePercentile:
+			alias = fmt.Sprintf("p%d_%s", int(m.Percentile*100), m.Field)
+		default:
 			alias = string(m.Kind) + "_" + m.Field
 		}
 	}
@@ -75,21 +78,39 @@ func measureAlias(m query.Measure) (string, error) {
 // measureExpr renders one Measure as a SELECT-list aggregate expression.
 // jsonCol is the JSONB column to accessor into ("props" for events, "payload"
 // for facts). allowed, when non-nil, is the resolver's column allow-list for
-// this source (facts only); a measure field not in it is rejected.
-func measureExpr(m query.Measure, jsonCol string, allowed map[string]bool) (string, error) {
+// this source (facts only); a measure field not in it is rejected. argN is
+// the next free positional-parameter index; a measure that needs to bind a
+// value (only MeasurePercentile, for its fraction) consumes it via *argN and
+// returns the bound value(s) in extraArgs for the caller to append to args.
+func measureExpr(m query.Measure, jsonCol string, allowed map[string]bool, argN *int) (expr string, extraArgs []any, err error) {
 	alias, err := measureAlias(m)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if m.Kind == query.MeasureCount {
-		return fmt.Sprintf("COUNT(*) AS %q", alias), nil
+		return fmt.Sprintf("COUNT(*) AS %q", alias), nil, nil
+	}
+	if m.Kind == query.MeasurePercentile {
+		if !(m.Percentile > 0 && m.Percentile < 1) {
+			return "", nil, fmt.Errorf("fabriq: percentile must be in (0,1), got %v", m.Percentile)
+		}
+		acc, err := propAccessor(jsonCol, m.Field)
+		if err != nil {
+			return "", nil, err
+		}
+		if allowed != nil && !allowed[m.Field] {
+			return "", nil, fmt.Errorf("fabriq: insights column %q is not declared for this source", m.Field)
+		}
+		p := fmt.Sprintf("$%d", *argN)
+		*argN++
+		return fmt.Sprintf("percentile_cont(%s) WITHIN GROUP (ORDER BY (%s)::numeric) AS %q", p, acc, alias), []any{m.Percentile}, nil
 	}
 	acc, err := propAccessor(jsonCol, m.Field)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if allowed != nil && !allowed[m.Field] {
-		return "", fmt.Errorf("fabriq: insights column %q is not declared for this source", m.Field)
+		return "", nil, fmt.Errorf("fabriq: insights column %q is not declared for this source", m.Field)
 	}
 	num := "(" + acc + ")::numeric"
 	var fn string
@@ -105,9 +126,9 @@ func measureExpr(m query.Measure, jsonCol string, allowed map[string]bool) (stri
 	case query.MeasureCountDistinct:
 		fn = "COUNT(DISTINCT " + acc + ")"
 	default:
-		return "", fmt.Errorf("fabriq: unknown measure kind %q", m.Kind)
+		return "", nil, fmt.Errorf("fabriq: unknown measure kind %q", m.Kind)
 	}
-	return fmt.Sprintf("%s AS %q", fn, alias), nil
+	return fmt.Sprintf("%s AS %q", fn, alias), nil, nil
 }
 
 // mapCondToProp renders one filter condition against a JSONB prop, mirroring
@@ -279,11 +300,12 @@ func buildInsightsSQL(q query.AnalyticsQuery, tid string, d insights.Descriptor)
 		allowedOrder["bucket"] = true
 	}
 	for _, m := range q.Measures {
-		me, err := measureExpr(m, d.JSONColumn, d.AllowedColumns)
+		me, extraArgs, err := measureExpr(m, d.JSONColumn, d.AllowedColumns, &argN)
 		if err != nil {
 			return "", nil, err
 		}
 		selects = append(selects, me)
+		args = append(args, extraArgs...)
 		alias, err := measureAlias(m)
 		if err != nil {
 			return "", nil, err

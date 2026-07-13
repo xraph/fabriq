@@ -273,6 +273,30 @@ func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.Analyt
 		}
 	})
 
+	t.Run("Percentile", func(t *testing.T) {
+		q := newQ(reg)
+		must(t, q.Track(ctx1, []query.AnalyticsEvent{
+			{Name: "latency", At: base, Props: map[string]any{"ms": 10}},
+			{Name: "latency", At: base, Props: map[string]any{"ms": 20}},
+			{Name: "latency", At: base, Props: map[string]any{"ms": 30}},
+			{Name: "latency", At: base, Props: map[string]any{"ms": 40}},
+		}))
+		var rows []map[string]any
+		must(t, q.Query(ctx1, query.AnalyticsQuery{
+			Source:   "latency",
+			Measures: []query.Measure{{Kind: query.MeasurePercentile, Field: "ms", Percentile: 0.5, As: "p50"}},
+		}, &rows))
+		if len(rows) != 1 {
+			t.Fatalf("want 1 grand-total row, got %d: %+v", len(rows), rows)
+		}
+		// Median via continuous linear interpolation: n=4, p=0.5, h=p*(n-1)=1.5,
+		// lo=1 (v=20), hi=2 (v=30) -> 20 + 0.5*(30-20) = 25. Matches Postgres
+		// percentile_cont(0.5) exactly, so this locks fake/real parity.
+		if p50, ok := toFloatT(rows[0]["p50"]); !ok || p50 != 25 {
+			t.Fatalf("percentile p50 wrong: %+v", rows[0])
+		}
+	})
+
 	t.Run("TenantIsolation", func(t *testing.T) {
 		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{{Name: "order", At: base, Props: map[string]any{}}}))

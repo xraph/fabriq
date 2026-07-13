@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -195,13 +196,19 @@ func bucketOf(at time.Time, bucket time.Duration) time.Time {
 }
 
 // measureName is the output column name for a measure: As when set, else
-// "count" for MeasureCount, else "<kind>_<field>".
+// "count" for MeasureCount, else "p<pct>_<field>" for MeasurePercentile
+// (MUST match measureAlias's default in adapters/postgres/insights_query_build.go
+// exactly, so the fake and the real adapter agree on column names for the
+// same Measure), else "<kind>_<field>".
 func measureName(m query.Measure) string {
 	if m.As != "" {
 		return m.As
 	}
 	if m.Kind == query.MeasureCount {
 		return string(m.Kind)
+	}
+	if m.Kind == query.MeasurePercentile {
+		return fmt.Sprintf("p%d_%s", int(m.Percentile*100), m.Field)
 	}
 	return string(m.Kind) + "_" + m.Field
 }
@@ -268,6 +275,25 @@ func foldMeasure(m query.Measure, rows []query.AnalyticsEvent) any {
 			return nil
 		}
 		return max
+	case query.MeasurePercentile:
+		var vals []float64
+		for _, e := range rows {
+			if v, ok := toFloat(e.Props[m.Field]); ok {
+				vals = append(vals, v)
+			}
+		}
+		if len(vals) == 0 {
+			return nil
+		}
+		sort.Float64s(vals)
+		n := len(vals)
+		h := m.Percentile * float64(n-1)
+		lo := int(math.Floor(h))
+		hi := int(math.Ceil(h))
+		if lo == hi {
+			return vals[lo]
+		}
+		return vals[lo] + (h-float64(lo))*(vals[hi]-vals[lo])
 	default:
 		return nil
 	}
