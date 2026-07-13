@@ -46,6 +46,7 @@ const (
 	MeasureMin           MeasureKind = "min"            // MIN(field)
 	MeasureMax           MeasureKind = "max"            // MAX(field)
 	MeasureCountDistinct MeasureKind = "count_distinct" // COUNT(DISTINCT field)
+	MeasurePercentile    MeasureKind = "percentile"     // percentile_cont(Percentile) WITHIN GROUP (ORDER BY field)
 )
 
 // Measure is one aggregated output column. Field is ignored for MeasureCount.
@@ -54,6 +55,9 @@ type Measure struct {
 	Kind  MeasureKind `json:"kind"`
 	Field string      `json:"field,omitempty"`
 	As    string      `json:"as,omitempty"`
+	// Percentile is the fraction (0,1) for a MeasurePercentile measure, e.g.
+	// 0.95 for p95. Required when Kind is MeasurePercentile; ignored otherwise.
+	Percentile float64 `json:"percentile,omitempty"`
 }
 
 // AnalyticsQuery is an engine-neutral cube aggregation — the sibling of

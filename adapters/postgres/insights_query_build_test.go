@@ -5,15 +5,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/query"
 )
+
+// evtDesc builds the event Descriptor insights.ResolveSource would produce
+// for source when no registry entity/metric claims it — the shape every
+// buildInsightsSQL unit test in this file exercises (they predate
+// insights.ResolveSource and test the builder in isolation from the
+// resolver).
+func evtDesc(source string) insights.Descriptor {
+	return insights.Descriptor{
+		Kind:       insights.SourceEvent,
+		Table:      "fabriq_insights_events",
+		JSONColumn: "props",
+		KeyColumn:  "name",
+		KeyValue:   source,
+	}
+}
 
 func TestBuildInsightsSQL_CountByDimension(t *testing.T) {
 	sql, args, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source:     "order",
 		Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}, {Kind: query.MeasureSum, Field: "amount", As: "total"}},
 		Dimensions: []string{"status"},
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +56,7 @@ func TestBuildInsightsSQL_TimeBucket(t *testing.T) {
 	sql, _, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source: "hit", TimeBucket: time.Hour,
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
-	}, "t1")
+	}, "t1", evtDesc("hit"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +66,7 @@ func TestBuildInsightsSQL_TimeBucket(t *testing.T) {
 }
 
 func TestBuildInsightsSQL_RejectsNoMeasures(t *testing.T) {
-	if _, _, err := buildInsightsSQL(query.AnalyticsQuery{Source: "x"}, "t1"); err == nil {
+	if _, _, err := buildInsightsSQL(query.AnalyticsQuery{Source: "x"}, "t1", evtDesc("x")); err == nil {
 		t.Fatal("want error with no measures")
 	}
 }
@@ -59,20 +75,40 @@ func TestBuildInsightsSQL_RejectsInjectionInDimension(t *testing.T) {
 	_, _, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source: "x", Measures: []query.Measure{{Kind: query.MeasureCount}},
 		Dimensions: []string{"status'; DROP TABLE users;--"},
-	}, "t1")
+	}, "t1", evtDesc("x"))
 	if err == nil {
 		t.Fatal("want rejection of non-identifier dimension")
 	}
 }
 
-func TestBuildInsightsSQL_RejectsHaving(t *testing.T) {
+func TestBuildInsightsSQL_Having(t *testing.T) {
+	sql, args, err := buildInsightsSQL(query.AnalyticsQuery{
+		Source:     "order",
+		Dimensions: []string{"status"},
+		Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		Having:     query.Where{query.Gt("n", 5)},
+	}, "t1", evtDesc("order"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 'n' must map back to its aggregate expression (COUNT(*)) — Postgres
+	// cannot reference a SELECT-list alias from HAVING.
+	if !strings.Contains(sql, "HAVING COUNT(*) > $") {
+		t.Fatalf("having sql wrong:\n%s", sql)
+	}
+	if args[len(args)-1] != 5 {
+		t.Fatalf("having value not bound: %v", args)
+	}
+}
+
+func TestBuildInsightsSQL_RejectsHavingUnknownAlias(t *testing.T) {
 	_, _, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source:   "x",
-		Measures: []query.Measure{{Kind: query.MeasureCount}},
-		Having:   query.Where{query.Gt("count", 10)},
-	}, "t1")
+		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		Having:   query.Where{query.Gt("ghost", 1)},
+	}, "t1", evtDesc("x"))
 	if err == nil {
-		t.Fatal("want explicit rejection of Having (phase-1 gap)")
+		t.Fatal("having on unknown alias must be rejected")
 	}
 }
 
@@ -81,7 +117,7 @@ func TestBuildInsightsSQL_FilterBindsValueRewritesColumn(t *testing.T) {
 		Source:   "order",
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Filter:   query.Where{query.Eq("status", "paid")},
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,13 +134,13 @@ func TestBuildInsightsSQL_NumericRangeFilterCastsToNumeric(t *testing.T) {
 		Source:   "order",
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Filter:   query.Where{query.Gt("amount", 100)},
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A numeric-valued Gt must cast the JSONB accessor to numeric before
 	// comparing, or "50" > "100" wins lexicographically and silently returns
-	// wrong rows (see measureExpr, which casts the same field for measures).
+	// wrong rows (see measureAggExpr, which casts the same field for measures).
 	if !strings.Contains(sql, "(props ->> 'amount')::numeric > $3") {
 		t.Fatalf("expected numeric-cast comparison for numeric Gt bound:\n%s", sql)
 	}
@@ -118,7 +154,7 @@ func TestBuildInsightsSQL_StringRangeFilterStaysText(t *testing.T) {
 		Source:   "order",
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Filter:   query.Where{query.Gt("col", "m")},
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +176,7 @@ func TestBuildInsightsSQL_RejectsInjectionInFilterColumn(t *testing.T) {
 		Source:   "x",
 		Measures: []query.Measure{{Kind: query.MeasureCount}},
 		Filter:   query.Where{query.Eq("status'; DROP TABLE users;--", "paid")},
-	}, "t1")
+	}, "t1", evtDesc("x"))
 	if err == nil {
 		t.Fatal("want rejection of non-identifier filter column")
 	}
@@ -150,7 +186,7 @@ func TestBuildInsightsSQL_RejectsInjectionInMeasureAlias(t *testing.T) {
 	_, _, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source:   "x",
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n; DROP TABLE users;--"}},
-	}, "t1")
+	}, "t1", evtDesc("x"))
 	if err == nil {
 		t.Fatal("want rejection of non-identifier measure alias")
 	}
@@ -163,7 +199,7 @@ func TestBuildInsightsSQL_OrderByValidatesAgainstDeclaredColumns(t *testing.T) {
 		Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Dimensions: []string{"status"},
 		OrderBy:    "status ASC, n DESC",
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +213,7 @@ func TestBuildInsightsSQL_OrderByValidatesAgainstDeclaredColumns(t *testing.T) {
 		Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Dimensions: []string{"status"},
 		OrderBy:    "not_a_column",
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err == nil {
 		t.Fatal("want rejection of order by referencing an undeclared column")
 	}
@@ -188,7 +224,7 @@ func TestBuildInsightsSQL_DefaultOrderByGroupsWhenNoOrderBySpecified(t *testing.
 		Source:     "order",
 		Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Dimensions: []string{"status"},
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +241,7 @@ func TestBuildInsightsSQL_FromToWindow(t *testing.T) {
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		From:     from,
 		To:       to,
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,17 +253,85 @@ func TestBuildInsightsSQL_FromToWindow(t *testing.T) {
 	}
 }
 
+func TestBuildInsightsSQL_Percentile(t *testing.T) {
+	sql, args, err := buildInsightsSQL(query.AnalyticsQuery{
+		Source:   "latency",
+		Measures: []query.Measure{{Kind: query.MeasurePercentile, Field: "ms", Percentile: 0.95, As: "p95"}},
+	}, "t1", evtDesc("latency"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, `percentile_cont($3) WITHIN GROUP (ORDER BY (props ->> 'ms')::numeric) AS "p95"`) {
+		t.Fatalf("percentile sql wrong:\n%s", sql)
+	}
+	if args[2] != 0.95 {
+		t.Fatalf("percentile fraction not bound: %v", args)
+	}
+}
+
+func TestBuildInsightsSQL_PercentileAliasRounds(t *testing.T) {
+	// int(0.29*100) truncates to 28 (0.29*100 is 28.999999999999996 in
+	// float64), silently mislabeling the alias; math.Round fixes it to 29.
+	sql, _, err := buildInsightsSQL(query.AnalyticsQuery{
+		Source:   "latency",
+		Measures: []query.Measure{{Kind: query.MeasurePercentile, Field: "field", Percentile: 0.29}},
+	}, "t1", evtDesc("latency"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, `AS "p29_field"`) {
+		t.Fatalf("expected rounded percentile alias p29_field:\n%s", sql)
+	}
+}
+
+func TestBuildInsightsSQL_RejectsBadPercentile(t *testing.T) {
+	for _, p := range []float64{0, 1, -0.1, 1.5} {
+		if _, _, err := buildInsightsSQL(query.AnalyticsQuery{
+			Source: "latency", Measures: []query.Measure{{Kind: query.MeasurePercentile, Field: "ms", Percentile: p}},
+		}, "t1", evtDesc("latency")); err == nil {
+			t.Fatalf("percentile %v should be rejected", p)
+		}
+	}
+}
+
 func TestBuildInsightsSQL_LimitOffset(t *testing.T) {
 	sql, _, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source:   "order",
 		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
 		Limit:    10,
 		Offset:   5,
-	}, "t1")
+	}, "t1", evtDesc("order"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(sql, "LIMIT 10") || !strings.Contains(sql, "OFFSET 5") {
 		t.Fatalf("expected limit/offset:\n%s", sql)
+	}
+}
+
+func TestBuildInsightsSQL_MetricExpands(t *testing.T) {
+	d := insights.Descriptor{ // as ResolveSource would produce for metric "revenue"->facts(order)
+		Kind: insights.SourceFacts, Table: "fabriq_insights_facts", JSONColumn: "payload",
+		KeyColumn: "entity", KeyValue: "order", ExtraWhere: "deleted = false",
+		AllowedColumns: map[string]bool{"amount": true, "status": true},
+		FromMetric:     true, MetricName: "revenue",
+		MetricMeasures:   []query.Measure{{Kind: query.MeasureSum, Field: "amount", As: "rev"}},
+		MetricDimensions: []string{"status"},
+	}
+	sql, _, err := buildInsightsSQL(query.AnalyticsQuery{Source: "revenue"}, "t1", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`SUM((payload ->> 'amount')::numeric) AS "rev"`, `payload ->> 'status'`, "FROM fabriq_insights_facts", "deleted = false"} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("missing %q in\n%s", want, sql)
+		}
+	}
+}
+
+func TestBuildInsightsSQL_MetricRejectsExplicitMeasures(t *testing.T) {
+	d := insights.Descriptor{FromMetric: true, MetricName: "revenue", Kind: insights.SourceEvent, Table: "fabriq_insights_events", JSONColumn: "props", KeyColumn: "name", KeyValue: "sale", MetricMeasures: []query.Measure{{Kind: query.MeasureCount}}}
+	if _, _, err := buildInsightsSQL(query.AnalyticsQuery{Source: "revenue", Measures: []query.Measure{{Kind: query.MeasureCount}}}, "t1", d); err == nil {
+		t.Fatal("metric + explicit measures must be rejected")
 	}
 }

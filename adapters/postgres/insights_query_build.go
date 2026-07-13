@@ -3,10 +3,12 @@ package postgres
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/query"
 )
 
@@ -18,14 +20,16 @@ import (
 // or alias that fails this check is rejected outright, never sanitized.
 var insightsIdentRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// propAccessor renders a JSONB prop key as `props ->> 'key'` after checking
-// it against insightsIdentRe. Every dimension and every non-count measure
-// field goes through this before appearing in SQL.
-func propAccessor(key string) (string, error) {
+// propAccessor renders a JSONB prop key as `<jsonCol> ->> 'key'` after
+// checking it against insightsIdentRe. Every dimension and every non-count
+// measure field goes through this before appearing in SQL. jsonCol is
+// "props" for events, "payload" for facts — a resolver-produced constant,
+// never user input, so it is interpolated directly.
+func propAccessor(jsonCol, key string) (string, error) {
 	if !insightsIdentRe.MatchString(key) {
 		return "", fmt.Errorf("fabriq: invalid insights key %q", key)
 	}
-	return fmt.Sprintf("props ->> '%s'", key), nil
+	return fmt.Sprintf("%s ->> '%s'", jsonCol, key), nil
 }
 
 // isNumericValue reports whether v is a Go numeric type, as opposed to a
@@ -51,15 +55,18 @@ func isNumericValue(v any) bool {
 }
 
 // measureAlias computes the (possibly defaulted) output column name for a
-// measure and checks it against insightsIdentRe. Shared by measureExpr
-// (which quotes it into the SELECT list) and buildInsightsSQL (which adds it
-// to the set of columns OrderBy may reference).
+// measure and checks it against insightsIdentRe. Shared by measureAggExpr
+// (which returns it alongside the bare aggregate expr) and buildInsightsSQL
+// (which adds it to the set of columns OrderBy may reference).
 func measureAlias(m query.Measure) (string, error) {
 	alias := m.As
 	if alias == "" {
-		if m.Kind == query.MeasureCount {
+		switch {
+		case m.Kind == query.MeasureCount:
 			alias = "count"
-		} else {
+		case m.Kind == query.MeasurePercentile:
+			alias = fmt.Sprintf("p%d_%s", int(math.Round(m.Percentile*100)), m.Field)
+		default:
 			alias = string(m.Kind) + "_" + m.Field
 		}
 	}
@@ -69,18 +76,48 @@ func measureAlias(m query.Measure) (string, error) {
 	return alias, nil
 }
 
-// measureExpr renders one Measure as a SELECT-list aggregate expression.
-func measureExpr(m query.Measure) (string, error) {
-	alias, err := measureAlias(m)
+// measureAggExpr renders one Measure as a BARE aggregate expression (no
+// "AS alias" suffix) plus its alias, separately, so a caller building a
+// HAVING clause can repeat the aggregate expression verbatim — Postgres
+// cannot reference a SELECT-list alias from HAVING (unlike GROUP BY/ORDER
+// BY). jsonCol is the JSONB column to accessor into ("props" for events,
+// "payload" for facts). allowed, when non-nil, is the resolver's column
+// allow-list for this source (facts only); a measure field not in it is
+// rejected. argN is the next free positional-parameter index; a measure
+// that needs to bind a value (only MeasurePercentile, for its fraction)
+// consumes it via *argN and returns the bound value(s) in extraArgs for the
+// caller to append to args. buildInsightsSQL composes aggExpr and alias into
+// the full "<aggExpr> AS <alias>" SELECT-list entry for the SELECT list, and
+// mapHavingCond repeats aggExpr verbatim in HAVING.
+func measureAggExpr(m query.Measure, jsonCol string, allowed map[string]bool, argN *int) (aggExpr, alias string, extraArgs []any, err error) {
+	alias, err = measureAlias(m)
 	if err != nil {
-		return "", err
+		return "", "", nil, err
 	}
 	if m.Kind == query.MeasureCount {
-		return fmt.Sprintf("COUNT(*) AS %q", alias), nil
+		return "COUNT(*)", alias, nil, nil
 	}
-	acc, err := propAccessor(m.Field)
+	if m.Kind == query.MeasurePercentile {
+		if !(m.Percentile > 0 && m.Percentile < 1) {
+			return "", "", nil, fmt.Errorf("fabriq: percentile must be in (0,1), got %v", m.Percentile)
+		}
+		acc, err := propAccessor(jsonCol, m.Field)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if allowed != nil && !allowed[m.Field] {
+			return "", "", nil, fmt.Errorf("fabriq: insights column %q is not declared for this source", m.Field)
+		}
+		p := fmt.Sprintf("$%d", *argN)
+		*argN++
+		return fmt.Sprintf("percentile_cont(%s) WITHIN GROUP (ORDER BY (%s)::numeric)", p, acc), alias, []any{m.Percentile}, nil
+	}
+	acc, err := propAccessor(jsonCol, m.Field)
 	if err != nil {
-		return "", err
+		return "", "", nil, err
+	}
+	if allowed != nil && !allowed[m.Field] {
+		return "", "", nil, fmt.Errorf("fabriq: insights column %q is not declared for this source", m.Field)
 	}
 	num := "(" + acc + ")::numeric"
 	var fn string
@@ -96,9 +133,9 @@ func measureExpr(m query.Measure) (string, error) {
 	case query.MeasureCountDistinct:
 		fn = "COUNT(DISTINCT " + acc + ")"
 	default:
-		return "", fmt.Errorf("fabriq: unknown measure kind %q", m.Kind)
+		return "", "", nil, fmt.Errorf("fabriq: unknown measure kind %q", m.Kind)
 	}
-	return fmt.Sprintf("%s AS %q", fn, alias), nil
+	return fn, alias, nil, nil
 }
 
 // mapCondToProp renders one filter condition against a JSONB prop, mirroring
@@ -115,14 +152,14 @@ func measureExpr(m query.Measure) (string, error) {
 // with propAccessor in place of quoteIdent keeps the same injection guard —
 // column via an identifier-checked accessor, value always via a bound $N
 // placeholder — while emitting correct SQL for the JSONB case.
-func mapCondToProp(c query.Cond, argN *int) (frag string, args []any, err error) {
+func mapCondToProp(c query.Cond, argN *int, jsonCol string, allowed map[string]bool) (frag string, args []any, err error) {
 	if c.IsGroup() {
 		if len(c.Or) == 0 {
 			return "", nil, fmt.Errorf("fabriq: empty OR group in insights filter")
 		}
 		var parts []string
 		for _, sub := range c.Or {
-			f, a, serr := mapCondToProp(sub, argN)
+			f, a, serr := mapCondToProp(sub, argN, jsonCol, allowed)
 			if serr != nil {
 				return "", nil, serr
 			}
@@ -132,9 +169,12 @@ func mapCondToProp(c query.Cond, argN *int) (frag string, args []any, err error)
 		return "(" + strings.Join(parts, " OR ") + ")", args, nil
 	}
 
-	acc, err := propAccessor(c.Column)
+	acc, err := propAccessor(jsonCol, c.Column)
 	if err != nil {
 		return "", nil, err
+	}
+	if allowed != nil && !allowed[c.Column] {
+		return "", nil, fmt.Errorf("fabriq: insights column %q is not declared for this source", c.Column)
 	}
 	ph := func() string {
 		p := fmt.Sprintf("$%d", *argN)
@@ -147,7 +187,7 @@ func mapCondToProp(c query.Cond, argN *int) (frag string, args []any, err error)
 		// (props ->> 'col' is already ::text), which is lexicographic — "50"
 		// > "100" as strings — and silently returns wrong rows for numeric
 		// data. Measures on the same field already cast to numeric
-		// (measureExpr); mirror that here whenever the bound value itself is
+		// (measureAggExpr); mirror that here whenever the bound value itself is
 		// numeric, so `Gt("amount", 100)` compares numerically. A
 		// string-valued bound (e.g. comparing a status/version string field)
 		// keeps the plain text comparison.
@@ -168,6 +208,69 @@ func mapCondToProp(c query.Cond, argN *int) (frag string, args []any, err error)
 		return fmt.Sprintf("%s IS NOT NULL", acc), nil, nil
 	default:
 		return "", nil, fmt.Errorf("fabriq: unsupported filter operator %q", c.Op)
+	}
+}
+
+// mapHavingCond renders one post-aggregation filter condition (an
+// AnalyticsQuery.Having entry) against aliasExpr — the measure-alias ->
+// bare-aggregate-expression map buildInsightsSQL assembles while emitting
+// the SELECT list. Postgres cannot reference a SELECT-list alias from
+// HAVING (unlike GROUP BY/ORDER BY), so the aggregate expression is
+// repeated verbatim here instead of the alias. Looking c.Column up in
+// aliasExpr is BOTH the validation (Having may only reference a measure
+// this query actually selects) AND the injection guard: c.Column is a
+// caller-supplied string, and only a name that is already a map key —
+// i.e. one that passed through measureAlias's insightsIdentRe check when
+// the measure was emitted — is ever interpolated; c.Column itself never
+// reaches the SQL string.
+//
+// Percentile aggregate expressions embed their fraction as a "$N"
+// placeholder that was already bound into args when the measure was
+// emitted (measureAggExpr). Repeating that same aggExpr string here
+// re-references the SAME positional parameter — Postgres permits a
+// placeholder to appear more than once in a query, and it is exactly
+// correct to do so since it is the same value — so Having over a
+// percentile alias needs no extra binding for the fraction, only a fresh
+// $N for the cond's own comparison value (via argN/ph below).
+func mapHavingCond(c query.Cond, aliasExpr map[string]string, argN *int) (frag string, args []any, err error) {
+	if c.IsGroup() {
+		if len(c.Or) == 0 {
+			return "", nil, fmt.Errorf("fabriq: empty OR group in insights having")
+		}
+		var parts []string
+		for _, sub := range c.Or {
+			f, a, serr := mapHavingCond(sub, aliasExpr, argN)
+			if serr != nil {
+				return "", nil, serr
+			}
+			parts = append(parts, f)
+			args = append(args, a...)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", args, nil
+	}
+
+	aggExpr, ok := aliasExpr[c.Column]
+	if !ok {
+		return "", nil, fmt.Errorf("fabriq: having references unknown measure alias %q", c.Column)
+	}
+	ph := func() string {
+		p := fmt.Sprintf("$%d", *argN)
+		*argN++
+		return p
+	}
+	switch c.Op {
+	case query.OpGt, query.OpGte, query.OpLt, query.OpLte, query.OpEq, query.OpNe, query.OpLike, query.OpILike:
+		return fmt.Sprintf("%s %s %s", aggExpr, sqlOp[c.Op], ph()), []any{c.Value}, nil
+	case query.OpIn:
+		return fmt.Sprintf("%s = ANY(%s)", aggExpr, ph()), []any{c.Value}, nil
+	case query.OpNotIn:
+		return fmt.Sprintf("NOT (%s = ANY(%s))", aggExpr, ph()), []any{c.Value}, nil
+	case query.OpIsNull:
+		return fmt.Sprintf("%s IS NULL", aggExpr), nil, nil
+	case query.OpIsNotNull:
+		return fmt.Sprintf("%s IS NOT NULL", aggExpr), nil, nil
+	default:
+		return "", nil, fmt.Errorf("fabriq: unsupported having operator %q", c.Op)
 	}
 }
 
@@ -216,21 +319,29 @@ func buildInsightsOrder(orderBy string, allowed map[string]bool) (string, error)
 }
 
 // buildInsightsSQL builds the cube aggregation SQL and its positional args
-// for one AnalyticsQuery scoped to tenant tid. $1 = tenant_id, $2 = Source
-// (the event name); time-window, time-bucket-interval, and filter values
-// continue from $3. See insightsIdentRe for the injection-guard contract.
+// for one AnalyticsQuery scoped to tenant tid, against the source resolved by
+// insights.ResolveSource. $1 = tenant_id, $2 = d.KeyValue (the event name or
+// projected entity name); time-window, time-bucket-interval, and filter
+// values continue from $3. d.Table, d.KeyColumn, d.JSONColumn, and
+// d.ExtraWhere are constants produced by the resolver — never user input —
+// so they are interpolated directly; d.KeyValue always travels bound as $2.
+// See insightsIdentRe for the injection-guard contract on user-supplied
+// identifiers (dimension/measure/filter keys, OrderBy columns).
 //
-// Having (post-aggregation filtering) is a documented phase-1 gap — it is
-// rejected explicitly rather than silently ignored (see Task 12 follow-up).
-func buildInsightsSQL(q query.AnalyticsQuery, tid string) (sql string, args []any, err error) {
-	if len(q.Having) > 0 {
-		return "", nil, fmt.Errorf("fabriq: insights Having is not implemented yet")
+// Having (post-aggregation filtering over measure outputs) is emitted as a
+// HAVING clause after GROUP BY; see aliasExpr below and mapHavingCond for
+// how a Having condition's alias is resolved back to its aggregate
+// expression.
+func buildInsightsSQL(q query.AnalyticsQuery, tid string, d insights.Descriptor) (sql string, args []any, err error) {
+	measures, dimensions, bucket, err := insights.EffectiveQuery(q, d)
+	if err != nil {
+		return "", nil, err
 	}
-	if len(q.Measures) == 0 {
+	if len(measures) == 0 {
 		return "", nil, fmt.Errorf("fabriq: insights query needs at least one measure")
 	}
 
-	args = []any{tid, q.Source}
+	args = []any{tid, d.KeyValue}
 	argN := 3
 
 	// allowedOrder collects every output column name OrderBy may reference:
@@ -239,41 +350,52 @@ func buildInsightsSQL(q query.AnalyticsQuery, tid string) (sql string, args []an
 	// that already passed insightsIdentRe.
 	allowedOrder := map[string]bool{}
 
+	// aliasExpr maps each measure's output alias to its BARE aggregate
+	// expression (no "AS alias" suffix), so a Having condition referencing
+	// that alias can repeat the aggregate expression in the HAVING clause —
+	// Postgres cannot reference a SELECT-list alias from HAVING. See
+	// mapHavingCond.
+	aliasExpr := map[string]string{}
+
 	var selects, groups []string
-	for _, d := range q.Dimensions {
-		acc, err := propAccessor(d)
+	for _, dim := range dimensions {
+		acc, err := propAccessor(d.JSONColumn, dim)
 		if err != nil {
 			return "", nil, err
 		}
-		selects = append(selects, fmt.Sprintf("%s AS %q", acc, d))
+		if d.AllowedColumns != nil && !d.AllowedColumns[dim] {
+			return "", nil, fmt.Errorf("fabriq: insights dimension %q is not declared for this source", dim)
+		}
+		selects = append(selects, fmt.Sprintf("%s AS %q", acc, dim))
 		groups = append(groups, acc)
-		allowedOrder[d] = true
+		allowedOrder[dim] = true
 	}
-	if q.TimeBucket > 0 {
+	if bucket > 0 {
 		// time_bucket takes an interval; bind the duration as a "N seconds"
 		// literal rather than interpolating it.
 		selects = append(selects, fmt.Sprintf(`time_bucket($%d::interval, at) AS bucket`, argN))
 		groups = append(groups, "bucket")
-		args = append(args, fmt.Sprintf("%d seconds", int64(q.TimeBucket/time.Second)))
+		args = append(args, fmt.Sprintf("%d seconds", int64(bucket/time.Second)))
 		argN++
 		allowedOrder["bucket"] = true
 	}
-	for _, m := range q.Measures {
-		me, err := measureExpr(m)
+	for _, m := range measures {
+		aggExpr, alias, extraArgs, err := measureAggExpr(m, d.JSONColumn, d.AllowedColumns, &argN)
 		if err != nil {
 			return "", nil, err
 		}
-		selects = append(selects, me)
-		alias, err := measureAlias(m)
-		if err != nil {
-			return "", nil, err
-		}
+		selects = append(selects, fmt.Sprintf("%s AS %q", aggExpr, alias))
+		args = append(args, extraArgs...)
 		allowedOrder[alias] = true
+		aliasExpr[alias] = aggExpr
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "SELECT %s FROM fabriq_insights_events WHERE tenant_id = $1 AND name = $2",
-		strings.Join(selects, ", "))
+	fmt.Fprintf(&sb, "SELECT %s FROM %s WHERE tenant_id = $1 AND %s = $2",
+		strings.Join(selects, ", "), d.Table, d.KeyColumn)
+	if d.ExtraWhere != "" {
+		fmt.Fprintf(&sb, " AND %s", d.ExtraWhere)
+	}
 	if !q.From.IsZero() {
 		fmt.Fprintf(&sb, " AND at >= $%d", argN)
 		args = append(args, q.From)
@@ -285,7 +407,7 @@ func buildInsightsSQL(q query.AnalyticsQuery, tid string) (sql string, args []an
 		argN++
 	}
 	for _, c := range q.Filter {
-		frag, fargs, cerr := mapCondToProp(c, &argN)
+		frag, fargs, cerr := mapCondToProp(c, &argN, d.JSONColumn, d.AllowedColumns)
 		if cerr != nil {
 			return "", nil, cerr
 		}
@@ -295,6 +417,18 @@ func buildInsightsSQL(q query.AnalyticsQuery, tid string) (sql string, args []an
 	}
 	if len(groups) > 0 {
 		fmt.Fprintf(&sb, " GROUP BY %s", strings.Join(groups, ", "))
+	}
+	if len(q.Having) > 0 {
+		var havingParts []string
+		for _, c := range q.Having {
+			frag, hargs, herr := mapHavingCond(c, aliasExpr, &argN)
+			if herr != nil {
+				return "", nil, herr
+			}
+			havingParts = append(havingParts, frag)
+			args = append(args, hargs...)
+		}
+		fmt.Fprintf(&sb, " HAVING %s", strings.Join(havingParts, " AND "))
 	}
 	if q.OrderBy != "" {
 		ord, err := buildInsightsOrder(q.OrderBy, allowedOrder)
