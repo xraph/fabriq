@@ -143,6 +143,37 @@ func resolveBase(reg *registry.Registry, source string) (Descriptor, error) {
 	}, nil
 }
 
+// EffectiveQuery computes the measures/dimensions/bucket a query actually
+// runs with, given the Descriptor ResolveSource produced for q.Source. Both
+// buildInsightsSQL (adapters/postgres) and the in-memory fake
+// (fabriqtest.FakeAnalytics) call this — never q.Measures/q.Dimensions/
+// q.TimeBucket directly — so metric expansion can't drift between the two.
+//
+// When d.FromMetric (q.Source named a declared MetricSpec), the metric's own
+// Measures/Dimensions/DefaultBucket apply and the caller may NOT also pass
+// Measures or Dimensions (that would be ambiguous: which wins?) — doing so is
+// rejected outright. q.TimeBucket, when set, still overrides the metric's
+// DefaultBucket (a caller-supplied window granularity is not ambiguous the
+// same way). Filter/Having/From/To/OrderBy/Limit/Offset are ALWAYS the
+// caller's — EffectiveQuery has no opinion on them; it only resolves the
+// three fields a metric declares.
+//
+// When d.FromMetric is false, q.Measures/q.Dimensions/q.TimeBucket pass
+// through unchanged.
+func EffectiveQuery(q query.AnalyticsQuery, d Descriptor) (measures []query.Measure, dimensions []string, bucket time.Duration, err error) {
+	if !d.FromMetric {
+		return q.Measures, q.Dimensions, q.TimeBucket, nil
+	}
+	if len(q.Measures) > 0 || len(q.Dimensions) > 0 {
+		return nil, nil, 0, fmt.Errorf("fabriq: query names metric %q — do not also pass Measures/Dimensions", d.MetricName)
+	}
+	bucket = q.TimeBucket
+	if bucket == 0 {
+		bucket = d.MetricBucket
+	}
+	return d.MetricMeasures, d.MetricDimensions, bucket, nil
+}
+
 // toQueryMeasures translates registry.MetricMeasure (the registry-layer,
 // import-fence-respecting mirror) to query.Measure. A "percentile" Kind is
 // not supported by MetricSpec in phase 2a (query.MeasurePercentile and its

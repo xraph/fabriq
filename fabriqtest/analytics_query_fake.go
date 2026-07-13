@@ -113,7 +113,11 @@ func (f *FakeAnalytics) Query(ctx context.Context, q query.AnalyticsQuery, into 
 	if err != nil {
 		return err
 	}
-	if verr := checkInsightsColumns(d, q); verr != nil {
+	measures, dimensions, bucket, err := insights.EffectiveQuery(q, d)
+	if err != nil {
+		return err
+	}
+	if verr := checkInsightsColumns(d, measures, dimensions, q.Filter); verr != nil {
 		return verr
 	}
 
@@ -158,7 +162,7 @@ func (f *FakeAnalytics) Query(ctx context.Context, q query.AnalyticsQuery, into 
 	}
 	g := groups{byKey: map[string][]query.AnalyticsEvent{}}
 	for _, e := range filtered {
-		k := groupKey(e, q.Dimensions, q.TimeBucket)
+		k := groupKey(e, dimensions, bucket)
 		if _, ok := g.byKey[k]; !ok {
 			g.order = append(g.order, k)
 		}
@@ -169,13 +173,13 @@ func (f *FakeAnalytics) Query(ctx context.Context, q query.AnalyticsQuery, into 
 	for _, k := range g.order {
 		rowsInGroup := g.byKey[k]
 		row := map[string]any{}
-		for _, d := range q.Dimensions {
-			row[d] = rowsInGroup[0].Props[d]
+		for _, dm := range dimensions {
+			row[dm] = rowsInGroup[0].Props[dm]
 		}
-		if q.TimeBucket > 0 {
-			row["bucket"] = bucketOf(rowsInGroup[0].At, q.TimeBucket)
+		if bucket > 0 {
+			row["bucket"] = bucketOf(rowsInGroup[0].At, bucket)
 		}
-		for _, m := range q.Measures {
+		for _, m := range measures {
 			row[measureName(m)] = foldMeasure(m, rowsInGroup)
 		}
 		out = append(out, row)
@@ -202,7 +206,7 @@ func (f *FakeAnalytics) Query(ctx context.Context, q query.AnalyticsQuery, into 
 
 	// 3. deterministic order (dimensions then bucket) unless the caller wants
 	// only a bounded slice via Limit.
-	sort.SliceStable(out, func(i, j int) bool { return lessRows(out[i], out[j], q.Dimensions) })
+	sort.SliceStable(out, func(i, j int) bool { return lessRows(out[i], out[j], dimensions) })
 	if q.Limit > 0 && len(out) > q.Limit {
 		out = out[:q.Limit]
 	}
@@ -249,17 +253,21 @@ func (f *FakeAnalytics) factsAsEvents(tid string, d insights.Descriptor) ([]quer
 // real adapter's identical checks in measureAggExpr/mapCondToProp/the
 // dimension loop of buildInsightsSQL (adapters/postgres/insights_query_build.go),
 // including the exact error wording, so fake and adapter agree on both
-// WHETHER a query is rejected and WHAT the error says.
-func checkInsightsColumns(d insights.Descriptor, q query.AnalyticsQuery) error {
+// WHETHER a query is rejected and WHAT the error says. measures/dimensions
+// are the EFFECTIVE ones (insights.EffectiveQuery output) so a metric's own
+// declared measures/dimensions are checked too, not just what the caller
+// passed in q; where is always the caller's (query.AnalyticsQuery.Filter is
+// never metric-expanded).
+func checkInsightsColumns(d insights.Descriptor, measures []query.Measure, dimensions []string, where query.Where) error {
 	if d.AllowedColumns == nil {
 		return nil
 	}
-	for _, dim := range q.Dimensions {
+	for _, dim := range dimensions {
 		if !d.AllowedColumns[dim] {
 			return fmt.Errorf("fabriq: insights dimension %q is not declared for this source", dim)
 		}
 	}
-	for _, m := range q.Measures {
+	for _, m := range measures {
 		if m.Kind == query.MeasureCount {
 			continue // COUNT(*) has no Field to check
 		}
@@ -267,7 +275,7 @@ func checkInsightsColumns(d insights.Descriptor, q query.AnalyticsQuery) error {
 			return fmt.Errorf("fabriq: insights column %q is not declared for this source", m.Field)
 		}
 	}
-	return checkAllowedInWhere(q.Filter, d.AllowedColumns)
+	return checkAllowedInWhere(where, d.AllowedColumns)
 }
 
 // checkAllowedInWhere recursively checks every leaf condition's Column

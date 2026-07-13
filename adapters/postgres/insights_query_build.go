@@ -333,7 +333,11 @@ func buildInsightsOrder(orderBy string, allowed map[string]bool) (string, error)
 // how a Having condition's alias is resolved back to its aggregate
 // expression.
 func buildInsightsSQL(q query.AnalyticsQuery, tid string, d insights.Descriptor) (sql string, args []any, err error) {
-	if len(q.Measures) == 0 {
+	measures, dimensions, bucket, err := insights.EffectiveQuery(q, d)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(measures) == 0 {
 		return "", nil, fmt.Errorf("fabriq: insights query needs at least one measure")
 	}
 
@@ -354,7 +358,7 @@ func buildInsightsSQL(q query.AnalyticsQuery, tid string, d insights.Descriptor)
 	aliasExpr := map[string]string{}
 
 	var selects, groups []string
-	for _, dim := range q.Dimensions {
+	for _, dim := range dimensions {
 		acc, err := propAccessor(d.JSONColumn, dim)
 		if err != nil {
 			return "", nil, err
@@ -366,16 +370,16 @@ func buildInsightsSQL(q query.AnalyticsQuery, tid string, d insights.Descriptor)
 		groups = append(groups, acc)
 		allowedOrder[dim] = true
 	}
-	if q.TimeBucket > 0 {
+	if bucket > 0 {
 		// time_bucket takes an interval; bind the duration as a "N seconds"
 		// literal rather than interpolating it.
 		selects = append(selects, fmt.Sprintf(`time_bucket($%d::interval, at) AS bucket`, argN))
 		groups = append(groups, "bucket")
-		args = append(args, fmt.Sprintf("%d seconds", int64(q.TimeBucket/time.Second)))
+		args = append(args, fmt.Sprintf("%d seconds", int64(bucket/time.Second)))
 		argN++
 		allowedOrder["bucket"] = true
 	}
-	for _, m := range q.Measures {
+	for _, m := range measures {
 		aggExpr, alias, extraArgs, err := measureAggExpr(m, d.JSONColumn, d.AllowedColumns, &argN)
 		if err != nil {
 			return "", nil, err

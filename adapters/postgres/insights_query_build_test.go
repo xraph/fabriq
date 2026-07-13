@@ -308,3 +308,30 @@ func TestBuildInsightsSQL_LimitOffset(t *testing.T) {
 		t.Fatalf("expected limit/offset:\n%s", sql)
 	}
 }
+
+func TestBuildInsightsSQL_MetricExpands(t *testing.T) {
+	d := insights.Descriptor{ // as ResolveSource would produce for metric "revenue"->facts(order)
+		Kind: insights.SourceFacts, Table: "fabriq_insights_facts", JSONColumn: "payload",
+		KeyColumn: "entity", KeyValue: "order", ExtraWhere: "deleted = false",
+		AllowedColumns: map[string]bool{"amount": true, "status": true},
+		FromMetric:     true, MetricName: "revenue",
+		MetricMeasures:   []query.Measure{{Kind: query.MeasureSum, Field: "amount", As: "rev"}},
+		MetricDimensions: []string{"status"},
+	}
+	sql, _, err := buildInsightsSQL(query.AnalyticsQuery{Source: "revenue"}, "t1", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`SUM((payload ->> 'amount')::numeric) AS "rev"`, `payload ->> 'status'`, "FROM fabriq_insights_facts", "deleted = false"} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("missing %q in\n%s", want, sql)
+		}
+	}
+}
+
+func TestBuildInsightsSQL_MetricRejectsExplicitMeasures(t *testing.T) {
+	d := insights.Descriptor{FromMetric: true, MetricName: "revenue", Kind: insights.SourceEvent, Table: "fabriq_insights_events", JSONColumn: "props", KeyColumn: "name", KeyValue: "sale", MetricMeasures: []query.Measure{{Kind: query.MeasureCount}}}
+	if _, _, err := buildInsightsSQL(query.AnalyticsQuery{Source: "revenue", Measures: []query.Measure{{Kind: query.MeasureCount}}}, "t1", d); err == nil {
+		t.Fatal("metric + explicit measures must be rejected")
+	}
+}

@@ -2,10 +2,12 @@ package insights_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/xraph/grove"
 
 	"github.com/xraph/fabriq/core/insights"
+	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 )
 
@@ -150,5 +152,96 @@ func TestResolveSource_MetricSourcingMetricIsError(t *testing.T) {
 	}
 	if _, err := insights.ResolveSource(r, "revenue_daily"); err == nil {
 		t.Fatal("want error: metric sourcing another metric is not supported")
+	}
+}
+
+func TestEffectiveQuery_NonMetricPassesThrough(t *testing.T) {
+	reg := testRegistry(t)
+	d, err := insights.ResolveSource(reg, "order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := query.AnalyticsQuery{
+		Source:     "order",
+		Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		Dimensions: []string{"status"},
+		TimeBucket: time.Hour,
+	}
+	measures, dims, bucket, err := insights.EffectiveQuery(q, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(measures) != 1 || measures[0].As != "n" {
+		t.Fatalf("measures wrong: %+v", measures)
+	}
+	if len(dims) != 1 || dims[0] != "status" {
+		t.Fatalf("dims wrong: %+v", dims)
+	}
+	if bucket != time.Hour {
+		t.Fatalf("bucket wrong: %v", bucket)
+	}
+}
+
+func TestEffectiveQuery_MetricExpands(t *testing.T) {
+	reg := testRegistry(t)
+	d, err := insights.ResolveSource(reg, "revenue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	measures, dims, bucket, err := insights.EffectiveQuery(query.AnalyticsQuery{Source: "revenue"}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(measures) != 1 || measures[0].Kind != query.MeasureSum || measures[0].Field != "amount" {
+		t.Fatalf("expanded measures wrong: %+v", measures)
+	}
+	if len(dims) != 1 || dims[0] != "status" {
+		t.Fatalf("expanded dims wrong: %+v", dims)
+	}
+	if bucket != 0 {
+		t.Fatalf("expanded bucket wrong: %v", bucket)
+	}
+}
+
+func TestEffectiveQuery_MetricCallerBucketOverridesDefault(t *testing.T) {
+	reg := testRegistry(t)
+	d, err := insights.ResolveSource(reg, "revenue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, bucket, err := insights.EffectiveQuery(query.AnalyticsQuery{Source: "revenue", TimeBucket: time.Minute}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bucket != time.Minute {
+		t.Fatalf("caller TimeBucket should override metric default: %v", bucket)
+	}
+}
+
+func TestEffectiveQuery_MetricRejectsExplicitMeasures(t *testing.T) {
+	reg := testRegistry(t)
+	d, err := insights.ResolveSource(reg, "revenue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := insights.EffectiveQuery(query.AnalyticsQuery{
+		Source:   "revenue",
+		Measures: []query.Measure{{Kind: query.MeasureCount}},
+	}, d); err == nil {
+		t.Fatal("want error: metric + explicit measures")
+	}
+}
+
+func TestEffectiveQuery_MetricRejectsExplicitDimensions(t *testing.T) {
+	reg := testRegistry(t)
+	d, err := insights.ResolveSource(reg, "revenue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := insights.EffectiveQuery(query.AnalyticsQuery{
+		Source:     "revenue",
+		Dimensions: []string{"status"},
+	}, d); err == nil {
+		t.Fatal("want error: metric + explicit dimensions")
 	}
 }

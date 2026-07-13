@@ -422,8 +422,20 @@ func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.Analyt
 			Measures:   []string{"amount"},
 			Dimensions: []string{"status"},
 		},
+		// "revenue" is a declared MetricSpec sourcing "order": Query{Source:
+		// "revenue"} expands to Sum(amount) As "rev" grouped by status — the
+		// metric-by-name subtests below (Task 7) exercise it.
+		Metrics: []registry.MetricSpec{{
+			Name:       "revenue",
+			Source:     "order",
+			Measures:   []registry.MetricMeasure{{Kind: "sum", Field: "amount", As: "rev"}},
+			Dimensions: []string{"status"},
+		}},
 	}); err != nil {
 		t.Fatalf("conformance suite: register order facts entity: %v", err)
+	}
+	if err := reg.Validate(); err != nil {
+		t.Fatalf("conformance suite: re-validate after registering metric: %v", err)
 	}
 
 	t.Run("QueryProjectedFacts", func(t *testing.T) {
@@ -499,6 +511,112 @@ func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.Analyt
 		}, &rows)
 		if err == nil {
 			t.Fatal("want error: dimension \"ssn\" is not declared in the order InsightsSpec")
+		}
+	})
+
+	t.Run("ProjectedFactsFilterMustBeDeclared", func(t *testing.T) {
+		// Pins the fake's checkAllowedInWhere (fabriqtest/analytics_query_fake.go),
+		// flagged as untested in the Task 6 report: a Filter column not in the
+		// "order" InsightsSpec allow-list must be rejected, mirroring the
+		// dimension/measure checks above and the real adapter's
+		// mapCondToProp check.
+		q := newQ(reg)
+		var rows []map[string]any
+		err := q.Query(ctx1, query.AnalyticsQuery{
+			Source:   "order",
+			Filter:   query.Where{query.Eq("ssn", "123-45-6789")}, // not in the "order" InsightsSpec
+			Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		}, &rows)
+		if err == nil {
+			t.Fatal("want error: filter column \"ssn\" is not declared in the order InsightsSpec")
+		}
+	})
+
+	// --- Metric-by-name (Task 7): Query.Source names a declared MetricSpec ---
+	//
+	// "revenue" (registered above, alongside the "order" InsightsSpec entity)
+	// sources "order" facts: Sum(amount) As "rev", grouped by status. These
+	// subtests upsert their OWN facts (fresh agg IDs) rather than reusing the
+	// ones QueryProjectedFacts/ProjectedFactsVersionGate already wrote, so
+	// they don't depend on subtest ordering or on those facts still being
+	// there — but since facts are cumulative across subtests sharing reg,
+	// the equivalence check below (MetricByNameExpands) reads through the
+	// SAME facts an explicit-measure query would, over the entity's full
+	// surviving fact set.
+
+	t.Run("MetricByNameExpands", func(t *testing.T) {
+		q := newQ(reg)
+		sink, ok := q.(FactSink)
+		if !ok {
+			t.Fatalf("%T does not implement insights.FactSink", q)
+		}
+		must(t, sink.UpsertInsightFacts(ctx1, []Fact{
+			{TenantID: "t1", Entity: "order", AggID: "m1", Version: 1, At: base,
+				Payload: json.RawMessage(`{"status":"paid","amount":10}`)},
+			{TenantID: "t1", Entity: "order", AggID: "m2", Version: 1, At: base,
+				Payload: json.RawMessage(`{"status":"paid","amount":5}`)},
+			{TenantID: "t1", Entity: "order", AggID: "m3", Version: 1, At: base,
+				Payload: json.RawMessage(`{"status":"void","amount":0}`)},
+		}))
+
+		var byMetric []map[string]any
+		must(t, q.Query(ctx1, query.AnalyticsQuery{Source: "revenue"}, &byMetric))
+
+		var explicit []map[string]any
+		must(t, q.Query(ctx1, query.AnalyticsQuery{
+			Source:     "order",
+			Dimensions: []string{"status"},
+			Measures:   []query.Measure{{Kind: query.MeasureSum, Field: "amount", As: "rev"}},
+		}, &explicit))
+
+		paid := findRow(byMetric, "status", "paid")
+		if paid == nil || asInt(paid["rev"]) != 15 {
+			t.Fatalf("metric-by-name paid group wrong: %+v", paid)
+		}
+		if len(byMetric) != len(explicit) {
+			t.Fatalf("metric-by-name and explicit-measure query disagree on group count: %d vs %d", len(byMetric), len(explicit))
+		}
+		for _, er := range explicit {
+			mr := findRow(byMetric, "status", er["status"])
+			if mr == nil || asInt(mr["rev"]) != asInt(er["rev"]) {
+				t.Fatalf("metric-by-name diverges from explicit-measure equivalent for status %v: metric=%+v explicit=%+v", er["status"], mr, er)
+			}
+		}
+	})
+
+	t.Run("MetricCallerFilterApplies", func(t *testing.T) {
+		q := newQ(reg)
+		sink, ok := q.(FactSink)
+		if !ok {
+			t.Fatalf("%T does not implement insights.FactSink", q)
+		}
+		must(t, sink.UpsertInsightFacts(ctx1, []Fact{
+			{TenantID: "t1", Entity: "order", AggID: "mf1", Version: 1, At: base,
+				Payload: json.RawMessage(`{"status":"paid","amount":10}`)},
+			{TenantID: "t1", Entity: "order", AggID: "mf2", Version: 1, At: base,
+				Payload: json.RawMessage(`{"status":"paid","amount":5}`)},
+			{TenantID: "t1", Entity: "order", AggID: "mf3", Version: 1, At: base,
+				Payload: json.RawMessage(`{"status":"void","amount":0}`)},
+		}))
+		var rows []map[string]any
+		must(t, q.Query(ctx1, query.AnalyticsQuery{
+			Source: "revenue",
+			Filter: query.Where{query.Eq("status", "paid")},
+		}, &rows))
+		if len(rows) != 1 || rows[0]["status"] != "paid" || asInt(rows[0]["rev"]) != 15 {
+			t.Fatalf("metric caller-filter wrong: %+v", rows)
+		}
+	})
+
+	t.Run("MetricRejectsExplicitMeasures", func(t *testing.T) {
+		q := newQ(reg)
+		var rows []map[string]any
+		err := q.Query(ctx1, query.AnalyticsQuery{
+			Source:   "revenue",
+			Measures: []query.Measure{{Kind: query.MeasureCount}},
+		}, &rows)
+		if err == nil {
+			t.Fatal("want error: metric + explicit Measures must be rejected")
 		}
 	})
 }
