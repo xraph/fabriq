@@ -18,10 +18,11 @@ import (
 // FakeAnalytics is an in-memory query.AnalyticsQuerier for tests. Events are
 // keyed tenant-first so cross-tenant reads are structurally impossible.
 type FakeAnalytics struct {
-	mu   sync.Mutex
-	reg  *registry.Registry
-	data map[string][]query.AnalyticsEvent // tenant -> events
-	seen map[string]bool                   // tenant|dedupKey -> true
+	mu    sync.Mutex
+	reg   *registry.Registry
+	data  map[string][]query.AnalyticsEvent // tenant -> events
+	seen  map[string]bool                   // tenant|dedupKey -> true
+	facts map[string]insights.Fact          // tenant|entity|aggID -> latest surviving fact
 }
 
 // NewFakeAnalytics returns an empty FakeAnalytics that resolves Query.Source
@@ -30,7 +31,41 @@ type FakeAnalytics struct {
 // between the fake and the adapter. reg may be nil, in which case every
 // source resolves to an event descriptor (the prior back-compat behavior).
 func NewFakeAnalytics(reg *registry.Registry) *FakeAnalytics {
-	return &FakeAnalytics{reg: reg, data: map[string][]query.AnalyticsEvent{}, seen: map[string]bool{}}
+	return &FakeAnalytics{
+		reg:   reg,
+		data:  map[string][]query.AnalyticsEvent{},
+		seen:  map[string]bool{},
+		facts: map[string]insights.Fact{},
+	}
+}
+
+// var _ insights.FactSink asserts FakeAnalytics also implements the
+// proj:insights consumer's write port, alongside query.AnalyticsQuerier
+// below — mirroring *postgres.InsightsAdapter (adapters/postgres/insights.go),
+// which implements both on one receiver too.
+var _ insights.FactSink = (*FakeAnalytics)(nil)
+
+// UpsertInsightFacts implements insights.FactSink: an in-memory, version-
+// gated upsert keyed tenant|entity|aggID, mirroring the real adapter's
+// (tenant_id, entity, agg_id) uniqueness + "WHERE EXCLUDED.version >
+// fabriq_insights_facts.version" gate (adapters/postgres/insights.go's
+// UpsertInsightFacts) — an equal-or-older version is a silent no-op, never
+// an error, so redelivery from the proj:insights consumer stays idempotent.
+func (f *FakeAnalytics) UpsertInsightFacts(ctx context.Context, facts []insights.Fact) error {
+	tid, err := tenant.Require(ctx)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, fact := range facts {
+		k := tid + "|" + fact.Entity + "|" + fact.AggID
+		if existing, ok := f.facts[k]; ok && existing.Version >= fact.Version {
+			continue // version gate: an equal-or-older write never replaces the stored fact
+		}
+		f.facts[k] = fact
+	}
+	return nil
 }
 
 // Track implements query.AnalyticsQuerier. Events sharing a non-empty
@@ -78,16 +113,21 @@ func (f *FakeAnalytics) Query(ctx context.Context, q query.AnalyticsQuery, into 
 	if err != nil {
 		return err
 	}
-	if d.Kind == insights.SourceFacts {
-		// TODO(Task 6): in-memory facts read path. No existing conformance
-		// subtest exercises SourceFacts yet, so this is intentionally a stub —
-		// return an empty result rather than guessing at behavior Task 6 owns.
-		return assignJSON(into, []map[string]any{})
+	if verr := checkInsightsColumns(d, q); verr != nil {
+		return verr
 	}
 
-	f.mu.Lock()
-	rows := append([]query.AnalyticsEvent(nil), f.data[tid]...)
-	f.mu.Unlock()
+	var rows []query.AnalyticsEvent
+	if d.Kind == insights.SourceFacts {
+		rows, err = f.factsAsEvents(tid, d)
+		if err != nil {
+			return err
+		}
+	} else {
+		f.mu.Lock()
+		rows = append([]query.AnalyticsEvent(nil), f.data[tid]...)
+		f.mu.Unlock()
+	}
 
 	// 1. filter by Source (event name), time window, and Filter predicates.
 	var filtered []query.AnalyticsEvent
@@ -170,6 +210,83 @@ func (f *FakeAnalytics) Query(ctx context.Context, q query.AnalyticsQuery, into 
 }
 
 var _ query.AnalyticsQuerier = (*FakeAnalytics)(nil)
+
+// factsAsEvents reads the tenant's surviving (non-deleted) facts for the
+// projected entity d.KeyValue and converts each into a synthetic
+// query.AnalyticsEvent — Name: d.KeyValue (so the Source-name filter in Query
+// is a no-op), Props: the fact's JSON payload unmarshaled to a map, At: the
+// fact's own timestamp (for time-bucketing). This lets Query's existing
+// filter/group/measure/having/order/limit pipeline aggregate facts without
+// any separate code path — only the row source differs from the event case.
+func (f *FakeAnalytics) factsAsEvents(tid string, d insights.Descriptor) ([]query.AnalyticsEvent, error) {
+	f.mu.Lock()
+	matched := make([]insights.Fact, 0, len(f.facts))
+	for _, fact := range f.facts {
+		if fact.TenantID != tid || fact.Entity != d.KeyValue || fact.Deleted {
+			continue
+		}
+		matched = append(matched, fact)
+	}
+	f.mu.Unlock()
+
+	out := make([]query.AnalyticsEvent, 0, len(matched))
+	for _, fact := range matched {
+		var props map[string]any
+		if len(fact.Payload) > 0 {
+			if err := json.Unmarshal(fact.Payload, &props); err != nil {
+				return nil, fmt.Errorf("fabriq: FakeAnalytics: unmarshal fact payload for entity %q agg_id %q: %w", fact.Entity, fact.AggID, err)
+			}
+		}
+		out = append(out, query.AnalyticsEvent{Name: d.KeyValue, At: fact.At, Props: props})
+	}
+	return out, nil
+}
+
+// checkInsightsColumns rejects a Dimension, Measure field, or Filter column
+// that isn't declared in d.AllowedColumns — the InsightsSpec column allow-
+// list resolved for a SourceFacts query (nil for SourceEvent, where any
+// top-level prop key is allowed, so this is a no-op there). Mirrors the
+// real adapter's identical checks in measureAggExpr/mapCondToProp/the
+// dimension loop of buildInsightsSQL (adapters/postgres/insights_query_build.go),
+// including the exact error wording, so fake and adapter agree on both
+// WHETHER a query is rejected and WHAT the error says.
+func checkInsightsColumns(d insights.Descriptor, q query.AnalyticsQuery) error {
+	if d.AllowedColumns == nil {
+		return nil
+	}
+	for _, dim := range q.Dimensions {
+		if !d.AllowedColumns[dim] {
+			return fmt.Errorf("fabriq: insights dimension %q is not declared for this source", dim)
+		}
+	}
+	for _, m := range q.Measures {
+		if m.Kind == query.MeasureCount {
+			continue // COUNT(*) has no Field to check
+		}
+		if !d.AllowedColumns[m.Field] {
+			return fmt.Errorf("fabriq: insights column %q is not declared for this source", m.Field)
+		}
+	}
+	return checkAllowedInWhere(q.Filter, d.AllowedColumns)
+}
+
+// checkAllowedInWhere recursively checks every leaf condition's Column
+// (descending into OR groups) against allowed, mirroring mapCondToProp's
+// per-condition check in the real adapter.
+func checkAllowedInWhere(where query.Where, allowed map[string]bool) error {
+	for _, c := range where {
+		if c.IsGroup() {
+			if err := checkAllowedInWhere(c.Or, allowed); err != nil {
+				return err
+			}
+			continue
+		}
+		if !allowed[c.Column] {
+			return fmt.Errorf("fabriq: insights column %q is not declared for this source", c.Column)
+		}
+	}
+	return nil
+}
 
 // assignJSON marshals src to JSON and unmarshals it into dst (typically a
 // pointer to a slice). fabriqtest has no shared generic scan helper yet — the

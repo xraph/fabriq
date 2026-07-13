@@ -25,20 +25,33 @@ import (
 	"github.com/xraph/fabriq/migrations"
 )
 
-// newInsightsHarness boots one Postgres container, runs fabriq migrations to
-// head (which creates fabriq_insights_events with its RLS policy — migration
-// 0031), then opens the adapter under test as the restricted app role so RLS
-// actually constrains its writes. It also returns the superuser owner
-// adapter, which bypasses RLS, so the test can verify raw row counts without
-// needing a tenant-stamped read path (Query/QueryRaw don't exist yet — this
-// task only implements Track).
-func newInsightsHarness(t *testing.T) (a, owner *postgres.Adapter) {
+// newInsightsHarness boots one Postgres container, registers the example
+// domain pack into reg, runs fabriq migrations to head (which creates
+// fabriq_insights_events/fabriq_insights_facts with their RLS policies —
+// migration 0031), then opens the adapter under test as the restricted app
+// role so RLS actually constrains its writes. It also returns the superuser
+// owner adapter, which bypasses RLS, so the test can verify raw row counts
+// without needing a tenant-stamped read path.
+//
+// reg is supplied by the CALLER rather than built internally, so a caller
+// can register additional entities into it — before OR after calling this
+// function — and have both returned adapters observe them: postgres.Open
+// stores the *registry.Registry pointer as-is (adapters/postgres/adapter.go's
+// newAdapter does `reg: reg`, no snapshot/copy), and every per-call resolver
+// (insights.ResolveSource inside InsightsAdapter.Query, entity lookups inside
+// Get/List/...) reads that same live registry fresh on each call. So a
+// registry.Register call on the identical object, issued after Open has
+// already returned, is visible to the very next Query. TestPgInsights_Conformance
+// below exploits this to bind the adapter under test to RunConformance's OWN
+// suite registry — the one insights.RunConformance (core/insights/conformance.go)
+// registers its "order" InsightsSpec entity into for the facts subtests —
+// instead of a disjoint registry the adapter could never see that entity in.
+func newInsightsHarness(t *testing.T, reg *registry.Registry) (a, owner *postgres.Adapter) {
 	t.Helper()
 	ctx := context.Background()
 
 	superDSN := fabriqtest.StartPostgres(t)
 
-	reg := registry.New()
 	if err := domain.RegisterAll(reg); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +80,7 @@ func newInsightsHarness(t *testing.T) (a, owner *postgres.Adapter) {
 }
 
 func TestInsights_TrackDedup(t *testing.T) {
-	a, owner := newInsightsHarness(t)
+	a, owner := newInsightsHarness(t, registry.New())
 	ctx, err := tenant.WithTenant(context.Background(), "acme")
 	if err != nil {
 		t.Fatal(err)
@@ -133,39 +146,48 @@ func countAllInsightsEvents(t *testing.T, a *postgres.Adapter, tenantID string) 
 
 // TestPgInsights_Conformance gates the real Postgres adapter against the
 // SAME behavioral suite (insights.RunConformance) that already passes
-// against fabriqtest.NewFakeAnalytics — the drift gate for Track/Query
-// semantics. It reuses newInsightsHarness (the exact opener + migrate-to-head
-// setup TestInsights_TrackDedup uses above), which also runs domain.DemoDDL
-// as a side effect — the only thing in this suite's setup path that issues
-// `CREATE EXTENSION IF NOT EXISTS timescaledb` (see domain/demo.go), which
-// TimeBucketGroups' use of time_bucket() depends on.
+// against fabriqtest.NewFakeAnalytics — the drift gate for Track/Query/
+// UpsertInsightFacts semantics. It reuses newInsightsHarness (the exact
+// opener + migrate-to-head setup TestInsights_TrackDedup uses above), which
+// also runs domain.DemoDDL as a side effect — the only thing in this suite's
+// setup path that issues `CREATE EXTENSION IF NOT EXISTS timescaledb` (see
+// domain/demo.go), which TimeBucketGroups' use of time_bucket() depends on.
 //
-// One adapter instance is opened once and reused across every RunConformance
-// sub-test: query.AnalyticsQuerier is stateless per call (tenant travels on
-// ctx, stamped fresh by inTenantTx/inDynamicTenantTx per call), so unlike a
-// pooled resource that needs a fresh handle per sub-test, the SAME
-// *postgres.InsightsAdapter can simply be returned every time the factory is
-// invoked. Isolation between sub-tests instead comes from truncating the
-// insights tables before each factory call, mirroring the noCloseSink +
-// truncating-factory idiom in
+// The harness is built LAZILY, on the factory's FIRST invocation, using
+// RunConformance's OWN suite registry — the reg parameter the factory
+// receives — rather than a registry built ahead of time. This is the fix for
+// the facts subtests (Task 6): insights.RunConformance registers an "order"
+// InsightsSpec entity into reg partway through the suite (right before its
+// facts subtests), and because newInsightsHarness stashes that IDENTICAL reg
+// pointer on the *postgres.Adapter it opens (see newInsightsHarness's doc
+// comment — postgres.Open never snapshots the registry), the very next
+// InsightsAdapter.Query call after that registration sees the new entity and
+// resolves Source: "order" as SourceFacts, exactly like the fake. Previously
+// `ia` was bound to a private, disjoint registry built via domain.RegisterAll
+// alone — the suite's facts entity never reached it, so Source: "order" in
+// the facts subtests would have resolved as a (data-less) event source
+// against the real adapter.
+//
+// One adapter instance is still opened once (guarded by ia == nil) and reused
+// across every RunConformance sub-test after that: query.AnalyticsQuerier is
+// stateless per call (tenant travels on ctx, stamped fresh by
+// inTenantTx/inDynamicTenantTx per call), so unlike a pooled resource that
+// needs a fresh handle per sub-test, the SAME *postgres.InsightsAdapter can
+// simply be returned every time the factory is invoked thereafter. Isolation
+// between sub-tests instead comes from truncating the insights tables before
+// each factory call, mirroring the noCloseSink + truncating-factory idiom in
 // adapters/pganalytics/conformance_integration_test.go.
-//
-// The factory's reg parameter (RunConformance's own, currently-empty suite
-// registry) is intentionally unused here: ia's *postgres.Adapter is already
-// bound to newInsightsHarness's registry (domain.RegisterAll's entities, none
-// of which collide with any event name this suite tracks — "order", "hit",
-// "visit", "signup", "page_view", "x" — so insights.ResolveSource resolves
-// every Source the same way against either registry: SourceEvent). Tasks 6/7,
-// which register facts-projected entities/metrics into the suite's reg, will
-// need to reconcile this — either registering the same entities into the
-// harness's own registry, or rebinding ia to the suite's reg — before their
-// facts/metric subtests can exercise the real adapter here.
 func TestPgInsights_Conformance(t *testing.T) {
-	a, owner := newInsightsHarness(t)
 	ctx := context.Background()
-	ia := postgres.NewInsightsAdapter(a)
+	var owner *postgres.Adapter
+	var ia *postgres.InsightsAdapter
 
 	insights.RunConformance(t, func(reg *registry.Registry) query.AnalyticsQuerier {
+		if ia == nil {
+			var a *postgres.Adapter
+			a, owner = newInsightsHarness(t, reg)
+			ia = postgres.NewInsightsAdapter(a)
+		}
 		truncateInsights(t, ctx, owner)
 		return ia
 	})
@@ -192,7 +214,7 @@ func truncateInsights(t *testing.T, ctx context.Context, owner *postgres.Adapter
 // back via the RLS-bypassing owner adapter exactly as TestInsights_TrackDedup
 // reads back Track's rows.
 func TestInsights_UpsertFactsVersionGate(t *testing.T) {
-	a, owner := newInsightsHarness(t)
+	a, owner := newInsightsHarness(t, registry.New())
 	ia := postgres.NewInsightsAdapter(a)
 
 	acmeCtx, err := tenant.WithTenant(context.Background(), "acme")
