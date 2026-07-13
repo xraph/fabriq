@@ -22,6 +22,10 @@ type Registry struct {
 	entities map[string]*Entity
 	byModel  map[reflect.Type]*Entity
 
+	// metrics indexes MetricSpec by name across all registered entities. It is
+	// built and validated by Validate; empty (nil-lookup-safe) until then.
+	metrics map[string]*MetricSpec
+
 	// tablePrefix namespaces STATIC entity tables (WithTablePrefix) so a
 	// host embedding fabriq next to its own tables cannot clash. fabriq_*
 	// and ds_* tables are already namespaces and are never re-prefixed.
@@ -52,6 +56,7 @@ func New(opts ...Option) *Registry {
 	r := &Registry{
 		entities: make(map[string]*Entity),
 		byModel:  make(map[reflect.Type]*Entity),
+		metrics:  make(map[string]*MetricSpec),
 	}
 	for _, o := range opts {
 		o(r)
@@ -273,6 +278,24 @@ func (r *Registry) Get(name string) (*Entity, bool) {
 	return e, ok
 }
 
+// Metric returns the declared MetricSpec named name. The index is populated by
+// Validate; calling Metric before Validate returns (nil, false).
+func (r *Registry) Metric(name string) (*MetricSpec, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	m, ok := r.metrics[name]
+	return m, ok
+}
+
+// EntityHasInsights reports whether name is a registered entity carrying a
+// non-nil InsightsSpec (i.e. one whose projected facts are queryable).
+func (r *Registry) EntityHasInsights(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.entities[name]
+	return ok && e.Spec.Insights != nil
+}
+
 // All returns every registered entity, sorted by name for determinism.
 func (r *Registry) All() []*Entity {
 	r.mu.RLock()
@@ -286,10 +309,17 @@ func (r *Registry) All() []*Entity {
 }
 
 // Validate performs startup validation across entities: every edge target
-// must itself be registered. Call once after all Register calls.
+// must itself be registered, plus the metric-name index (global uniqueness,
+// no entity-name collision, and every entity source declares InsightsSpec).
+// Call once after all Register calls.
+//
+// Validate takes the WRITE lock, not RLock: it assigns r.metrics as its last
+// step, and Validate is expected to run once at startup (no read contention
+// to protect), so upgrading to Lock for the whole method is simplest and
+// avoids any read/write race on that assignment.
 func (r *Registry) Validate() error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for name, e := range r.entities {
 		for _, edge := range e.Spec.Edges {
 			target, ok := r.entities[edge.Target]
@@ -321,5 +351,28 @@ func (r *Registry) Validate() error {
 			}
 		}
 	}
+
+	// Metric-name index: global uniqueness, no entity-name collision, and
+	// every entity source declares an InsightsSpec. "Event" sources (a Source
+	// that names no registered entity) can't be validated against a fixed set
+	// — event names are schemaless — so they're accepted as-is.
+	idx := map[string]*MetricSpec{}
+	for name, e := range r.entities {
+		for i := range e.Spec.Metrics {
+			m := &e.Spec.Metrics[i]
+			if _, clash := r.entities[m.Name]; clash {
+				return fmt.Errorf("fabriq: metric %q (on entity %q) collides with a registered entity name", m.Name, name)
+			}
+			if _, dup := idx[m.Name]; dup {
+				return fmt.Errorf("fabriq: duplicate metric name %q", m.Name)
+			}
+			if src, ok := r.entities[m.Source]; ok && src.Spec.Insights == nil {
+				return fmt.Errorf("fabriq: metric %q sources entity %q which has no InsightsSpec", m.Name, m.Source)
+			}
+			idx[m.Name] = m
+		}
+	}
+	r.metrics = idx
+
 	return nil
 }
