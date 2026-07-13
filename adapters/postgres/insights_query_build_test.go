@@ -140,7 +140,7 @@ func TestBuildInsightsSQL_NumericRangeFilterCastsToNumeric(t *testing.T) {
 	}
 	// A numeric-valued Gt must cast the JSONB accessor to numeric before
 	// comparing, or "50" > "100" wins lexicographically and silently returns
-	// wrong rows (see measureExpr, which casts the same field for measures).
+	// wrong rows (see measureAggExpr, which casts the same field for measures).
 	if !strings.Contains(sql, "(props ->> 'amount')::numeric > $3") {
 		t.Fatalf("expected numeric-cast comparison for numeric Gt bound:\n%s", sql)
 	}

@@ -55,9 +55,9 @@ func isNumericValue(v any) bool {
 }
 
 // measureAlias computes the (possibly defaulted) output column name for a
-// measure and checks it against insightsIdentRe. Shared by measureExpr
-// (which quotes it into the SELECT list) and buildInsightsSQL (which adds it
-// to the set of columns OrderBy may reference).
+// measure and checks it against insightsIdentRe. Shared by measureAggExpr
+// (which returns it alongside the bare aggregate expr) and buildInsightsSQL
+// (which adds it to the set of columns OrderBy may reference).
 func measureAlias(m query.Measure) (string, error) {
 	alias := m.As
 	if alias == "" {
@@ -86,8 +86,9 @@ func measureAlias(m query.Measure) (string, error) {
 // rejected. argN is the next free positional-parameter index; a measure
 // that needs to bind a value (only MeasurePercentile, for its fraction)
 // consumes it via *argN and returns the bound value(s) in extraArgs for the
-// caller to append to args. measureExpr composes aggExpr and alias into the
-// full "<aggExpr> AS <alias>" SELECT-list entry.
+// caller to append to args. buildInsightsSQL composes aggExpr and alias into
+// the full "<aggExpr> AS <alias>" SELECT-list entry for the SELECT list, and
+// mapHavingCond repeats aggExpr verbatim in HAVING.
 func measureAggExpr(m query.Measure, jsonCol string, allowed map[string]bool, argN *int) (aggExpr, alias string, extraArgs []any, err error) {
 	alias, err = measureAlias(m)
 	if err != nil {
@@ -135,18 +136,6 @@ func measureAggExpr(m query.Measure, jsonCol string, allowed map[string]bool, ar
 		return "", "", nil, fmt.Errorf("fabriq: unknown measure kind %q", m.Kind)
 	}
 	return fn, alias, nil, nil
-}
-
-// measureExpr renders one Measure as a full SELECT-list aggregate
-// expression ("<aggExpr> AS <alias>"). See measureAggExpr for the parameter
-// contract; this is a thin composer over it for callers that only need the
-// SELECT-list form.
-func measureExpr(m query.Measure, jsonCol string, allowed map[string]bool, argN *int) (expr string, extraArgs []any, err error) {
-	aggExpr, alias, extraArgs, err := measureAggExpr(m, jsonCol, allowed, argN)
-	if err != nil {
-		return "", nil, err
-	}
-	return fmt.Sprintf("%s AS %q", aggExpr, alias), extraArgs, nil
 }
 
 // mapCondToProp renders one filter condition against a JSONB prop, mirroring
@@ -198,7 +187,7 @@ func mapCondToProp(c query.Cond, argN *int, jsonCol string, allowed map[string]b
 		// (props ->> 'col' is already ::text), which is lexicographic — "50"
 		// > "100" as strings — and silently returns wrong rows for numeric
 		// data. Measures on the same field already cast to numeric
-		// (measureExpr); mirror that here whenever the bound value itself is
+		// (measureAggExpr); mirror that here whenever the bound value itself is
 		// numeric, so `Gt("amount", 100)` compares numerically. A
 		// string-valued bound (e.g. comparing a status/version string field)
 		// keeps the plain text comparison.

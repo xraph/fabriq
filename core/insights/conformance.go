@@ -319,6 +319,41 @@ func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.Analyt
 		}
 	})
 
+	t.Run("HavingOverPercentile", func(t *testing.T) {
+		q := newQ(reg)
+		must(t, q.Track(ctx1, []query.AnalyticsEvent{
+			{Name: "latency2", At: base, Props: map[string]any{"status": "a", "ms": 10}},
+			{Name: "latency2", At: base, Props: map[string]any{"status": "a", "ms": 20}},
+			{Name: "latency2", At: base, Props: map[string]any{"status": "a", "ms": 30}},
+			{Name: "latency2", At: base, Props: map[string]any{"status": "a", "ms": 40}},
+			{Name: "latency2", At: base, Props: map[string]any{"status": "b", "ms": 100}},
+			{Name: "latency2", At: base, Props: map[string]any{"status": "b", "ms": 200}},
+		}))
+		var rows []map[string]any
+		must(t, q.Query(ctx1, query.AnalyticsQuery{
+			Source:     "latency2",
+			Dimensions: []string{"status"},
+			Measures:   []query.Measure{{Kind: query.MeasurePercentile, Field: "ms", Percentile: 0.5, As: "med"}},
+			Having:     query.Where{query.Gt("med", 50)},
+		}, &rows))
+		// Group "a" (ms 10,20,30,40) -> p50=25, dropped by Having. Group "b"
+		// (ms 100,200) -> p50=150, kept. This is the subtlest Having path: the
+		// percentile aggregate expression binds its fraction to an already-used
+		// $N placeholder (measureAggExpr), and mapHavingCond must repeat that
+		// same expression verbatim in HAVING rather than referencing the
+		// SELECT-list alias (Postgres cannot do that) or re-binding the
+		// fraction. Locks fake/real parity for that path.
+		if len(rows) != 1 {
+			t.Fatalf("want 1 group past having, got %d: %+v", len(rows), rows)
+		}
+		if rows[0]["status"] != "b" {
+			t.Fatalf("having-over-percentile wrong group: %+v", rows)
+		}
+		if med, ok := toFloatT(rows[0]["med"]); !ok || med != 150 {
+			t.Fatalf("having-over-percentile med wrong: %+v", rows[0])
+		}
+	})
+
 	t.Run("TenantIsolation", func(t *testing.T) {
 		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{{Name: "order", At: base, Props: map[string]any{}}}))
