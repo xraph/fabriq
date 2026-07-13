@@ -81,14 +81,34 @@ func TestBuildInsightsSQL_RejectsInjectionInDimension(t *testing.T) {
 	}
 }
 
-func TestBuildInsightsSQL_RejectsHaving(t *testing.T) {
+func TestBuildInsightsSQL_Having(t *testing.T) {
+	sql, args, err := buildInsightsSQL(query.AnalyticsQuery{
+		Source:     "order",
+		Dimensions: []string{"status"},
+		Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		Having:     query.Where{query.Gt("n", 5)},
+	}, "t1", evtDesc("order"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 'n' must map back to its aggregate expression (COUNT(*)) — Postgres
+	// cannot reference a SELECT-list alias from HAVING.
+	if !strings.Contains(sql, "HAVING COUNT(*) > $") {
+		t.Fatalf("having sql wrong:\n%s", sql)
+	}
+	if args[len(args)-1] != 5 {
+		t.Fatalf("having value not bound: %v", args)
+	}
+}
+
+func TestBuildInsightsSQL_RejectsHavingUnknownAlias(t *testing.T) {
 	_, _, err := buildInsightsSQL(query.AnalyticsQuery{
 		Source:   "x",
-		Measures: []query.Measure{{Kind: query.MeasureCount}},
-		Having:   query.Where{query.Gt("count", 10)},
+		Measures: []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+		Having:   query.Where{query.Gt("ghost", 1)},
 	}, "t1", evtDesc("x"))
 	if err == nil {
-		t.Fatal("want explicit rejection of Having (phase-1 gap)")
+		t.Fatal("having on unknown alias must be rejected")
 	}
 }
 
@@ -246,6 +266,21 @@ func TestBuildInsightsSQL_Percentile(t *testing.T) {
 	}
 	if args[2] != 0.95 {
 		t.Fatalf("percentile fraction not bound: %v", args)
+	}
+}
+
+func TestBuildInsightsSQL_PercentileAliasRounds(t *testing.T) {
+	// int(0.29*100) truncates to 28 (0.29*100 is 28.999999999999996 in
+	// float64), silently mislabeling the alias; math.Round fixes it to 29.
+	sql, _, err := buildInsightsSQL(query.AnalyticsQuery{
+		Source:   "latency",
+		Measures: []query.Measure{{Kind: query.MeasurePercentile, Field: "field", Percentile: 0.29}},
+	}, "t1", evtDesc("latency"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, `AS "p29_field"`) {
+		t.Fatalf("expected rounded percentile alias p29_field:\n%s", sql)
 	}
 }
 

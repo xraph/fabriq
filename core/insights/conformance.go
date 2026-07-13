@@ -297,6 +297,28 @@ func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.Analyt
 		}
 	})
 
+	t.Run("HavingFiltersGroups", func(t *testing.T) {
+		q := newQ(reg)
+		events := make([]query.AnalyticsEvent, 0, 8)
+		for i := 0; i < 6; i++ {
+			events = append(events, query.AnalyticsEvent{Name: "order", At: base, Props: map[string]any{"status": "paid"}})
+		}
+		for i := 0; i < 2; i++ {
+			events = append(events, query.AnalyticsEvent{Name: "order", At: base, Props: map[string]any{"status": "void"}})
+		}
+		must(t, q.Track(ctx1, events))
+		var rows []map[string]any
+		must(t, q.Query(ctx1, query.AnalyticsQuery{
+			Source:     "order",
+			Dimensions: []string{"status"},
+			Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}},
+			Having:     query.Where{query.Gt("n", 5)},
+		}, &rows))
+		if len(rows) != 1 || rows[0]["status"] != "paid" || asInt(rows[0]["n"]) != 6 {
+			t.Fatalf("having wrong: %+v", rows)
+		}
+	})
+
 	t.Run("TenantIsolation", func(t *testing.T) {
 		q := newQ(reg)
 		must(t, q.Track(ctx1, []query.AnalyticsEvent{{Name: "order", At: base, Props: map[string]any{}}}))

@@ -141,6 +141,25 @@ func (f *FakeAnalytics) Query(ctx context.Context, q query.AnalyticsQuery, into 
 		out = append(out, row)
 	}
 
+	// 2.5. post-aggregation filter (Having): the row map's keys ARE the
+	// measure aliases (measureName), so evalConds — the same in-memory
+	// predicate evaluator used for pre-aggregation Filter above — applies
+	// unchanged; numeric measure values are float64/int64, which
+	// evalConds/toFloat already coerce.
+	if len(q.Having) > 0 {
+		kept := make([]map[string]any, 0, len(out))
+		for _, row := range out {
+			ok, err := evalConds(row, q.Having)
+			if err != nil {
+				return err
+			}
+			if ok {
+				kept = append(kept, row)
+			}
+		}
+		out = kept
+	}
+
 	// 3. deterministic order (dimensions then bucket) unless the caller wants
 	// only a bounded slice via Limit.
 	sort.SliceStable(out, func(i, j int) bool { return lessRows(out[i], out[j], q.Dimensions) })
@@ -208,7 +227,7 @@ func measureName(m query.Measure) string {
 		return string(m.Kind)
 	}
 	if m.Kind == query.MeasurePercentile {
-		return fmt.Sprintf("p%d_%s", int(m.Percentile*100), m.Field)
+		return fmt.Sprintf("p%d_%s", int(math.Round(m.Percentile*100)), m.Field)
 	}
 	return string(m.Kind) + "_" + m.Field
 }
