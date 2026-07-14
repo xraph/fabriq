@@ -286,11 +286,41 @@ type MetricSpec struct {
 	Measures      []MetricMeasure // at least one
 	Dimensions    []string
 	DefaultBucket time.Duration // optional default TimeBucket
+
+	// Rollup opts this metric into materialization (phase 2b). Nil (the zero
+	// value) means the metric stays live-only, computed on demand from raw
+	// events/facts on every query. Rollups are event-sourced only (Source must
+	// NOT name a registered entity) and, in 2b-1, additive-only: no measure may
+	// be a non-additive "sketch" kind (count_distinct, percentile) — that
+	// restriction is relaxed in a later phase once sketch storage exists.
+	Rollup *RollupSpec
+}
+
+// RollupSpec opts a MetricSpec into materialization (phase 2b). Nil (on
+// MetricSpec.Rollup) means live-only. The rollup grain is Bucket; a bucket is
+// sealed (rolled up, no longer mutable by the maintainer) once it can no
+// longer receive in-grace late events — SealGrace after the bucket's end time.
+// RerollWindow trailing buckets are recomputed on each maintainer pass to
+// absorb events that arrive within grace but after an earlier pass already
+// sealed the bucket.
+type RollupSpec struct {
+	// Bucket is the rollup grain (e.g. time.Hour). Required, must be > 0.
+	Bucket time.Duration
+
+	// SealGrace delays sealing a bucket past its end time, so events that
+	// arrive slightly late still land in the correct bucket. Zero means the
+	// maintainer applies its own sane default.
+	SealGrace time.Duration
+
+	// RerollWindow is how far back (in buckets) the maintainer recomputes on
+	// every pass, to absorb events that arrived after a bucket was already
+	// sealed. Zero means the maintainer applies its own sane default.
+	RerollWindow time.Duration
 }
 
 // MetricMeasure mirrors query.Measure at the registry layer (registry must not
 // import core/query). Kind is one of "count"/"sum"/"avg"/"min"/"max"/
-// "count_distinct".
+// "count_distinct"/"percentile".
 type MetricMeasure struct {
 	Kind  string
 	Field string

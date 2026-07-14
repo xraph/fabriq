@@ -287,6 +287,23 @@ func (r *Registry) Metric(name string) (*MetricSpec, bool) {
 	return m, ok
 }
 
+// MaterializedMetrics returns every declared metric that opts into
+// materialization (MetricSpec.Rollup != nil), sorted by Name for determinism.
+// Like Metric, it reads the index built by Validate; calling it before
+// Validate returns an empty slice.
+func (r *Registry) MaterializedMetrics() []*MetricSpec {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*MetricSpec, 0, len(r.metrics))
+	for _, m := range r.metrics {
+		if m.Rollup != nil {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // EntityHasInsights reports whether name is a registered entity carrying a
 // non-nil InsightsSpec (i.e. one whose projected facts are queryable).
 func (r *Registry) EntityHasInsights(name string) bool {
@@ -368,6 +385,19 @@ func (r *Registry) Validate() error {
 			}
 			if src, ok := r.entities[m.Source]; ok && src.Spec.Insights == nil {
 				return fmt.Errorf("fabriq: metric %q sources entity %q which has no InsightsSpec", m.Name, m.Source)
+			}
+			if m.Rollup != nil {
+				if m.Rollup.Bucket <= 0 {
+					return fmt.Errorf("fabriq: metric %q: Rollup.Bucket must be > 0", m.Name)
+				}
+				if _, ok := r.entities[m.Source]; ok {
+					return fmt.Errorf("fabriq: metric %q: Rollup sources entity %q — rollups are event-sourced only", m.Name, m.Source)
+				}
+				for _, mm := range m.Measures {
+					if mm.Kind == "count_distinct" || mm.Kind == "percentile" {
+						return fmt.Errorf("fabriq: metric %q: Rollup measure kind %q (sketch measures not supported in rollups until phase 2b-2)", m.Name, mm.Kind)
+					}
+				}
 			}
 			idx[m.Name] = m
 		}
