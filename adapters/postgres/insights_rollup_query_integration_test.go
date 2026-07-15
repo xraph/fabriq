@@ -588,3 +588,54 @@ func TestRollupQuery_ReadsRollupWhenCompatible(t *testing.T) {
 		t.Fatalf("rev = %v, want the planted sentinel %v — query did not read the rollup table", got, sentinel)
 	}
 }
+
+// TestRollupQuery_NoWatermarkFallsBackToLive is the review-fix regression
+// test (phase 2b Task 5 fix): "revenue_rollup" is materialized
+// (MetricSpec.Rollup != nil) and its query shape is rollupCompatible, but
+// NEITHER EnsureRollupTable NOR MaintainRollup is ever called here — so
+// fabriq_insights_rollup_revenue_rollup does not exist AND
+// fabriq_insights_rollup_state has no row for it (ReadRollupWatermark
+// returns hasWatermark=false, not an error — ReadRollupWatermark only reads
+// the always-migrated state table, never the per-metric one). Before the
+// fix, InsightsAdapter.Query routed to buildStitchedRollupSQL regardless,
+// whose sealed CTE does `FROM fabriq_insights_rollup_revenue_rollup`
+// unconditionally — Postgres needs that relation to exist at PLAN time even
+// though the WHERE clause degrades to "AND FALSE" when hasWatermark is
+// false, so the query failed with "relation ... does not exist" the moment
+// a MetricSpec declared Rollup, well before any maintainer pass ever ran.
+// After the fix, Query must fall through to the ordinary live path
+// (buildInsightsSQL) instead, returning the correct live-computed result
+// with no error. Ground truth is "revenue_live" — the same events, same
+// measures/dimensions, un-materialized twin — exactly as every other test
+// in this file compares against.
+func TestRollupQuery_NoWatermarkFallsBackToLive(t *testing.T) {
+	reg := newRollupQueryRegistry(t, time.Minute, 2*time.Hour)
+	a, _ := newInsightsHarness(t, reg)
+	ctx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Deliberately skip EnsureRollupTable/MaintainRollup: no per-metric
+	// rollup table, no watermark row.
+	base := time.Date(2025, 1, 12, 9, 0, 0, 0, time.UTC)
+	trackRevenue(t, a, ctx, base.Add(10*time.Minute), "ok", 42)
+	trackRevenue(t, a, ctx, base.Add(20*time.Minute), "ok", 8)
+	trackRevenue(t, a, ctx, base.Add(30*time.Minute), "err", 5)
+
+	ia := postgres.NewInsightsAdapter(a)
+	q := query.AnalyticsQuery{TimeBucket: time.Hour, From: base, To: base.Add(time.Hour)}
+
+	qRollup := q
+	qRollup.Source = "revenue_rollup"
+	fellBack := queryRows(t, ia, ctx, qRollup) // must NOT error with "relation ... does not exist"
+
+	qLive := q
+	qLive.Source = "revenue_live"
+	live := queryRows(t, ia, ctx, qLive)
+
+	if len(live) == 0 {
+		t.Fatalf("test fixture produced no live rows — nothing was actually compared")
+	}
+	assertRowsExactlyEqual(t, fellBack, live)
+}

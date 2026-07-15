@@ -140,26 +140,52 @@ func (i *InsightsAdapter) Query(ctx context.Context, q query.AnalyticsQuery, int
 			qEff := q
 			qEff.Dimensions = effDims
 			qEff.TimeBucket = effBucket
+			// Route to the stitched builder ONLY when a watermark already
+			// exists (review fix, phase 2b Task 5): buildStitchedRollupSQL's
+			// sealed CTE unconditionally does `FROM fabriq_insights_rollup_
+			// <metric>` — even when hasWatermark is false and the WHERE
+			// clause degrades to "AND FALSE", Postgres still needs that
+			// relation to exist at plan time. Since EnsureRollupTable isn't
+			// wired into boot until a later task, a materialized metric that
+			// has never had a maintainer pass (no watermark row, and
+			// possibly no rollup table at all) would make Query() fail with
+			// "relation does not exist" the moment MetricSpec.Rollup is set
+			// — a regression, not the intended "still exactly correct, just
+			// unaccelerated" behavior the sealed CTE's AND-FALSE branch is
+			// meant to provide. Reading the watermark FIRST and gating the
+			// branch on it means an un-rolled-up metric falls through to the
+			// ordinary live path below (functionally identical to what the
+			// sealed CTE's permanently-false branch would have computed, had
+			// the table existed) with no dependency on the rollup table.
+			//
+			// ReadRollupWatermark reads fabriq_insights_rollup_state, which
+			// always exists (migration 0032) independent of any per-metric
+			// rollup table; a metric with no maintainer pass simply has no
+			// state row, so hasWatermark is cleanly false here — never an
+			// error caused by a missing per-metric table.
 			if rollupCompatible(qEff, m) {
 				watermark, hasWatermark, werr := i.a.ReadRollupWatermark(ctx, m.Name)
 				if werr != nil {
 					return werr
 				}
-				return i.a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
-					sql, args, berr := i.a.buildStitchedRollupSQL(qEff, tid, m, effMeasures, effDims, effBucket, watermark, hasWatermark)
-					if berr != nil {
-						return berr
-					}
-					rows, qerr := tx.Query(ctx, sql, args...)
-					if qerr != nil {
-						return fmt.Errorf("fabriq: insights rollup query: %w", qerr)
-					}
-					maps, serr := scanMaps(rows)
-					if serr != nil {
-						return serr
-					}
-					return assignMapsDest(into, maps)
-				})
+				if hasWatermark {
+					return i.a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
+						sql, args, berr := i.a.buildStitchedRollupSQL(qEff, tid, m, effMeasures, effDims, effBucket, watermark, hasWatermark)
+						if berr != nil {
+							return berr
+						}
+						rows, qerr := tx.Query(ctx, sql, args...)
+						if qerr != nil {
+							return fmt.Errorf("fabriq: insights rollup query: %w", qerr)
+						}
+						maps, serr := scanMaps(rows)
+						if serr != nil {
+							return serr
+						}
+						return assignMapsDest(into, maps)
+					})
+				}
+				// !hasWatermark: fall through to the live path below.
 			}
 		}
 	}
