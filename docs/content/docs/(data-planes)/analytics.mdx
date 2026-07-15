@@ -178,8 +178,12 @@ err := f.Analytics().Query(ctx, query.AnalyticsQuery{
 `Percentile` is a fraction in `(0, 1)` — `0.95` for p95, `0.5` for the
 median. The default output column is `pNN_field` (the percentile × 100,
 rounded, then the field name — `0.95` + `latencyMs` becomes `p95_latencyMs`);
-set `Measure.As` to override. See [Known limitations](#known-limitations-of-query)
-for why percentiles can't be rolled up the way a sum or count can.
+set `Measure.As` to override. Percentiles are **non-additive** — a stored p95
+can't be recombined from partial p95s the way a sum or count can — so a
+purely live `Query` always recomputes one from scratch over every matching
+row. A percentile measure declared on a materialized `MetricSpec` *can* still
+be accelerated, via an approximate t-digest sketch — see
+[Materialized rollups](#materialized-rollups).
 
 ### Having: filtering on aggregated output
 
@@ -242,29 +246,25 @@ query-time **error** — a metric owns its shape, the caller owns filtering.
 ### Known limitations of Query
 
 <Callout type="warn">
-- **No materialized rollups.** Every `Query` computes on-demand; there is no
-  continuous-aggregate/rollup routing yet — phase 2b. Percentiles in
-  particular are **non-additive**: unlike a sum or count, a stored p95 can't
-  be rolled up from partial p95s, so a future rollup has to treat percentile
-  measures specially (recompute from raw facts, or switch to an approximate
-  structure).
-- **No approximate/t-digest percentiles.** Today's `MeasurePercentile` is
-  Postgres's exact `percentile_cont`, computed over every matching row —
-  fine at moderate cardinality, but it doesn't scale the way an approximate
-  (t-digest/HLL-style) percentile would. Approximate percentiles are
-  phase 2b.
+- **Rollups are event-sourced only.** `MetricSpec.Rollup` can only be set on a
+  metric whose `Source` is a schemaless event — a metric sourced from a
+  registered entity's projected facts (`Source` names an entity with
+  `InsightsSpec`) can't be materialized; querying it always takes the live
+  path over `fabriq_insights_facts`.
 - **One source per query.** `Query.Source` names exactly one event, entity,
   or metric — there's no way to join customer events with projected facts
   (or facts from two different entities) in a single cube `Query`. Reach
-  for `QueryRaw` for cross-source aggregation.
+  for `QueryRaw` for cross-source aggregation. This also means rollup
+  acceleration never spans sources: it only ever applies to the one
+  materialized metric a query names.
 - **The remote/gRPC transport doesn't carry `AnalyticsQuerier` yet.**
   Analytics only works against an in-process `f.Analytics()`; the
   `fabriq+grpc://` transport (ADR 0009) returns `ErrNotImplemented` for
   `Track`/`Query`/`QueryRaw` today.
-- **A `MetricSpec` cannot declare a percentile measure yet.**
-  `MetricMeasure.Kind = "percentile"` is rejected at registration — declare
-  percentile measures inline on the `AnalyticsQuery` (as shown above)
-  instead of through a metric, until that capability is added.
+- **Materialized rollups aren't supported under schema-per-tenant mode.**
+  The runtime rollup-table DDL doesn't stamp `search_path` for the tenant's
+  schema — the same gap dynamic-entity managed DDL has. Under that tenancy
+  mode, leave `MetricSpec.Rollup` unset and query the metric live.
 </Callout>
 
 See [ADR 0014](/docs/decisions/0014-tenant-analytics) for the full,
@@ -359,13 +359,130 @@ r.Register(registry.EntitySpec{
 
 A `MetricSpec` validates at registration (a non-empty `Name`, at least one
 `MetricMeasure`, and every non-`count` measure field is a real column) and
-makes the metric discoverable, typed metadata — and a rollup candidate for
-phase 2b. It **is** callable by name: pass `Query.Source = "daily_revenue"`
-and the cube expands it into the declared measures/dimensions/bucket, as
-shown in [Invoking a declared metric by name](#invoking-a-declared-metric-by-name).
-One current restriction: `MetricMeasure.Kind` cannot be `"percentile"` —
-declare percentile measures inline on the `AnalyticsQuery` instead, until
-metrics grow that capability.
+makes the metric discoverable, typed metadata. It **is** callable by name:
+pass `Query.Source = "daily_revenue"` and the cube expands it into the
+declared measures/dimensions/bucket, as shown in
+[Invoking a declared metric by name](#invoking-a-declared-metric-by-name).
+`MetricMeasure.Kind` may be any of `count`/`sum`/`avg`/`min`/`max`/
+`count_distinct`/`percentile` — a percentile measure on a `MetricSpec` sets
+`MetricMeasure.Percentile` the same way `Measure.Percentile` works inline on
+an `AnalyticsQuery`.
+
+An event-sourced metric (`Source` names no registered entity) can also opt
+into background materialization — see [Materialized rollups](#materialized-rollups)
+below.
+
+## Materialized rollups
+
+Any event-sourced `MetricSpec` can opt into background materialization by
+setting `Rollup`. A maintainer job pre-aggregates the metric's raw events
+into per-bucket rollup rows, and `Query` transparently accelerates itself
+against them — no change to the calling code:
+
+```go
+Metrics: []registry.MetricSpec{
+	{
+		Name:          "daily_revenue",
+		Source:        "order_placed",
+		Measures:      []registry.MetricMeasure{{Kind: "sum", Field: "amount"}},
+		Dimensions:    []string{"status"},
+		DefaultBucket: 24 * time.Hour,
+		Rollup: &registry.RollupSpec{
+			Bucket:       time.Hour,        // rollup grain; required, must be > 0
+			SealGrace:    10 * time.Minute, // delay before a bucket seals (0 = 5m default)
+			RerollWindow: 2 * time.Hour,    // trailing recompute for late arrivals (0 = 2×Bucket default)
+		},
+	},
+},
+```
+
+`Rollup` is `nil` by default — a metric stays live-only (the phase 1/2a
+behavior) unless it opts in. Materialization is **event-sourced only**:
+`Rollup.Bucket` must be greater than zero, and registration fails if
+`Source` names a registered entity instead of a schemaless event — a
+projected-facts metric can never be materialized.
+
+Querying it is unchanged:
+
+```go
+// Same call as any other named metric — the cube decides, transparently,
+// whether to serve it from the rollup or compute it live.
+err := f.Analytics().Query(ctx, query.AnalyticsQuery{
+	Source:     "daily_revenue",
+	TimeBucket: 24 * time.Hour, // a clean multiple of the 1h rollup grain
+	Filter:     query.Where{query.Eq("status", "paid")},
+	From:       time.Now().AddDate(0, 0, -30),
+}, &rows)
+```
+
+### Transparent and always fresh
+
+A `Query` against a materialized metric is served by **stitching** the
+sealed rollup with a **live tail**: buckets recent enough that the
+maintainer hasn't sealed them yet are computed live, directly over
+`fabriq_insights_events`, and combined with the pre-aggregated sealed rows
+in the same result. The live tail always covers events up to the query's
+`To` bound, so the stitched result is exactly as current as a fully-live
+query — just faster, since most of the range is already pre-aggregated.
+
+### Exact vs. approximate
+
+- **Additive measures** — `count`, `sum`, `avg`, `min`, `max` — roll up
+  **exactly**: the stitched result is identical to what a fully-live query
+  would compute.
+- **`count_distinct` and `percentile`** roll up **approximately**, backed by
+  `timescaledb_toolkit` sketches — a HyperLogLog for `count_distinct`, a
+  t-digest for `percentile`. The sealed rollup and the live tail build their
+  sketch at the same size (a 1024-register HyperLogLog, a 100-bucket
+  t-digest) so they combine correctly via the toolkit's `rollup()`
+  aggregate. A 1024-register HyperLogLog carries roughly a 3% expected
+  standard error for `count_distinct`; the t-digest stays accurate to a few
+  percent for `percentile` on typical distributions.
+- The pure-live path — a non-materialized metric, a schemaless event
+  queried directly, projected facts, or any query the rollup can't serve
+  (see below) — always computes exactly, sketches included.
+
+### Compatibility and fallback
+
+A query is served from the rollup only when its shape lines up with what's
+stored:
+
+- `TimeBucket` must be a positive multiple of the metric's `Rollup.Bucket`
+  grain (an hourly rollup can serve 1h/2h/6h/24h buckets, never anything
+  finer than an hour).
+- Every requested dimension and every `Filter` column must be one of the
+  metric's declared `Dimensions` — a rollup row has no column for anything
+  else.
+
+Any other query shape falls through to the exact live path automatically,
+rather than erroring — materialization only ever accelerates a query, it
+never changes what a query is allowed to ask for. The same fallback applies
+before the maintainer has ever sealed a bucket for the metric (no watermark
+yet): the very first `Query` against a freshly materialized metric is served
+live, exactly like an unmaterialized one, until the next maintainer pass.
+
+### Maintenance
+
+A leader-elected background job, `rollup:insights`, incrementally seals and
+aggregates completed buckets, per tenant, for every materialized metric. It
+runs once `Insights.Enabled` is true and at least one metric declares
+`Rollup` — nothing to configure beyond that. Its cadence defaults to one
+pass a minute; override it with `forgeext.WithRollupInterval(d)` when wiring
+the extension.
+
+### Requirements and limits
+
+- `count_distinct`/`percentile` measures in a rollup require the
+  `timescaledb_toolkit` Postgres extension (bundled in the
+  `timescale/timescaledb-ha:pg*-all` images). A materialized metric with a
+  sketch measure fails loudly at boot — before any table is created — if
+  the toolkit isn't installable in the target database; additive-only
+  rollups never touch the toolkit at all.
+- **Materialized rollups aren't supported under schema-per-tenant
+  consolidation mode.** The runtime rollup-table DDL doesn't stamp
+  `search_path` for the tenant's schema — the same gap dynamic-entity
+  managed DDL has. Use another tenancy mode for a metric that needs
+  materialization, or leave `Rollup` unset and query it live.
 
 <Cards>
   <Card title="ADR 0014" href="/docs/decisions/0014-tenant-analytics">The design decisions and the hard boundary vs. the operator sink.</Card>
