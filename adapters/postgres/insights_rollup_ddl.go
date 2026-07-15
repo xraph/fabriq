@@ -100,7 +100,7 @@ func rollupMeasureColumns(m registry.MetricMeasure) ([]string, error) {
 // adapters/postgres is the runtime managed-DDL lane (this file's sibling is
 // ddl.go's EnsureDynamic seam) and must not import the migrations package,
 // which is the boot-time-schema lane. Tenant stays the hard boundary; scope
-// is soft — an unscoped reader (app.scope_id = '') sees every row in the
+// is soft — an unscoped reader (empty app.scope_id) sees every row in the
 // tenant, a scoped reader sees its own scope's rows plus shared (NULL-scope)
 // rows.
 func rollupRLSStatements(table string) []string {
