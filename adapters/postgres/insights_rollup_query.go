@@ -28,16 +28,37 @@ package postgres
 // of sealed bucket_start values — i.e. every rollup row with bucket_start <
 // watermark is sealed and up to date, and the bucket starting AT watermark
 // itself is NOT yet in the rollup (it may still be open, or sealed-but-not-
-// yet-rolled-up by the next maintainer pass). So:
+// yet-rolled-up by the next maintainer pass).
 //
-//   - the sealed CTE reads bucket_start ∈ [q.From, min(watermark, q.To)) —
-//     never bucket_start >= watermark;
-//   - the live CTE reads at ∈ [max(watermark, q.From), q.To) — starting
-//     exactly AT watermark, not watermark+grain.
+// q.From/q.To are NOT guaranteed to be grain-aligned (a caller may ask for
+// "the last 90 minutes" against an hourly rollup), but every rollup
+// bucket_start value IS grain-aligned. So the sealed/live boundary cannot
+// simply be "watermark" compared against raw q.From/q.To — that would either
+// drop the leading partial bucket [q.From, ceilToGrain(q.From)) (sealed's
+// bucket_start >= q.From, raw, excludes the sealed bucket q.From falls
+// inside; live's lower bound starts AT watermark, well past it) or
+// double-count a trailing partial bucket, whenever q.From/q.To land
+// mid-bucket. Instead this file computes two grain-ALIGNED boundaries
+// (sealedLo, sealedHiExcl, below) and tiles sealed/live around THOSE:
 //
-// These two ranges tile [q.From, q.To) with NO gap and NO overlap by
-// construction (both bounds are exactly `watermark`), which is the numeric
-// crux of "stitched == fully-live".
+//   - sealedLo = ceilToGrain(q.From, g) — the first rollup bucket_start
+//     fully inside [q.From, ∞): rounds UP, so a mid-bucket q.From excludes
+//     that partial bucket from the sealed side (it belongs to live instead).
+//   - sealedHiExcl = min(watermark, floorToGrain(q.To, g)) when q.To is
+//     bounded, else just `watermark` — the sealed CTE serves bucket_start ∈
+//     [sealedLo, sealedHiExcl), i.e. only buckets BOTH sealed (before the
+//     watermark) AND fully before q.To (floorToGrain rounds DOWN, so a
+//     mid-bucket q.To excludes that partial bucket from the sealed side
+//     too).
+//   - the live CTE covers everything sealed does NOT: at ∈ [q.From, q.To)
+//     AND (at < sealedLo OR at >= sealedHiExcl) — the leading partial
+//     [q.From, sealedLo), the trailing partial + unsealed tail
+//     [sealedHiExcl, q.To), and nothing sealed already served.
+//
+// sealed ∪ live tiles [q.From, q.To) with NO gap and NO overlap by
+// construction (sealedLo/sealedHiExcl are the shared boundary on both
+// sides), which is the numeric crux of "stitched == fully-live" even when
+// q.From/q.To are not clean multiples of the rollup grain.
 
 import (
 	"fmt"
@@ -47,6 +68,42 @@ import (
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 )
+
+// floorToGrain rounds t DOWN to the nearest multiple of g. Pure, no I/O.
+//
+// Uses time.Time.Truncate, which aligns to Go's zero-time origin (an
+// absolute, epoch-independent instant) — this matches Postgres/TimescaleDB's
+// time_bucket(interval, ts) alignment for any grain that evenly divides a
+// calendar day (minute, hour, or day itself): TimescaleDB's default
+// time_bucket origin (2000-01-03, a Monday, chosen to align weekly buckets)
+// is itself exactly midnight-aligned, and the gap between that origin and
+// Go's zero time is a whole number of days — so truncating to a sub-day
+// grain lands on the identical boundary either way. It would NOT hold for a
+// weekly (or coarser, non-day-multiple) grain, but rollupCompatible's
+// bucket-multiple rule only ever routes practical hour/day-scale grains
+// through this file; the unaligned-boundary regression test
+// (TestRollupQuery_UnalignedBoundaryExactVsLive) is the oracle that would
+// catch a mismatch if that assumption ever stopped holding.
+func floorToGrain(t time.Time, g time.Duration) time.Time {
+	if g <= 0 {
+		return t
+	}
+	return t.Truncate(g)
+}
+
+// ceilToGrain rounds t UP to the nearest multiple of g (t itself, unchanged,
+// if it is already grain-aligned). Pure, no I/O. See floorToGrain's doc for
+// the origin-alignment argument this shares.
+func ceilToGrain(t time.Time, g time.Duration) time.Time {
+	if g <= 0 {
+		return t
+	}
+	fl := t.Truncate(g)
+	if fl.Equal(t) {
+		return fl
+	}
+	return fl.Add(g)
+}
 
 // rollupCompatible reports whether q can be served by m's materialized
 // rollup instead of the fully-live path. PURE — no I/O, no db/registry
@@ -324,7 +381,29 @@ func (a *Adapter) buildStitchedRollupSQL(q query.AnalyticsQuery, tid string, m *
 	args = []any{tid} // $1 — tenant_id, shared by both CTEs
 	argN := 2
 
-	// ---- sealed CTE: bucket_start ∈ [q.From, min(watermark, q.To)) ----
+	// ---- grain-aligned sealed/live boundary (see this file's header
+	// comment for the derivation) ----
+	//
+	// sealedLo/sealedHiExcl are the ALIGNED tiling boundary: sealed serves
+	// bucket_start ∈ [sealedLo, sealedHiExcl); live serves everything else in
+	// [q.From, q.To). Both are zero (Go zero time.Time) when there is no
+	// corresponding bound (q.From unset -> sealedLo unset: no leading partial
+	// to worry about; q.To unset -> sealedHiExcl capped only by watermark).
+	g := m.Rollup.Bucket
+	var sealedLo, sealedHiExcl time.Time
+	if hasWatermark {
+		if !q.From.IsZero() {
+			sealedLo = ceilToGrain(q.From, g)
+		}
+		sealedHiExcl = watermark
+		if !q.To.IsZero() {
+			if toFloor := floorToGrain(q.To, g); toFloor.Before(sealedHiExcl) {
+				sealedHiExcl = toFloor
+			}
+		}
+	}
+
+	// ---- sealed CTE: bucket_start ∈ [sealedLo, sealedHiExcl) ----
 	sealedSelect := []string{"bucket_start", "scope_id"}
 	for _, d := range rollupDims {
 		sealedSelect = append(sealedSelect, fmt.Sprintf("%q", d))
@@ -344,17 +423,13 @@ func (a *Adapter) buildStitchedRollupSQL(q query.AnalyticsQuery, tid string, m *
 		// entire requested range — still exactly correct, just unaccelerated.
 		sealedWhere.WriteString(" AND FALSE")
 	} else {
-		sealedHi := watermark
-		if !q.To.IsZero() && q.To.Before(watermark) {
-			sealedHi = q.To
-		}
-		if !q.From.IsZero() {
+		if !sealedLo.IsZero() {
 			fmt.Fprintf(&sealedWhere, " AND bucket_start >= $%d", argN)
-			args = append(args, q.From)
+			args = append(args, sealedLo)
 			argN++
 		}
 		fmt.Fprintf(&sealedWhere, " AND bucket_start < $%d", argN)
-		args = append(args, sealedHi)
+		args = append(args, sealedHiExcl)
 		argN++
 		for _, c := range q.Filter {
 			frag, fargs, ferr := mapCondToRollupDim(c, &argN, rollupDimSet)
@@ -366,6 +441,12 @@ func (a *Adapter) buildStitchedRollupSQL(q query.AnalyticsQuery, tid string, m *
 			args = append(args, fargs...)
 		}
 	}
+	// If sealedHiExcl <= sealedLo (e.g. the whole query range sits strictly
+	// inside a single not-yet-sealed span, or before any watermark has ever
+	// advanced past it), the two bound comparisons above naturally yield zero
+	// sealed rows — no special-case branch needed; the live CTE's
+	// OR-exclusion below (built from the SAME sealedLo/sealedHiExcl values)
+	// then covers the entire [q.From, q.To) range, the "all-live" case.
 	sealedSQL := fmt.Sprintf("SELECT %s FROM %s WHERE %s", strings.Join(sealedSelect, ", "), table, sealedWhere.String())
 
 	// ---- live CTE: at ∈ [max(watermark, q.From), q.To) ----
@@ -441,22 +522,38 @@ func (a *Adapter) buildStitchedRollupSQL(q query.AnalyticsQuery, tid string, m *
 	args = append(args, m.Source)
 	argN++
 
-	liveLo := q.From
-	if hasWatermark {
-		liveLo = watermark
-		if !q.From.IsZero() && q.From.After(watermark) {
-			liveLo = q.From
-		}
-	}
-	if !liveLo.IsZero() {
+	// ---- live CTE bounds: at ∈ [q.From, q.To), EXCLUDING whatever the
+	// sealed CTE above already served ([sealedLo, sealedHiExcl)) ----
+	if !q.From.IsZero() {
 		fmt.Fprintf(&liveWhere, " AND at >= $%d", argN)
-		args = append(args, liveLo)
+		args = append(args, q.From)
 		argN++
 	}
 	if !q.To.IsZero() {
 		fmt.Fprintf(&liveWhere, " AND at < $%d", argN)
 		args = append(args, q.To)
 		argN++
+	}
+	if hasWatermark {
+		// Excludes the sealed interior so sealed ∪ live tiles [q.From, q.To)
+		// with no overlap: "at < sealedLo" covers the leading partial bucket
+		// (only meaningful — i.e. only added — when q.From carved one out);
+		// "at >= sealedHiExcl" covers the trailing partial bucket plus
+		// whatever unsealed tail remains, and is always added when a
+		// watermark exists. If sealedHiExcl <= sealedLo (sealed was empty),
+		// this OR is a tautology (every `at` satisfies one side or the
+		// other), so live correctly serves the entire range unfiltered by
+		// this clause — the "all-live" case.
+		var orParts []string
+		if !sealedLo.IsZero() {
+			orParts = append(orParts, fmt.Sprintf("at < $%d", argN))
+			args = append(args, sealedLo)
+			argN++
+		}
+		orParts = append(orParts, fmt.Sprintf("at >= $%d", argN))
+		args = append(args, sealedHiExcl)
+		argN++
+		fmt.Fprintf(&liveWhere, " AND (%s)", strings.Join(orParts, " OR "))
 	}
 	for _, c := range q.Filter {
 		frag, fargs, ferr := mapCondToProp(c, &argN, "props", rollupDimSet)

@@ -639,3 +639,106 @@ func TestRollupQuery_NoWatermarkFallsBackToLive(t *testing.T) {
 	}
 	assertRowsExactlyEqual(t, fellBack, live)
 }
+
+// TestRollupQuery_UnalignedBoundaryExactVsLive is the C1 review-fix
+// regression test (phase 2b final-review): buildStitchedRollupSQL must tile
+// the sealed rollup and the live tail on GRAIN-ALIGNED boundaries, not raw
+// q.From/q.To, or a query whose From/To land mid-bucket silently drops (or,
+// symmetrically, double-counts) events.
+//
+// Fixture: hourly grain. Buckets 0 (0:00-1:00), 1 (1:00-2:00), and 2
+// (2:00-3:00) are sealed by MaintainRollup; bucket 3 (3:00-4:00) is left
+// open (still live). The query's From (1:30) lands MID-bucket-1 and To
+// (3:30) lands MID-bucket-3 — deliberately never aligned to the 1h grain.
+// Every bucket also carries an event OUTSIDE [From, To) (before 1:30 or at/
+// after 3:30) that must NOT be counted, proving the fix does not merely
+// widen the window to fully include partial buckets.
+//
+// Before the fix: the sealed CTE filtered "bucket_start >= q.From" (raw,
+// 1:30) against grain-aligned bucket_start values (0:00/1:00/2:00) — bucket
+// 1's sealed row (bucket_start=1:00 < 1:30) was dropped ENTIRELY, and the
+// live CTE's lower bound started at the watermark (3:00), well past the
+// dropped bucket — so the bucket-1 event at 1:40 (status "ok", amount 7)
+// disappeared from the result with no error. This test fails before the fix
+// (stitched result missing the 1:00/ok row present in the live ground
+// truth) and passes after it (stitched == live, byte-for-byte, via
+// assertRowsExactlyEqual).
+func TestRollupQuery_UnalignedBoundaryExactVsLive(t *testing.T) {
+	reg := newRollupQueryRegistry(t, time.Minute, 2*time.Hour)
+	a, owner := newInsightsHarness(t, reg)
+	ctx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, ok := reg.Metric("revenue_rollup")
+	if !ok {
+		t.Fatalf("revenue_rollup metric not found in registry")
+	}
+	if err := owner.EnsureRollupTable(context.Background(), m); err != nil {
+		t.Fatalf("EnsureRollupTable: %v", err)
+	}
+
+	base := time.Date(2025, 1, 13, 0, 0, 0, 0, time.UTC)
+
+	// Bucket 0 (0:00-1:00): entirely before the query's From (1:30) —
+	// must never be counted.
+	trackRevenue(t, a, ctx, base.Add(10*time.Minute), "ok", 1000)
+
+	// Bucket 1 (1:00-2:00): straddles the query's From (1:30). The 1:10
+	// event is excluded (before From); the 1:40 event is included (the
+	// leading partial-bucket event a buggy sealed-only filter would drop
+	// along with the rest of this sealed bucket).
+	bucket1 := base.Add(time.Hour)
+	trackRevenue(t, a, ctx, bucket1.Add(10*time.Minute), "ok", 50)
+	trackRevenue(t, a, ctx, bucket1.Add(40*time.Minute), "ok", 7)
+
+	// Bucket 2 (2:00-3:00): fully inside [From, To) and fully sealed.
+	bucket2 := base.Add(2 * time.Hour)
+	trackRevenue(t, a, ctx, bucket2.Add(5*time.Minute), "ok", 20)
+	trackRevenue(t, a, ctx, bucket2.Add(50*time.Minute), "err", 30)
+
+	// Bucket 3 (3:00-4:00): the OPEN (unsealed) bucket, straddling the
+	// query's To (3:30). The 3:10 event is included (trailing partial +
+	// unsealed tail); the 3:40 event is excluded (at/after To).
+	bucket3 := base.Add(3 * time.Hour)
+	trackRevenue(t, a, ctx, bucket3.Add(10*time.Minute), "ok", 9)
+	trackRevenue(t, a, ctx, bucket3.Add(40*time.Minute), "ok", 999)
+
+	now := base.Add(3*time.Hour + 10*time.Minute) // 10m into bucket 3 — past 1m SealGrace for buckets 0-2, not for bucket 3
+	if err := a.MaintainRollup(ctx, m, now); err != nil {
+		t.Fatalf("MaintainRollup: %v", err)
+	}
+
+	wm, wmOK, werr := a.ReadRollupWatermark(ctx, "revenue_rollup")
+	if werr != nil {
+		t.Fatalf("ReadRollupWatermark: %v", werr)
+	}
+	if !wmOK || !wm.Equal(bucket3) {
+		t.Fatalf("watermark = (%s, %v), want (%s, true) — test fixture must leave bucket 3 open", wm, wmOK, bucket3)
+	}
+
+	ia := postgres.NewInsightsAdapter(a)
+	// Deliberately mid-hour From/To against an hourly (1h) rollup grain.
+	q := query.AnalyticsQuery{
+		TimeBucket: time.Hour,
+		From:       base.Add(90 * time.Minute),             // 1:30 — mid bucket 1
+		To:         base.Add(3*time.Hour + 30*time.Minute), // 3:30 — mid bucket 3
+	}
+
+	qRollup := q
+	qRollup.Source = "revenue_rollup"
+	stitched := queryRows(t, ia, ctx, qRollup)
+
+	qLive := q
+	qLive.Source = "revenue_live"
+	live := queryRows(t, ia, ctx, qLive)
+
+	if len(live) == 0 {
+		t.Fatalf("test fixture produced no live rows — nothing was actually compared")
+	}
+	if len(live) != 4 {
+		t.Fatalf("test fixture sanity check failed: want exactly 4 live rows (1:00/ok, 2:00/ok, 2:00/err, 3:00/ok), got %d: %+v", len(live), live)
+	}
+	assertRowsExactlyEqual(t, stitched, live)
+}
