@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/xraph/fabriq/core/registry"
@@ -11,6 +12,30 @@ import (
 // rollupTablePrefix names the per-metric materialized-rollup tables (phase
 // 2b). One table per materialized MetricSpec: fabriq_insights_rollup_<metric>.
 const rollupTablePrefix = "fabriq_insights_rollup_"
+
+// rollupHLLRegisters and rollupTDigestBuckets (phase 2b-2) are the SHARED
+// timescaledb_toolkit sketch-size parameters: hyperloglog(N, value)'s
+// register count and tdigest(N, value)'s bucket count, respectively. BOTH
+// the maintainer's sealed aggregation (rollupMeasureSelect,
+// insights_rollup_maintain.go) and the router's live-tail aggregation
+// (buildStitchedRollupSQL, insights_rollup_query.go) build their sketches
+// with these SAME constants — a hyperloglog/tdigest built at one size
+// cannot be validly `rollup()`'d together with one built at a different
+// size (the toolkit combinator aggregate assumes matching internal
+// resolution), so the sealed-bucket sketch and the live-tail sketch for
+// the same query MUST agree, which is only guaranteed by sharing these
+// package-level constants rather than repeating literals at each callsite.
+//
+// rollupHLLRegisters must be between 16 and 2^18 per the toolkit's
+// hyperloglog(size, value) contract (size is rounded up to the next power
+// of 2 internally); 1024 is already a power of 2, comfortably inside that
+// range, and gives ~1-2% standard error for count_distinct estimates.
+// rollupTDigestBuckets has no power-of-2 requirement; 100 is the toolkit
+// docs' own example value and gives good accuracy at modest memory cost.
+const (
+	rollupHLLRegisters   = 1024
+	rollupTDigestBuckets = 100
+)
 
 // rollupTableName returns the physical table name for a materialized
 // metric's rollup, validating the FULL name (prefix + metric) against
@@ -30,16 +55,33 @@ func rollupTableName(metric string) (string, error) {
 
 // rollupMeasureAlias returns the measure's column alias: its declared As, or
 // a defaulted alias when As is empty — "count" for a count measure (which
-// typically has no Field), "<kind>_<field>" otherwise. The caller
-// ddlValid-checks the result before using it in DDL.
+// typically has no Field), "p<N>_<field>" for a percentile measure (N =
+// round(Percentile*100), e.g. "p95_latency"), "<kind>_<field>" otherwise.
+// The caller ddlValid-checks the result before using it in DDL.
+//
+// The percentile default MUST match query.measureAlias's own default
+// (adapters/postgres/insights_query_build.go) EXACTLY: this function names
+// the DDL column (rollupMeasureColumns) and the maintainer's INSERT column
+// (rollupMeasureSelect), while the router (buildStitchedRollupSQL) computes
+// its sealed-CTE column reference via query.measureAlias on the very same
+// registry.MetricMeasure (translated to query.Measure by
+// insights.toQueryMeasures, which threads As/Percentile through unchanged).
+// A metric with a percentile measure and no explicit As would otherwise
+// have its column DDL-created/populated under one default name here but
+// have the router SELECT a differently-named column — a "column ... does
+// not exist" failure the moment a percentile measure omits As.
 func rollupMeasureAlias(m registry.MetricMeasure) string {
 	if m.As != "" {
 		return m.As
 	}
-	if m.Kind == "count" {
+	switch m.Kind {
+	case "count":
 		return "count"
+	case "percentile":
+		return fmt.Sprintf("p%d_%s", int(math.Round(m.Percentile*100)), m.Field)
+	default:
+		return fmt.Sprintf("%s_%s", m.Kind, m.Field)
 	}
-	return fmt.Sprintf("%s_%s", m.Kind, m.Field)
 }
 
 // rollupMeasureColumns returns the rollup column definition(s) for one

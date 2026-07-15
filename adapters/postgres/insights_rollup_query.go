@@ -1,18 +1,26 @@
 package postgres
 
-// The stitching query router (phase 2b, Task 5): when a cube Query targets a
-// materialized metric (MetricSpec.Rollup != nil) and the query's shape is
-// "rollup-compatible" (rollupCompatible, below), InsightsAdapter.Query serves
-// it by combining the SEALED rollup table with a LIVE tail computed directly
-// from fabriq_insights_events — buildStitchedRollupSQL builds that combined
-// query. Correctness invariant: for additive measures (count/sum/avg/min/
-// max — the only kinds a Rollup-opted metric may declare in 2b-1, enforced by
-// registry.Validate), the stitched result is EXACTLY equal to the fully-live
-// result, never stale (the live tail always covers events up to `to`, so
-// nothing sealed-but-not-yet-rolled-up or arrived-since is ever missing) and
-// never partial. An incompatible query (see rollupCompatible) is not routed
-// here at all — the caller falls back to buildInsightsSQL, which is always
-// exact by construction.
+// The stitching query router (phase 2b, Task 5; sketch measures added Task
+// 8/2b-2): when a cube Query targets a materialized metric
+// (MetricSpec.Rollup != nil) and the query's shape is "rollup-compatible"
+// (rollupCompatible, below), InsightsAdapter.Query serves it by combining the
+// SEALED rollup table with a LIVE tail computed directly from
+// fabriq_insights_events — buildStitchedRollupSQL builds that combined query.
+// Correctness invariant: for additive measures (count/sum/avg/min/max), the
+// stitched result is EXACTLY equal to the fully-live result, never stale (the
+// live tail always covers events up to `to`, so nothing sealed-but-not-yet-
+// rolled-up or arrived-since is ever missing) and never partial. For sketch
+// measures (count_distinct/percentile, phase 2b-2), the stitched result is
+// APPROXIMATE by construction — combining a sealed hyperloglog/tdigest with a
+// live-tail one built at the SAME toolkit size (rollupHLLRegisters/
+// rollupTDigestBuckets, insights_rollup_ddl.go) via `rollup()` and reading it
+// with `distinct_count`/`approx_percentile` — never stale or partial in the
+// same range sense as the additive case, just not exact; this is the
+// explicit trade a caller accepts by declaring a sketch measure on a Rollup
+// metric (see the design's "Sketches (2b-2)" section). An incompatible query
+// (see rollupCompatible) is not routed here at all — the caller falls back
+// to buildInsightsSQL, which is always exact by construction (both additive
+// and sketch measures).
 //
 // The watermark/seal-boundary tiling this file depends on (see
 // insights_rollup_maintain.go's MaintainRollup/AdvanceRollupWatermark):
@@ -94,27 +102,35 @@ func rollupCompatible(q query.AnalyticsQuery, m *registry.MetricSpec) bool {
 	return true
 }
 
-// rollupMeasurePartial describes how one query.Measure's additive partial is
-// carried through the sealed/live-tail "parts" shape and re-aggregated in
-// the final SELECT: count/sum/min/max store ONE partial column (named by the
+// rollupMeasurePartial describes how one query.Measure's partial is carried
+// through the sealed/live-tail "parts" shape and re-aggregated in the final
+// SELECT: count/sum/min/max store ONE additive partial column (named by the
 // measure's output alias, matching the rollup table's own column exactly —
 // see rollupMeasureColumns, insights_rollup_ddl.go); avg is decomposed into
 // TWO partial columns ("<alias>__sum", "<alias>__count"), mirroring
 // rollupMeasureSelect (insights_rollup_maintain.go) — additive storage, so
 // avg is recomputed as sum/count only once, in the final SELECT.
+// count_distinct/percentile ("sketch" measures, phase 2b-2) also store ONE
+// partial column, but it carries a toolkit hyperloglog/tdigest VALUE (not a
+// plain additive number) — the final SELECT combines sealed+live-tail
+// partials via `rollup()` rather than sum/min/max. percentile is set (the
+// measure's requested fraction) only for MeasurePercentile; ignored
+// otherwise, mirroring query.Measure.Percentile itself.
 type rollupMeasurePartial struct {
-	kind  query.MeasureKind
-	field string
-	alias string
-	cols  []string
+	kind       query.MeasureKind
+	field      string
+	alias      string
+	cols       []string
+	percentile float64
 }
 
 // planRollupMeasures validates each measure's output alias and computes its
-// partial-column plan. Only count/sum/avg/min/max are additive — the only
-// kinds registry.Validate permits on a Rollup-opted MetricSpec in 2b-1 — so a
-// count_distinct/percentile measure here indicates the registry validation
-// gate was bypassed (a metric was hand-built rather than validated); reject
-// rather than silently building nonsense SQL for it.
+// partial-column plan. count/sum/avg/min/max are additive; count_distinct/
+// percentile are sketch-based (phase 2b-2, combined via toolkit rollup()) —
+// together these are every kind registry.Validate permits on a Rollup-opted
+// MetricSpec. Any other kind here indicates the registry validation gate was
+// bypassed (a metric was hand-built rather than validated); reject rather
+// than silently building nonsense SQL for it.
 func planRollupMeasures(measures []query.Measure) ([]rollupMeasurePartial, error) {
 	out := make([]rollupMeasurePartial, 0, len(measures))
 	for _, meas := range measures {
@@ -123,8 +139,9 @@ func planRollupMeasures(measures []query.Measure) ([]rollupMeasurePartial, error
 			return nil, err
 		}
 		var cols []string
+		var percentile float64
 		switch meas.Kind {
-		case query.MeasureCount, query.MeasureSum, query.MeasureMin, query.MeasureMax:
+		case query.MeasureCount, query.MeasureSum, query.MeasureMin, query.MeasureMax, query.MeasureCountDistinct:
 			cols = []string{alias}
 		case query.MeasureAvg:
 			sumCol, countCol := alias+"__sum", alias+"__count"
@@ -132,10 +149,16 @@ func planRollupMeasures(measures []query.Measure) ([]rollupMeasurePartial, error
 				return nil, fmt.Errorf("fabriq: invalid decomposed avg column for alias %q", alias)
 			}
 			cols = []string{sumCol, countCol}
+		case query.MeasurePercentile:
+			if !(meas.Percentile > 0 && meas.Percentile < 1) {
+				return nil, fmt.Errorf("fabriq: percentile must be in (0,1), got %v", meas.Percentile)
+			}
+			cols = []string{alias}
+			percentile = meas.Percentile
 		default:
-			return nil, fmt.Errorf("fabriq: measure kind %q is not additive — not servable from a rollup", meas.Kind)
+			return nil, fmt.Errorf("fabriq: measure kind %q is not servable from a rollup", meas.Kind)
 		}
-		out = append(out, rollupMeasurePartial{kind: meas.Kind, field: meas.Field, alias: alias, cols: cols})
+		out = append(out, rollupMeasurePartial{kind: meas.Kind, field: meas.Field, alias: alias, cols: cols, percentile: percentile})
 	}
 	return out, nil
 }
@@ -391,6 +414,25 @@ func (a *Adapter) buildStitchedRollupSQL(q query.AnalyticsQuery, tid string, m *
 				fmt.Sprintf("sum((%s)::numeric) AS %q", acc, p.cols[0]),
 				fmt.Sprintf("count(%s)::numeric AS %q", acc, p.cols[1]),
 			)
+		case query.MeasureCountDistinct:
+			acc, aerr := propAccessor("props", p.field)
+			if aerr != nil {
+				return "", nil, aerr
+			}
+			// SAME size (rollupHLLRegisters) the maintainer's sealed
+			// hyperloglog(...) uses (insights_rollup_maintain.go) — required
+			// for the final SELECT's rollup(hll) to combine sealed + live-tail
+			// correctly.
+			liveSelect = append(liveSelect, fmt.Sprintf("hyperloglog(%d, %s) AS %q", rollupHLLRegisters, acc, p.cols[0]))
+		case query.MeasurePercentile:
+			acc, aerr := propAccessor("props", p.field)
+			if aerr != nil {
+				return "", nil, aerr
+			}
+			// SAME size (rollupTDigestBuckets) the maintainer's sealed
+			// tdigest(...) uses — required for rollup(td) to combine
+			// correctly, mirroring the hyperloglog case above.
+			liveSelect = append(liveSelect, fmt.Sprintf("tdigest(%d, (%s)::double precision) AS %q", rollupTDigestBuckets, acc, p.cols[0]))
 		}
 	}
 
@@ -456,6 +498,28 @@ func (a *Adapter) buildStitchedRollupSQL(q query.AnalyticsQuery, tid string, m *
 			expr = fmt.Sprintf("max(%q)", p.cols[0])
 		case query.MeasureAvg:
 			expr = fmt.Sprintf("(sum(%q) / NULLIF(sum(%q), 0))", p.cols[0], p.cols[1])
+		case query.MeasureCountDistinct:
+			// rollup(hll) unions every sealed-bucket hll AND the live-tail
+			// hll (both built at rollupHLLRegisters, so they combine
+			// validly) within this GROUP; distinct_count reads the
+			// estimate off the combined hll. Approximate by construction —
+			// the design's explicit trade for a Rollup metric with a
+			// count_distinct measure.
+			expr = fmt.Sprintf("distinct_count(rollup(%q))", p.cols[0])
+		case query.MeasurePercentile:
+			// Mirrors the count_distinct case above for tdigest: rollup(td)
+			// combines every sealed + live-tail partial (all built at
+			// rollupTDigestBuckets) within this GROUP; approx_percentile
+			// reads the requested fraction off the combined digest. The
+			// fraction travels as a bound $N parameter (like the live
+			// path's percentile_cont — measureAggExpr,
+			// insights_query_build.go) rather than a literal, consistent
+			// with this file's own "every value is a bound parameter"
+			// injection-guard contract.
+			ph := fmt.Sprintf("$%d", argN)
+			args = append(args, p.percentile)
+			argN++
+			expr = fmt.Sprintf("approx_percentile(%s, rollup(%q))", ph, p.cols[0])
 		}
 		finalSelect = append(finalSelect, fmt.Sprintf("%s AS %q", expr, p.alias))
 		allowedOrder[p.alias] = true

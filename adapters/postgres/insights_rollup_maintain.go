@@ -166,9 +166,20 @@ func (a *Adapter) AdvanceRollupWatermark(ctx context.Context, metric string, buc
 // rollupMeasureColumns' (insights_rollup_ddl.go) column shape exactly: count/
 // sum/min/max map to one column, avg decomposes into "<alias>__sum" +
 // "<alias>__count" (additive storage — the maintainer/router recompute
-// avg = sum/count when reading). cols and updateCols are appended to (not
-// returned fresh) so the caller can build one running list across all
-// measures.
+// avg = sum/count when reading). count_distinct/percentile ("sketch"
+// measures, phase 2b-2) each map to a single toolkit-typed column, built via
+// hyperloglog(rollupHLLRegisters, ...)/tdigest(rollupTDigestBuckets, ...)
+// respectively — the SAME size constants the router's live-tail CTE
+// (buildStitchedRollupSQL, insights_rollup_query.go) uses, so a sealed
+// bucket's sketch and a live-tail bucket's sketch for the same metric can
+// always be rollup()'d together. A sketch measure's ON CONFLICT DO UPDATE
+// overwrites the stored sketch wholesale (like every other measure kind
+// here) rather than merging it with the previous value: RollupRange always
+// recomputes a bucket's aggregate FRESH from the raw events in that bucket
+// (see buildRollupRangeSQL's GROUP BY), so overwrite is exactly correct —
+// merging would double-count a re-rolled (late-arrival) bucket. cols and
+// updateCols are appended to (not returned fresh) so the caller can build
+// one running list across all measures.
 func rollupMeasureSelect(m registry.MetricMeasure, insertCols, selects, updateCols *[]string) error {
 	switch m.Kind {
 	case "count":
@@ -209,8 +220,32 @@ func rollupMeasureSelect(m registry.MetricMeasure, insertCols, selects, updateCo
 		*selects = append(*selects, fmt.Sprintf("SUM((%s)::numeric)", acc), fmt.Sprintf("COUNT(%s)", acc))
 		*updateCols = append(*updateCols, sumCol, countCol)
 		return nil
-	case "count_distinct", "percentile":
-		return fmt.Errorf("measure kind %q is not additive — rollups do not support sketch measures until phase 2b-2", m.Kind)
+	case "count_distinct":
+		alias := rollupMeasureAlias(m)
+		if !ddlValid(alias) {
+			return fmt.Errorf("invalid measure column name %q (kind %q)", alias, m.Kind)
+		}
+		acc, err := propAccessor("props", m.Field)
+		if err != nil {
+			return err
+		}
+		*insertCols = append(*insertCols, alias)
+		*selects = append(*selects, fmt.Sprintf("hyperloglog(%d, %s)", rollupHLLRegisters, acc))
+		*updateCols = append(*updateCols, alias)
+		return nil
+	case "percentile":
+		alias := rollupMeasureAlias(m)
+		if !ddlValid(alias) {
+			return fmt.Errorf("invalid measure column name %q (kind %q)", alias, m.Kind)
+		}
+		acc, err := propAccessor("props", m.Field)
+		if err != nil {
+			return err
+		}
+		*insertCols = append(*insertCols, alias)
+		*selects = append(*selects, fmt.Sprintf("tdigest(%d, (%s)::double precision)", rollupTDigestBuckets, acc))
+		*updateCols = append(*updateCols, alias)
+		return nil
 	default:
 		return fmt.Errorf("unknown measure kind %q", m.Kind)
 	}
