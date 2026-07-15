@@ -87,31 +87,33 @@ func rollupMeasureColumns(m registry.MetricMeasure) ([]string, error) {
 	}
 }
 
-// rollupRLSStatements returns the tenant-isolation RLS statements for a
-// runtime-created rollup table. This deliberately mirrors EnsureDynamic's
-// exact runtime RLS pattern in ddl.go (ENABLE/FORCE ROW LEVEL SECURITY +
-// DROP POLICY IF EXISTS + CREATE POLICY tenant_isolation), NOT
-// migrations.ScopeAwareTenantPolicy: ddl.go is the runtime managed-DDL seam
-// (this file's sibling), while ScopeAwareTenantPolicy is the migrations
-// package's boot-time-schema equivalent — reusing the latter here would pull
-// adapters/postgres's runtime DDL lane into a dependency on the migrations
-// package for no behavioral gain.
+// rollupRLSStatements returns the scope-aware tenant-isolation RLS
+// statements for a runtime-created rollup table. The rollup table carries a
+// nullable scope_id column (per the design's Storage section — Task 4's
+// maintainer stores per-scope aggregates there, with NULL meaning "shared
+// across all scopes in the tenant", matching fabriq_insights_events's
+// convention), so its RLS predicate must be scope-aware, exactly like the
+// sibling migration-created tables fabriq_insights_events/facts/rollup_state.
 //
-// NOTE (see task-3-report.md "concerns" for the full writeup): the rollup
-// table also carries a scope_id column (per the design's Storage section),
-// but ddl.go's runtime pattern predates any runtime table having scope_id —
-// EnsureDynamic's dynamic-entity tables never carry one — so its policy
-// predicate is tenant-only. Copying it verbatim, as directed, means scope_id
-// is stored as data but is NOT part of the RLS predicate on this table
-// (unlike the migration-created fabriq_insights_events/facts/rollup_state
-// tables, which DO use the scope-aware predicate). A tenant's own rows are
-// still fully isolated from other tenants either way.
+// This is a deliberate INLINE COPY of migrations.ScopeAwareTenantPolicy's
+// exact SQL text (migrations/0012_scope.go), not a call to it:
+// adapters/postgres is the runtime managed-DDL lane (this file's sibling is
+// ddl.go's EnsureDynamic seam) and must not import the migrations package,
+// which is the boot-time-schema lane. Tenant stays the hard boundary; scope
+// is soft — an unscoped reader (app.scope_id = '') sees every row in the
+// tenant, a scoped reader sees its own scope's rows plus shared (NULL-scope)
+// rows.
 func rollupRLSStatements(table string) []string {
 	return []string{
 		fmt.Sprintf(`ALTER TABLE %s ENABLE ROW LEVEL SECURITY`, table),
 		fmt.Sprintf(`ALTER TABLE %s FORCE ROW LEVEL SECURITY`, table),
 		fmt.Sprintf(`DROP POLICY IF EXISTS tenant_isolation ON %s`, table),
-		fmt.Sprintf(`CREATE POLICY tenant_isolation ON %s USING (tenant_id = current_setting('app.tenant_id', true)) WITH CHECK (tenant_id = current_setting('app.tenant_id', true))`, table),
+		fmt.Sprintf(`CREATE POLICY tenant_isolation ON %s
+			USING ( tenant_id = current_setting('app.tenant_id', true)
+				AND ( current_setting('app.scope_id', true) = ''
+					OR scope_id IS NULL
+					OR scope_id = current_setting('app.scope_id', true) ) )
+			WITH CHECK ( tenant_id = current_setting('app.tenant_id', true) )`, table),
 	}
 }
 
@@ -119,13 +121,28 @@ func rollupRLSStatements(table string) []string {
 // per-metric materialized-rollup table for m: tenant_id/scope_id/bucket_start
 // structural columns, one TEXT column per rollup dimension (m.Dimensions),
 // one or two NUMERIC columns per additive measure (rollupMeasureColumns), a
-// composite primary key over (tenant_id, scope_id, bucket_start, <dims...>),
-// and the runtime RLS statements (rollupRLSStatements).
+// unique index over (tenant_id, scope_id, bucket_start, <dims...>) that
+// serves as the upsert conflict target, and the runtime RLS statements
+// (rollupRLSStatements).
+//
+// The table has NO PRIMARY KEY. A PRIMARY KEY would implicitly force
+// scope_id NOT NULL (Postgres forces every PK member NOT NULL even without
+// an explicit NOT NULL), which would break the NULL-means-shared convention
+// that fabriq_insights_events uses and that rollupRLSStatements's
+// scope-aware predicate relies on (scope_id IS NULL is the shared-row
+// branch). Instead, uniqueness is enforced by a UNIQUE INDEX with NULLS NOT
+// DISTINCT (Postgres 15+): NULL scope_id values are treated as one distinct
+// group for uniqueness purposes, so an unscoped upsert still coalesces onto
+// a single row per (tenant_id, bucket_start, <dims...>) instead of Postgres's
+// default "every NULL is distinct" behavior, which would otherwise let
+// duplicate unscoped rows accumulate. scope_id itself stays nullable
+// (declared plain "scope_id TEXT", no NOT NULL).
 //
 // Pure: no I/O, no DB. Every interpolated identifier — the table name, each
-// dimension column, each measure column — is ddlValid-checked before use;
-// any invalid name is returned as an error rather than silently ignored,
-// so this is the injection-guard boundary for rollup DDL.
+// dimension column, each measure column, the derived unique-index name — is
+// ddlValid-checked before use; any invalid name is returned as an error
+// rather than silently ignored, so this is the injection-guard boundary for
+// rollup DDL.
 func rollupTableDDL(m *registry.MetricSpec) ([]string, error) {
 	table, err := rollupTableName(m.Name)
 	if err != nil {
@@ -137,14 +154,17 @@ func rollupTableDDL(m *registry.MetricSpec) ([]string, error) {
 		"scope_id TEXT",
 		"bucket_start TIMESTAMPTZ NOT NULL",
 	}
-	pk := []string{"tenant_id", "scope_id", "bucket_start"}
+	// uniqCols is the upsert conflict-target key (tenant + scope + bucket +
+	// dimensions), enforced below via a UNIQUE INDEX rather than a PRIMARY
+	// KEY so scope_id can stay nullable — see the doc comment above.
+	uniqCols := []string{"tenant_id", "scope_id", "bucket_start"}
 
 	for _, dim := range m.Dimensions {
 		if !ddlValid(dim) {
 			return nil, fmt.Errorf("fabriq: metric %q: invalid rollup dimension name %q", m.Name, dim)
 		}
 		cols = append(cols, fmt.Sprintf("%s TEXT", dim))
-		pk = append(pk, dim)
+		uniqCols = append(uniqCols, dim)
 	}
 
 	for _, meas := range m.Measures {
@@ -156,11 +176,20 @@ func rollupTableDDL(m *registry.MetricSpec) ([]string, error) {
 	}
 
 	create := fmt.Sprintf(
-		"CREATE TABLE IF NOT EXISTS %s (\n\t%s,\n\tPRIMARY KEY (%s)\n)",
-		table, strings.Join(cols, ",\n\t"), strings.Join(pk, ", "),
+		"CREATE TABLE IF NOT EXISTS %s (\n\t%s\n)",
+		table, strings.Join(cols, ",\n\t"),
 	)
 
-	stmts := append([]string{create}, rollupRLSStatements(table)...)
+	uniqIndex := table + "_uniq"
+	if !ddlValid(uniqIndex) {
+		return nil, fmt.Errorf("fabriq: metric %q: derived unique index name %q is not a valid identifier (table name leaves no room for the _uniq suffix)", m.Name, uniqIndex)
+	}
+	uniqueIdx := fmt.Sprintf(
+		"CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (%s) NULLS NOT DISTINCT",
+		uniqIndex, table, strings.Join(uniqCols, ", "),
+	)
+
+	stmts := append([]string{create, uniqueIdx}, rollupRLSStatements(table)...)
 	return stmts, nil
 }
 

@@ -65,16 +65,33 @@ func TestRollupTableDDL_Revenue(t *testing.T) {
 		"n NUMERIC",
 		"lat__sum NUMERIC",
 		"lat__count NUMERIC",
-		"PRIMARY KEY (tenant_id, scope_id, bucket_start, status)",
-		// Runtime RLS statements (mirrors ddl.go's EnsureDynamic pattern).
+		// Uniqueness is a UNIQUE INDEX (not a PRIMARY KEY, which would force
+		// scope_id NOT NULL) with NULLS NOT DISTINCT so an unscoped upsert
+		// coalesces onto a single row instead of Postgres's default
+		// every-NULL-is-distinct behavior.
+		"CREATE UNIQUE INDEX IF NOT EXISTS fabriq_insights_rollup_revenue_uniq ON fabriq_insights_rollup_revenue (tenant_id, scope_id, bucket_start, status) NULLS NOT DISTINCT",
+		// Runtime RLS statements — scope-aware (mirrors
+		// migrations.ScopeAwareTenantPolicy's exact SQL text, inlined).
 		"ALTER TABLE fabriq_insights_rollup_revenue ENABLE ROW LEVEL SECURITY",
 		"ALTER TABLE fabriq_insights_rollup_revenue FORCE ROW LEVEL SECURITY",
 		"DROP POLICY IF EXISTS tenant_isolation ON fabriq_insights_rollup_revenue",
-		"CREATE POLICY tenant_isolation ON fabriq_insights_rollup_revenue USING (tenant_id = current_setting('app.tenant_id', true)) WITH CHECK (tenant_id = current_setting('app.tenant_id', true))",
+		"CREATE POLICY tenant_isolation ON fabriq_insights_rollup_revenue",
+		"tenant_id = current_setting('app.tenant_id', true)",
+		"current_setting('app.scope_id', true) = ''",
+		"OR scope_id IS NULL",
+		"OR scope_id = current_setting('app.scope_id', true)",
+		"WITH CHECK ( tenant_id = current_setting('app.tenant_id', true) )",
 	} {
 		if !strings.Contains(all, want) {
 			t.Fatalf("rollupTableDDL: want statements to contain %q, got:\n%s", want, all)
 		}
+	}
+
+	// PRIMARY KEY must be entirely absent — scope_id must stay nullable, and
+	// a PRIMARY KEY would force it NOT NULL even without an explicit
+	// constraint.
+	if strings.Contains(all, "PRIMARY KEY") {
+		t.Fatalf("rollupTableDDL: want no PRIMARY KEY (scope_id must stay nullable), got:\n%s", all)
 	}
 
 	// count's NUMERIC column must not collide with the decomposed avg
@@ -90,6 +107,20 @@ func TestRollupTableDDL_RejectsInvalidMetricName(t *testing.T) {
 	m.Name = "bad-name"
 	if _, err := rollupTableDDL(m); err == nil {
 		t.Fatal("rollupTableDDL: want error for invalid metric name, got nil")
+	}
+}
+
+func TestRollupTableDDL_RejectsOverlongDerivedIndexName(t *testing.T) {
+	// rollupTableName only validates the table name itself (prefix + metric,
+	// <=64 chars) against ddlValid; it does not reserve headroom for the
+	// "_uniq" suffix appended later. A metric name that leaves the table
+	// name valid (<=64 chars) but the table name + "_uniq" over 64 chars
+	// must be caught by rollupTableDDL's own ddlValid check on the derived
+	// index name, not silently truncated or passed through to Postgres.
+	m := revenueMetric()
+	m.Name = strings.Repeat("m", 40) // table name = 23 + 40 = 63 (valid); +"_uniq" = 68 (invalid)
+	if _, err := rollupTableDDL(m); err == nil {
+		t.Fatal("rollupTableDDL: want error for a derived unique-index name that overflows the identifier length limit, got nil")
 	}
 }
 
