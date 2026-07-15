@@ -429,3 +429,92 @@ func TestRollup_RejectsUnconfiguredMetric(t *testing.T) {
 		t.Fatalf("RollupRange on a metric with no RollupSpec: expected an error, got nil")
 	}
 }
+
+// TestRollup_PerTenantWatermarkIsolation is a regression test for a bug
+// ReadRollupWatermark's query used to have: it read
+// `SELECT watermark_bucket FROM fabriq_insights_rollup_state WHERE metric =
+// $1` with NO explicit tenant_id filter, relying entirely on RLS to scope
+// the read. Every other TestRollup_* test in this file only ever exercises
+// one tenant ("acme") through the RLS-ENFORCED app-role adapter `a`, which
+// never surfaces this: RLS silently does the tenant filtering for it. But
+// forgeext's rollup:insights maintainer (Task 6) enumerates tenants and runs
+// through the OWNER/pool-path connection for cross-tenant operations — a
+// deployment where that connection is a superuser (or any BYPASSRLS role,
+// which is exactly what `owner` here is) bypasses RLS entirely, so an
+// un-filtered query returns SOME row matching the metric, not necessarily
+// the calling tenant's — silently borrowing another tenant's watermark and
+// permanently excluding the caller's own historical buckets from ever being
+// rolled up (no error, no missing-row signal — just quietly wrong/empty
+// results forever after). This test runs MaintainRollup for TWO tenants
+// back to back through `owner` (RLS-bypassing) and asserts each tenant's
+// rollup row and watermark are correct and mutually isolated — the exact
+// scenario that exposed the bug when Task 6's forgeext integration test used
+// a superuser DSN for its own maintainer.
+func TestRollup_PerTenantWatermarkIsolation(t *testing.T) {
+	_, owner := newInsightsHarness(t, registry.New())
+
+	acmeCtx, err := tenant.WithTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	globexCtx, err := tenant.WithTenant(context.Background(), "globex")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := checkoutRollupMetric(0, 0) // defaults: 5m grace, 2x-bucket reroll
+	if err := owner.EnsureRollupTable(context.Background(), m); err != nil {
+		t.Fatalf("EnsureRollupTable: %v", err)
+	}
+
+	base := time.Date(2024, 3, 10, 8, 0, 0, 0, time.UTC)
+	// acme: 3 "ok" checkouts; globex: 2 "ok" checkouts — different counts so
+	// a tenant mix-up in the watermark read would be caught, not just an
+	// empty-vs-nonempty check.
+	for i := 0; i < 3; i++ {
+		trackCheckout(t, owner, acmeCtx, base.Add(10*time.Minute), "ok", 10)
+	}
+	for i := 0; i < 2; i++ {
+		trackCheckout(t, owner, globexCtx, base.Add(10*time.Minute), "ok", 10)
+	}
+
+	now := base.Add(2 * time.Hour) // well past SealGrace for the base+10m bucket
+	if err := owner.MaintainRollup(acmeCtx, m, now); err != nil {
+		t.Fatalf("MaintainRollup acme: %v", err)
+	}
+	if err := owner.MaintainRollup(globexCtx, m, now); err != nil {
+		t.Fatalf("MaintainRollup globex: %v", err)
+	}
+
+	acmeRow := readCheckoutRollupRow(t, owner, "acme", nil, base, "ok")
+	if !acmeRow.present || acmeRow.n != 3 {
+		t.Fatalf("acme rollup row: got %+v, want present n=3", acmeRow)
+	}
+	globexRow := readCheckoutRollupRow(t, owner, "globex", nil, base, "ok")
+	if !globexRow.present || globexRow.n != 2 {
+		t.Fatalf("globex rollup row: got %+v, want present n=2 (this is the bug: an un-tenant-filtered "+
+			"ReadRollupWatermark borrows acme's already-advanced watermark for globex, excluding globex's "+
+			"own historical bucket from ever being rolled up)", globexRow)
+	}
+
+	acmeWM, acmeOK, err := owner.ReadRollupWatermark(acmeCtx, m.Name)
+	if err != nil {
+		t.Fatalf("ReadRollupWatermark acme: %v", err)
+	}
+	globexWM, globexOK, err := owner.ReadRollupWatermark(globexCtx, m.Name)
+	if err != nil {
+		t.Fatalf("ReadRollupWatermark globex: %v", err)
+	}
+	if !acmeOK || !globexOK {
+		t.Fatalf("expected both watermarks to exist: acme ok=%v, globex ok=%v", acmeOK, globexOK)
+	}
+	if !acmeWM.Equal(globexWM) {
+		// Both tenants ran MaintainRollup with the same `now`/metric, so their
+		// sealed-to boundary is the same value — but each MUST read back its
+		// OWN row (not literally the same row), which this same-value
+		// assertion cannot distinguish by itself; the per-tenant row/count
+		// assertions above are the ones that actually catch cross-tenant
+		// borrowing.
+		t.Fatalf("acme watermark %s != globex watermark %s (both ran the same pass, expected equal boundaries)", acmeWM, globexWM)
+	}
+}

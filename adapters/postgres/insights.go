@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/xraph/grove/driver"
 	"github.com/xraph/grove/drivers/pgdriver"
 
 	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 )
 
@@ -291,4 +293,22 @@ func (i *InsightsAdapter) UpsertInsightFacts(ctx context.Context, facts []insigh
 		}
 		return nil
 	})
+}
+
+// var _ insights.RollupSurface asserts *InsightsAdapter also implements the
+// rollup:insights maintainer's tenant-routed surface (forgeext/rollup.go),
+// alongside FactSink and query.AnalyticsQuerier above.
+var _ insights.RollupSurface = (*InsightsAdapter)(nil)
+
+// EnsureRollupTable pass-through to the underlying *Adapter's owner/DDL
+// rollup-table creation (idempotent) — see Adapter.EnsureRollupTable.
+func (i *InsightsAdapter) EnsureRollupTable(ctx context.Context, m *registry.MetricSpec) error {
+	return i.a.EnsureRollupTable(ctx, m)
+}
+
+// MaintainRollup pass-through to the underlying *Adapter's rollup maintainer
+// pass — see Adapter.MaintainRollup. The caller supplies the tenant ctx
+// (unscoped — MaintainRollup itself guards against a scoped ctx).
+func (i *InsightsAdapter) MaintainRollup(ctx context.Context, m *registry.MetricSpec, now time.Time) error {
+	return i.a.MaintainRollup(ctx, m, now)
 }

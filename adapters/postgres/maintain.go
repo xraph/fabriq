@@ -24,6 +24,9 @@ const (
 	LockKeyDocumentPlane = int64(1003)
 	// LockKeyBlobGC guards the blob CAS garbage collector.
 	LockKeyBlobGC = int64(1004)
+	// LockKeyRollup guards the rollup:insights materialized-rollup maintainer
+	// (phase 2b).
+	LockKeyRollup = int64(1005)
 )
 
 // schemaLockKey derives a per-SCHEMA advisory lock key for schema-per-tenant

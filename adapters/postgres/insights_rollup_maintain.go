@@ -47,12 +47,65 @@ const defaultSealGrace = 5 * time.Minute
 // the metric's own Bucket.
 const defaultRerollMultiple = 2
 
+// requireUnscopedRollupCtx is the defense-in-depth guard behind this file's
+// header comment: a maintainer pass MUST run under an unscoped tenant ctx so
+// its RLS predicate's first OR branch (`current_setting('app.scope_id', true)
+// = ''`) is satisfied and it sees every scope's events, not just one. The
+// orchestrator (forgeext's rollup:insights job) always supplies an unscoped
+// ctx, so this never trips in normal operation — it exists to fail loudly
+// (rather than silently under-count a tenant's rollup) if a scoped ctx is
+// ever threaded through by mistake.
+func requireUnscopedRollupCtx(ctx context.Context) error {
+	if tenant.ScopeOrEmpty(ctx) != "" {
+		return fmt.Errorf("fabriq: rollup maintainer must run under an unscoped ctx")
+	}
+	return nil
+}
+
+// TenantsForInsightsEvent returns the DISTINCT tenant_ids that have at least
+// one fabriq_insights_events row named eventName (a materialized metric's
+// Source) — the rollup:insights maintainer's per-shard tenant-enumeration
+// seam (forgeext/rollup.go). Runs on the pool as OWNER (bypassing RLS, like
+// TableColumns/introspect.go), not inside a tenant transaction: a maintainer
+// pass needs to discover EVERY tenant with data for the metric on this
+// shard/database, not one tenant's rows. This is deliberately NOT
+// Stores.AllTenants — that seam is derived from fabriq_outbox bookkeeping
+// (populated by the event/projection plane) and would miss any tenant that
+// only ever called Track (Insights events bypass the outbox entirely).
+func (a *Adapter) TenantsForInsightsEvent(ctx context.Context, eventName string) ([]string, error) {
+	rows, err := a.pg.Query(ctx, `SELECT DISTINCT tenant_id FROM fabriq_insights_events WHERE name = $1 ORDER BY tenant_id`, eventName)
+	if err != nil {
+		return nil, fmt.Errorf("fabriq: list tenants for insights event %q: %w", eventName, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, fmt.Errorf("fabriq: list tenants for insights event %q: scan: %w", eventName, err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fabriq: list tenants for insights event %q: rows: %w", eventName, err)
+	}
+	return out, nil
+}
+
 // ReadRollupWatermark reads the current (tenant, metric) rollup watermark —
 // the newest bucket_start the maintainer has fully sealed and rolled up —
-// from fabriq_insights_rollup_state. RLS scopes the read to the ctx's
-// tenant; the caller (an unscoped maintainer pass) sees the one row for
-// (tenant, metric) regardless of that row's own scope_id (the PK is
-// (tenant_id, metric), so there is at most one).
+// from fabriq_insights_rollup_state. The query filters by tid EXPLICITLY (not
+// solely relying on RLS to scope the read to the ctx's tenant): the
+// rollup:insights maintainer (forgeext) enumerates tenants and runs DDL/reads
+// through the owner/pool-path connection for some operations (e.g.
+// TenantsForInsightsEvent, EnsureRollupTable), and a deployment where
+// Config.Postgres.DSN itself has BYPASSRLS or superuser privileges would
+// otherwise let this query return ANY tenant's watermark row for the metric
+// (Postgres has no ORDER/LIMIT-independent "the right one" without an
+// explicit filter) — silently corrupting a different tenant's sealed range
+// and permanently excluding its historical buckets from ever being rolled
+// up. The explicit filter makes this correct under RLS OR a bypassing role.
+// (tenant_id, metric) is the table's PK, so there is at most one row.
 //
 // Returns (zero time, false, nil) when no watermark row exists yet — the
 // metric's first maintainer pass — rather than an error: "no watermark yet"
@@ -69,8 +122,8 @@ const defaultRerollMultiple = 2
 func (a *Adapter) ReadRollupWatermark(ctx context.Context, metric string) (time.Time, bool, error) {
 	var wm time.Time
 	found := false
-	err := a.inDynamicTenantTx(ctx, func(_ string, tx driver.Tx) error {
-		row := tx.QueryRow(ctx, `SELECT watermark_bucket FROM fabriq_insights_rollup_state WHERE metric = $1`, metric)
+	err := a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
+		row := tx.QueryRow(ctx, `SELECT watermark_bucket FROM fabriq_insights_rollup_state WHERE tenant_id = $1 AND metric = $2`, tid, metric)
 		serr := row.Scan(&wm)
 		if serr != nil {
 			if isNoRows(serr) {
@@ -248,6 +301,9 @@ func (a *Adapter) RollupRange(ctx context.Context, m *registry.MetricSpec, from,
 	if m.Rollup == nil || m.Rollup.Bucket <= 0 {
 		return fmt.Errorf("fabriq: metric %q has no rollup bucket configured", m.Name)
 	}
+	if err := requireUnscopedRollupCtx(ctx); err != nil {
+		return err
+	}
 	tid, err := tenant.Require(ctx)
 	if err != nil {
 		return err
@@ -289,6 +345,9 @@ func (a *Adapter) RollupRange(ctx context.Context, m *registry.MetricSpec, from,
 func (a *Adapter) MaintainRollup(ctx context.Context, m *registry.MetricSpec, now time.Time) error {
 	if m.Rollup == nil || m.Rollup.Bucket <= 0 {
 		return fmt.Errorf("fabriq: metric %q has no rollup bucket configured", m.Name)
+	}
+	if err := requireUnscopedRollupCtx(ctx); err != nil {
+		return err
 	}
 
 	grace := m.Rollup.SealGrace

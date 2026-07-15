@@ -26,6 +26,13 @@ type Config struct {
 	// BlobGCGrace protects freshly-created CAS entries and orphan bytes from
 	// collection for this window. Zero falls back to 1h at run time.
 	BlobGCGrace time.Duration
+	// RollupInterval is how often the leader-elected rollup:insights
+	// maintainer runs one pass over every materialized metric (phase 2b).
+	// Unlike ReconcileInterval (opt-in, disabled at zero), this job defaults
+	// ON once Insights is enabled and at least one metric declares a Rollup:
+	// zero falls back to 1 minute at run time, so materialized rollups stay
+	// current without extra configuration.
+	RollupInterval time.Duration
 	// Embedder enables the embedding worker: each write to an entity with an
 	// EmbedSpec is embedded + vector-upserted asynchronously. Nil = disabled.
 	Embedder agent.Embedder
@@ -85,6 +92,13 @@ func WithDocCompactInterval(d time.Duration) Option {
 // orphan byte becomes GC-eligible. Defaults to 1h when zero.
 func WithBlobGCGrace(d time.Duration) Option {
 	return func(o *Config) { o.BlobGCGrace = d }
+}
+
+// WithRollupInterval sets how often the rollup:insights maintainer runs a
+// pass over every materialized metric. Zero falls back to 1 minute at run
+// time (integration tests use a fast interval so the pass fires promptly).
+func WithRollupInterval(d time.Duration) Option {
+	return func(o *Config) { o.RollupInterval = d }
 }
 
 // WithEmbedder enables the embedding worker: each write to an entity with an

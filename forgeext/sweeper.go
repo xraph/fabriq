@@ -226,6 +226,28 @@ func (e *Extension) runCatalogSweeper() error {
 		}()
 	}
 
+	// Rollup maintainer: leader-elected on the CATALOG control DB (same lock
+	// key as the static worker's), same gate. EnsureRollupTable/MaintainRollup
+	// are resolved per tenant database via Stores.RollupSurfaceFor, so this
+	// job needs no primary shard to elect on.
+	if e.cfg.Fabriq.Insights.Enabled && hasMaterializedMetric(e.reg) {
+		rollupInterval := e.cfg.RollupInterval
+		if rollupInterval <= 0 {
+			rollupInterval = defaultRollupInterval
+		}
+		rollupElector := stores.Catalog.Elector(postgres.LockKeyRollup)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "rollup:insights", func(c context.Context) error {
+				return rollupElector.Run(c, func(leadCtx context.Context) error {
+					e.runRollupMaintainer(leadCtx, rollupInterval)
+					return leadCtx.Err()
+				})
+			})
+		}()
+	}
+
 	go func() {
 		wg.Wait()
 		close(done)
