@@ -83,6 +83,72 @@ func TestEnsureRollupTable_Idempotent(t *testing.T) {
 	}
 }
 
+// TestEnsureRollupTable_SecondCallDoesNotDropPolicy is the I1 review-fix
+// regression test (phase 2b final-review): forgeext/rollup.go's rollupOne
+// calls EnsureRollupTable on EVERY maintainer tick, for every (tenant,
+// metric) pair — not just once at boot. Before the fix, EnsureRollupTable
+// unconditionally re-ran `DROP POLICY IF EXISTS tenant_isolation ... ;
+// CREATE POLICY tenant_isolation ...` on every call; since execDDL commits
+// each statement in its own autocommit transaction, the moment the DROP
+// committed and before the CREATE committed, the FORCE-ROW-LEVEL-SECURITY
+// table had NO policy at all — a concurrent app-role reader in that window
+// hit Postgres's default-deny and got an empty result, and this recurred on
+// every tick forever.
+//
+// This test proves the fix closes that window: it reads the tenant_isolation
+// policy's stable Postgres OID (pg_policy.oid) after the FIRST
+// EnsureRollupTable call, calls EnsureRollupTable a SECOND time, and asserts
+// the OID is UNCHANGED. A DROP+CREATE necessarily allocates a brand-new
+// pg_policy row (a new OID) — an unchanged OID is only possible if the
+// second call's RLS statements were skipped entirely (the probe-and-skip
+// fix), which is exactly the no-DROP-window guarantee this test needs.
+func TestEnsureRollupTable_SecondCallDoesNotDropPolicy(t *testing.T) {
+	ctx := context.Background()
+	_, owner := newInsightsHarness(t, registry.New())
+
+	m := revenueRollupMetric()
+	const table = "fabriq_insights_rollup_revenue"
+
+	if err := owner.EnsureRollupTable(ctx, m); err != nil {
+		t.Fatalf("EnsureRollupTable (1st call): %v", err)
+	}
+	oidBefore := rollupTenantIsolationPolicyOID(t, owner, table)
+
+	if err := owner.EnsureRollupTable(ctx, m); err != nil {
+		t.Fatalf("EnsureRollupTable (2nd call, must be idempotent): %v", err)
+	}
+	oidAfter := rollupTenantIsolationPolicyOID(t, owner, table)
+
+	if oidBefore != oidAfter {
+		t.Fatalf("tenant_isolation policy OID changed across a second EnsureRollupTable call (before=%d, after=%d) — the policy was DROPPED and re-CREATED instead of being left alone, reopening the empty-result window under FORCE ROW LEVEL SECURITY", oidBefore, oidAfter)
+	}
+
+	// The policy must still actually be present and scope-aware after the
+	// second call — proving "skip the RLS statements" did not silently leave
+	// the table with no policy at all.
+	if !rollupHasTenantIsolationPolicy(t, owner, table) {
+		t.Errorf("rollup table %q: want a tenant_isolation policy to still exist after a 2nd EnsureRollupTable call", table)
+	}
+	if !rollupPolicyIsScopeAware(t, owner, table) {
+		t.Errorf("rollup table %q: want the tenant_isolation policy to remain scope-aware after a 2nd EnsureRollupTable call", table)
+	}
+}
+
+// rollupTenantIsolationPolicyOID reads the stable Postgres OID of table's
+// "tenant_isolation" RLS policy via pg_policy (the underlying system catalog
+// pg_policies is a view over) — an OID that only changes if the policy is
+// dropped and recreated, never on an in-place no-op.
+func rollupTenantIsolationPolicyOID(t *testing.T, a *postgres.Adapter, table string) uint32 {
+	t.Helper()
+	var oid uint32
+	row := a.Driver().QueryRow(context.Background(),
+		`SELECT p.oid FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid WHERE c.relname = $1 AND p.polname = 'tenant_isolation'`, table)
+	if err := row.Scan(&oid); err != nil {
+		t.Fatalf("read tenant_isolation policy oid for %q: %v", table, err)
+	}
+	return oid
+}
+
 // rollupColumnSet reads back the physical columns of table via
 // information_schema, keyed by column_name for O(1) membership checks.
 func rollupColumnSet(t *testing.T, a *postgres.Adapter, table string) map[string]bool {

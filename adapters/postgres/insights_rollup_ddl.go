@@ -277,12 +277,50 @@ func (a *Adapter) toolkitAvailable(ctx context.Context) (bool, error) {
 	return n > 0, nil
 }
 
+// rollupPolicyExists reports whether table already carries an RLS policy
+// named "tenant_isolation" (via pg_policies — the same view
+// insights_rollup_ddl_integration_test.go's rollupHasTenantIsolationPolicy
+// helper reads). EnsureRollupTable uses this to decide whether the
+// ENABLE/FORCE/DROP/CREATE RLS statements need to run at all — see its doc
+// for why re-running them unconditionally on every call is unsafe.
+func (a *Adapter) rollupPolicyExists(ctx context.Context, table string) (bool, error) {
+	var n int
+	if err := a.pg.QueryRow(ctx,
+		`SELECT count(*) FROM pg_policies WHERE tablename = $1 AND policyname = 'tenant_isolation'`, table,
+	).Scan(&n); err != nil {
+		return false, translatePg("query", "", "", err)
+	}
+	return n > 0, nil
+}
+
 // EnsureRollupTable creates (idempotently) the per-metric materialized-
 // rollup table for m, via the same owner/DDL exec seam EnsureDynamic uses
 // (a.execDDL — the schema-owner pool path, NOT a tenant-scoped transaction:
 // DDL is tenant-agnostic; the table's RLS policy enforces per-row tenant
 // isolation once rows are written). Safe to call repeatedly (CREATE TABLE
-// IF NOT EXISTS + idempotent RLS statements).
+// IF NOT EXISTS + idempotent RLS statements) AND cheap to call repeatedly:
+// forgeext/rollup.go's rollupOne calls this on EVERY maintainer tick, for
+// every (tenant, metric) pair, not just once at boot.
+//
+// The RLS statements specifically are NOT simply re-run every time, even
+// though rollupTableDDL/rollupRLSStatements build them as an unconditional
+// `ALTER ... ENABLE/FORCE ROW LEVEL SECURITY; DROP POLICY IF EXISTS
+// tenant_isolation; CREATE POLICY tenant_isolation ...` sequence: execDDL
+// runs each statement in its OWN autocommit transaction (there is no single
+// transaction spanning DROP+CREATE), so on a table with FORCE ROW LEVEL
+// SECURITY, the instant the DROP commits and before the CREATE commits, the
+// table has NO policy at all — a concurrent app-role query in that window
+// hits Postgres's default-deny-under-FORCE-RLS behavior and gets an empty
+// result, not an error. Doing that on every maintainer tick, forever, is a
+// recurring (if narrow) empty-result window for live readers. So this probes
+// pg_policies FIRST (rollupPolicyExists) and only runs the RLS statements
+// when the policy does not already exist — the first EnsureRollupTable call
+// for a given table still creates it (with RLS applied) as before; every
+// subsequent call, including every later maintainer tick, is then a true
+// no-op for the RLS statements (CREATE TABLE IF NOT EXISTS and the unique
+// index were already idempotent no-ops on their own). RLS itself is never
+// removed or weakened by this — only the redundant re-application is
+// skipped.
 //
 // When m declares a sketch measure (count_distinct/percentile), the rollup
 // table needs timescaledb_toolkit's hyperloglog/tdigest types. This is a
@@ -299,6 +337,10 @@ func (a *Adapter) EnsureRollupTable(ctx context.Context, m *registry.MetricSpec)
 	if err != nil {
 		return err
 	}
+	table, err := rollupTableName(m.Name)
+	if err != nil {
+		return err
+	}
 	if metricHasSketchMeasure(m) {
 		available, err := a.toolkitAvailable(ctx)
 		if err != nil {
@@ -311,9 +353,33 @@ func (a *Adapter) EnsureRollupTable(ctx context.Context, m *registry.MetricSpec)
 			return fmt.Errorf("fabriq: ensure rollup table for metric %q: creating timescaledb_toolkit extension: %w", m.Name, err)
 		}
 	}
-	for _, stmt := range stmts {
+
+	// rollupTableDDL always appends rollupRLSStatements(table)'s statements
+	// (a fixed count) as its tail; split them off so they can be
+	// conditionally skipped below without re-deriving or duplicating their
+	// text (avoiding any drift between what rollupTableDDL built and what
+	// this function executes).
+	rlsCount := len(rollupRLSStatements(table))
+	if rlsCount > len(stmts) {
+		return fmt.Errorf("fabriq: ensure rollup table for metric %q: internal error: DDL statement count (%d) shorter than RLS statement count (%d)", m.Name, len(stmts), rlsCount)
+	}
+	baseStmts, rlsStmts := stmts[:len(stmts)-rlsCount], stmts[len(stmts)-rlsCount:]
+
+	for _, stmt := range baseStmts {
 		if err := a.execDDL(ctx, stmt); err != nil {
 			return fmt.Errorf("fabriq: ensure rollup table for metric %q: %w", m.Name, err)
+		}
+	}
+
+	exists, err := a.rollupPolicyExists(ctx, table)
+	if err != nil {
+		return fmt.Errorf("fabriq: ensure rollup table for metric %q: checking existing tenant_isolation policy: %w", m.Name, err)
+	}
+	if !exists {
+		for _, stmt := range rlsStmts {
+			if err := a.execDDL(ctx, stmt); err != nil {
+				return fmt.Errorf("fabriq: ensure rollup table for metric %q: %w", m.Name, err)
+			}
 		}
 	}
 	return nil

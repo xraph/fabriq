@@ -424,6 +424,11 @@ maintainer hasn't sealed them yet are computed live, directly over
 in the same result. The live tail always covers events up to the query's
 `To` bound, so the stitched result is exactly as current as a fully-live
 query — just faster, since most of the range is already pre-aggregated.
+One caveat: `RerollWindow` is the late-arrival exactness horizon — an event
+backdated into a bucket that's already sealed *and* has fallen outside the
+metric's `RerollWindow` is never absorbed into the rollup, so a
+rollup-served result can under-count such very-late arrivals relative to a
+fully-live query over the same range.
 
 ### Exact vs. approximate
 
