@@ -166,6 +166,89 @@ func rollupHasUniqueIndex(t *testing.T, a *postgres.Adapter, table, indexName st
 	return n > 0
 }
 
+// sketchRollupMetric declares a materialized metric with one sketch measure
+// of each kind — count_distinct (hyperloglog) and percentile (tdigest) — so
+// TestEnsureRollupTable_SketchColumns can prove both toolkit column types
+// land in a real database from a single EnsureRollupTable call.
+func sketchRollupMetric() *registry.MetricSpec {
+	return &registry.MetricSpec{
+		Name:   "latency_and_uniques",
+		Source: "request_completed",
+		Measures: []registry.MetricMeasure{
+			{Kind: "count_distinct", Field: "visitor_id", As: "uniques"},
+			{Kind: "percentile", Field: "duration_ms", As: "p50", Percentile: 0.5},
+		},
+		Rollup: &registry.RollupSpec{Bucket: time.Hour},
+	}
+}
+
+// TestEnsureRollupTable_SketchColumns proves EnsureRollupTable, for a metric
+// declaring count_distinct and percentile measures, against a real Postgres
+// (the pg16-all image bundles timescaledb_toolkit, see
+// fabriqtest.PostgresImage): it creates the timescaledb_toolkit extension,
+// and the resulting table carries a hyperloglog column for the
+// count_distinct measure and a tdigest column for the percentile measure —
+// asserted via information_schema.columns.udt_name, which reports the
+// underlying Postgres type name for each column.
+func TestEnsureRollupTable_SketchColumns(t *testing.T) {
+	ctx := context.Background()
+	_, owner := newInsightsHarness(t, registry.New())
+
+	m := sketchRollupMetric()
+	const table = "fabriq_insights_rollup_latency_and_uniques"
+
+	if err := owner.EnsureRollupTable(ctx, m); err != nil {
+		t.Fatalf("EnsureRollupTable: %v", err)
+	}
+	// Idempotent, same as the additive case (TestEnsureRollupTable_Idempotent).
+	if err := owner.EnsureRollupTable(ctx, m); err != nil {
+		t.Fatalf("EnsureRollupTable (2nd call, must be idempotent): %v", err)
+	}
+
+	udt := rollupColumnUDTNames(t, owner, table)
+	if got := udt["uniques"]; got != "hyperloglog" {
+		t.Errorf("column %q: want udt_name %q, got %q", "uniques", "hyperloglog", got)
+	}
+	if got := udt["p50"]; got != "tdigest" {
+		t.Errorf("column %q: want udt_name %q, got %q", "p50", "tdigest", got)
+	}
+
+	var extCount int
+	row := owner.Driver().QueryRow(ctx, `SELECT count(*) FROM pg_extension WHERE extname = 'timescaledb_toolkit'`)
+	if err := row.Scan(&extCount); err != nil {
+		t.Fatalf("count pg_extension for timescaledb_toolkit: %v", err)
+	}
+	if extCount == 0 {
+		t.Error("want timescaledb_toolkit extension created by EnsureRollupTable, got not installed")
+	}
+}
+
+// rollupColumnUDTNames reads back table's columns keyed by column_name, with
+// each value the Postgres underlying type name (information_schema.columns.
+// udt_name) — e.g. "hyperloglog", "tdigest", "numeric" — so a caller can
+// assert a column's TOOLKIT type distinctly from just its presence.
+func rollupColumnUDTNames(t *testing.T, a *postgres.Adapter, table string) map[string]string {
+	t.Helper()
+	rows, err := a.Driver().Query(context.Background(),
+		`SELECT column_name, udt_name FROM information_schema.columns WHERE table_name = $1`, table)
+	if err != nil {
+		t.Fatalf("query information_schema.columns for %q: %v", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]string{}
+	for rows.Next() {
+		var col, udt string
+		if err := rows.Scan(&col, &udt); err != nil {
+			t.Fatalf("scan column_name/udt_name: %v", err)
+		}
+		out[col] = udt
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate information_schema.columns rows: %v", err)
+	}
+	return out
+}
+
 // rollupScopeIDNullable reports whether table's scope_id column is nullable
 // (information_schema.columns.is_nullable = 'YES') — it must stay nullable
 // so NULL can mean "shared across all scopes", matching

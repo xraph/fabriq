@@ -151,12 +151,62 @@ func TestRollupTableDDL_RejectsInvalidDefaultedMeasureAlias(t *testing.T) {
 	}
 }
 
-func TestRollupTableDDL_RejectsSketchMeasures(t *testing.T) {
+// TestRollupTableDDL_SketchColumns asserts a metric with a count_distinct
+// measure and a percentile measure emits toolkit-typed columns — hyperloglog
+// for count_distinct, tdigest for percentile — rather than NUMERIC. Phase
+// 2b-1 rejected these Kinds outright (see the removed
+// TestRollupTableDDL_RejectsSketchMeasures); phase 2b-2 stores them via
+// timescaledb_toolkit.
+func TestRollupTableDDL_SketchColumns(t *testing.T) {
+	m := &registry.MetricSpec{
+		Name:   "latency_stats",
+		Source: "request_completed",
+		Measures: []registry.MetricMeasure{
+			{Kind: "count_distinct", Field: "visitor_id", As: "uniques"},
+			{Kind: "percentile", Field: "duration_ms", As: "p50", Percentile: 0.5},
+		},
+		Rollup: &registry.RollupSpec{Bucket: time.Minute},
+	}
+	stmts, err := rollupTableDDL(m)
+	if err != nil {
+		t.Fatalf("rollupTableDDL: %v", err)
+	}
+	all := strings.Join(stmts, "\n")
+	for _, want := range []string{"uniques hyperloglog", "p50 tdigest"} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("rollupTableDDL: want %q, got:\n%s", want, all)
+		}
+	}
+	if strings.Contains(all, "uniques NUMERIC") || strings.Contains(all, "p50 NUMERIC") {
+		t.Fatalf("rollupTableDDL: sketch columns must NOT be NUMERIC, got:\n%s", all)
+	}
+}
+
+// TestRollupTableDDL_SketchMeasureDefaultAlias asserts the default alias
+// ("<kind>_<field>") applies to sketch measures too, same as additive ones.
+func TestRollupTableDDL_SketchMeasureDefaultAlias(t *testing.T) {
+	m := &registry.MetricSpec{
+		Name:     "unique_visitors",
+		Source:   "page_viewed",
+		Measures: []registry.MetricMeasure{{Kind: "count_distinct", Field: "visitor_id"}},
+		Rollup:   &registry.RollupSpec{Bucket: time.Hour},
+	}
+	stmts, err := rollupTableDDL(m)
+	if err != nil {
+		t.Fatalf("rollupTableDDL: %v", err)
+	}
+	all := strings.Join(stmts, "\n")
+	if !strings.Contains(all, "count_distinct_visitor_id hyperloglog") {
+		t.Fatalf("rollupTableDDL: want defaulted alias %q, got:\n%s", "count_distinct_visitor_id hyperloglog", all)
+	}
+}
+
+func TestRollupTableDDL_RejectsInvalidSketchMeasureAlias(t *testing.T) {
 	for _, kind := range []string{"count_distinct", "percentile"} {
 		m := revenueMetric()
-		m.Measures = []registry.MetricMeasure{{Kind: kind, Field: "amount", As: "x"}}
+		m.Measures = []registry.MetricMeasure{{Kind: kind, Field: "amount", As: "bad-alias"}}
 		if _, err := rollupTableDDL(m); err == nil {
-			t.Fatalf("rollupTableDDL: want error for sketch measure kind %q, got nil", kind)
+			t.Fatalf("rollupTableDDL: want error for invalid sketch measure alias (kind %q), got nil", kind)
 		}
 	}
 }

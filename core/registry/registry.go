@@ -393,11 +393,12 @@ func (r *Registry) Validate() error {
 				if _, ok := r.entities[m.Source]; ok {
 					return fmt.Errorf("fabriq: metric %q: Rollup sources entity %q — rollups are event-sourced only", m.Name, m.Source)
 				}
-				for _, mm := range m.Measures {
-					if mm.Kind == "count_distinct" || mm.Kind == "percentile" {
-						return fmt.Errorf("fabriq: metric %q: Rollup measure kind %q (sketch measures not supported in rollups until phase 2b-2)", m.Name, mm.Kind)
-					}
-				}
+				// Sketch measures (count_distinct/percentile) are allowed on a
+				// Rollup metric as of phase 2b-2 — they materialize as
+				// toolkit-typed columns (hyperloglog/tdigest) instead of plain
+				// NUMERIC. See adapters/postgres's rollupTableDDL (column
+				// shape) and toolkitAvailable (the boot-time capability check
+				// that fails loudly when timescaledb_toolkit is absent).
 			}
 			idx[m.Name] = m
 		}

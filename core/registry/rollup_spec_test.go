@@ -67,11 +67,14 @@ func sketchMeasureSchema(table, col string) *registry.DynamicSchema {
 	}
 }
 
-// TestValidate_RejectsSketchMeasureInRollup_2b1 asserts a Rollup metric
-// carrying a non-additive ("sketch") measure — count_distinct or percentile —
-// is rejected in phase 2b-1. This restriction is expected to relax once
-// sketch storage lands (2b-2).
-func TestValidate_RejectsSketchMeasureInRollup_2b1(t *testing.T) {
+// TestValidate_AllowsSketchMeasureInRollup asserts a Rollup metric carrying a
+// non-additive ("sketch") measure — count_distinct or percentile — now
+// VALIDATES successfully. Phase 2b-1 rejected these (see the removed
+// TestValidate_RejectsSketchMeasureInRollup_2b1 /
+// TestValidate_RejectsPercentileMeasureInRollup_2b1); phase 2b-2 relaxes the
+// restriction now that sketch storage (toolkit hyperloglog/tdigest columns,
+// adapters/postgres's rollupTableDDL) exists.
+func TestValidate_AllowsSketchMeasureInRollup(t *testing.T) {
 	r := registry.New()
 	err := r.Register(registry.EntitySpec{
 		Name: "c", Schema: sketchMeasureSchema("cs", "visitor_id"),
@@ -82,28 +85,22 @@ func TestValidate_RejectsSketchMeasureInRollup_2b1(t *testing.T) {
 			Rollup:   &registry.RollupSpec{Bucket: time.Hour},
 		}},
 	})
-	got := firstErr(r, err)
-	if got == nil || !strings.Contains(got.Error(), "count_distinct") {
-		t.Fatalf("want sketch-measure-rejected error, got %v", got)
+	if got := firstErr(r, err); got != nil {
+		t.Fatalf("want count_distinct allowed in a Rollup metric, got error: %v", got)
 	}
-}
 
-// TestValidate_RejectsPercentileMeasureInRollup_2b1 mirrors the count_distinct
-// case for the other non-additive Kind, "percentile".
-func TestValidate_RejectsPercentileMeasureInRollup_2b1(t *testing.T) {
-	r := registry.New()
-	err := r.Register(registry.EntitySpec{
+	r2 := registry.New()
+	err2 := r2.Register(registry.EntitySpec{
 		Name: "d", Schema: sketchMeasureSchema("ds", "duration_ms"),
 		Metrics: []registry.MetricSpec{{
 			Name:     "latency_p50",
 			Source:   "request_completed",
-			Measures: []registry.MetricMeasure{{Kind: "percentile", Field: "duration_ms"}},
+			Measures: []registry.MetricMeasure{{Kind: "percentile", Field: "duration_ms", Percentile: 0.5}},
 			Rollup:   &registry.RollupSpec{Bucket: time.Minute},
 		}},
 	})
-	got := firstErr(r, err)
-	if got == nil || !strings.Contains(got.Error(), "percentile") {
-		t.Fatalf("want sketch-measure-rejected error, got %v", got)
+	if got := firstErr(r2, err2); got != nil {
+		t.Fatalf("want percentile allowed in a Rollup metric, got error: %v", got)
 	}
 }
 

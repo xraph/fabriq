@@ -175,10 +175,10 @@ func EffectiveQuery(q query.AnalyticsQuery, d Descriptor) (measures []query.Meas
 }
 
 // toQueryMeasures translates registry.MetricMeasure (the registry-layer,
-// import-fence-respecting mirror) to query.Measure. A "percentile" Kind is
-// not supported by MetricSpec in phase 2a (query.MeasurePercentile and its
-// backing registry.MetricMeasure.Percentile field don't exist yet) — it is
-// rejected here rather than silently miscompiled.
+// import-fence-respecting mirror) to query.Measure. As of phase 2b-2,
+// "percentile" is supported on a MetricSpec (registry.MetricMeasure.Percentile
+// mirrors query.Measure.Percentile) — its fraction is threaded through
+// unchanged; the additive-only kinds are unaffected.
 func toQueryMeasures(ms []registry.MetricMeasure) ([]query.Measure, error) {
 	out := make([]query.Measure, 0, len(ms))
 	for _, m := range ms {
@@ -197,11 +197,11 @@ func toQueryMeasures(ms []registry.MetricMeasure) ([]query.Measure, error) {
 		case "count_distinct":
 			kind = query.MeasureCountDistinct
 		case "percentile":
-			return nil, fmt.Errorf("fabriq: measure kind %q is not supported on a MetricSpec in phase 2a", m.Kind)
+			kind = query.MeasurePercentile
 		default:
 			return nil, fmt.Errorf("fabriq: unknown measure kind %q", m.Kind)
 		}
-		out = append(out, query.Measure{Kind: kind, Field: m.Field, As: m.As})
+		out = append(out, query.Measure{Kind: kind, Field: m.Field, As: m.As, Percentile: m.Percentile})
 	}
 	return out, nil
 }

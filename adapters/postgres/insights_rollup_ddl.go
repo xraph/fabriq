@@ -42,17 +42,22 @@ func rollupMeasureAlias(m registry.MetricMeasure) string {
 	return fmt.Sprintf("%s_%s", m.Kind, m.Field)
 }
 
-// rollupMeasureColumns returns the additive rollup column definition(s) for
-// one measure. count/sum/min/max each map to a single NUMERIC column named by
-// its alias. avg is decomposed into TWO NUMERIC columns, "<alias>__sum" and
+// rollupMeasureColumns returns the rollup column definition(s) for one
+// measure. count/sum/min/max each map to a single NUMERIC column named by its
+// alias. avg is decomposed into TWO NUMERIC columns, "<alias>__sum" and
 // "<alias>__count", so the rollup stores sum-and-count rather than a
 // non-additive average — the maintainer/router recompute avg = sum/count
 // when combining sealed and live-tail partials (see the design's Storage +
-// stitching-router sections). count_distinct/percentile ("sketch" measures)
-// are NOT supported by 2b-1's additive-only rollup storage — registry.Validate
-// already rejects them on a Rollup-opted metric, but this is checked
-// defensively here too since rollupTableDDL is also a direct, testable
-// injection-guard boundary independent of the registry.
+// stitching-router sections).
+//
+// count_distinct/percentile ("sketch" measures, phase 2b-2) map to a single
+// column typed as a timescaledb_toolkit aggregate: hyperloglog for
+// count_distinct (sealed via `rollup(hll)`, read via `distinct_count(...)`),
+// tdigest for percentile (sealed via `rollup(td)`, read via
+// `approx_percentile(p, ...)`). These require timescaledb_toolkit to be
+// installed in the target database — EnsureRollupTable's caller
+// (toolkitAvailable) is the boot-time capability gate; this function itself
+// does not touch the database and has no opinion on availability.
 //
 // Every interpolated identifier (the alias, and its decomposed avg
 // variants) is ddlValid-checked before being returned — the caller must
@@ -76,12 +81,18 @@ func rollupMeasureColumns(m registry.MetricMeasure) ([]string, error) {
 			fmt.Sprintf("%s NUMERIC", sumCol),
 			fmt.Sprintf("%s NUMERIC", countCol),
 		}, nil
-	case "count_distinct", "percentile":
-		// Sketch measures require timescaledb_toolkit storage (hyperloglog/
-		// tdigest columns), which 2b-1 does not build. registry.Validate
-		// already rejects a Rollup metric with a sketch measure before this
-		// is ever reached in production; this is a defensive second guard.
-		return nil, fmt.Errorf("measure kind %q is not additive — rollups do not support sketch measures until phase 2b-2", m.Kind)
+	case "count_distinct":
+		alias := rollupMeasureAlias(m)
+		if !ddlValid(alias) {
+			return nil, fmt.Errorf("invalid measure column name %q (kind %q)", alias, m.Kind)
+		}
+		return []string{fmt.Sprintf("%s hyperloglog", alias)}, nil
+	case "percentile":
+		alias := rollupMeasureAlias(m)
+		if !ddlValid(alias) {
+			return nil, fmt.Errorf("invalid measure column name %q (kind %q)", alias, m.Kind)
+		}
+		return []string{fmt.Sprintf("%s tdigest", alias)}, nil
 	default:
 		return nil, fmt.Errorf("unknown measure kind %q", m.Kind)
 	}
@@ -193,16 +204,70 @@ func rollupTableDDL(m *registry.MetricSpec) ([]string, error) {
 	return stmts, nil
 }
 
+// metricHasSketchMeasure reports whether m declares at least one non-additive
+// ("sketch") measure — count_distinct or percentile — which rollupTableDDL
+// materializes as a timescaledb_toolkit-typed column (hyperloglog/tdigest)
+// rather than plain NUMERIC.
+func metricHasSketchMeasure(m *registry.MetricSpec) bool {
+	for _, meas := range m.Measures {
+		if meas.Kind == "count_distinct" || meas.Kind == "percentile" {
+			return true
+		}
+	}
+	return false
+}
+
+// toolkitAvailable reports whether timescaledb_toolkit can be installed in
+// the current database: it probes pg_available_extensions, the same
+// capability-check view migrations.extensionAvailable already uses for
+// pgvector/postgis (CREATE EXTENSION IF NOT EXISTS succeeds iff the
+// extension is listed there — whether or not it has been created yet).
+// pg_extension alone would only tell us "already created," which is the
+// wrong question here: EnsureRollupTable creates the extension lazily on
+// first use, so the gate that matters is "can it be created at all."
+func (a *Adapter) toolkitAvailable(ctx context.Context) (bool, error) {
+	var n int
+	if err := a.pg.QueryRow(ctx,
+		`SELECT count(*) FROM pg_available_extensions WHERE name = 'timescaledb_toolkit'`,
+	).Scan(&n); err != nil {
+		return false, translatePg("query", "", "", err)
+	}
+	return n > 0, nil
+}
+
 // EnsureRollupTable creates (idempotently) the per-metric materialized-
 // rollup table for m, via the same owner/DDL exec seam EnsureDynamic uses
 // (a.execDDL — the schema-owner pool path, NOT a tenant-scoped transaction:
 // DDL is tenant-agnostic; the table's RLS policy enforces per-row tenant
 // isolation once rows are written). Safe to call repeatedly (CREATE TABLE
 // IF NOT EXISTS + idempotent RLS statements).
+//
+// When m declares a sketch measure (count_distinct/percentile), the rollup
+// table needs timescaledb_toolkit's hyperloglog/tdigest types. This is a
+// fail-fast boot check, not silent degradation: if the toolkit is not
+// available in the target database, EnsureRollupTable returns a loud error
+// naming the metric BEFORE attempting to create the table, rather than
+// letting a bare "type hyperloglog does not exist" driver error surface.
+// When toolkit IS available, `CREATE EXTENSION IF NOT EXISTS
+// timescaledb_toolkit` runs first (idempotent) so the toolkit's types exist
+// before the CREATE TABLE that references them. Additive-only rollup
+// metrics never touch the toolkit at all.
 func (a *Adapter) EnsureRollupTable(ctx context.Context, m *registry.MetricSpec) error {
 	stmts, err := rollupTableDDL(m)
 	if err != nil {
 		return err
+	}
+	if metricHasSketchMeasure(m) {
+		available, err := a.toolkitAvailable(ctx)
+		if err != nil {
+			return fmt.Errorf("fabriq: ensure rollup table for metric %q: checking timescaledb_toolkit availability: %w", m.Name, err)
+		}
+		if !available {
+			return fmt.Errorf("fabriq: metric %q declares a sketch measure (count_distinct/percentile) but timescaledb_toolkit is not available on this Postgres instance — install the extension (or drop the sketch measure from the rollup)", m.Name)
+		}
+		if err := a.execDDL(ctx, `CREATE EXTENSION IF NOT EXISTS timescaledb_toolkit`); err != nil {
+			return fmt.Errorf("fabriq: ensure rollup table for metric %q: creating timescaledb_toolkit extension: %w", m.Name, err)
+		}
 	}
 	for _, stmt := range stmts {
 		if err := a.execDDL(ctx, stmt); err != nil {

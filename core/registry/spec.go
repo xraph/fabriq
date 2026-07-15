@@ -290,9 +290,14 @@ type MetricSpec struct {
 	// Rollup opts this metric into materialization (phase 2b). Nil (the zero
 	// value) means the metric stays live-only, computed on demand from raw
 	// events/facts on every query. Rollups are event-sourced only (Source must
-	// NOT name a registered entity) and, in 2b-1, additive-only: no measure may
-	// be a non-additive "sketch" kind (count_distinct, percentile) — that
-	// restriction is relaxed in a later phase once sketch storage exists.
+	// NOT name a registered entity). As of phase 2b-2, a Rollup metric may
+	// also carry a non-additive "sketch" measure (count_distinct, percentile):
+	// these are stored as toolkit-typed columns (hyperloglog/tdigest — see
+	// adapters/postgres's rollupTableDDL) rather than plain NUMERIC, and
+	// require timescaledb_toolkit to be available in the target database
+	// (adapters/postgres's toolkitAvailable boot-check fails loudly if not).
+	// Rollup-served count_distinct/percentile are approximate; the pure-live
+	// path stays exact.
 	Rollup *RollupSpec
 }
 
@@ -325,4 +330,9 @@ type MetricMeasure struct {
 	Kind  string
 	Field string
 	As    string
+	// Percentile is the fraction (0,1) for a "percentile" Kind measure, e.g.
+	// 0.95 for p95 — mirrors query.Measure.Percentile. Required when Kind is
+	// "percentile"; ignored otherwise. Threaded through to query.Measure by
+	// core/insights/resolve.go's toQueryMeasures.
+	Percentile float64
 }
