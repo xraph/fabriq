@@ -1,0 +1,332 @@
+//go:build integration
+
+package postgres_test
+
+// TestEnsureRollupTable_Idempotent proves (*postgres.Adapter).EnsureRollupTable
+// against a real Postgres: it creates the per-metric rollup table with the
+// expected additive columns and RLS, and running it a second time (the
+// maintainer calls this at every boot, not just the first) is a no-op that
+// does not error — CREATE TABLE IF NOT EXISTS + idempotent RLS statements.
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/xraph/fabriq/adapters/postgres"
+	"github.com/xraph/fabriq/core/registry"
+)
+
+// revenueRollupMetric mirrors the task-3 brief's example metric used by the
+// pure rollupTableDDL unit tests in insights_rollup_ddl_test.go — kept in
+// sync deliberately so the integration test proves the SAME shape actually
+// lands in a real database.
+func revenueRollupMetric() *registry.MetricSpec {
+	return &registry.MetricSpec{
+		Name:       "revenue",
+		Source:     "order_placed",
+		Dimensions: []string{"status"},
+		Measures: []registry.MetricMeasure{
+			{Kind: "sum", Field: "amount", As: "rev"},
+			{Kind: "count", As: "n"},
+			{Kind: "avg", Field: "latency", As: "lat"},
+		},
+		Rollup: &registry.RollupSpec{Bucket: time.Hour},
+	}
+}
+
+func TestEnsureRollupTable_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	_, owner := newInsightsHarness(t, registry.New())
+
+	m := revenueRollupMetric()
+	const table = "fabriq_insights_rollup_revenue"
+
+	if err := owner.EnsureRollupTable(ctx, m); err != nil {
+		t.Fatalf("EnsureRollupTable (1st call): %v", err)
+	}
+	if err := owner.EnsureRollupTable(ctx, m); err != nil {
+		t.Fatalf("EnsureRollupTable (2nd call, must be idempotent): %v", err)
+	}
+
+	cols := rollupColumnSet(t, owner, table)
+	for _, want := range []string{
+		"tenant_id", "scope_id", "bucket_start", "status",
+		"rev", "n", "lat__sum", "lat__count",
+	} {
+		if !cols[want] {
+			t.Errorf("rollup table %q missing expected column %q; got columns: %v", table, want, cols)
+		}
+	}
+
+	if !rollupScopeIDNullable(t, owner, table) {
+		t.Errorf("rollup table %q: want scope_id column to be nullable (NULL means shared, matching fabriq_insights_events)", table)
+	}
+
+	if !rollupHasUniqueIndex(t, owner, table, table+"_uniq") {
+		t.Errorf("rollup table %q: want unique index %q on (tenant_id, scope_id, bucket_start, status)", table, table+"_uniq")
+	}
+
+	enabled, forced := rollupRLSFlags(t, owner, table)
+	if !enabled {
+		t.Errorf("rollup table %q: want ROW LEVEL SECURITY enabled", table)
+	}
+	if !forced {
+		t.Errorf("rollup table %q: want ROW LEVEL SECURITY forced", table)
+	}
+	if !rollupHasTenantIsolationPolicy(t, owner, table) {
+		t.Errorf("rollup table %q: want a tenant_isolation policy", table)
+	}
+	if !rollupPolicyIsScopeAware(t, owner, table) {
+		t.Errorf("rollup table %q: want the tenant_isolation policy to be scope-aware (scope_id IS NULL OR scope_id = current_setting('app.scope_id', true)), like fabriq_insights_events/facts/rollup_state", table)
+	}
+}
+
+// TestEnsureRollupTable_SecondCallDoesNotDropPolicy is the I1 review-fix
+// regression test (phase 2b final-review): forgeext/rollup.go's rollupOne
+// calls EnsureRollupTable on EVERY maintainer tick, for every (tenant,
+// metric) pair — not just once at boot. Before the fix, EnsureRollupTable
+// unconditionally re-ran `DROP POLICY IF EXISTS tenant_isolation ... ;
+// CREATE POLICY tenant_isolation ...` on every call; since execDDL commits
+// each statement in its own autocommit transaction, the moment the DROP
+// committed and before the CREATE committed, the FORCE-ROW-LEVEL-SECURITY
+// table had NO policy at all — a concurrent app-role reader in that window
+// hit Postgres's default-deny and got an empty result, and this recurred on
+// every tick forever.
+//
+// This test proves the fix closes that window: it reads the tenant_isolation
+// policy's stable Postgres OID (pg_policy.oid) after the FIRST
+// EnsureRollupTable call, calls EnsureRollupTable a SECOND time, and asserts
+// the OID is UNCHANGED. A DROP+CREATE necessarily allocates a brand-new
+// pg_policy row (a new OID) — an unchanged OID is only possible if the
+// second call's RLS statements were skipped entirely (the probe-and-skip
+// fix), which is exactly the no-DROP-window guarantee this test needs.
+func TestEnsureRollupTable_SecondCallDoesNotDropPolicy(t *testing.T) {
+	ctx := context.Background()
+	_, owner := newInsightsHarness(t, registry.New())
+
+	m := revenueRollupMetric()
+	const table = "fabriq_insights_rollup_revenue"
+
+	if err := owner.EnsureRollupTable(ctx, m); err != nil {
+		t.Fatalf("EnsureRollupTable (1st call): %v", err)
+	}
+	oidBefore := rollupTenantIsolationPolicyOID(t, owner, table)
+
+	if err := owner.EnsureRollupTable(ctx, m); err != nil {
+		t.Fatalf("EnsureRollupTable (2nd call, must be idempotent): %v", err)
+	}
+	oidAfter := rollupTenantIsolationPolicyOID(t, owner, table)
+
+	if oidBefore != oidAfter {
+		t.Fatalf("tenant_isolation policy OID changed across a second EnsureRollupTable call (before=%d, after=%d) — the policy was DROPPED and re-CREATED instead of being left alone, reopening the empty-result window under FORCE ROW LEVEL SECURITY", oidBefore, oidAfter)
+	}
+
+	// The policy must still actually be present and scope-aware after the
+	// second call — proving "skip the RLS statements" did not silently leave
+	// the table with no policy at all.
+	if !rollupHasTenantIsolationPolicy(t, owner, table) {
+		t.Errorf("rollup table %q: want a tenant_isolation policy to still exist after a 2nd EnsureRollupTable call", table)
+	}
+	if !rollupPolicyIsScopeAware(t, owner, table) {
+		t.Errorf("rollup table %q: want the tenant_isolation policy to remain scope-aware after a 2nd EnsureRollupTable call", table)
+	}
+}
+
+// rollupTenantIsolationPolicyOID reads the stable Postgres OID of table's
+// "tenant_isolation" RLS policy via pg_policy (the underlying system catalog
+// pg_policies is a view over) — an OID that only changes if the policy is
+// dropped and recreated, never on an in-place no-op.
+func rollupTenantIsolationPolicyOID(t *testing.T, a *postgres.Adapter, table string) uint32 {
+	t.Helper()
+	var oid uint32
+	row := a.Driver().QueryRow(context.Background(),
+		`SELECT p.oid FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid WHERE c.relname = $1 AND p.polname = 'tenant_isolation'`, table)
+	if err := row.Scan(&oid); err != nil {
+		t.Fatalf("read tenant_isolation policy oid for %q: %v", table, err)
+	}
+	return oid
+}
+
+// rollupColumnSet reads back the physical columns of table via
+// information_schema, keyed by column_name for O(1) membership checks.
+func rollupColumnSet(t *testing.T, a *postgres.Adapter, table string) map[string]bool {
+	t.Helper()
+	rows, err := a.Driver().Query(context.Background(),
+		`SELECT column_name FROM information_schema.columns WHERE table_name = $1`, table)
+	if err != nil {
+		t.Fatalf("query information_schema.columns for %q: %v", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]bool{}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			t.Fatalf("scan column_name: %v", err)
+		}
+		out[c] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate information_schema.columns rows: %v", err)
+	}
+	return out
+}
+
+// rollupRLSFlags reads pg_class.relrowsecurity/relforcerowsecurity for table.
+func rollupRLSFlags(t *testing.T, a *postgres.Adapter, table string) (enabled, forced bool) {
+	t.Helper()
+	row := a.Driver().QueryRow(context.Background(),
+		`SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = $1`, table)
+	if err := row.Scan(&enabled, &forced); err != nil {
+		t.Fatalf("read pg_class RLS flags for %q: %v", table, err)
+	}
+	return enabled, forced
+}
+
+// rollupHasTenantIsolationPolicy reports whether table carries a policy named
+// "tenant_isolation" (via pg_policies, the same view namespace_integration_test.go
+// uses to verify RLS-following-rename).
+func rollupHasTenantIsolationPolicy(t *testing.T, a *postgres.Adapter, table string) bool {
+	t.Helper()
+	var n int
+	row := a.Driver().QueryRow(context.Background(),
+		`SELECT count(*) FROM pg_policies WHERE tablename = $1 AND policyname = 'tenant_isolation'`, table)
+	if err := row.Scan(&n); err != nil {
+		t.Fatalf("count tenant_isolation policies for %q: %v", table, err)
+	}
+	return n > 0
+}
+
+// rollupPolicyIsScopeAware reads the tenant_isolation policy's USING
+// expression back from pg_policies and checks it carries the scope-aware
+// predicate (the "scope_id IS NULL OR scope_id = current_setting(...)"
+// branch), not just the plain tenant-only predicate. Postgres deparses the
+// stored expression with its own whitespace/parenthesization/casts, so this
+// checks for the predicate's distinguishing substrings rather than an exact
+// string match.
+func rollupPolicyIsScopeAware(t *testing.T, a *postgres.Adapter, table string) bool {
+	t.Helper()
+	var qual string
+	row := a.Driver().QueryRow(context.Background(),
+		`SELECT qual FROM pg_policies WHERE tablename = $1 AND policyname = 'tenant_isolation'`, table)
+	if err := row.Scan(&qual); err != nil {
+		t.Fatalf("read tenant_isolation policy qual for %q: %v", table, err)
+	}
+	return strings.Contains(qual, "scope_id") &&
+		strings.Contains(qual, "IS NULL") &&
+		strings.Contains(qual, "app.scope_id")
+}
+
+// rollupHasUniqueIndex reports whether table carries a unique index named
+// indexName (via pg_indexes), the upsert conflict target Task 4's
+// maintainer will use.
+func rollupHasUniqueIndex(t *testing.T, a *postgres.Adapter, table, indexName string) bool {
+	t.Helper()
+	var n int
+	row := a.Driver().QueryRow(context.Background(),
+		`SELECT count(*) FROM pg_indexes WHERE tablename = $1 AND indexname = $2`, table, indexName)
+	if err := row.Scan(&n); err != nil {
+		t.Fatalf("count index %q on %q: %v", indexName, table, err)
+	}
+	return n > 0
+}
+
+// sketchRollupMetric declares a materialized metric with one sketch measure
+// of each kind — count_distinct (hyperloglog) and percentile (tdigest) — so
+// TestEnsureRollupTable_SketchColumns can prove both toolkit column types
+// land in a real database from a single EnsureRollupTable call.
+func sketchRollupMetric() *registry.MetricSpec {
+	return &registry.MetricSpec{
+		Name:   "latency_and_uniques",
+		Source: "request_completed",
+		Measures: []registry.MetricMeasure{
+			{Kind: "count_distinct", Field: "visitor_id", As: "uniques"},
+			{Kind: "percentile", Field: "duration_ms", As: "p50", Percentile: 0.5},
+		},
+		Rollup: &registry.RollupSpec{Bucket: time.Hour},
+	}
+}
+
+// TestEnsureRollupTable_SketchColumns proves EnsureRollupTable, for a metric
+// declaring count_distinct and percentile measures, against a real Postgres
+// (the pg16-all image bundles timescaledb_toolkit, see
+// fabriqtest.PostgresImage): it creates the timescaledb_toolkit extension,
+// and the resulting table carries a hyperloglog column for the
+// count_distinct measure and a tdigest column for the percentile measure —
+// asserted via information_schema.columns.udt_name, which reports the
+// underlying Postgres type name for each column.
+func TestEnsureRollupTable_SketchColumns(t *testing.T) {
+	ctx := context.Background()
+	_, owner := newInsightsHarness(t, registry.New())
+
+	m := sketchRollupMetric()
+	const table = "fabriq_insights_rollup_latency_and_uniques"
+
+	if err := owner.EnsureRollupTable(ctx, m); err != nil {
+		t.Fatalf("EnsureRollupTable: %v", err)
+	}
+	// Idempotent, same as the additive case (TestEnsureRollupTable_Idempotent).
+	if err := owner.EnsureRollupTable(ctx, m); err != nil {
+		t.Fatalf("EnsureRollupTable (2nd call, must be idempotent): %v", err)
+	}
+
+	udt := rollupColumnUDTNames(t, owner, table)
+	if got := udt["uniques"]; got != "hyperloglog" {
+		t.Errorf("column %q: want udt_name %q, got %q", "uniques", "hyperloglog", got)
+	}
+	if got := udt["p50"]; got != "tdigest" {
+		t.Errorf("column %q: want udt_name %q, got %q", "p50", "tdigest", got)
+	}
+
+	var extCount int
+	row := owner.Driver().QueryRow(ctx, `SELECT count(*) FROM pg_extension WHERE extname = 'timescaledb_toolkit'`)
+	if err := row.Scan(&extCount); err != nil {
+		t.Fatalf("count pg_extension for timescaledb_toolkit: %v", err)
+	}
+	if extCount == 0 {
+		t.Error("want timescaledb_toolkit extension created by EnsureRollupTable, got not installed")
+	}
+}
+
+// rollupColumnUDTNames reads back table's columns keyed by column_name, with
+// each value the Postgres underlying type name (information_schema.columns.
+// udt_name) — e.g. "hyperloglog", "tdigest", "numeric" — so a caller can
+// assert a column's TOOLKIT type distinctly from just its presence.
+func rollupColumnUDTNames(t *testing.T, a *postgres.Adapter, table string) map[string]string {
+	t.Helper()
+	rows, err := a.Driver().Query(context.Background(),
+		`SELECT column_name, udt_name FROM information_schema.columns WHERE table_name = $1`, table)
+	if err != nil {
+		t.Fatalf("query information_schema.columns for %q: %v", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]string{}
+	for rows.Next() {
+		var col, udt string
+		if err := rows.Scan(&col, &udt); err != nil {
+			t.Fatalf("scan column_name/udt_name: %v", err)
+		}
+		out[col] = udt
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate information_schema.columns rows: %v", err)
+	}
+	return out
+}
+
+// rollupScopeIDNullable reports whether table's scope_id column is nullable
+// (information_schema.columns.is_nullable = 'YES') — it must stay nullable
+// so NULL can mean "shared across all scopes", matching
+// fabriq_insights_events's convention. A rollup table's scope_id must never
+// be a PRIMARY KEY member, which would force it NOT NULL implicitly.
+func rollupScopeIDNullable(t *testing.T, a *postgres.Adapter, table string) bool {
+	t.Helper()
+	var nullable string
+	row := a.Driver().QueryRow(context.Background(),
+		`SELECT is_nullable FROM information_schema.columns WHERE table_name = $1 AND column_name = 'scope_id'`, table)
+	if err := row.Scan(&nullable); err != nil {
+		t.Fatalf("read scope_id is_nullable for %q: %v", table, err)
+	}
+	return nullable == "YES"
+}

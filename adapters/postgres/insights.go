@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/xraph/grove/driver"
 	"github.com/xraph/grove/drivers/pgdriver"
 
 	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 )
 
@@ -118,6 +120,78 @@ func (i *InsightsAdapter) Query(ctx context.Context, q query.AnalyticsQuery, int
 	if err != nil {
 		return err
 	}
+
+	// Stitching-rollup routing (phase 2b, Task 5): a query naming a
+	// materialized metric (MetricSpec.Rollup != nil) whose shape is
+	// rollup-compatible is served by combining the sealed rollup with a
+	// live tail (buildStitchedRollupSQL, insights_rollup_query.go) instead
+	// of the fully-live path below. Descriptor does not carry RollupSpec —
+	// it is shared with fabriqtest.FakeAnalytics, which never materializes
+	// anything — so the metric is looked up again here, by name, directly
+	// from the registry. EffectiveQuery is called early (rather than left
+	// to buildInsightsSQL) so rollupCompatible can be checked against the
+	// EFFECTIVE dimensions/bucket a metric-sourced query actually runs
+	// with, not q's raw (and, for a metric source, always-empty)
+	// Dimensions/TimeBucket fields.
+	if d.FromMetric && i.a.reg != nil {
+		if m, ok := i.a.reg.Metric(d.MetricName); ok && m.Rollup != nil {
+			effMeasures, effDims, effBucket, eerr := insights.EffectiveQuery(q, d)
+			if eerr != nil {
+				return eerr
+			}
+			qEff := q
+			qEff.Dimensions = effDims
+			qEff.TimeBucket = effBucket
+			// Route to the stitched builder ONLY when a watermark already
+			// exists (review fix, phase 2b Task 5): buildStitchedRollupSQL's
+			// sealed CTE unconditionally does `FROM fabriq_insights_rollup_
+			// <metric>` — even when hasWatermark is false and the WHERE
+			// clause degrades to "AND FALSE", Postgres still needs that
+			// relation to exist at plan time. Since EnsureRollupTable isn't
+			// wired into boot until a later task, a materialized metric that
+			// has never had a maintainer pass (no watermark row, and
+			// possibly no rollup table at all) would make Query() fail with
+			// "relation does not exist" the moment MetricSpec.Rollup is set
+			// — a regression, not the intended "still exactly correct, just
+			// unaccelerated" behavior the sealed CTE's AND-FALSE branch is
+			// meant to provide. Reading the watermark FIRST and gating the
+			// branch on it means an un-rolled-up metric falls through to the
+			// ordinary live path below (functionally identical to what the
+			// sealed CTE's permanently-false branch would have computed, had
+			// the table existed) with no dependency on the rollup table.
+			//
+			// ReadRollupWatermark reads fabriq_insights_rollup_state, which
+			// always exists (migration 0032) independent of any per-metric
+			// rollup table; a metric with no maintainer pass simply has no
+			// state row, so hasWatermark is cleanly false here — never an
+			// error caused by a missing per-metric table.
+			if rollupCompatible(qEff, m) {
+				watermark, hasWatermark, werr := i.a.ReadRollupWatermark(ctx, m.Name)
+				if werr != nil {
+					return werr
+				}
+				if hasWatermark {
+					return i.a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
+						sql, args, berr := i.a.buildStitchedRollupSQL(qEff, tid, m, effMeasures, effDims, effBucket, watermark, hasWatermark)
+						if berr != nil {
+							return berr
+						}
+						rows, qerr := tx.Query(ctx, sql, args...)
+						if qerr != nil {
+							return fmt.Errorf("fabriq: insights rollup query: %w", qerr)
+						}
+						maps, serr := scanMaps(rows)
+						if serr != nil {
+							return serr
+						}
+						return assignMapsDest(into, maps)
+					})
+				}
+				// !hasWatermark: fall through to the live path below.
+			}
+		}
+	}
+
 	return i.a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
 		sql, args, err := buildInsightsSQL(q, tid, d)
 		if err != nil {
@@ -219,4 +293,22 @@ func (i *InsightsAdapter) UpsertInsightFacts(ctx context.Context, facts []insigh
 		}
 		return nil
 	})
+}
+
+// var _ insights.RollupSurface asserts *InsightsAdapter also implements the
+// rollup:insights maintainer's tenant-routed surface (forgeext/rollup.go),
+// alongside FactSink and query.AnalyticsQuerier above.
+var _ insights.RollupSurface = (*InsightsAdapter)(nil)
+
+// EnsureRollupTable pass-through to the underlying *Adapter's owner/DDL
+// rollup-table creation (idempotent) — see Adapter.EnsureRollupTable.
+func (i *InsightsAdapter) EnsureRollupTable(ctx context.Context, m *registry.MetricSpec) error {
+	return i.a.EnsureRollupTable(ctx, m)
+}
+
+// MaintainRollup pass-through to the underlying *Adapter's rollup maintainer
+// pass — see Adapter.MaintainRollup. The caller supplies the tenant ctx
+// (unscoped — MaintainRollup itself guards against a scoped ctx).
+func (i *InsightsAdapter) MaintainRollup(ctx context.Context, m *registry.MetricSpec, now time.Time) error {
+	return i.a.MaintainRollup(ctx, m, now)
 }

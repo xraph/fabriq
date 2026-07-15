@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Entity is a registered, compiled spec: the declarative EntitySpec plus
@@ -287,6 +288,23 @@ func (r *Registry) Metric(name string) (*MetricSpec, bool) {
 	return m, ok
 }
 
+// MaterializedMetrics returns every declared metric that opts into
+// materialization (MetricSpec.Rollup != nil), sorted by Name for determinism.
+// Like Metric, it reads the index built by Validate; calling it before
+// Validate returns an empty slice.
+func (r *Registry) MaterializedMetrics() []*MetricSpec {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*MetricSpec, 0, len(r.metrics))
+	for _, m := range r.metrics {
+		if m.Rollup != nil {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // EntityHasInsights reports whether name is a registered entity carrying a
 // non-nil InsightsSpec (i.e. one whose projected facts are queryable).
 func (r *Registry) EntityHasInsights(name string) bool {
@@ -368,6 +386,23 @@ func (r *Registry) Validate() error {
 			}
 			if src, ok := r.entities[m.Source]; ok && src.Spec.Insights == nil {
 				return fmt.Errorf("fabriq: metric %q sources entity %q which has no InsightsSpec", m.Name, m.Source)
+			}
+			if m.Rollup != nil {
+				if m.Rollup.Bucket <= 0 {
+					return fmt.Errorf("fabriq: metric %q: Rollup.Bucket must be > 0", m.Name)
+				}
+				if m.Rollup.Bucket > 24*time.Hour || (24*time.Hour)%m.Rollup.Bucket != 0 {
+					return fmt.Errorf("fabriq: metric %q: Rollup.Bucket must evenly divide 24h (got %v) — the rollup grain must align with Postgres time_bucket day boundaries", m.Name, m.Rollup.Bucket)
+				}
+				if _, ok := r.entities[m.Source]; ok {
+					return fmt.Errorf("fabriq: metric %q: Rollup sources entity %q — rollups are event-sourced only", m.Name, m.Source)
+				}
+				// Sketch measures (count_distinct/percentile) are allowed on a
+				// Rollup metric as of phase 2b-2 — they materialize as
+				// toolkit-typed columns (hyperloglog/tdigest) instead of plain
+				// NUMERIC. See adapters/postgres's rollupTableDDL (column
+				// shape) and toolkitAvailable (the boot-time capability check
+				// that fails loudly when timescaledb_toolkit is absent).
 			}
 			idx[m.Name] = m
 		}

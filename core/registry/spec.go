@@ -286,13 +286,57 @@ type MetricSpec struct {
 	Measures      []MetricMeasure // at least one
 	Dimensions    []string
 	DefaultBucket time.Duration // optional default TimeBucket
+
+	// Rollup opts this metric into materialization (phase 2b). Nil (the zero
+	// value) means the metric stays live-only, computed on demand from raw
+	// events/facts on every query. Rollups are event-sourced only (Source must
+	// NOT name a registered entity). As of phase 2b-2, a Rollup metric may
+	// also carry a non-additive "sketch" measure (count_distinct, percentile):
+	// these are stored as toolkit-typed columns (hyperloglog/tdigest — see
+	// adapters/postgres's rollupTableDDL) rather than plain NUMERIC, and
+	// require timescaledb_toolkit to be available in the target database
+	// (adapters/postgres's toolkitAvailable boot-check fails loudly if not).
+	// Rollup-served count_distinct/percentile are approximate; the pure-live
+	// path stays exact.
+	Rollup *RollupSpec
+}
+
+// RollupSpec opts a MetricSpec into materialization (phase 2b). Nil (on
+// MetricSpec.Rollup) means live-only. The rollup grain is Bucket; a bucket is
+// sealed (rolled up, no longer mutable by the maintainer) once it can no
+// longer receive in-grace late events — SealGrace after the bucket's end time.
+// RerollWindow trailing buckets are recomputed on each maintainer pass to
+// absorb events that arrive within grace but after an earlier pass already
+// sealed the bucket.
+type RollupSpec struct {
+	// Bucket is the rollup grain (e.g. time.Hour). Required, must be > 0,
+	// and must evenly divide 24h (Validate rejects anything else) — the
+	// stitched-query boundary math truncates on Go's zero-time origin and
+	// only lines up with Postgres time_bucket's day-aligned grid when the
+	// grain divides a day evenly.
+	Bucket time.Duration
+
+	// SealGrace delays sealing a bucket past its end time, so events that
+	// arrive slightly late still land in the correct bucket. Zero means the
+	// maintainer applies its own sane default.
+	SealGrace time.Duration
+
+	// RerollWindow is how far back (in buckets) the maintainer recomputes on
+	// every pass, to absorb events that arrived after a bucket was already
+	// sealed. Zero means the maintainer applies its own sane default.
+	RerollWindow time.Duration
 }
 
 // MetricMeasure mirrors query.Measure at the registry layer (registry must not
 // import core/query). Kind is one of "count"/"sum"/"avg"/"min"/"max"/
-// "count_distinct".
+// "count_distinct"/"percentile".
 type MetricMeasure struct {
 	Kind  string
 	Field string
 	As    string
+	// Percentile is the fraction (0,1) for a "percentile" Kind measure, e.g.
+	// 0.95 for p95 — mirrors query.Measure.Percentile. Required when Kind is
+	// "percentile"; ignored otherwise. Threaded through to query.Measure by
+	// core/insights/resolve.go's toQueryMeasures.
+	Percentile float64
 }

@@ -1,0 +1,386 @@
+package postgres
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"strings"
+
+	"github.com/xraph/fabriq/core/registry"
+)
+
+// rollupTablePrefix names the per-metric materialized-rollup tables (phase
+// 2b). One table per materialized MetricSpec: fabriq_insights_rollup_<metric>.
+const rollupTablePrefix = "fabriq_insights_rollup_"
+
+// rollupHLLRegisters and rollupTDigestBuckets (phase 2b-2) are the SHARED
+// timescaledb_toolkit sketch-size parameters: hyperloglog(N, value)'s
+// register count and tdigest(N, value)'s bucket count, respectively. BOTH
+// the maintainer's sealed aggregation (rollupMeasureSelect,
+// insights_rollup_maintain.go) and the router's live-tail aggregation
+// (buildStitchedRollupSQL, insights_rollup_query.go) build their sketches
+// with these SAME constants — a hyperloglog/tdigest built at one size
+// cannot be validly `rollup()`'d together with one built at a different
+// size (the toolkit combinator aggregate assumes matching internal
+// resolution), so the sealed-bucket sketch and the live-tail sketch for
+// the same query MUST agree, which is only guaranteed by sharing these
+// package-level constants rather than repeating literals at each callsite.
+//
+// rollupHLLRegisters must be between 16 and 2^18 per the toolkit's
+// hyperloglog(size, value) contract (size is rounded up to the next power
+// of 2 internally); 1024 is already a power of 2, comfortably inside that
+// range, and gives ~1-2% standard error for count_distinct estimates.
+// rollupTDigestBuckets has no power-of-2 requirement; 100 is the toolkit
+// docs' own example value and gives good accuracy at modest memory cost.
+const (
+	rollupHLLRegisters   = 1024
+	rollupTDigestBuckets = 100
+)
+
+// rollupTableName returns the physical table name for a materialized
+// metric's rollup, validating the FULL name (prefix + metric) against
+// ddlValid — this both rejects a metric name containing SQL-hostile
+// characters (e.g. "bad-name", "x; DROP") and catches a name that would
+// overflow Postgres's identifier length once the prefix is added.
+func rollupTableName(metric string) (string, error) {
+	if metric == "" {
+		return "", fmt.Errorf("fabriq: rollup metric name must not be empty")
+	}
+	table := rollupTablePrefix + metric
+	if !ddlValid(table) {
+		return "", fmt.Errorf("fabriq: invalid rollup metric name %q (table name %q is not a valid identifier)", metric, table)
+	}
+	return table, nil
+}
+
+// rollupMeasureAlias returns the measure's column alias: its declared As, or
+// a defaulted alias when As is empty — "count" for a count measure (which
+// typically has no Field), "p<N>_<field>" for a percentile measure (N =
+// round(Percentile*100), e.g. "p95_latency"), "<kind>_<field>" otherwise.
+// The caller ddlValid-checks the result before using it in DDL.
+//
+// The percentile default MUST match query.measureAlias's own default
+// (adapters/postgres/insights_query_build.go) EXACTLY: this function names
+// the DDL column (rollupMeasureColumns) and the maintainer's INSERT column
+// (rollupMeasureSelect), while the router (buildStitchedRollupSQL) computes
+// its sealed-CTE column reference via query.measureAlias on the very same
+// registry.MetricMeasure (translated to query.Measure by
+// insights.toQueryMeasures, which threads As/Percentile through unchanged).
+// A metric with a percentile measure and no explicit As would otherwise
+// have its column DDL-created/populated under one default name here but
+// have the router SELECT a differently-named column — a "column ... does
+// not exist" failure the moment a percentile measure omits As.
+func rollupMeasureAlias(m registry.MetricMeasure) string {
+	if m.As != "" {
+		return m.As
+	}
+	switch m.Kind {
+	case "count":
+		return "count"
+	case "percentile":
+		return fmt.Sprintf("p%d_%s", int(math.Round(m.Percentile*100)), m.Field)
+	default:
+		return fmt.Sprintf("%s_%s", m.Kind, m.Field)
+	}
+}
+
+// rollupMeasureColumns returns the rollup column definition(s) for one
+// measure. count/sum/min/max each map to a single NUMERIC column named by its
+// alias. avg is decomposed into TWO NUMERIC columns, "<alias>__sum" and
+// "<alias>__count", so the rollup stores sum-and-count rather than a
+// non-additive average — the maintainer/router recompute avg = sum/count
+// when combining sealed and live-tail partials (see the design's Storage +
+// stitching-router sections).
+//
+// count_distinct/percentile ("sketch" measures, phase 2b-2) map to a single
+// column typed as a timescaledb_toolkit aggregate: hyperloglog for
+// count_distinct (sealed via `rollup(hll)`, read via `distinct_count(...)`),
+// tdigest for percentile (sealed via `rollup(td)`, read via
+// `approx_percentile(p, ...)`). These require timescaledb_toolkit to be
+// installed in the target database — EnsureRollupTable's caller
+// (toolkitAvailable) is the boot-time capability gate; this function itself
+// does not touch the database and has no opinion on availability.
+//
+// Every interpolated identifier (the alias, and its decomposed avg
+// variants) is ddlValid-checked before being returned — the caller must
+// treat a returned error as "do not build this table."
+func rollupMeasureColumns(m registry.MetricMeasure) ([]string, error) {
+	switch m.Kind {
+	case "count", "sum", "min", "max":
+		alias := rollupMeasureAlias(m)
+		if !ddlValid(alias) {
+			return nil, fmt.Errorf("invalid measure column name %q (kind %q)", alias, m.Kind)
+		}
+		return []string{fmt.Sprintf("%s NUMERIC", alias)}, nil
+	case "avg":
+		alias := rollupMeasureAlias(m)
+		sumCol := alias + "__sum"
+		countCol := alias + "__count"
+		if !ddlValid(sumCol) || !ddlValid(countCol) {
+			return nil, fmt.Errorf("invalid decomposed avg column for alias %q", alias)
+		}
+		return []string{
+			fmt.Sprintf("%s NUMERIC", sumCol),
+			fmt.Sprintf("%s NUMERIC", countCol),
+		}, nil
+	case "count_distinct":
+		alias := rollupMeasureAlias(m)
+		if !ddlValid(alias) {
+			return nil, fmt.Errorf("invalid measure column name %q (kind %q)", alias, m.Kind)
+		}
+		return []string{fmt.Sprintf("%s hyperloglog", alias)}, nil
+	case "percentile":
+		alias := rollupMeasureAlias(m)
+		if !ddlValid(alias) {
+			return nil, fmt.Errorf("invalid measure column name %q (kind %q)", alias, m.Kind)
+		}
+		return []string{fmt.Sprintf("%s tdigest", alias)}, nil
+	default:
+		return nil, fmt.Errorf("unknown measure kind %q", m.Kind)
+	}
+}
+
+// rollupRLSStatements returns the scope-aware tenant-isolation RLS
+// statements for a runtime-created rollup table. The rollup table carries a
+// nullable scope_id column (per the design's Storage section — Task 4's
+// maintainer stores per-scope aggregates there, with NULL meaning "shared
+// across all scopes in the tenant", matching fabriq_insights_events's
+// convention), so its RLS predicate must be scope-aware, exactly like the
+// sibling migration-created tables fabriq_insights_events/facts/rollup_state.
+//
+// This is a deliberate INLINE COPY of migrations.ScopeAwareTenantPolicy's
+// exact SQL text (migrations/0012_scope.go), not a call to it:
+// adapters/postgres is the runtime managed-DDL lane (this file's sibling is
+// ddl.go's EnsureDynamic seam) and must not import the migrations package,
+// which is the boot-time-schema lane. Tenant stays the hard boundary; scope
+// is soft — an unscoped reader (empty app.scope_id) sees every row in the
+// tenant, a scoped reader sees its own scope's rows plus shared (NULL-scope)
+// rows.
+func rollupRLSStatements(table string) []string {
+	return []string{
+		fmt.Sprintf(`ALTER TABLE %s ENABLE ROW LEVEL SECURITY`, table),
+		fmt.Sprintf(`ALTER TABLE %s FORCE ROW LEVEL SECURITY`, table),
+		fmt.Sprintf(`DROP POLICY IF EXISTS tenant_isolation ON %s`, table),
+		fmt.Sprintf(`CREATE POLICY tenant_isolation ON %s
+			USING ( tenant_id = current_setting('app.tenant_id', true)
+				AND ( current_setting('app.scope_id', true) = ''
+					OR scope_id IS NULL
+					OR scope_id = current_setting('app.scope_id', true) ) )
+			WITH CHECK ( tenant_id = current_setting('app.tenant_id', true) )`, table),
+	}
+}
+
+// rollupTableDDL builds the statements to create (idempotently) the
+// per-metric materialized-rollup table for m: tenant_id/scope_id/bucket_start
+// structural columns, one TEXT column per rollup dimension (m.Dimensions),
+// one or two NUMERIC columns per additive measure (rollupMeasureColumns), a
+// unique index over (tenant_id, scope_id, bucket_start, <dims...>) that
+// serves as the upsert conflict target, and the runtime RLS statements
+// (rollupRLSStatements).
+//
+// The table has NO PRIMARY KEY. A PRIMARY KEY would implicitly force
+// scope_id NOT NULL (Postgres forces every PK member NOT NULL even without
+// an explicit NOT NULL), which would break the NULL-means-shared convention
+// that fabriq_insights_events uses and that rollupRLSStatements's
+// scope-aware predicate relies on (scope_id IS NULL is the shared-row
+// branch). Instead, uniqueness is enforced by a UNIQUE INDEX with NULLS NOT
+// DISTINCT (Postgres 15+): NULL scope_id values are treated as one distinct
+// group for uniqueness purposes, so an unscoped upsert still coalesces onto
+// a single row per (tenant_id, bucket_start, <dims...>) instead of Postgres's
+// default "every NULL is distinct" behavior, which would otherwise let
+// duplicate unscoped rows accumulate. scope_id itself stays nullable
+// (declared plain "scope_id TEXT", no NOT NULL).
+//
+// Pure: no I/O, no DB. Every interpolated identifier — the table name, each
+// dimension column, each measure column, the derived unique-index name — is
+// ddlValid-checked before use; any invalid name is returned as an error
+// rather than silently ignored, so this is the injection-guard boundary for
+// rollup DDL.
+func rollupTableDDL(m *registry.MetricSpec) ([]string, error) {
+	table, err := rollupTableName(m.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	cols := []string{
+		"tenant_id TEXT NOT NULL",
+		"scope_id TEXT",
+		"bucket_start TIMESTAMPTZ NOT NULL",
+	}
+	// uniqCols is the upsert conflict-target key (tenant + scope + bucket +
+	// dimensions), enforced below via a UNIQUE INDEX rather than a PRIMARY
+	// KEY so scope_id can stay nullable — see the doc comment above.
+	uniqCols := []string{"tenant_id", "scope_id", "bucket_start"}
+
+	for _, dim := range m.Dimensions {
+		if !ddlValid(dim) {
+			return nil, fmt.Errorf("fabriq: metric %q: invalid rollup dimension name %q", m.Name, dim)
+		}
+		cols = append(cols, fmt.Sprintf("%s TEXT", dim))
+		uniqCols = append(uniqCols, dim)
+	}
+
+	for _, meas := range m.Measures {
+		measureCols, err := rollupMeasureColumns(meas)
+		if err != nil {
+			return nil, fmt.Errorf("fabriq: metric %q: %w", m.Name, err)
+		}
+		cols = append(cols, measureCols...)
+	}
+
+	create := fmt.Sprintf(
+		"CREATE TABLE IF NOT EXISTS %s (\n\t%s\n)",
+		table, strings.Join(cols, ",\n\t"),
+	)
+
+	uniqIndex := table + "_uniq"
+	if !ddlValid(uniqIndex) {
+		return nil, fmt.Errorf("fabriq: metric %q: derived unique index name %q is not a valid identifier (table name leaves no room for the _uniq suffix)", m.Name, uniqIndex)
+	}
+	uniqueIdx := fmt.Sprintf(
+		"CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (%s) NULLS NOT DISTINCT",
+		uniqIndex, table, strings.Join(uniqCols, ", "),
+	)
+
+	stmts := append([]string{create, uniqueIdx}, rollupRLSStatements(table)...)
+	return stmts, nil
+}
+
+// metricHasSketchMeasure reports whether m declares at least one non-additive
+// ("sketch") measure — count_distinct or percentile — which rollupTableDDL
+// materializes as a timescaledb_toolkit-typed column (hyperloglog/tdigest)
+// rather than plain NUMERIC.
+func metricHasSketchMeasure(m *registry.MetricSpec) bool {
+	for _, meas := range m.Measures {
+		if meas.Kind == "count_distinct" || meas.Kind == "percentile" {
+			return true
+		}
+	}
+	return false
+}
+
+// toolkitAvailable reports whether timescaledb_toolkit can be installed in
+// the current database: it probes pg_available_extensions, the same
+// capability-check view migrations.extensionAvailable already uses for
+// pgvector/postgis (CREATE EXTENSION IF NOT EXISTS succeeds iff the
+// extension is listed there — whether or not it has been created yet).
+// pg_extension alone would only tell us "already created," which is the
+// wrong question here: EnsureRollupTable creates the extension lazily on
+// first use, so the gate that matters is "can it be created at all."
+func (a *Adapter) toolkitAvailable(ctx context.Context) (bool, error) {
+	var n int
+	if err := a.pg.QueryRow(ctx,
+		`SELECT count(*) FROM pg_available_extensions WHERE name = 'timescaledb_toolkit'`,
+	).Scan(&n); err != nil {
+		return false, translatePg("query", "", "", err)
+	}
+	return n > 0, nil
+}
+
+// rollupPolicyExists reports whether table already carries an RLS policy
+// named "tenant_isolation" (via pg_policies — the same view
+// insights_rollup_ddl_integration_test.go's rollupHasTenantIsolationPolicy
+// helper reads). EnsureRollupTable uses this to decide whether the
+// ENABLE/FORCE/DROP/CREATE RLS statements need to run at all — see its doc
+// for why re-running them unconditionally on every call is unsafe.
+func (a *Adapter) rollupPolicyExists(ctx context.Context, table string) (bool, error) {
+	var n int
+	if err := a.pg.QueryRow(ctx,
+		`SELECT count(*) FROM pg_policies WHERE tablename = $1 AND policyname = 'tenant_isolation'`, table,
+	).Scan(&n); err != nil {
+		return false, translatePg("query", "", "", err)
+	}
+	return n > 0, nil
+}
+
+// EnsureRollupTable creates (idempotently) the per-metric materialized-
+// rollup table for m, via the same owner/DDL exec seam EnsureDynamic uses
+// (a.execDDL — the schema-owner pool path, NOT a tenant-scoped transaction:
+// DDL is tenant-agnostic; the table's RLS policy enforces per-row tenant
+// isolation once rows are written). Safe to call repeatedly (CREATE TABLE
+// IF NOT EXISTS + idempotent RLS statements) AND cheap to call repeatedly:
+// forgeext/rollup.go's rollupOne calls this on EVERY maintainer tick, for
+// every (tenant, metric) pair, not just once at boot.
+//
+// The RLS statements specifically are NOT simply re-run every time, even
+// though rollupTableDDL/rollupRLSStatements build them as an unconditional
+// `ALTER ... ENABLE/FORCE ROW LEVEL SECURITY; DROP POLICY IF EXISTS
+// tenant_isolation; CREATE POLICY tenant_isolation ...` sequence: execDDL
+// runs each statement in its OWN autocommit transaction (there is no single
+// transaction spanning DROP+CREATE), so on a table with FORCE ROW LEVEL
+// SECURITY, the instant the DROP commits and before the CREATE commits, the
+// table has NO policy at all — a concurrent app-role query in that window
+// hits Postgres's default-deny-under-FORCE-RLS behavior and gets an empty
+// result, not an error. Doing that on every maintainer tick, forever, is a
+// recurring (if narrow) empty-result window for live readers. So this probes
+// pg_policies FIRST (rollupPolicyExists) and only runs the RLS statements
+// when the policy does not already exist — the first EnsureRollupTable call
+// for a given table still creates it (with RLS applied) as before; every
+// subsequent call, including every later maintainer tick, is then a true
+// no-op for the RLS statements (CREATE TABLE IF NOT EXISTS and the unique
+// index were already idempotent no-ops on their own). RLS itself is never
+// removed or weakened by this — only the redundant re-application is
+// skipped.
+//
+// When m declares a sketch measure (count_distinct/percentile), the rollup
+// table needs timescaledb_toolkit's hyperloglog/tdigest types. This is a
+// fail-fast boot check, not silent degradation: if the toolkit is not
+// available in the target database, EnsureRollupTable returns a loud error
+// naming the metric BEFORE attempting to create the table, rather than
+// letting a bare "type hyperloglog does not exist" driver error surface.
+// When toolkit IS available, `CREATE EXTENSION IF NOT EXISTS
+// timescaledb_toolkit` runs first (idempotent) so the toolkit's types exist
+// before the CREATE TABLE that references them. Additive-only rollup
+// metrics never touch the toolkit at all.
+func (a *Adapter) EnsureRollupTable(ctx context.Context, m *registry.MetricSpec) error {
+	stmts, err := rollupTableDDL(m)
+	if err != nil {
+		return err
+	}
+	table, err := rollupTableName(m.Name)
+	if err != nil {
+		return err
+	}
+	if metricHasSketchMeasure(m) {
+		available, err := a.toolkitAvailable(ctx)
+		if err != nil {
+			return fmt.Errorf("fabriq: ensure rollup table for metric %q: checking timescaledb_toolkit availability: %w", m.Name, err)
+		}
+		if !available {
+			return fmt.Errorf("fabriq: metric %q declares a sketch measure (count_distinct/percentile) but timescaledb_toolkit is not available on this Postgres instance — install the extension (or drop the sketch measure from the rollup)", m.Name)
+		}
+		if err := a.execDDL(ctx, `CREATE EXTENSION IF NOT EXISTS timescaledb_toolkit`); err != nil {
+			return fmt.Errorf("fabriq: ensure rollup table for metric %q: creating timescaledb_toolkit extension: %w", m.Name, err)
+		}
+	}
+
+	// rollupTableDDL always appends rollupRLSStatements(table)'s statements
+	// (a fixed count) as its tail; split them off so they can be
+	// conditionally skipped below without re-deriving or duplicating their
+	// text (avoiding any drift between what rollupTableDDL built and what
+	// this function executes).
+	rlsCount := len(rollupRLSStatements(table))
+	if rlsCount > len(stmts) {
+		return fmt.Errorf("fabriq: ensure rollup table for metric %q: internal error: DDL statement count (%d) shorter than RLS statement count (%d)", m.Name, len(stmts), rlsCount)
+	}
+	baseStmts, rlsStmts := stmts[:len(stmts)-rlsCount], stmts[len(stmts)-rlsCount:]
+
+	for _, stmt := range baseStmts {
+		if err := a.execDDL(ctx, stmt); err != nil {
+			return fmt.Errorf("fabriq: ensure rollup table for metric %q: %w", m.Name, err)
+		}
+	}
+
+	exists, err := a.rollupPolicyExists(ctx, table)
+	if err != nil {
+		return fmt.Errorf("fabriq: ensure rollup table for metric %q: checking existing tenant_isolation policy: %w", m.Name, err)
+	}
+	if !exists {
+		for _, stmt := range rlsStmts {
+			if err := a.execDDL(ctx, stmt); err != nil {
+				return fmt.Errorf("fabriq: ensure rollup table for metric %q: %w", m.Name, err)
+			}
+		}
+	}
+	return nil
+}

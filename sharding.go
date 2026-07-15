@@ -9,6 +9,7 @@ import (
 	"github.com/xraph/fabriq/adapters/shard"
 	"github.com/xraph/fabriq/core/catalog"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/projection"
 )
 
@@ -96,6 +97,38 @@ func allTenantsFromCatalog(ctx context.Context, cat catalog.Catalog) ([]string, 
 		}
 		cursor = next
 	}
+}
+
+// RollupSurfaceFor resolves tenantID's rollup-maintenance surface — the
+// concrete Postgres capability behind Shard.Analytics for that tenant's
+// shard (static sharding) or tenant database (catalog / db-per-tenant
+// mode) — through the same router seam InsightsConsumer's FactSink uses, so
+// a rollup:insights maintainer pass (forgeext) always lands on the tenant's
+// own shard/database, exactly like proj:insights' per-event writes.
+//
+// Returns the routing context to use downstream (schema-per-tenant mode
+// stamps search_path onto it; every other router returns ctx unchanged) and
+// a release func that MUST be called when the pass completes (no-op in
+// static mode; refcounted in catalog mode so the pool cannot evict the
+// shard mid-operation). On error, release is always safe to call (a no-op).
+func (s *Stores) RollupSurfaceFor(ctx context.Context, tenantID string) (insights.RollupSurface, context.Context, func(), error) {
+	router := s.router
+	if router == nil {
+		router = s.Shards
+	}
+	if router == nil {
+		return nil, ctx, func() {}, fmt.Errorf("fabriq: rollup maintainer needs a shard router configured")
+	}
+	sh, sctx, release, err := router.AcquireFor(ctx, tenantID)
+	if err != nil {
+		return nil, ctx, func() {}, err
+	}
+	rs, ok := sh.Analytics.(insights.RollupSurface)
+	if !ok {
+		release()
+		return nil, ctx, func() {}, fmt.Errorf("fabriq: tenant %q shard has no rollup-capable analytics surface configured", tenantID)
+	}
+	return rs, sctx, release, nil
 }
 
 // withReplay runs fn against the tenant's event-truth surface — the

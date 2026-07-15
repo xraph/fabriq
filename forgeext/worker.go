@@ -24,6 +24,7 @@ const (
 	lockKeyReconciler    = postgres.LockKeyReconciler
 	lockKeyDocumentPlane = postgres.LockKeyDocumentPlane
 	lockKeyBlobGC        = postgres.LockKeyBlobGC
+	lockKeyRollup        = postgres.LockKeyRollup
 )
 
 // Run implements forge.RunnableExtension: supervise the leader-elected relay
@@ -133,6 +134,28 @@ func (e *Extension) Run(ctx context.Context) error {
 			supervise(runCtx, logger, "blob-gc", func(c context.Context) error {
 				return gcElector.Run(c, func(leadCtx context.Context) error {
 					e.runBlobGC(leadCtx, reconcileInterval)
+					return leadCtx.Err()
+				})
+			})
+		}()
+	}
+
+	// Rollup maintainer: leader-elected (lock 1005), one scanner across
+	// replicas materializes every metric that opts into Rollup (phase 2b).
+	// Gated on Insights being enabled AND at least one materialized metric
+	// existing — mirrors proj:insights' own gate below.
+	if e.cfg.Fabriq.Insights.Enabled && hasMaterializedMetric(e.reg) {
+		rollupInterval := e.cfg.RollupInterval
+		if rollupInterval <= 0 {
+			rollupInterval = defaultRollupInterval
+		}
+		rollupElector := postgres.NewElector(stores.Postgres, lockKeyRollup)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, "rollup:insights", func(c context.Context) error {
+				return rollupElector.Run(c, func(leadCtx context.Context) error {
+					e.runRollupMaintainer(leadCtx, rollupInterval)
 					return leadCtx.Err()
 				})
 			})
