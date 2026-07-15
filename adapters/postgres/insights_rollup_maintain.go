@@ -49,8 +49,8 @@ const defaultRerollMultiple = 2
 
 // requireUnscopedRollupCtx is the defense-in-depth guard behind this file's
 // header comment: a maintainer pass MUST run under an unscoped tenant ctx so
-// its RLS predicate's first OR branch (`current_setting('app.scope_id', true)
-// = ''`) is satisfied and it sees every scope's events, not just one. The
+// its RLS predicate's first OR branch (the empty-app.scope_id branch) is
+// satisfied and it sees every scope's events, not just one. The
 // orchestrator (forgeext's rollup:insights job) always supplies an unscoped
 // ctx, so this never trips in normal operation — it exists to fail loudly
 // (rather than silently under-count a tenant's rollup) if a scoped ctx is
