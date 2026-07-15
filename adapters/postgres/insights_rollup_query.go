@@ -1,0 +1,500 @@
+package postgres
+
+// The stitching query router (phase 2b, Task 5): when a cube Query targets a
+// materialized metric (MetricSpec.Rollup != nil) and the query's shape is
+// "rollup-compatible" (rollupCompatible, below), InsightsAdapter.Query serves
+// it by combining the SEALED rollup table with a LIVE tail computed directly
+// from fabriq_insights_events — buildStitchedRollupSQL builds that combined
+// query. Correctness invariant: for additive measures (count/sum/avg/min/
+// max — the only kinds a Rollup-opted metric may declare in 2b-1, enforced by
+// registry.Validate), the stitched result is EXACTLY equal to the fully-live
+// result, never stale (the live tail always covers events up to `to`, so
+// nothing sealed-but-not-yet-rolled-up or arrived-since is ever missing) and
+// never partial. An incompatible query (see rollupCompatible) is not routed
+// here at all — the caller falls back to buildInsightsSQL, which is always
+// exact by construction.
+//
+// The watermark/seal-boundary tiling this file depends on (see
+// insights_rollup_maintain.go's MaintainRollup/AdvanceRollupWatermark):
+// fabriq_insights_rollup_state.watermark_bucket is the EXCLUSIVE upper bound
+// of sealed bucket_start values — i.e. every rollup row with bucket_start <
+// watermark is sealed and up to date, and the bucket starting AT watermark
+// itself is NOT yet in the rollup (it may still be open, or sealed-but-not-
+// yet-rolled-up by the next maintainer pass). So:
+//
+//   - the sealed CTE reads bucket_start ∈ [q.From, min(watermark, q.To)) —
+//     never bucket_start >= watermark;
+//   - the live CTE reads at ∈ [max(watermark, q.From), q.To) — starting
+//     exactly AT watermark, not watermark+grain.
+//
+// These two ranges tile [q.From, q.To) with NO gap and NO overlap by
+// construction (both bounds are exactly `watermark`), which is the numeric
+// crux of "stitched == fully-live".
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/registry"
+)
+
+// rollupCompatible reports whether q can be served by m's materialized
+// rollup instead of the fully-live path. PURE — no I/O, no db/registry
+// access beyond the passed-in MetricSpec. ALL of the following must hold; if
+// any fails the caller must use the fully-live path (buildInsightsSQL),
+// which is always correct:
+//
+//   - m.Rollup is non-nil and its Bucket is > 0 (m is actually materialized).
+//   - q.TimeBucket is a POSITIVE INTEGER MULTIPLE of m.Rollup.Bucket: a
+//     rollup stored at, say, 1h grain can serve a query bucketed at 1h, 2h,
+//     6h, 24h (all cleanly re-bucketable from hourly partials, because every
+//     coarser boundary that is a whole multiple of the rollup grain is also
+//     one of the rollup's own bucket boundaries — time_bucket in Postgres
+//     aligns to the epoch, so this holds for ANY clean multiple, not just
+//     calendar-aligned ones) but NOT a query bucketed FINER than the rollup
+//     grain (the rollup has already discarded sub-bucket resolution) and
+//     NOT a bucket that is not a clean multiple (its boundaries would not
+//     line up with the rollup's own bucket_start values).
+//   - every dimension q asks for is one the rollup stores (q.Dimensions ⊆
+//     m.Dimensions) — the rollup table has no column for a dimension
+//     outside the metric's declared set.
+//   - every Filter condition's column (recursively through OR groups) is one
+//     of m.Dimensions — a filter on a non-dimension prop (a measure field,
+//     or an ad-hoc prop the metric never declared) cannot be evaluated
+//     against already-aggregated rows: that prop's per-event values no
+//     longer exist once rolled up.
+//
+// Having/OrderBy/Limit/Offset impose NO restriction here: Having applies to
+// the measure aliases the combined query still produces (buildStitchedRollupSQL
+// re-derives the same aliasExpr map mapHavingCond needs); OrderBy/Limit/
+// Offset apply to the final result rows exactly as they do for the live path.
+func rollupCompatible(q query.AnalyticsQuery, m *registry.MetricSpec) bool {
+	if m == nil || m.Rollup == nil || m.Rollup.Bucket <= 0 {
+		return false
+	}
+	if q.TimeBucket <= 0 || q.TimeBucket < m.Rollup.Bucket || q.TimeBucket%m.Rollup.Bucket != 0 {
+		return false
+	}
+
+	dimSet := make(map[string]bool, len(m.Dimensions))
+	for _, d := range m.Dimensions {
+		dimSet[d] = true
+	}
+	for _, d := range q.Dimensions {
+		if !dimSet[d] {
+			return false
+		}
+	}
+
+	if err := query.ValidateConds(q.Filter, func(c string) bool { return dimSet[c] }); err != nil {
+		return false
+	}
+	return true
+}
+
+// rollupMeasurePartial describes how one query.Measure's additive partial is
+// carried through the sealed/live-tail "parts" shape and re-aggregated in
+// the final SELECT: count/sum/min/max store ONE partial column (named by the
+// measure's output alias, matching the rollup table's own column exactly —
+// see rollupMeasureColumns, insights_rollup_ddl.go); avg is decomposed into
+// TWO partial columns ("<alias>__sum", "<alias>__count"), mirroring
+// rollupMeasureSelect (insights_rollup_maintain.go) — additive storage, so
+// avg is recomputed as sum/count only once, in the final SELECT.
+type rollupMeasurePartial struct {
+	kind  query.MeasureKind
+	field string
+	alias string
+	cols  []string
+}
+
+// planRollupMeasures validates each measure's output alias and computes its
+// partial-column plan. Only count/sum/avg/min/max are additive — the only
+// kinds registry.Validate permits on a Rollup-opted MetricSpec in 2b-1 — so a
+// count_distinct/percentile measure here indicates the registry validation
+// gate was bypassed (a metric was hand-built rather than validated); reject
+// rather than silently building nonsense SQL for it.
+func planRollupMeasures(measures []query.Measure) ([]rollupMeasurePartial, error) {
+	out := make([]rollupMeasurePartial, 0, len(measures))
+	for _, meas := range measures {
+		alias, err := measureAlias(meas)
+		if err != nil {
+			return nil, err
+		}
+		var cols []string
+		switch meas.Kind {
+		case query.MeasureCount, query.MeasureSum, query.MeasureMin, query.MeasureMax:
+			cols = []string{alias}
+		case query.MeasureAvg:
+			sumCol, countCol := alias+"__sum", alias+"__count"
+			if !insightsIdentRe.MatchString(sumCol) || !insightsIdentRe.MatchString(countCol) {
+				return nil, fmt.Errorf("fabriq: invalid decomposed avg column for alias %q", alias)
+			}
+			cols = []string{sumCol, countCol}
+		default:
+			return nil, fmt.Errorf("fabriq: measure kind %q is not additive — not servable from a rollup", meas.Kind)
+		}
+		out = append(out, rollupMeasurePartial{kind: meas.Kind, field: meas.Field, alias: alias, cols: cols})
+	}
+	return out, nil
+}
+
+// mapCondToRollupDim renders one filter condition against the rollup table's
+// plain TEXT dimension column, the sealed-CTE sibling of mapCondToProp
+// (insights_query_build.go), which renders the SAME condition against a
+// JSONB prop accessor for the live-tail CTE. Column is quoted directly (a
+// real column reference), not run through propAccessor's `col ->> 'key'`
+// idiom. Mirrors mapCondToProp's operator handling and its numeric-cast rule
+// for Gt/Gte/Lt/Lte (the rollup dimension column is TEXT, exactly like a
+// JSONB accessor's implicit result type, so a numeric-valued bound needs the
+// same ::numeric cast to compare correctly rather than lexicographically) so
+// the sealed and live-tail WHERE clauses filter identically — a requirement
+// for "stitched == fully-live".
+//
+// allowed, when non-nil, restricts which columns may appear (the rollup's
+// declared Dimensions) — rollupCompatible has already guaranteed every
+// Filter condition names a rollup dimension before this is ever reached, but
+// this is the injection-guard boundary that enforces it at the SQL-building
+// layer too, independent of but consistent with mapCondToProp's own allowed
+// map.
+func mapCondToRollupDim(c query.Cond, argN *int, allowed map[string]bool) (frag string, args []any, err error) {
+	if c.IsGroup() {
+		if len(c.Or) == 0 {
+			return "", nil, fmt.Errorf("fabriq: empty OR group in rollup filter")
+		}
+		var parts []string
+		for _, sub := range c.Or {
+			f, a, serr := mapCondToRollupDim(sub, argN, allowed)
+			if serr != nil {
+				return "", nil, serr
+			}
+			parts = append(parts, f)
+			args = append(args, a...)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", args, nil
+	}
+
+	if !insightsIdentRe.MatchString(c.Column) {
+		return "", nil, fmt.Errorf("fabriq: invalid rollup dimension %q", c.Column)
+	}
+	if allowed != nil && !allowed[c.Column] {
+		return "", nil, fmt.Errorf("fabriq: filter column %q is not a rollup dimension", c.Column)
+	}
+	col := fmt.Sprintf("%q", c.Column)
+	ph := func() string {
+		p := fmt.Sprintf("$%d", *argN)
+		*argN++
+		return p
+	}
+	switch c.Op {
+	case query.OpGt, query.OpGte, query.OpLt, query.OpLte:
+		cc := col
+		if isNumericValue(c.Value) {
+			cc = "(" + col + ")::numeric"
+		}
+		return fmt.Sprintf("%s %s %s", cc, sqlOp[c.Op], ph()), []any{c.Value}, nil
+	case query.OpEq, query.OpNe, query.OpLike, query.OpILike:
+		return fmt.Sprintf("%s %s %s", col, sqlOp[c.Op], ph()), []any{c.Value}, nil
+	case query.OpIn:
+		return fmt.Sprintf("%s = ANY(%s)", col, ph()), []any{c.Value}, nil
+	case query.OpNotIn:
+		return fmt.Sprintf("NOT (%s = ANY(%s))", col, ph()), []any{c.Value}, nil
+	case query.OpIsNull:
+		return fmt.Sprintf("%s IS NULL", col), nil, nil
+	case query.OpIsNotNull:
+		return fmt.Sprintf("%s IS NOT NULL", col), nil, nil
+	default:
+		return "", nil, fmt.Errorf("fabriq: unsupported filter operator %q", c.Op)
+	}
+}
+
+// buildStitchedRollupSQL builds the stitched (sealed-rollup + live-tail)
+// aggregation SQL and its positional args for query q against materialized
+// metric m, scoped to tenant tid. measures/dims/bucket are the EFFECTIVE
+// query shape (insights.EffectiveQuery's output for q against m's
+// Descriptor) — dims may be a subset of m.Dimensions (rollupCompatible
+// allows q.Dimensions ⊆ m.Dimensions); bucket is q's requested TimeBucket
+// (or m's DefaultBucket), already proven by rollupCompatible to be a clean
+// multiple of m.Rollup.Bucket.
+//
+// watermark/hasWatermark come from ReadRollupWatermark: hasWatermark==false
+// means the metric has never had a maintainer pass (no sealed data at all)
+// — the sealed CTE is built to always return zero rows (an unconditional
+// "AND FALSE"), so the ENTIRE query range is served live, which is still
+// exactly correct, just not accelerated.
+//
+// Structure (see the design's §"The stitching router" and this file's
+// header comment for the sealed/live boundary tiling):
+//
+//	WITH sealed AS (
+//	  SELECT bucket_start, scope_id, <m.Dimensions...>, <partial cols...>
+//	  FROM fabriq_insights_rollup_<metric>
+//	  WHERE tenant_id = $1 AND bucket_start >= $from AND bucket_start < $sealedHi
+//	    [AND <dim filters, plain TEXT columns>]
+//	), live AS (
+//	  SELECT time_bucket($grain::interval, at) AS bucket_start, scope_id,
+//	         <props->>dim AS dim...>,
+//	         count(*)::numeric AS <cnt>, sum((props->>f)::numeric) AS <sum>,
+//	         min((props->>f)::numeric) AS <min>, max((props->>f)::numeric) AS <max>,
+//	         sum((props->>f)::numeric) AS <avg>__sum, count(props->>f)::numeric AS <avg>__count
+//	  FROM fabriq_insights_events
+//	  WHERE tenant_id = $1 AND name = $src AND at >= $liveLo AND at < $liveHi
+//	    [AND <dim filters, JSONB accessor>]
+//	  GROUP BY bucket_start, scope_id, <dim aliases...>
+//	), parts AS (SELECT * FROM sealed UNION ALL SELECT * FROM live)
+//	SELECT time_bucket($reqGrain::interval, bucket_start) AS bucket, <requested dims...>,
+//	       sum(<cnt>) AS <alias>, sum(<sum>) AS <alias>, min(<min>) AS <alias>, max(<max>) AS <alias>,
+//	       (sum(<avg>__sum) / NULLIF(sum(<avg>__count), 0)) AS <alias>
+//	FROM parts
+//	GROUP BY bucket, <requested dims...>
+//	[HAVING ...] [ORDER BY ...] [LIMIT ...] [OFFSET ...]
+//
+// scope_id is carried through sealed/live/parts (so RLS, which already
+// filtered both source tables to the caller's visible scope(s), stays
+// correct) but deliberately NOT included in the final GROUP BY — matching
+// buildInsightsSQL's own live path, which never groups by scope_id either:
+// a scoped reader's visible rows are already exactly the ones RLS let
+// through, so summing across them in the final aggregation is the same
+// "aggregate over every visible scope" semantics the live path has always
+// had, not a new behavior this router introduces.
+//
+// Every interpolated identifier (dimension names, measure aliases/partial
+// columns) is insightsIdentRe-checked before being placed in the SQL text;
+// every value (tenant, bounds, filter values, Having values, grains) travels
+// as a bound $N parameter — the same injection-guard contract
+// insights_query_build.go documents for buildInsightsSQL.
+func (a *Adapter) buildStitchedRollupSQL(q query.AnalyticsQuery, tid string, m *registry.MetricSpec, measures []query.Measure, dims []string, bucket time.Duration, watermark time.Time, hasWatermark bool) (sql string, args []any, err error) {
+	if m.Rollup == nil || m.Rollup.Bucket <= 0 {
+		return "", nil, fmt.Errorf("fabriq: metric %q has no rollup configured", m.Name)
+	}
+	if bucket <= 0 {
+		return "", nil, fmt.Errorf("fabriq: stitched rollup query requires a positive TimeBucket")
+	}
+	if len(measures) == 0 {
+		return "", nil, fmt.Errorf("fabriq: insights query needs at least one measure")
+	}
+	table, err := rollupTableName(m.Name)
+	if err != nil {
+		return "", nil, err
+	}
+
+	rollupDims := m.Dimensions
+	rollupDimSet := make(map[string]bool, len(rollupDims))
+	for _, d := range rollupDims {
+		if !insightsIdentRe.MatchString(d) {
+			return "", nil, fmt.Errorf("fabriq: invalid rollup dimension name %q", d)
+		}
+		rollupDimSet[d] = true
+	}
+	for _, d := range dims {
+		if !rollupDimSet[d] {
+			return "", nil, fmt.Errorf("fabriq: requested dimension %q is not a rollup dimension of metric %q", d, m.Name)
+		}
+	}
+
+	partials, err := planRollupMeasures(measures)
+	if err != nil {
+		return "", nil, err
+	}
+
+	args = []any{tid} // $1 — tenant_id, shared by both CTEs
+	argN := 2
+
+	// ---- sealed CTE: bucket_start ∈ [q.From, min(watermark, q.To)) ----
+	sealedSelect := []string{"bucket_start", "scope_id"}
+	for _, d := range rollupDims {
+		sealedSelect = append(sealedSelect, fmt.Sprintf("%q", d))
+	}
+	for _, p := range partials {
+		for _, c := range p.cols {
+			sealedSelect = append(sealedSelect, fmt.Sprintf("%q", c))
+		}
+	}
+
+	var sealedWhere strings.Builder
+	sealedWhere.WriteString("tenant_id = $1")
+	if !hasWatermark {
+		// No maintainer pass has ever sealed anything for this metric: the
+		// sealed partial is unconditionally empty, and the live CTE below
+		// (whose lower bound falls back to q.From in this case) covers the
+		// entire requested range — still exactly correct, just unaccelerated.
+		sealedWhere.WriteString(" AND FALSE")
+	} else {
+		sealedHi := watermark
+		if !q.To.IsZero() && q.To.Before(watermark) {
+			sealedHi = q.To
+		}
+		if !q.From.IsZero() {
+			fmt.Fprintf(&sealedWhere, " AND bucket_start >= $%d", argN)
+			args = append(args, q.From)
+			argN++
+		}
+		fmt.Fprintf(&sealedWhere, " AND bucket_start < $%d", argN)
+		args = append(args, sealedHi)
+		argN++
+		for _, c := range q.Filter {
+			frag, fargs, ferr := mapCondToRollupDim(c, &argN, rollupDimSet)
+			if ferr != nil {
+				return "", nil, ferr
+			}
+			sealedWhere.WriteString(" AND ")
+			sealedWhere.WriteString(frag)
+			args = append(args, fargs...)
+		}
+	}
+	sealedSQL := fmt.Sprintf("SELECT %s FROM %s WHERE %s", strings.Join(sealedSelect, ", "), table, sealedWhere.String())
+
+	// ---- live CTE: at ∈ [max(watermark, q.From), q.To) ----
+	grainArg := fmt.Sprintf("$%d", argN)
+	args = append(args, fmt.Sprintf("%d seconds", int64(m.Rollup.Bucket/time.Second)))
+	argN++
+
+	liveSelect := []string{fmt.Sprintf("time_bucket(%s::interval, at) AS bucket_start", grainArg), "scope_id"}
+	liveGroups := []string{"bucket_start", "scope_id"}
+	for _, d := range rollupDims {
+		acc, aerr := propAccessor("props", d)
+		if aerr != nil {
+			return "", nil, aerr
+		}
+		liveSelect = append(liveSelect, fmt.Sprintf("%s AS %q", acc, d))
+		liveGroups = append(liveGroups, fmt.Sprintf("%q", d))
+	}
+	for _, p := range partials {
+		switch p.kind {
+		case query.MeasureCount:
+			liveSelect = append(liveSelect, fmt.Sprintf("count(*)::numeric AS %q", p.cols[0]))
+		case query.MeasureSum:
+			acc, aerr := propAccessor("props", p.field)
+			if aerr != nil {
+				return "", nil, aerr
+			}
+			liveSelect = append(liveSelect, fmt.Sprintf("sum((%s)::numeric) AS %q", acc, p.cols[0]))
+		case query.MeasureMin:
+			acc, aerr := propAccessor("props", p.field)
+			if aerr != nil {
+				return "", nil, aerr
+			}
+			liveSelect = append(liveSelect, fmt.Sprintf("min((%s)::numeric) AS %q", acc, p.cols[0]))
+		case query.MeasureMax:
+			acc, aerr := propAccessor("props", p.field)
+			if aerr != nil {
+				return "", nil, aerr
+			}
+			liveSelect = append(liveSelect, fmt.Sprintf("max((%s)::numeric) AS %q", acc, p.cols[0]))
+		case query.MeasureAvg:
+			acc, aerr := propAccessor("props", p.field)
+			if aerr != nil {
+				return "", nil, aerr
+			}
+			liveSelect = append(liveSelect,
+				fmt.Sprintf("sum((%s)::numeric) AS %q", acc, p.cols[0]),
+				fmt.Sprintf("count(%s)::numeric AS %q", acc, p.cols[1]),
+			)
+		}
+	}
+
+	var liveWhere strings.Builder
+	fmt.Fprintf(&liveWhere, "tenant_id = $1 AND name = $%d", argN)
+	args = append(args, m.Source)
+	argN++
+
+	liveLo := q.From
+	if hasWatermark {
+		liveLo = watermark
+		if !q.From.IsZero() && q.From.After(watermark) {
+			liveLo = q.From
+		}
+	}
+	if !liveLo.IsZero() {
+		fmt.Fprintf(&liveWhere, " AND at >= $%d", argN)
+		args = append(args, liveLo)
+		argN++
+	}
+	if !q.To.IsZero() {
+		fmt.Fprintf(&liveWhere, " AND at < $%d", argN)
+		args = append(args, q.To)
+		argN++
+	}
+	for _, c := range q.Filter {
+		frag, fargs, ferr := mapCondToProp(c, &argN, "props", rollupDimSet)
+		if ferr != nil {
+			return "", nil, ferr
+		}
+		fmt.Fprintf(&liveWhere, " AND %s", frag)
+		args = append(args, fargs...)
+	}
+
+	liveSQL := fmt.Sprintf("SELECT %s FROM fabriq_insights_events WHERE %s GROUP BY %s",
+		strings.Join(liveSelect, ", "), liveWhere.String(), strings.Join(liveGroups, ", "))
+
+	// ---- final: re-bucket + re-aggregate the combined parts ----
+	allowedOrder := map[string]bool{"bucket": true}
+	aliasExpr := map[string]string{}
+
+	finalSelect := []string{fmt.Sprintf("time_bucket($%d::interval, bucket_start) AS bucket", argN)}
+	args = append(args, fmt.Sprintf("%d seconds", int64(bucket/time.Second)))
+	argN++
+	finalGroups := []string{"bucket"}
+
+	for _, d := range dims {
+		finalSelect = append(finalSelect, fmt.Sprintf("%q AS %q", d, d))
+		finalGroups = append(finalGroups, fmt.Sprintf("%q", d))
+		allowedOrder[d] = true
+	}
+
+	for _, p := range partials {
+		var expr string
+		switch p.kind {
+		case query.MeasureCount:
+			expr = fmt.Sprintf("sum(%q)", p.cols[0])
+		case query.MeasureSum:
+			expr = fmt.Sprintf("sum(%q)", p.cols[0])
+		case query.MeasureMin:
+			expr = fmt.Sprintf("min(%q)", p.cols[0])
+		case query.MeasureMax:
+			expr = fmt.Sprintf("max(%q)", p.cols[0])
+		case query.MeasureAvg:
+			expr = fmt.Sprintf("(sum(%q) / NULLIF(sum(%q), 0))", p.cols[0], p.cols[1])
+		}
+		finalSelect = append(finalSelect, fmt.Sprintf("%s AS %q", expr, p.alias))
+		allowedOrder[p.alias] = true
+		aliasExpr[p.alias] = expr
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "WITH sealed AS (%s), live AS (%s), parts AS (SELECT * FROM sealed UNION ALL SELECT * FROM live) SELECT %s FROM parts",
+		sealedSQL, liveSQL, strings.Join(finalSelect, ", "))
+	fmt.Fprintf(&sb, " GROUP BY %s", strings.Join(finalGroups, ", "))
+
+	if len(q.Having) > 0 {
+		var havingParts []string
+		for _, c := range q.Having {
+			frag, hargs, herr := mapHavingCond(c, aliasExpr, &argN)
+			if herr != nil {
+				return "", nil, herr
+			}
+			havingParts = append(havingParts, frag)
+			args = append(args, hargs...)
+		}
+		fmt.Fprintf(&sb, " HAVING %s", strings.Join(havingParts, " AND "))
+	}
+
+	if q.OrderBy != "" {
+		ord, oerr := buildInsightsOrder(q.OrderBy, allowedOrder)
+		if oerr != nil {
+			return "", nil, oerr
+		}
+		fmt.Fprintf(&sb, " ORDER BY %s", ord)
+	} else {
+		fmt.Fprintf(&sb, " ORDER BY %s", strings.Join(finalGroups, ", "))
+	}
+	if q.Limit > 0 {
+		fmt.Fprintf(&sb, " LIMIT %d", q.Limit)
+	}
+	if q.Offset > 0 {
+		fmt.Fprintf(&sb, " OFFSET %d", q.Offset)
+	}
+
+	return sb.String(), args, nil
+}

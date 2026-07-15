@@ -118,6 +118,52 @@ func (i *InsightsAdapter) Query(ctx context.Context, q query.AnalyticsQuery, int
 	if err != nil {
 		return err
 	}
+
+	// Stitching-rollup routing (phase 2b, Task 5): a query naming a
+	// materialized metric (MetricSpec.Rollup != nil) whose shape is
+	// rollup-compatible is served by combining the sealed rollup with a
+	// live tail (buildStitchedRollupSQL, insights_rollup_query.go) instead
+	// of the fully-live path below. Descriptor does not carry RollupSpec —
+	// it is shared with fabriqtest.FakeAnalytics, which never materializes
+	// anything — so the metric is looked up again here, by name, directly
+	// from the registry. EffectiveQuery is called early (rather than left
+	// to buildInsightsSQL) so rollupCompatible can be checked against the
+	// EFFECTIVE dimensions/bucket a metric-sourced query actually runs
+	// with, not q's raw (and, for a metric source, always-empty)
+	// Dimensions/TimeBucket fields.
+	if d.FromMetric && i.a.reg != nil {
+		if m, ok := i.a.reg.Metric(d.MetricName); ok && m.Rollup != nil {
+			effMeasures, effDims, effBucket, eerr := insights.EffectiveQuery(q, d)
+			if eerr != nil {
+				return eerr
+			}
+			qEff := q
+			qEff.Dimensions = effDims
+			qEff.TimeBucket = effBucket
+			if rollupCompatible(qEff, m) {
+				watermark, hasWatermark, werr := i.a.ReadRollupWatermark(ctx, m.Name)
+				if werr != nil {
+					return werr
+				}
+				return i.a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
+					sql, args, berr := i.a.buildStitchedRollupSQL(qEff, tid, m, effMeasures, effDims, effBucket, watermark, hasWatermark)
+					if berr != nil {
+						return berr
+					}
+					rows, qerr := tx.Query(ctx, sql, args...)
+					if qerr != nil {
+						return fmt.Errorf("fabriq: insights rollup query: %w", qerr)
+					}
+					maps, serr := scanMaps(rows)
+					if serr != nil {
+						return serr
+					}
+					return assignMapsDest(into, maps)
+				})
+			}
+		}
+	}
+
 	return i.a.inDynamicTenantTx(ctx, func(tid string, tx driver.Tx) error {
 		sql, args, err := buildInsightsSQL(q, tid, d)
 		if err != nil {
