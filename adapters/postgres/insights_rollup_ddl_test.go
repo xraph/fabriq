@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 )
 
@@ -225,6 +226,80 @@ func TestRollupTableDDL_DefaultCountAlias(t *testing.T) {
 	all := strings.Join(stmts, "\n")
 	if !strings.Contains(all, "count NUMERIC") {
 		t.Fatalf("rollupTableDDL: want a defaulted %q column for a count measure with no As, got:\n%s", "count NUMERIC", all)
+	}
+}
+
+// queryMeasureKind mirrors core/insights/resolve.go's toQueryMeasures kind
+// mapping (registry.MetricMeasure.Kind string -> query.MeasureKind). Kept as
+// a hardcoded local mirror (per the task-8 brief) rather than importing
+// core/insights, so this test stays a pure adapters/postgres unit test.
+func queryMeasureKind(t *testing.T, kind string) query.MeasureKind {
+	t.Helper()
+	switch kind {
+	case "count":
+		return query.MeasureCount
+	case "sum":
+		return query.MeasureSum
+	case "avg":
+		return query.MeasureAvg
+	case "min":
+		return query.MeasureMin
+	case "max":
+		return query.MeasureMax
+	case "count_distinct":
+		return query.MeasureCountDistinct
+	case "percentile":
+		return query.MeasurePercentile
+	default:
+		t.Fatalf("queryMeasureKind: unknown kind %q", kind)
+		return ""
+	}
+}
+
+// TestRollupMeasureAlias_MatchesQueryLayerDefaultAlias is the task-8
+// regression test: it locks the invariant that rollupMeasureAlias (the
+// maintainer's rollup COLUMN name) and measureAlias (the stitching
+// router/query-builder's alias for that same measure) agree EXACTLY for
+// every measure kind when no explicit As is given. Task 8 fixed a real bug
+// where the percentile branches had drifted (rollupMeasureAlias used a
+// different format than measureAlias), producing a rollup column the
+// stitched query referenced by the wrong name -> "column does not exist" at
+// query time. The existing tolerance/integration tests all pass an explicit
+// As, so none of them would have caught that drift; this test exercises the
+// no-As default-alias path directly, with no DB involved.
+func TestRollupMeasureAlias_MatchesQueryLayerDefaultAlias(t *testing.T) {
+	cases := []struct {
+		name       string
+		kind       string
+		field      string
+		percentile float64
+	}{
+		{name: "count", kind: "count", field: ""},
+		{name: "sum", kind: "sum", field: "amount"},
+		{name: "avg", kind: "avg", field: "latency"},
+		{name: "min", kind: "min", field: "duration_ms"},
+		{name: "max", kind: "max", field: "duration_ms"},
+		{name: "count_distinct", kind: "count_distinct", field: "visitor_id"},
+		{name: "percentile_p95", kind: "percentile", field: "latency", percentile: 0.95},
+		{name: "percentile_p50", kind: "percentile", field: "duration_ms", percentile: 0.5},
+		{name: "percentile_p99_9", kind: "percentile", field: "latency", percentile: 0.999},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rm := registry.MetricMeasure{Kind: tc.kind, Field: tc.field, Percentile: tc.percentile}
+			maintainerAlias := rollupMeasureAlias(rm)
+
+			qm := query.Measure{Kind: queryMeasureKind(t, tc.kind), Field: tc.field, Percentile: tc.percentile}
+			routerAlias, err := measureAlias(qm)
+			if err != nil {
+				t.Fatalf("measureAlias: %v", err)
+			}
+
+			if maintainerAlias != routerAlias {
+				t.Fatalf("alias parity broken for kind %q: rollupMeasureAlias (maintainer) = %q, measureAlias (router) = %q — the maintainer would create a rollup column the stitched query cannot find", tc.kind, maintainerAlias, routerAlias)
+			}
+		})
 	}
 }
 
