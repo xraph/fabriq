@@ -309,7 +309,11 @@ type MetricSpec struct {
 // absorb events that arrive within grace but after an earlier pass already
 // sealed the bucket.
 type RollupSpec struct {
-	// Bucket is the rollup grain (e.g. time.Hour). Required, must be > 0.
+	// Bucket is the rollup grain (e.g. time.Hour). Required, must be > 0,
+	// and must evenly divide 24h (Validate rejects anything else) — the
+	// stitched-query boundary math truncates on Go's zero-time origin and
+	// only lines up with Postgres time_bucket's day-aligned grid when the
+	// grain divides a day evenly.
 	Bucket time.Duration
 
 	// SealGrace delays sealing a bucket past its end time, so events that

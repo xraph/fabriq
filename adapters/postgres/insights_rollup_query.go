@@ -449,7 +449,9 @@ func (a *Adapter) buildStitchedRollupSQL(q query.AnalyticsQuery, tid string, m *
 	// then covers the entire [q.From, q.To) range, the "all-live" case.
 	sealedSQL := fmt.Sprintf("SELECT %s FROM %s WHERE %s", strings.Join(sealedSelect, ", "), table, sealedWhere.String())
 
-	// ---- live CTE: at ∈ [max(watermark, q.From), q.To) ----
+	// ---- live CTE grain arg (bounds computed below, once sealedLo/
+	// sealedHiExcl are in scope — see the accurate comment at their WHERE
+	// clause) ----
 	grainArg := fmt.Sprintf("$%d", argN)
 	args = append(args, fmt.Sprintf("%d seconds", int64(m.Rollup.Bucket/time.Second)))
 	argN++

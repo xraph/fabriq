@@ -1,6 +1,7 @@
 package registry_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,76 @@ func TestValidate_RejectsRollupBucketZero(t *testing.T) {
 	got := firstErr(r, err)
 	if got == nil || !strings.Contains(got.Error(), "Bucket") || !strings.Contains(got.Error(), "signups") {
 		t.Fatalf("want error naming metric and Bucket, got %v", got)
+	}
+}
+
+// TestValidate_RejectsRollupBucketNotDayDivisible asserts a Rollup.Bucket
+// that does not evenly divide 24h is rejected. This is the C1-fix
+// precondition: the stitched-query boundary math (floorToGrain/ceilToGrain
+// via Go's time.Truncate, epoch-origin) only matches Postgres
+// time_bucket(grain, at)'s day-aligned grid when the grain divides a day
+// evenly — a grain like 5h would silently reintroduce the boundary-drop/
+// double-count bug the C1 fix closed.
+func TestValidate_RejectsRollupBucketNotDayDivisible(t *testing.T) {
+	r := registry.New()
+	err := r.Register(registry.EntitySpec{
+		Name: "a", Schema: minimalDynSchema("as"),
+		Metrics: []registry.MetricSpec{{
+			Name:     "signups",
+			Source:   "user_signed_up",
+			Measures: []registry.MetricMeasure{{Kind: "count"}},
+			Rollup:   &registry.RollupSpec{Bucket: 5 * time.Hour},
+		}},
+	})
+	got := firstErr(r, err)
+	if got == nil || !strings.Contains(got.Error(), "evenly divide 24h") || !strings.Contains(got.Error(), "signups") {
+		t.Fatalf("want error naming metric and the day-divide constraint, got %v", got)
+	}
+}
+
+// TestValidate_RejectsRollupBucketOver24h asserts a Rollup.Bucket greater
+// than 24h is rejected outright (weekly/monthly aggregation is still
+// achievable by querying a daily-grain rollup with a weekly TimeBucket,
+// since a week is a whole multiple of a day).
+func TestValidate_RejectsRollupBucketOver24h(t *testing.T) {
+	r := registry.New()
+	err := r.Register(registry.EntitySpec{
+		Name: "a", Schema: minimalDynSchema("as"),
+		Metrics: []registry.MetricSpec{{
+			Name:     "signups",
+			Source:   "user_signed_up",
+			Measures: []registry.MetricMeasure{{Kind: "count"}},
+			Rollup:   &registry.RollupSpec{Bucket: 48 * time.Hour},
+		}},
+	})
+	got := firstErr(r, err)
+	if got == nil || !strings.Contains(got.Error(), "evenly divide 24h") {
+		t.Fatalf("want error naming the day-divide constraint, got %v", got)
+	}
+}
+
+// TestValidate_AllowsDayDivisibleRollupBuckets asserts every commonly-used
+// day-dividing grain (30m, 1h, 24h) is accepted, distinct entities per grain
+// so the "duplicate metric name" rule doesn't interfere.
+func TestValidate_AllowsDayDivisibleRollupBuckets(t *testing.T) {
+	grains := []time.Duration{30 * time.Minute, time.Hour, 24 * time.Hour}
+	for i, g := range grains {
+		g := g
+		entityName := fmt.Sprintf("grain%d", i)
+		table := fmt.Sprintf("grain%ds", i)
+		r := registry.New()
+		err := r.Register(registry.EntitySpec{
+			Name: entityName, Schema: minimalDynSchema(table),
+			Metrics: []registry.MetricSpec{{
+				Name:     fmt.Sprintf("metric_%d", i),
+				Source:   "some_event",
+				Measures: []registry.MetricMeasure{{Kind: "count"}},
+				Rollup:   &registry.RollupSpec{Bucket: g},
+			}},
+		})
+		if got := firstErr(r, err); got != nil {
+			t.Fatalf("grain %v: want accepted, got error: %v", g, got)
+		}
 	}
 }
 

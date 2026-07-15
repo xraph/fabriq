@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Entity is a registered, compiled spec: the declarative EntitySpec plus
@@ -389,6 +390,9 @@ func (r *Registry) Validate() error {
 			if m.Rollup != nil {
 				if m.Rollup.Bucket <= 0 {
 					return fmt.Errorf("fabriq: metric %q: Rollup.Bucket must be > 0", m.Name)
+				}
+				if m.Rollup.Bucket > 24*time.Hour || (24*time.Hour)%m.Rollup.Bucket != 0 {
+					return fmt.Errorf("fabriq: metric %q: Rollup.Bucket must evenly divide 24h (got %v) — the rollup grain must align with Postgres time_bucket day boundaries", m.Name, m.Rollup.Bucket)
 				}
 				if _, ok := r.entities[m.Source]; ok {
 					return fmt.Errorf("fabriq: metric %q: Rollup sources entity %q — rollups are event-sourced only", m.Name, m.Source)
