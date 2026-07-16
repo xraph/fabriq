@@ -197,6 +197,16 @@ func TestRollupMaintainer_EndToEnd_PerTenantIsolation(t *testing.T) {
 		rows, qerr := db.Query(context.Background(),
 			`SELECT n FROM fabriq_insights_rollup_checkouts WHERE tenant_id = $1`, tid)
 		if qerr != nil {
+			// The rollup table is provisioned asynchronously by the
+			// leader-elected maintainer (boot pass + every tick's idempotent
+			// EnsureRollupTable), which races this poll loop. Until that DDL
+			// lands the table simply doesn't exist yet (SQLSTATE 42P01) — that
+			// is "not materialized yet", exactly what this loop waits out, not
+			// a hard failure. The 30s deadline below still catches a maintainer
+			// that never creates it.
+			if strings.Contains(qerr.Error(), "42P01") {
+				return 0, false
+			}
 			t.Fatalf("query rollup table for %s: %v", tid, qerr)
 		}
 		defer rows.Close()
