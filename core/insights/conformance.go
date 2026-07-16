@@ -75,11 +75,11 @@ func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.Analyt
 			Measures:   []query.Measure{{Kind: query.MeasureCount, As: "n"}, {Kind: query.MeasureSum, Field: "amount", As: "total"}},
 			Dimensions: []string{"status"},
 		}, &rows))
-		paid := findRow(rows, "status", "paid")
+		paid := findByStatus(rows, "paid")
 		if paid == nil || asInt(paid["n"]) != 2 || asInt(paid["total"]) != 15 {
 			t.Fatalf("paid group wrong: %+v", paid)
 		}
-		void := findRow(rows, "status", "void")
+		void := findByStatus(rows, "void")
 		if void == nil || asInt(void["n"]) != 1 || asInt(void["total"]) != 0 {
 			t.Fatalf("void group wrong: %+v", void)
 		}
@@ -489,11 +489,11 @@ func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.Analyt
 			Dimensions: []string{"status"},
 			Measures:   []query.Measure{{Kind: query.MeasureSum, Field: "amount", As: "total"}},
 		}, &rows))
-		paid := findRow(rows, "status", "paid")
+		paid := findByStatus(rows, "paid")
 		if paid == nil || asInt(paid["total"]) != 15 {
 			t.Fatalf("paid facts total wrong: %+v", paid)
 		}
-		void := findRow(rows, "status", "void")
+		void := findByStatus(rows, "void")
 		if void == nil || asInt(void["total"]) != 0 {
 			t.Fatalf("void facts total wrong: %+v", void)
 		}
@@ -600,7 +600,7 @@ func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.Analyt
 			Measures:   []query.Measure{{Kind: query.MeasureSum, Field: "amount", As: "rev"}},
 		}, &explicit))
 
-		paid := findRow(byMetric, "status", "paid")
+		paid := findByStatus(byMetric, "paid")
 		if paid == nil || asInt(paid["rev"]) != 15 {
 			t.Fatalf("metric-by-name paid group wrong: %+v", paid)
 		}
@@ -608,7 +608,7 @@ func RunConformance(t *testing.T, newQ func(reg *registry.Registry) query.Analyt
 			t.Fatalf("metric-by-name and explicit-measure query disagree on group count: %d vs %d", len(byMetric), len(explicit))
 		}
 		for _, er := range explicit {
-			mr := findRow(byMetric, "status", er["status"])
+			mr := findByStatus(byMetric, er["status"])
 			if mr == nil || asInt(mr["rev"]) != asInt(er["rev"]) {
 				t.Fatalf("metric-by-name diverges from explicit-measure equivalent for status %v: metric=%+v explicit=%+v", er["status"], mr, er)
 			}
@@ -668,10 +668,10 @@ func must(t *testing.T, err error) {
 	}
 }
 
-// findRow returns the first row whose column equals value, or nil.
-func findRow(rows []map[string]any, column string, value any) map[string]any {
+// findByStatus returns the first row whose "status" column equals value, or nil.
+func findByStatus(rows []map[string]any, value any) map[string]any {
 	for _, r := range rows {
-		if r[column] == value {
+		if r["status"] == value {
 			return r
 		}
 	}

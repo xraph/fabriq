@@ -29,8 +29,8 @@ func TestInsightsSpec_RejectsUnknownDimensionColumn(t *testing.T) {
 			Dimensions: []string{"nonexistent"},
 		},
 	})
-	if err := firstErr(r, err); err == nil || !strings.Contains(err.Error(), "nonexistent") {
-		t.Fatalf("want error naming the unknown column, got %v", err)
+	if e := firstErr(r, err); e == nil || !strings.Contains(e.Error(), "nonexistent") {
+		t.Fatalf("want error naming the unknown column, got %v", e)
 	}
 }
 
@@ -56,8 +56,8 @@ func TestMetricSpec_RejectsBadMeasureField(t *testing.T) {
 			Name: "revenue", Measures: []registry.MetricMeasure{{Kind: "sum", Field: "ghost"}},
 		}},
 	})
-	if err := firstErr(r, err); err == nil || !strings.Contains(err.Error(), "ghost") {
-		t.Fatalf("want error naming the unknown measure field, got %v", err)
+	if e := firstErr(r, err); e == nil || !strings.Contains(e.Error(), "ghost") {
+		t.Fatalf("want error naming the unknown measure field, got %v", e)
 	}
 }
 

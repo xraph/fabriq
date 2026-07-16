@@ -342,14 +342,15 @@ func (a *Adapter) EnsureRollupTable(ctx context.Context, m *registry.MetricSpec)
 		return err
 	}
 	if metricHasSketchMeasure(m) {
-		available, err := a.toolkitAvailable(ctx)
+		var available bool
+		available, err = a.toolkitAvailable(ctx)
 		if err != nil {
 			return fmt.Errorf("fabriq: ensure rollup table for metric %q: checking timescaledb_toolkit availability: %w", m.Name, err)
 		}
 		if !available {
 			return fmt.Errorf("fabriq: metric %q declares a sketch measure (count_distinct/percentile) but timescaledb_toolkit is not available on this Postgres instance — install the extension (or drop the sketch measure from the rollup)", m.Name)
 		}
-		if err := a.execDDL(ctx, `CREATE EXTENSION IF NOT EXISTS timescaledb_toolkit`); err != nil {
+		if err = a.execDDL(ctx, `CREATE EXTENSION IF NOT EXISTS timescaledb_toolkit`); err != nil {
 			return fmt.Errorf("fabriq: ensure rollup table for metric %q: creating timescaledb_toolkit extension: %w", m.Name, err)
 		}
 	}
@@ -366,7 +367,7 @@ func (a *Adapter) EnsureRollupTable(ctx context.Context, m *registry.MetricSpec)
 	baseStmts, rlsStmts := stmts[:len(stmts)-rlsCount], stmts[len(stmts)-rlsCount:]
 
 	for _, stmt := range baseStmts {
-		if err := a.execDDL(ctx, stmt); err != nil {
+		if err = a.execDDL(ctx, stmt); err != nil {
 			return fmt.Errorf("fabriq: ensure rollup table for metric %q: %w", m.Name, err)
 		}
 	}
@@ -377,7 +378,7 @@ func (a *Adapter) EnsureRollupTable(ctx context.Context, m *registry.MetricSpec)
 	}
 	if !exists {
 		for _, stmt := range rlsStmts {
-			if err := a.execDDL(ctx, stmt); err != nil {
+			if err = a.execDDL(ctx, stmt); err != nil {
 				return fmt.Errorf("fabriq: ensure rollup table for metric %q: %w", m.Name, err)
 			}
 		}

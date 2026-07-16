@@ -268,7 +268,7 @@ func rollupMeasureSelect(m registry.MetricMeasure, insertCols, selects, updateCo
 // ddlValid/insightsIdentRe-checked before being placed in the SQL text —
 // this function's own injection-guard boundary, independent of but
 // consistent with rollupTableDDL's.
-func buildRollupRangeSQL(m *registry.MetricSpec, tid string, grain string, from, to time.Time) (sql string, args []any, err error) {
+func buildRollupRangeSQL(m *registry.MetricSpec, tid, grain string, from, to time.Time) (sql string, args []any, err error) {
 	table, err := rollupTableName(m.Name)
 	if err != nil {
 		return "", nil, err

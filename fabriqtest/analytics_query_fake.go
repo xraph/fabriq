@@ -93,7 +93,7 @@ func (f *FakeAnalytics) Track(ctx context.Context, events []query.AnalyticsEvent
 // QueryRaw implements query.AnalyticsQuerier. Raw SQL has no in-memory
 // analogue; the fake always errors. The conformance suite does not exercise
 // this method — only the real adapter does.
-func (f *FakeAnalytics) QueryRaw(ctx context.Context, into any, sql string, args ...any) error {
+func (f *FakeAnalytics) QueryRaw(ctx context.Context, _ any, _ string, _ ...any) error {
 	if _, err := tenant.Require(ctx); err != nil {
 		return err
 	}
@@ -357,7 +357,7 @@ func checkHavingAliases(having query.Where, measures []query.Measure) error {
 // pointer to a slice). fabriqtest has no shared generic scan helper yet — the
 // existing fakes each type-assert `into` to a concrete type instead — so this
 // is a small local round-trip used only by FakeAnalytics.Query.
-func assignJSON(dst any, src any) error {
+func assignJSON(dst, src any) error {
 	buf, err := json.Marshal(src)
 	if err != nil {
 		return fmt.Errorf("fabriq: FakeAnalytics: marshal result: %w", err)
@@ -447,12 +447,12 @@ func foldMeasure(m query.Measure, rows []query.AnalyticsEvent) any {
 		}
 		return sum / float64(n)
 	case query.MeasureMin:
-		var min float64
+		var minVal float64
 		var set bool
 		for _, e := range rows {
 			if v, ok := toFloat(e.Props[m.Field]); ok {
-				if !set || v < min {
-					min = v
+				if !set || v < minVal {
+					minVal = v
 					set = true
 				}
 			}
@@ -460,14 +460,14 @@ func foldMeasure(m query.Measure, rows []query.AnalyticsEvent) any {
 		if !set {
 			return nil
 		}
-		return min
+		return minVal
 	case query.MeasureMax:
-		var max float64
+		var maxVal float64
 		var set bool
 		for _, e := range rows {
 			if v, ok := toFloat(e.Props[m.Field]); ok {
-				if !set || v > max {
-					max = v
+				if !set || v > maxVal {
+					maxVal = v
 					set = true
 				}
 			}
@@ -475,7 +475,7 @@ func foldMeasure(m query.Measure, rows []query.AnalyticsEvent) any {
 		if !set {
 			return nil
 		}
-		return max
+		return maxVal
 	case query.MeasurePercentile:
 		var vals []float64
 		for _, e := range rows {

@@ -11,7 +11,10 @@ var migration0031Insights = &migrate.Migration{
 	Version: "202607100031",
 	Comment: "per-tenant customer-facing analytics: events + projected facts (RLS)",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
-		stmts := []string{
+		eventsPolicy := ScopeAwareTenantPolicy("fabriq_insights_events")
+		factsPolicy := ScopeAwareTenantPolicy("fabriq_insights_facts")
+		stmts := make([]string, 0, 5+len(eventsPolicy)+len(factsPolicy))
+		stmts = append(stmts,
 			`CREATE TABLE IF NOT EXISTS fabriq_insights_events (
 				id         BIGSERIAL PRIMARY KEY,
 				tenant_id  TEXT NOT NULL,
@@ -38,9 +41,9 @@ var migration0031Insights = &migrate.Migration{
 			)`,
 			`CREATE INDEX IF NOT EXISTS fabriq_insights_facts_tenant_entity_idx
 				ON fabriq_insights_facts (tenant_id, entity)`,
-		}
-		stmts = append(stmts, ScopeAwareTenantPolicy("fabriq_insights_events")...)
-		stmts = append(stmts, ScopeAwareTenantPolicy("fabriq_insights_facts")...)
+		)
+		stmts = append(stmts, eventsPolicy...)
+		stmts = append(stmts, factsPolicy...)
 		return execAll(ctx, exec, stmts)
 	},
 	Down: func(ctx context.Context, exec migrate.Executor) error {

@@ -61,10 +61,10 @@ func isNumericValue(v any) bool {
 func measureAlias(m query.Measure) (string, error) {
 	alias := m.As
 	if alias == "" {
-		switch {
-		case m.Kind == query.MeasureCount:
+		switch m.Kind {
+		case query.MeasureCount:
 			alias = "count"
-		case m.Kind == query.MeasurePercentile:
+		case query.MeasurePercentile:
 			alias = fmt.Sprintf("p%d_%s", int(math.Round(m.Percentile*100)), m.Field)
 		default:
 			alias = string(m.Kind) + "_" + m.Field
@@ -101,7 +101,8 @@ func measureAggExpr(m query.Measure, jsonCol string, allowed map[string]bool, ar
 		if !(m.Percentile > 0 && m.Percentile < 1) {
 			return "", "", nil, fmt.Errorf("fabriq: percentile must be in (0,1), got %v", m.Percentile)
 		}
-		acc, err := propAccessor(jsonCol, m.Field)
+		var acc string
+		acc, err = propAccessor(jsonCol, m.Field)
 		if err != nil {
 			return "", "", nil, err
 		}
