@@ -132,14 +132,14 @@ fmt:
 lint:
 	@echo "$(BLUE)Running linter...$(NC)"
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "$(RED)golangci-lint not found. Install: https://golangci-lint.run/usage/install/$(NC)"; exit 1; }
-	golangci-lint run --timeout 10m
+	golangci-lint run --build-tags=integration --timeout 10m
 	@echo "$(GREEN)✓ Linting complete$(NC)"
 
 ## lint-fix: Run linter with auto-fix
 lint-fix:
 	@echo "$(BLUE)Running linter with auto-fix...$(NC)"
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "$(RED)golangci-lint not found. Install: https://golangci-lint.run/usage/install/$(NC)"; exit 1; }
-	golangci-lint run --fix --timeout 10m
+	golangci-lint run --fix --build-tags=integration --timeout 10m
 	@echo "$(GREEN)✓ Linting with fixes complete$(NC)"
 
 ## vet: Run go vet

@@ -160,10 +160,7 @@ func TestWorker_DocumentPlaneCompacts(t *testing.T) {
 		return n
 	}
 	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if count("fabriq_crdt_snapshots") == 1 && count("fabriq_crdt_updates") == 0 {
-			break
-		}
+	for count("fabriq_crdt_snapshots") != 1 || count("fabriq_crdt_updates") != 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("worker never compacted %s: %d snapshot rows, %d update rows",
 				docID, count("fabriq_crdt_snapshots"), count("fabriq_crdt_updates"))

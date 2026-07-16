@@ -91,6 +91,9 @@ linters:
       rules:
         - name: blank-imports
         - name: context-as-argument
+          arguments:
+            # Test helpers conventionally take *testing.T first, then ctx.
+            - allowTypesBefore: "*testing.T"
         - name: context-keys-type
         - name: dot-imports
         - name: error-return
@@ -139,8 +142,29 @@ linters:
       - comments
       - std-error-handling
     rules:
+      # Test code plays by looser rules than the packages it exercises:
+      # gosec/errcheck/gocritic/noctx are already relaxed here; depguard is too
+      # (integration tests open raw driver connections to seed and assert DB
+      # state, mirroring the fabriqtest harness exemption); and unparam is a
+      # production-API-hygiene check — test fixtures legitimately expose
+      # returns/params (whole (f, stores, reg) tuples, a node/sealGrace knob)
+      # for readability and future variation even when today's callers use a
+      # subset uniformly.
       - path: _test\.go
-        linters: [gosec, errcheck, gocritic, noctx]
+        linters: [gosec, errcheck, gocritic, noctx, depguard, unparam]
+      # Shadowing an outer `err` in an `if err := f(); err != nil` is idiomatic
+      # Go and pervasive in setup-heavy integration tests; the govet shadow
+      # check is pure noise there. Every other govet check stays on for tests.
+      - path: _test\.go
+        text: "shadow: declaration of"
+        linters: [govet]
+      # Test helpers conventionally lead with *testing.T (and often the subject
+      # under test) before ctx — allowTypesBefore already clears the plain
+      # (t, ctx) shape everywhere; this clears the (t, subject, ctx) helper
+      # shape that is idiomatic in test code specifically.
+      - path: _test\.go
+        text: "context-as-argument"
+        linters: [revive]
       - path: fabriqtest/
         linters: [gosec, errcheck]
       # internal/metrics is the spec'd package layout; it never collides in

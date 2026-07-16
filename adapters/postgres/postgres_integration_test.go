@@ -426,8 +426,8 @@ func TestPG_TimescaleBulkWriteAndRange(t *testing.T) {
 
 	// Raw SQL touching the unprotected readings table without a tenant
 	// predicate must be rejected by the adapter's guard.
-	var any []*domain.Site
-	if err := h.A.Query(ctx, &any, `SELECT * FROM tag_readings`); err == nil {
+	var leaked []*domain.Site
+	if err := h.A.Query(ctx, &leaked, `SELECT * FROM tag_readings`); err == nil {
 		t.Fatal("raw SQL on guarded table without tenant_id must be rejected")
 	}
 }

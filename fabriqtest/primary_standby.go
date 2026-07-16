@@ -33,7 +33,8 @@ type WriteProxy struct {
 
 func newWriteProxy(t *testing.T, upstreamHostPort string) *WriteProxy {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("write proxy listen: %v", err)
 	}
@@ -63,7 +64,8 @@ func (p *WriteProxy) handle(client net.Conn) {
 	}
 	p.mu.Unlock()
 
-	server, err := net.DialTimeout("tcp", up, 5*time.Second)
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	server, err := dialer.DialContext(context.Background(), "tcp", up)
 	if err != nil {
 		_ = client.Close()
 		return

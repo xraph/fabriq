@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Agents } from "@/components/landing/agents";
 import { Analytics } from "@/components/landing/analytics";
+import { AnalyticsSink } from "@/components/landing/analytics-sink";
 import { Console } from "@/components/landing/console";
 import { BentoFooter } from "@/components/landing/footer";
 import { LandingHero } from "@/components/landing/hero";
@@ -24,6 +25,7 @@ export default function HomePage() {
       <Ports />
       <Console />
       <Analytics />
+      <AnalyticsSink />
       <Agents />
       <Stats />
       <BentoFooter />

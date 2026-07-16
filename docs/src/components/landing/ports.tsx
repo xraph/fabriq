@@ -66,6 +66,11 @@ const ports = [
     engine: "Redis · grove kv",
   },
   {
+    method: "f.Analytics()",
+    body: "The tenant's own product analytics: schemaless event ingest, then a typed cube — measures by dimensions, bucketed over time — over those events or an opted-in entity's projected facts. Named metrics can materialize into rollups; raw SQL stays open, read-only.",
+    engine: "Postgres · RLS",
+  },
+  {
     method: "Analytics sink",
     body: "A write-side projection, not a facade port: the event stream is redacted into a cross-tenant read model for fleet-wide reporting — the one opt-in exception to per-tenant isolation. Read it operator-side with read-only SQL over facts and events.",
     engine: "DuckDB · Postgres · ClickHouse",

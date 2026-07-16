@@ -207,7 +207,7 @@ func TestE2E_DocumentPlane(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(2500 * time.Millisecond)
-	n, err = stores.Postgres.Documents().MaterializeQuiet(context.Background(), func(entity string, vals map[string]any) error {
+	n, err = stores.Postgres.Documents().MaterializeQuiet(context.Background(), func(_ string, vals map[string]any) error {
 		if s, _ := vals["title"].(string); s == "" {
 			return errors.New("title must not be empty")
 		}
@@ -227,7 +227,6 @@ func TestE2E_DocumentPlane(t *testing.T) {
 	if err := row.Scan(&flagged); err != nil || !flagged {
 		t.Fatalf("doc not flagged: %v %v", flagged, err)
 	}
-
 }
 
 // TestE2E_DocumentLiveSync proves the live transport: updates fan out on

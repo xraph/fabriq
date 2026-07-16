@@ -72,7 +72,7 @@ func TestE2E_LiveQueryExactWindow(t *testing.T) {
 
 	var sawEnterB, sawLeaveC bool
 	deadline := time.After(10 * time.Second)
-	for !(sawEnterB && sawLeaveC) {
+	for !sawEnterB || !sawLeaveC {
 		select {
 		case d := <-deltas:
 			switch {
