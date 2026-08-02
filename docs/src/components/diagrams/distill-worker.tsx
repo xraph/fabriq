@@ -1,12 +1,4 @@
-import {
-  Arrow,
-  Chip,
-  Figure,
-  INK_FAINT,
-  Label,
-  MONO,
-  Node,
-} from "../diagram-kit";
+import { Chip, Figure, INK_FAINT, Label, MONO, Node } from "../diagram-kit";
 
 /** The proj:distill worker: a debounced, per-tenant single-flight run. */
 export function DistillWorkerDiagram() {
@@ -31,62 +23,66 @@ export function DistillWorkerDiagram() {
       title="The proj:distill worker"
       desc="A write event on the shared stream marks an L0 node dirty; after a debounce window a per-tenant single-flight run collects dirty L0 nodes, short-circuits unchanged ones by ContentHash, runs the ingest guard, summarizes, runs the emit guard, writes the summary to the CAS, and recomputes the L1 parents and the L2 root once."
     >
-      <Node
-        x={170}
-        y={20}
-        w={220}
-        h={48}
-        title="event stream"
-        sub="same as proj:embed"
-      />
-      <Arrow x1={280} y1={68} x2={280} y2={104} />
-      <text x={296} y={92} fontSize="11" fontFamily={MONO} fill={INK_FAINT}>
-        debounce · 5s default
-      </text>
+      {({ Arrow }) => (
+        <>
+          <Node
+            x={170}
+            y={20}
+            w={220}
+            h={48}
+            title="event stream"
+            sub="same as proj:embed"
+          />
+          <Arrow x1={280} y1={68} x2={280} y2={104} />
+          <text x={296} y={92} fontSize="11" fontFamily={MONO} fill={INK_FAINT}>
+            debounce · 5s default
+          </text>
 
-      <rect
-        x={70}
-        y={110}
-        width={420}
-        height={418}
-        rx={16}
-        fill="var(--surface-sunken)"
-        stroke="var(--accent)"
-        strokeWidth={1.4}
-      />
-      <text
-        x={90}
-        y={136}
-        fontSize="12"
-        fontFamily={MONO}
-        fill="var(--ink-muted)"
-      >
-        per-tenant single-flight run
-      </text>
+          <rect
+            x={70}
+            y={110}
+            width={420}
+            height={418}
+            rx={16}
+            fill="var(--surface-sunken)"
+            stroke="var(--accent)"
+            strokeWidth={1.4}
+          />
+          <text
+            x={90}
+            y={136}
+            fontSize="12"
+            fontFamily={MONO}
+            fill="var(--ink-muted)"
+          >
+            per-tenant single-flight run
+          </text>
 
-      {steps.map((s, i) => {
-        const y = top + i * pitch;
-        return (
-          <g key={s.label}>
-            {i > 0 ? <Arrow x1={280} y1={y - 10} x2={280} y2={y} /> : null}
-            <Chip
-              x={sx}
-              y={y}
-              w={sw}
-              h={sh}
-              label={s.label}
-              accent={s.accent}
-            />
-          </g>
-        );
-      })}
-      <Label
-        x={280}
-        y={552}
-        text="Unchanged subtrees short-circuit — no Summarizer call."
-        anchor="middle"
-        muted
-      />
+          {steps.map((s, i) => {
+            const y = top + i * pitch;
+            return (
+              <g key={s.label}>
+                {i > 0 ? <Arrow x1={280} y1={y - 10} x2={280} y2={y} /> : null}
+                <Chip
+                  x={sx}
+                  y={y}
+                  w={sw}
+                  h={sh}
+                  label={s.label}
+                  accent={s.accent}
+                />
+              </g>
+            );
+          })}
+          <Label
+            x={280}
+            y={552}
+            text="Unchanged subtrees short-circuit — no Summarizer call."
+            anchor="middle"
+            muted
+          />
+        </>
+      )}
     </Figure>
   );
 }
