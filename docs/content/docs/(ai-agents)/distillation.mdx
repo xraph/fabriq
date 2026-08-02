@@ -7,7 +7,7 @@ Context distillation is fabriq's answer to the scale problem: not every agent
 turn needs to read entity rows — often a well-placed **summary of a scope** is
 all the model needs, costing a fraction of the tokens. Distillation builds and
 maintains a **per-tenant Merkle tree of summaries** (`DigestNode`), stored
-content-addressed in the [file-plane CAS](/docs/files), and exposes it through
+content-addressed in the [file-plane CAS](/docs/file-plane), and exposes it through
 the agent toolkit as altitude-aware recall and three dedicated tools.
 
 <Callout type="info">

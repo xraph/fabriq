@@ -11,7 +11,7 @@ its own data. It is a completely different capability from the operator-only
 0013), which deliberately co-locates a redacted slice of **every** tenant's
 data in one shared store for fleet-wide operator reporting. The two share no
 table, DSN, consumer group, or query path — see
-[ADR 0014](/docs/decisions/0014-tenant-analytics) for the full boundary.
+[ADR 0014](/docs/reference/decisions) for the full boundary.
 </Callout>
 
 The analytics plane is for a tenant's own product analytics: custom event
@@ -267,7 +267,7 @@ query-time **error** — a metric owns its shape, the caller owns filtering.
   mode, leave `MetricSpec.Rollup` unset and query the metric live.
 </Callout>
 
-See [ADR 0014](/docs/decisions/0014-tenant-analytics) for the full,
+See [ADR 0014](/docs/reference/decisions) for the full,
 authoritative gaps list.
 
 ## QueryRaw: the SQL escape hatch
@@ -490,7 +490,7 @@ the extension.
   materialization, or leave `Rollup` unset and query it live.
 
 <Cards>
-  <Card title="ADR 0014" href="/docs/decisions/0014-tenant-analytics">The design decisions and the hard boundary vs. the operator sink.</Card>
+  <Card title="ADR 0014" href="/docs/reference/decisions">The design decisions and the hard boundary vs. the operator sink.</Card>
   <Card title="Analytics sink" href="/docs/analytics-sink">The operator-only, cross-tenant counterpart (ADR 0013).</Card>
   <Card title="Registry" href="/docs/registry">EntitySpec and how opt-in specs like InsightsSpec are validated.</Card>
   <Card title="Tenancy" href="/docs/tenancy">The RLS and structural-stamping layers this plane inherits.</Card>

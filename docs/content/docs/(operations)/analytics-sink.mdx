@@ -21,7 +21,7 @@ deliberately **no RLS**, because RLS defends a store scoped to one tenant
 on `ctx`, and this store's entire purpose is cross-tenant aggregation.
 PII exposure is bounded by allow-listing fields per entity (see
 [Enabling it](#enabling-it)), not by row-level policy. See
-[ADR 0013](/docs/decisions/0013-cross-tenant-analytics-sink) for the full
+[ADR 0013](/docs/reference/decisions) for the full
 trust-boundary rationale.
 </Callout>
 
