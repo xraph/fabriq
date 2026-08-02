@@ -116,7 +116,7 @@ emb, err := f.Vector().Get(ctx, "asset", assetID)
 
 ## Beyond Postgres
 
-The port is uniform across every backend: the in-memory `fabriqtest.FakeVector`, the sharded router, and the remote/gRPC transport all implement the same interface — including metadata `Filter` and `DeleteByMeta` (the remote transport carries the filter as JSON). A shared [conformance](/docs/decisions) suite (`RunVector`) gates the fake and the real Postgres adapter on identical behavior, so a backend cannot silently drift.
+The port is uniform across every backend: the in-memory `fabriqtest.FakeVector`, the sharded router, and the remote/gRPC transport all implement the same interface — including metadata `Filter` and `DeleteByMeta` (the remote transport carries the filter as JSON). A shared [conformance](/docs/reference/decisions) suite (`RunVector`) gates the fake and the real Postgres adapter on identical behavior, so a backend cannot silently drift.
 
 <Callout type="info">
 `m.ID` is the aggregate id you passed to `Upsert`. To get the full row, hydrate from Postgres with `Relational().GetMany("asset", ids, &assets)` — one batched query for the whole match set.
