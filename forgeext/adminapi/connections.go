@@ -23,7 +23,8 @@ import (
 // field. Real passwords are dropped server-side (see the product-owner
 // redaction requirement); this constant merely signals that a secret is
 // configured without disclosing it.
-const maskedSecret = "••••" //nolint:gosec // the OPPOSITE of a credential: a fixed placeholder that REPLACES redacted secrets in responses
+// #nosec G101 -- not a live credential (demo default / fixed mask string).
+const maskedSecret = "••••"
 
 // connHealthTimeout bounds every reachability probe so a dead store cannot
 // wedge a connection-info request.
