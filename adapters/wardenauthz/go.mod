@@ -151,7 +151,7 @@ require (
 
 require (
 	github.com/xraph/fabriq v0.0.0
-	github.com/xraph/forge v1.9.2
+	github.com/xraph/forge v1.9.5
 	github.com/xraph/warden v1.6.0
 )
 
