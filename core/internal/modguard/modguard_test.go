@@ -26,7 +26,7 @@ var forbidden = []string{
 // module nothing stopped a driver import from landing here and spreading to
 // every consumer without a single test going red. Now something does.
 func TestCoreHasNoDriverDependencies(t *testing.T) {
-	cmd := exec.Command("go", "list", "-deps", "./...")
+	cmd := exec.Command("go", "list", "-deps", "-test", "./...")
 	cmd.Dir = "../.." // the core module root
 	out, err := cmd.Output()
 	if err != nil {

@@ -116,9 +116,16 @@ require the root module, from a separate `inttest/` module that holds
 the tests needing a live embedded engine.
 
 Every one of them currently carries a local `replace` directive pointing
-at a working copy. Those are development only. They have to be repinned
-to the published tags and the replaces removed before any of those
-branches merge.
+fabriq and core at a working copy. Those are development only, and they
+have to be repinned to the published tags and removed before any of
+those branches merge.
+
+The `inttest/` modules carry one more replace that is not part of that
+cleanup: `replace github.com/xraph/cortex => ..` in `cortex/inttest/go.mod`
+and `replace github.com/xraph/kgkit => ..` in `kgkit/inttest/go.mod`.
+Those point a nested test module at its own parent by relative path, and
+a nested module always needs that. It stays in place permanently; do not
+remove it when repinning the fabriq/core replaces.
 
 Core's require lines are a version floor under all three. Set them to
 the lowest version core actually builds and tests against, never to

@@ -41,6 +41,7 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
+          cd core && go mod tidy && git diff --exit-code go.mod go.sum
 
       - name: Build
         run: make build
@@ -107,6 +108,31 @@ jobs:
         run: cd adapters/wardenauthz && go build ./... && go test ./...
 
   # ===========================================================================
+  # core module (required gate). Nested module under core/, with its own go.mod,
+  # so the root `go test ./...` never touches it. This is the port layer the
+  # whole split exists for, including the driver-dependency fence
+  # (TestCoreHasNoDriverDependencies), so it gets the same required treatment
+  # as the root `go` job rather than the opt-in shape used for wardenauthz.
+  # ===========================================================================
+  core:
+    name: core module
+    runs-on: ubuntu-latest
+    needs: go
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache: true
+          cache-dependency-path: core/go.sum
+
+      - name: Build & test
+        run: cd core && go build ./... && go test -race -count=1 ./...
+
+  # ===========================================================================
   # Integration tests (required gate). testcontainers spins up Postgres+Timescale,
   # Redis, FalkorDB and Elasticsearch, so this leg needs Docker.
   # ===========================================================================
@@ -145,6 +171,7 @@ jobs:
       matrix:
         module:
           - .
+          - core
           - remote/grpc
           - remote/grpc/cmd/fabriqserver
           - adapters/wardenauthz
@@ -233,7 +260,7 @@ jobs:
   # ===========================================================================
   ci-success:
     name: CI Success
-    needs: [go, integration, lint, docker]
+    needs: [go, core, integration, lint, docker]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -241,6 +268,7 @@ jobs:
         run: |
           for result in \
             "go:${{ needs.go.result }}" \
+            "core:${{ needs.core.result }}" \
             "integration:${{ needs.integration.result }}" \
             "lint:${{ needs.lint.result }}" \
             "docker:${{ needs.docker.result }}"; do
