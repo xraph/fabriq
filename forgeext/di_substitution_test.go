@@ -1,4 +1,4 @@
-package query_test
+package forgeext_test
 
 import (
 	"testing"
@@ -18,6 +18,9 @@ import (
 // nothing at the call site changes when a deployment switches. This test stands
 // in for that consumer: it registers *remote.Fabric under the port key and the
 // registry under its name, then resolves exactly the way cortex and weave do.
+//
+// It lives in forgeext rather than core/query because core is its own module
+// and must not depend on remote, which depends on core.
 func TestDISubstitution_RemoteFabricUnderPortKey(t *testing.T) {
 	rf := remote.New(remote.Loopback{})
 	reg := registry.New()
