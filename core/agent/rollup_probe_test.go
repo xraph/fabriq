@@ -5,8 +5,8 @@ import (
 	"hash/fnv"
 	"testing"
 
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 // TestProbePrefixes_Radius1 enumerates the single-bit-flip neighbors of a prefix

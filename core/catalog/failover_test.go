@@ -7,7 +7,7 @@ import (
 	"github.com/xraph/fabriq/core/catalog"
 	"github.com/xraph/fabriq/core/catalog/catalogtest"
 	"github.com/xraph/fabriq/core/fabriqerr"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 // flaky wraps a catalog and, while down, fails every op with a transport-

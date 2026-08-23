@@ -8,7 +8,7 @@ import (
 
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/fabriqerr"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 func newFakeFabricWithHook(t testing.TB, w *fabriqtest.World, hook command.LifecycleHook) *fakeFabric {

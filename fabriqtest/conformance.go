@@ -8,6 +8,7 @@ import (
 
 	"github.com/xraph/fabriq/conformance"
 	"github.com/xraph/fabriq/core/command"
+	coretest "github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/domain"
@@ -19,7 +20,7 @@ import (
 // cases have a distinct ForeignCtx over the same store.
 type fakeBackend struct {
 	reg   *registry.Registry
-	world *World
+	world *coretest.World
 	exec  *command.Executor
 	n     atomic.Int64
 }
@@ -36,7 +37,7 @@ func NewConformanceBackend(t testing.TB) conformance.Backend {
 	if err := reg.Validate(); err != nil {
 		t.Fatalf("fabriqtest: validate registry: %v", err)
 	}
-	w := NewWorld(reg)
+	w := coretest.NewWorld(reg)
 	x, err := command.NewExecutor(reg, w.Store)
 	if err != nil {
 		t.Fatalf("fabriqtest: executor: %v", err)

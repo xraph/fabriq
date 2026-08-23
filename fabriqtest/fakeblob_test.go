@@ -9,8 +9,8 @@ import (
 
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/fabriqerr"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/tenant"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 func TestFakeBlobRoundTripAndIsolation(t *testing.T) {

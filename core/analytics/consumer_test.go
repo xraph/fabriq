@@ -7,8 +7,8 @@ import (
 
 	"github.com/xraph/fabriq/core/analytics"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 // fakeSource replays a fixed slice of envelopes then returns.

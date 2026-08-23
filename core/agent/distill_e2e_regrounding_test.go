@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 // TestDistill_E2E_DeleteAndContentHashStability covers two spec scenarios in a

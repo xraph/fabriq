@@ -11,10 +11,10 @@ import (
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 var errNotImplemented = errors.New("agent test: not implemented in phase 1a")

@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/catalog"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/sweep"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 // seed puts one catalog entry in the fake with the given state/version.

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/fabriqerr"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 func TestFakeVector_Get(t *testing.T) {

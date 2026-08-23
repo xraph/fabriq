@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 // TestExactDedup_ReusesVector: a 2nd byte-identical source reuses the donor's

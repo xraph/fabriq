@@ -3,8 +3,8 @@ package agent
 import (
 	"testing"
 
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 func newDepthDistiller(t *testing.T, r *registry.Registry, cas *fabriqtest.FakeCAS, maxFanIn int) *Distiller {

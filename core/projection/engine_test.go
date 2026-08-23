@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 // fakeSource feeds queued envelopes to the consumer, redelivering on

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/command"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 // stubEmbedder returns a fixed vector so recall ordering is reproducible.

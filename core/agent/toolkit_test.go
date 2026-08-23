@@ -4,7 +4,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 func TestNewToolkit_AppliesDefaults(t *testing.T) {

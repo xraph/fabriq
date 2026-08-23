@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/query"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 // seedNote creates a note row through the command plane using a typed *tDoc

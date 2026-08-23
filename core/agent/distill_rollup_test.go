@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 // TestRollup_BuildsScopeAndTenant verifies the bottom-up rollup: two notes under

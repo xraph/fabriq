@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/cache"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/tenant"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 func tctx(t *testing.T, id string) context.Context {

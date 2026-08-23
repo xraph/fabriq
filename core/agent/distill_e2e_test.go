@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 // TestDistill_E2E_BuildEditGuard covers three spec scenarios in a single

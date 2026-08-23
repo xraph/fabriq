@@ -8,8 +8,8 @@ import (
 
 	"github.com/xraph/fabriq/core/analytics"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 // snapshotEnvs replays a fixed set of current-state envelopes for any tenant.
