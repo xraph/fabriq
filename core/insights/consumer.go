@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/otel"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/tenant"
-	"github.com/xraph/fabriq/internal/otel"
 )
 
 // FactSink upserts projected facts into the tenant's own store, version-

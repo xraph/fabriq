@@ -8,8 +8,8 @@ import (
 	"github.com/xraph/fabriq/core/crypto"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/livequery"
+	"github.com/xraph/fabriq/core/otel"
 	"github.com/xraph/fabriq/core/subscribe"
-	"github.com/xraph/fabriq/internal/otel"
 )
 
 // settings collects everything Options tune.

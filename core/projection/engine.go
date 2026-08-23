@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/otel"
 	"github.com/xraph/fabriq/core/tenant"
-	"github.com/xraph/fabriq/internal/otel"
 )
 
 // Source is the consumer-group surface the engine reads from (implemented
