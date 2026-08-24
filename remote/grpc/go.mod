@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/xraph/fabriq v0.0.0
-	github.com/xraph/grove v1.6.1
+	github.com/xraph/grove v1.6.2
 	google.golang.org/grpc v1.81.1
 )
 

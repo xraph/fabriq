@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/oklog/ulid/v2 v2.1.1
-	github.com/xraph/grove v1.5.9
+	github.com/xraph/grove v1.6.2
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
 )

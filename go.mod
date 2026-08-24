@@ -16,21 +16,21 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
 	github.com/xraph/confy v1.0.2
-	github.com/xraph/forge v1.9.8
-	github.com/xraph/grove v1.6.1
-	github.com/xraph/grove/drivers/pgdriver v1.6.1
-	github.com/xraph/grove/kv v1.6.1
-	github.com/xraph/grove/kv/drivers/redisdriver v1.6.1
-	github.com/xraph/shield v1.5.2
-	github.com/xraph/trove v1.5.1
+	github.com/xraph/forge v1.9.10
+	github.com/xraph/grove v1.6.2
+	github.com/xraph/grove/drivers/pgdriver v1.6.2
+	github.com/xraph/grove/kv v1.6.2
+	github.com/xraph/grove/kv/drivers/redisdriver v1.6.2
+	github.com/xraph/shield v1.6.2
+	github.com/xraph/trove v1.6.5
 	github.com/xraph/vessel v1.0.4
 	golang.org/x/crypto v0.54.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )
 
 require (
-	github.com/gofrs/uuid/v5 v5.3.2 // indirect
-	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/gofrs/uuid/v5 v5.5.1 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	go.jetify.com/typeid/v2 v2.0.0-alpha.3 // indirect
@@ -128,12 +128,12 @@ require (
 	github.com/mdelapenya/tlscert v0.2.0 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
-	github.com/moby/go-archive v0.2.0 // indirect
+	github.com/moby/go-archive v0.3.3 // indirect
 	github.com/moby/moby/api v1.55.0 // indirect
 	github.com/moby/moby/client v0.5.0 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/sys/sequential v0.7.0 // indirect
-	github.com/moby/sys/user v0.4.0 // indirect
+	github.com/moby/sys/user v0.4.1 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
