@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 func TestFakeVector_SimilarFilter(t *testing.T) {

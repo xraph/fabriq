@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 func TestIndexer_ReindexBackfillsAllRows(t *testing.T) {

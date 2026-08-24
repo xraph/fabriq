@@ -5,7 +5,7 @@ import (
 
 	"github.com/xraph/fabriq/core/catalog"
 	"github.com/xraph/fabriq/core/catalog/catalogtest"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 func TestFakeCatalog_Contract(t *testing.T) {

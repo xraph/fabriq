@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/query"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 func TestWatch_DeliversDeltasAndPassesScope(t *testing.T) {

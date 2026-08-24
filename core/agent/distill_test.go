@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/blob"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 // distillRegistry registers one distillable entity "note" scoped by "site",

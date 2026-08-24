@@ -6,8 +6,8 @@ import (
 
 	"github.com/xraph/fabriq/core/analytics"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 func TestBackfillAll_TwoTenants(t *testing.T) {

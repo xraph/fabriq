@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/otel"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/tenant"
-	"github.com/xraph/fabriq/internal/otel"
 )
 
 // Consumer drives the proj:analytics group: it reads the shared event stream

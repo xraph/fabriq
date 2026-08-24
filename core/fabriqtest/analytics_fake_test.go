@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/analytics"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 var ctx = context.Background()

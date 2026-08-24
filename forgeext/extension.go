@@ -12,6 +12,7 @@ import (
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/provision"
+	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/internal/metrics"
 	"github.com/xraph/fabriq/remote"
@@ -19,6 +20,12 @@ import (
 
 // Version is the fabriq forge extension version.
 const Version = "0.1.0"
+
+// RegistryServiceName is the DI name the entity registry is registered under.
+// Consumers resolve it with vessel.InjectNamed[*registry.Registry](c, name);
+// it is re-exported from core/registry so they can name the key without
+// importing this package or the composition root.
+const RegistryServiceName = registry.ServiceName
 
 // Extension exposes the fabriq data fabric as a first-class Forge extension:
 // the facade as a DI service (alias "fabriq"), auto health, fabriq's migrations
@@ -114,18 +121,47 @@ func (e *Extension) Register(app forge.App) error {
 		}
 	}
 
-	// Lazy DI service: resolves the facade opened in Start.
-	// vessel.Provide registers a zero-param constructor; alias "fabriq" allows
-	// resolution by name in addition to type.
-	c := app.Container()
-	return vessel.Provide(c, func() (*fabriq.Fabriq, error) {
+	return e.provideFacade(app.Container())
+}
+
+// provideFacade registers the facade as a lazy DI service under three keys:
+// the concrete *fabriq.Fabriq, the name "fabriq", and the core/query.Fabric
+// port.
+//
+// The port key is the one that matters for consumers. Resolving by interface
+// means a dependent module (cortex, weave, kgkit) never imports the fabriq
+// composition root, which links every adapter — ClickHouse, Elasticsearch,
+// pgx, Redis, Trove, FalkorDB — purely to name a DI key. It is also the seam
+// that makes the engine location-transparent: a deployment fronting a remote
+// engine registers *remote.Fabric under the same key (ADR 0009) and consumer
+// call sites do not change.
+func (e *Extension) provideFacade(c vessel.Vessel) error {
+	if err := vessel.Provide(c, func() (*fabriq.Fabriq, error) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		if e.fab == nil {
 			return nil, fmt.Errorf("fabriq: facade not started yet")
 		}
 		return e.fab, nil
-	}, vessel.WithAliases("fabriq"))
+	}, vessel.WithAliases("fabriq"), vessel.As(new(query.Fabric))); err != nil {
+		return err
+	}
+
+	// The entity registry, under a name only. query.Fabric deliberately has no
+	// Registry() method — entity declarations are a client-side concern, and
+	// *remote.Fabric cannot serve them over the wire — so consumers that need
+	// the registry (typed repositories, the agent toolkit) resolve it here
+	// instead of reaching through the facade.
+	//
+	// Name-keyed, not type-keyed: a WithName-only registration leaves the bare
+	// *registry.Registry type key free, so a host app that provides its own
+	// registry still registers cleanly.
+	return vessel.Provide(c, func() (*registry.Registry, error) {
+		if e.reg == nil {
+			return nil, fmt.Errorf("fabriq: no entity registry configured")
+		}
+		return e.reg, nil
+	}, vessel.WithName(RegistryServiceName))
 }
 
 // Start implements forge.Extension. Opens the fabriq facade.

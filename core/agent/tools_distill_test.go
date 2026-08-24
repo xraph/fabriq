@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 // TestTools_IncludesDistillTools verifies that Tools() exposes the three

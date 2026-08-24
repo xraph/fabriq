@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/catalog"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 // A positive read served from a replica (primary unreachable) must carry the

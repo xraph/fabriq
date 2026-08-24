@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/command"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 func TestExpansionCypher_FormsByHopsAndDirection(t *testing.T) {

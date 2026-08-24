@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/command"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 // packEntities returns the set of distinct entity names present in a pack's items.

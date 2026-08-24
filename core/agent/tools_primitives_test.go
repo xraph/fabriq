@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/projection"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 func toolByName(tools []Tool, name string) (Tool, bool) {

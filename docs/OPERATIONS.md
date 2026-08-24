@@ -89,3 +89,45 @@ runs leader-elected (lock 1002) every `FABRIQ_RECONCILE_INTERVAL`
 Caveat: the ES projection scan is capped at 10k docs per entity per
 tenant; beyond that, scroll support is needed before trusting zombie
 detection there.
+
+## Releasing fabriq
+
+Core is a nested module and consumers resolve it by version, so releases
+are ordered. Get the order wrong and you ship a root release that cannot
+resolve.
+
+1. Tag core first: `git tag core/vX.Y.Z && git push origin core/vX.Y.Z`
+2. Point the root at it: `go mod edit -require=github.com/xraph/fabriq/core@vX.Y.Z`
+3. Confirm the root resolves without the local replace:
+   `go mod edit -dropreplace=github.com/xraph/fabriq/core && go build ./...`
+4. Put the replace back for local work, commit the require bump.
+5. Tag the root: `git tag vA.B.C && git push origin vA.B.C`
+
+The `replace github.com/xraph/fabriq/core => ./core` in the root go.mod is
+for local development. Consumers ignore a dependency's replace directives,
+so step 3 is the one that catches a require line pointing at a tag that
+does not exist.
+
+### Consumers
+
+Three repos consume fabriq: cortex, weave and kgkit. All three now
+require `github.com/xraph/fabriq/core`, and only cortex and kgkit also
+require the root module, from a separate `inttest/` module that holds
+the tests needing a live embedded engine.
+
+Every one of them currently carries a local `replace` directive pointing
+fabriq and core at a working copy. Those are development only, and they
+have to be repinned to the published tags and removed before any of
+those branches merge.
+
+The `inttest/` modules carry one more replace that is not part of that
+cleanup: `replace github.com/xraph/cortex => ..` in `cortex/inttest/go.mod`
+and `replace github.com/xraph/kgkit => ..` in `kgkit/inttest/go.mod`.
+Those point a nested test module at its own parent by relative path, and
+a nested module always needs that. It stays in place permanently; do not
+remove it when repinning the fabriq/core replaces.
+
+Core's require lines are a version floor under all three. Set them to
+the lowest version core actually builds and tests against, never to
+whatever the root module happens to use: every requirement in core is
+imposed on every consumer.

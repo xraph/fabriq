@@ -6,9 +6,9 @@ import (
 
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/fabriqerr"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/query"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 // The typed Repo derives the entity from the grove model type T and

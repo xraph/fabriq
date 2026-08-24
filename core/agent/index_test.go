@@ -9,9 +9,9 @@ import (
 	"github.com/xraph/grove"
 
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 type ixDoc struct {

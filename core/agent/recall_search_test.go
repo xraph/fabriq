@@ -9,9 +9,9 @@ import (
 	"github.com/xraph/grove"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 func TestRecall_SearchChannelContributesRankedRefs(t *testing.T) {

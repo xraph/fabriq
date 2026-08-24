@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/command"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/query"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 // seedAssets creates assets with the given (name, site) pairs and returns

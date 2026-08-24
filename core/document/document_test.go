@@ -20,7 +20,7 @@ import (
 	"github.com/xraph/grove/crdt"
 
 	"github.com/xraph/fabriq/core/document"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 func hlcAt(ts int64, node string) crdt.HLC {

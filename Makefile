@@ -156,16 +156,18 @@ check:
 	@$(MAKE) lint
 	@echo "$(GREEN)✓ All checks passed$(NC)"
 
-## test: Run unit tests (race)
+## test: Run unit tests (race), including the core/ nested module
 test:
 	@echo "$(BLUE)Running unit tests...$(NC)"
 	$(GO) test -race -count=1 ./...
+	cd core && $(GO) test -race -count=1 ./...
 	@echo "$(GREEN)✓ Tests complete$(NC)"
 
-## test-verbose: Run unit tests with verbose output
+## test-verbose: Run unit tests with verbose output, including the core/ nested module
 test-verbose:
 	@echo "$(BLUE)Running unit tests (verbose)...$(NC)"
 	$(GO) test -race -count=1 -v ./...
+	cd core && $(GO) test -race -count=1 -v ./...
 
 ## test-integration: Run integration tests (testcontainers; needs Docker)
 test-integration:
@@ -186,12 +188,14 @@ bench-smoke:
 	@echo "$(BLUE)Running benchmark smoke check...$(NC)"
 	$(GO) test -bench=. -benchtime=10x -benchmem -run='^$$' ./...
 
-## cover: Generate coverage profile
+## cover: Generate coverage profile (root module + the core/ nested module)
 cover:
 	@echo "$(BLUE)Generating coverage profile...$(NC)"
 	$(GO) test -race -count=1 -coverprofile=coverage.out ./...
 	$(GO) tool cover -func=coverage.out | tail -1
-	@echo "$(GREEN)✓ Coverage profile: coverage.out$(NC)"
+	cd core && $(GO) test -race -count=1 -coverprofile=coverage.out ./...
+	cd core && $(GO) tool cover -func=coverage.out | tail -1
+	@echo "$(GREEN)✓ Coverage profile: coverage.out (root), core/coverage.out (core)$(NC)"
 
 ## cover-html: Generate HTML coverage report
 cover-html: cover
@@ -200,11 +204,12 @@ cover-html: cover
 	@echo "$(GREEN)✓ HTML coverage report: coverage.html$(NC)"
 	@command -v open >/dev/null 2>&1 && open coverage.html || echo "Open coverage.html in your browser"
 
-## tidy: Tidy and verify modules
+## tidy: Tidy and verify modules (root module + the core/ nested module)
 tidy:
 	@echo "$(BLUE)Tidying modules...$(NC)"
 	$(GO) mod tidy
 	$(GO) mod verify
+	cd core && $(GO) mod tidy && $(GO) mod verify
 	@echo "$(GREEN)✓ Modules tidied$(NC)"
 
 ## deps: Install development dependencies

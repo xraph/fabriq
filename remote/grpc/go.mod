@@ -4,16 +4,17 @@ go 1.26.0
 
 require (
 	github.com/xraph/fabriq v0.0.0
-	github.com/xraph/grove v1.6.0
+	github.com/xraph/grove v1.6.2
 	google.golang.org/grpc v1.81.1
 )
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/oklog/ulid/v2 v2.1.1 // indirect
+	github.com/oklog/ulid/v2 v2.1.2 // indirect
+	github.com/xraph/fabriq/core v0.0.0
 	github.com/xraph/go-utils v1.1.6 // indirect
-	go.opentelemetry.io/otel v1.44.0 // indirect
-	go.opentelemetry.io/otel/trace v1.44.0 // indirect
+	go.opentelemetry.io/otel v1.45.0 // indirect
+	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
@@ -24,3 +25,5 @@ require (
 )
 
 replace github.com/xraph/fabriq => ../..
+
+replace github.com/xraph/fabriq/core => ../../core

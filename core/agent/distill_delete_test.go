@@ -3,8 +3,8 @@ package agent
 import (
 	"testing"
 
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/query"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 // TestDelete_RemovesL0AndCollapsesCluster verifies that deleting a distillable

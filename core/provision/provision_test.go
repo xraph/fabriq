@@ -9,8 +9,8 @@ import (
 
 	"github.com/xraph/fabriq/core/catalog"
 	"github.com/xraph/fabriq/core/fabriqerr"
+	"github.com/xraph/fabriq/core/fabriqtest"
 	"github.com/xraph/fabriq/core/provision"
-	"github.com/xraph/fabriq/fabriqtest"
 )
 
 // fakeOps records physical operations and injects failures.

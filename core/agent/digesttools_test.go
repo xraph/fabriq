@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 func TestDigest_SummaryAndChildren(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/analytics"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 func TestFakeSink_Conformance(t *testing.T) {

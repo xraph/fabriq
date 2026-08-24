@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/xraph/fabriq/core/command"
-	"github.com/xraph/fabriq/fabriqtest"
+	"github.com/xraph/fabriq/core/fabriqtest"
 )
 
 // countingCAS wraps the fake CAS to count Retrieve calls. Store and every other
