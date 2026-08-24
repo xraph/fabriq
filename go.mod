@@ -9,6 +9,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/oklog/ulid/v2 v2.1.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/testcontainers/testcontainers-go v0.44.0
@@ -24,6 +25,8 @@ require (
 	github.com/xraph/shield v1.6.2
 	github.com/xraph/trove v1.6.5
 	github.com/xraph/vessel v1.0.4
+	go.opentelemetry.io/otel v1.44.0
+	go.opentelemetry.io/otel/trace v1.44.0
 	golang.org/x/crypto v0.54.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )
@@ -31,11 +34,8 @@ require (
 require (
 	github.com/gofrs/uuid/v5 v5.5.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
-	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	go.jetify.com/typeid/v2 v2.0.0-alpha.3 // indirect
-	go.opentelemetry.io/otel v1.44.0 // indirect
-	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 )
 
 require (

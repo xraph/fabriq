@@ -14,51 +14,19 @@ concurrency:
 
 permissions:
   contents: read
+  # required by go-ci.yml's gosec SARIF upload
+  security-events: write
 
 jobs:
-  # ===========================================================================
-  # Build & unit tests (required gate). Routed through the Makefile so local
-  # `make build` / `make cover` reproduces CI exactly.
-  # ===========================================================================
-  go:
-    name: Go
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: go.sum
-
-      - name: Download modules
-        run: make mod-download
-
-      - name: Verify module tidy
-        run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
-          cd core && go mod tidy && git diff --exit-code go.mod go.sum
-
-      - name: Build
-        run: make build
-
-      - name: Test (unit, race + coverage)
-        run: make cover
-
-      - name: Benchmarks (smoke)
-        run: make bench-smoke
-
-      - name: Upload coverage
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: coverage.out
-          retention-days: 7
+  # ─── Go Build & Test ────────────────────────────────────────────────
+  # test, lint, verify and security now come from the shared workflow. It
+  # probes for Makefile targets per step and falls back to the plain go
+  # commands these jobs used to run inline.
+  ci:
+    uses: xraph/workflows/.github/workflows/go-ci.yml@v1
+    with:
+      go-versions: '["1.26"]'
+      os: '["ubuntu-latest"]'
 
   # ===========================================================================
   # DuckDB analytics sink (not in the required gate). Builds/tests the
@@ -68,7 +36,7 @@ jobs:
   duckdb:
     name: DuckDB analytics (CGO)
     runs-on: ubuntu-latest
-    needs: go
+    needs: ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -92,7 +60,7 @@ jobs:
   wardenauthz:
     name: wardenauthz adapter
     runs-on: ubuntu-latest
-    needs: go
+    needs: ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -107,6 +75,7 @@ jobs:
       - name: Build & test
         run: cd adapters/wardenauthz && go build ./... && go test ./...
 
+
   # ===========================================================================
   # core module (required gate). Nested module under core/, with its own go.mod,
   # so the root `go test ./...` never touches it. This is the port layer the
@@ -117,7 +86,7 @@ jobs:
   core:
     name: core module
     runs-on: ubuntu-latest
-    needs: go
+    needs: ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -139,7 +108,7 @@ jobs:
   integration:
     name: Integration
     runs-on: ubuntu-latest
-    needs: go
+    needs: ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -161,7 +130,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    needs: go
+    needs: ci
     strategy:
       fail-fast: false
       # golangci-lint does not recurse into nested modules, so each go.mod
@@ -202,7 +171,7 @@ jobs:
   docker:
     name: Docker image
     runs-on: ubuntu-latest
-    needs: go
+    needs: ci
     permissions:
       contents: read
       packages: write
@@ -260,17 +229,16 @@ jobs:
   # ===========================================================================
   ci-success:
     name: CI Success
-    needs: [go, core, integration, lint, docker]
+    needs: [ci, core, integration, lint, docker]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Verify required jobs succeeded
         run: |
           for result in \
-            "go:${{ needs.go.result }}" \
+            "ci:${{ needs.ci.result }}" \
             "core:${{ needs.core.result }}" \
             "integration:${{ needs.integration.result }}" \
-            "lint:${{ needs.lint.result }}" \
             "docker:${{ needs.docker.result }}"; do
             name="${result%%:*}"; status="${result##*:}"
             if [[ "$status" != "success" ]]; then

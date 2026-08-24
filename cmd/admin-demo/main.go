@@ -52,7 +52,8 @@ import (
 )
 
 const (
-	defaultDSN    = "postgres://fabriq:fabriq@localhost:5433/fabriq?sslmode=disable" //nolint:gosec // demo-only local DSN; not a real credential.
+	// #nosec G101 -- not a live credential (demo default / fixed mask string).
+	defaultDSN    = "postgres://fabriq:fabriq@localhost:5433/fabriq?sslmode=disable"
 	defaultAddr   = ":8080"
 	defaultES     = "http://localhost:9200"
 	defaultFalkor = "localhost:6390"
@@ -137,7 +138,8 @@ func run() error {
 	if dataDir == "" {
 		dataDir = filepath.Join(os.TempDir(), "fabriq-admin-demo")
 	}
-	if err := os.MkdirAll(dataDir, 0o750); err != nil { //nolint:gosec // demo data dir from operator-supplied env or a fixed temp path; not attacker-controlled
+	// #nosec G703 -- demo data directory chosen by the demo itself.
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return err
 	}
 	analyticsDSN := os.Getenv("ADMIN_DEMO_ANALYTICS_DSN")
@@ -488,6 +490,7 @@ func run() error {
 		for _, n := range counts {
 			analyticsFactsTotal += n
 		}
+		// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 		log.Printf("  analytics: backfilled %d fact(s) across %d tenant(s) into %s", analyticsFactsTotal, len(demoTenants), analyticsDSN)
 	} else {
 		log.Printf("  analytics: DISABLED (set ADMIN_DEMO_ANALYTICS_DSN=postgres://… or rebuild with -tags duckdb for embedded DuckDB)")
@@ -573,6 +576,7 @@ func run() error {
 				user = "admin"
 			}
 			adminOpts = append(adminOpts, adminapi.WithAdminLogin(user, pass))
+			// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 			log.Printf("admin-demo: dashboard login enabled for user %q (override)", user)
 		}
 		log.Printf("admin-demo: auth ENABLED by default — log in with admin/admin (unless ADMIN_LOGIN_* set); set ADMIN_DEMO_AUTH=0 to disable")
@@ -715,30 +719,48 @@ func (e missingEntityError) Error() string {
 // sample curl commands.
 func logStartup(addr, esURL, falkorAddr, blobDSN string, dims, indexed, graphNodes, graphEdges, fsFolders, fsFiles, docs, places, equipment, distillNodes, telemetryPoints int) {
 	base := "http://localhost" + addr
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("admin-demo listening on %s (admin base: %s/admin)", addr, base)
 	log.Printf("  seeded tenants: acme-corp, globex (%d products each)", seedCount)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  search: elasticsearch=%s (index base %q)", esURL, productSearchIndex)
 	log.Printf("  vector: pgvector via local deterministic embedder (dims=%d)", dims)
 	log.Printf("  indexed %d products into search + vector across tenants", indexed)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  graph: falkordb=%s wired; seeded %d nodes + %d edges across tenants (per-tenant graph tenant_<id>)", falkorAddr, graphNodes, graphEdges)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  files: blob=%s bucket=%q CAS=on; seeded %d folders + %d files across tenants", blobDSN, blobBucket, fsFolders, fsFiles)
 	log.Printf("  crdt: document plane (postgres + grove-crdt) wired; seeded %d demo doc(s) (%s/%s) across tenants", docs, pageEntity, demoPageID)
 	log.Printf("  spatial: postgis (fabriq_geometries) wired; seeded %d place point(s) across tenants (acme-corp: SF+NYC, globex: London/Berlin/Tokyo)", places)
 	log.Printf("  spatial: place (category) + site/equipment (tag) — try near-asset + tag filter in the Spatial page; seeded %d equipment point(s) across tenants", equipment)
 	log.Printf("  distill: context-distillation tree (digest_node) built from product+customer rows via demo embedder + stub summarizer + CAS; %d L0 leaves across tenants", distillNodes)
 	log.Printf("  timeseries: tag_readings (plain-PG telemetry table) wired; bulk-wrote %d readings across tenants (signals: cpu.load, mem.used.pct, requests.rate, latency.p95.ms)", telemetryPoints)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s %s/admin/capabilities -H 'X-Tenant-ID: acme-corp'  # search:true vector:true graph:true files:true crdt:true distill:true", base)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s '%s/admin/search?type=product&q=Product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s -X POST %s/admin/search/vector -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"type\":\"product\",\"query\":\"widget\",\"k\":5}'", base)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s '%s/admin/graph/neighbors?type=product&id=<id>&limit=10' -H 'X-Tenant-ID: acme-corp'", base)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s '%s/admin/files' -H 'X-Tenant-ID: acme-corp'  # root folders/files", base)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s '%s/admin/crdt/%s/%s' -H 'X-Tenant-ID: acme-corp'  # merged CRDT snapshot", base, pageEntity, demoPageID)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s '%s/admin/crdt/%s/%s/updates' -H 'X-Tenant-ID: acme-corp'  # update-log metadata", base, pageEntity, demoPageID)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s '%s/admin/entities?type=product&limit=5' -H 'X-Tenant-ID: acme-corp'", base)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s -X POST %s/admin/spatial/within -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"entity\":\"place\",\"lng\":-122.42,\"lat\":37.77,\"radiusM\":50000,\"limit\":10}'  # places near SF", base)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s -X POST %s/admin/spatial/within -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"entity\":\"equipment\",\"centerEntity\":\"site\",\"centerId\":\"<plant-a-id>\",\"radiusM\":500,\"filter\":{\"tag\":\"pump\"},\"limit\":10}'  # pumps near plant-a", base)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s '%s/admin/distill/map' -H 'X-Tenant-ID: acme-corp'  # context-distillation tree outline", base)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s '%s/admin/distill/node/%s' -H 'X-Tenant-ID: acme-corp'  # tenant root + L1 children", base, agent.TenantRootID())
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s '%s/admin/timeseries/keys' -H 'X-Tenant-ID: acme-corp'  # telemetry series keys", base)
+	// #nosec G706 -- demo CLI echoing its own listen address into usage hints; no untrusted input reaches this log.
 	log.Printf("  try: curl -s -X POST %s/admin/timeseries/range -H 'Content-Type: application/json' -H 'X-Tenant-ID: acme-corp' -d '{\"key\":\"cpu.load\",\"bucketSeconds\":900,\"agg\":\"avg\"}'  # last 24h, 15m avg buckets", base)
 }

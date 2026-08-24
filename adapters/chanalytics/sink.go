@@ -266,12 +266,12 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 	for fr.Next() {
 		var r factRewrite
 		if err := fr.Scan(&r.agg, &r.aggID, &r.payload, &r.version, &r.at, &r.deleted, &r.dd); err != nil {
-			fr.Close()
+			_ = fr.Close()
 			return total, fmt.Errorf("fabriq: analytics reproject fact scan: %w", err)
 		}
 		np, err := transform(json.RawMessage(r.payload))
 		if err != nil {
-			fr.Close()
+			_ = fr.Close()
 			return total, fmt.Errorf("fabriq: analytics reproject fact %s/%s: %w", r.agg, r.aggID, err)
 		}
 		if string(np) != r.payload {
@@ -280,10 +280,10 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 		}
 	}
 	if err := fr.Err(); err != nil {
-		fr.Close()
+		_ = fr.Close()
 		return total, fmt.Errorf("fabriq: analytics reproject facts: %w", err)
 	}
-	fr.Close()
+	_ = fr.Close()
 	if len(factRewrites) > 0 {
 		batch, err := s.conn.PrepareBatch(ctx,
 			"INSERT INTO fabriq_analytics_facts (tenant_id, aggregate, agg_id, version, payload, at, deleted, _dedup)")
@@ -327,12 +327,12 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 	for er.Next() {
 		var r eventRewrite
 		if err := er.Scan(&r.agg, &r.aggID, &r.version, &r.payload, &r.typ, &r.at, &r.dd); err != nil {
-			er.Close()
+			_ = er.Close()
 			return total, fmt.Errorf("fabriq: analytics reproject event scan: %w", err)
 		}
 		np, err := transform(json.RawMessage(r.payload))
 		if err != nil {
-			er.Close()
+			_ = er.Close()
 			return total, fmt.Errorf("fabriq: analytics reproject event %s/%s/%d: %w", r.agg, r.aggID, r.version, err)
 		}
 		if string(np) != r.payload {
@@ -341,10 +341,10 @@ func (s *Sink) ReprojectTenant(ctx context.Context, tenantID, aggregate string,
 		}
 	}
 	if err := er.Err(); err != nil {
-		er.Close()
+		_ = er.Close()
 		return total, fmt.Errorf("fabriq: analytics reproject events: %w", err)
 	}
-	er.Close()
+	_ = er.Close()
 	if len(eventRewrites) > 0 {
 		batch, err := s.conn.PrepareBatch(ctx,
 			"INSERT INTO fabriq_analytics_events (tenant_id, aggregate, agg_id, version, type, payload, at, _dedup)")
