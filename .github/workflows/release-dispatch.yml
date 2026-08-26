@@ -1,15 +1,30 @@
-# Manual release trigger.
+# Manual release trigger, ordered for fabriq's five Go modules.
+#
+# fabriq's root module requires github.com/xraph/fabriq/core itself (with a
+# local replace directive for development). Consumers ignore replace
+# directives, so a released root that still names core at the v0.0.0
+# placeholder breaks every `go get github.com/xraph/fabriq@vX.Y.Z`: go tries
+# to fetch fabriq/core@v0.0.0 and fails with "unknown revision". The fix is
+# ordering: tag and push core FIRST, bump the root's require to that real
+# tag, verify it resolves against the real module proxy with the replace not
+# in effect, THEN tag the root (which triggers release.yml) and the three
+# remaining nested modules at the same version, matching the lockstep
+# convention forge, nexus and grove already use.
 #
 # release.yml fires on a `vX.Y.Z` tag push and runs goreleaser + the Helm
-# publish job. This wrapper lets you cut a release from the Actions UI
-# ("Run workflow") or:
+# publish job. This wrapper lets you cut the whole ordered release from the
+# Actions UI ("Run workflow") or:
 #
-#   gh workflow run release-dispatch.yml -f tag=vX.Y.Z
+#   gh workflow run release-dispatch.yml -f tag=vX.Y.Z -f dry_run=false
 #
-# Unlike a Cargo/npm project, fabriq has no in-repo version to bump: goreleaser
-# stamps main.version from the git tag, and the Helm chart version/appVersion
-# are set from the tag at package time (release.yml). So this wrapper only
-# validates and pushes the tag.
+# dry_run defaults to true, so the default "Run workflow" click is always
+# safe: every tag and command is echoed and nothing is tagged, pushed,
+# edited, or committed. Set dry_run=false to perform the release for real.
+#
+# Unlike a Cargo/npm project, fabriq has no in-repo version to bump beyond
+# the core require line above: goreleaser stamps main.version from the git
+# tag, and the Helm chart version/appVersion are set from the tag at package
+# time (release.yml).
 #
 # IMPORTANT: a tag pushed with the default GITHUB_TOKEN does NOT trigger other
 # workflows. The push must use a PAT — CUSTOM_GITHUB_TOKEN — with `repo`
@@ -20,7 +35,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create (e.g. v1.2.3)"
+        description: "Release tag to create (e.g. v1.2.3). core, remote/grpc, adapters/wardenauthz and remote/grpc/cmd/fabriqserver are all tagged at the matching vX.Y.Z alongside it."
         required: true
         type: string
       ref:
@@ -28,16 +43,22 @@ on:
         required: false
         type: string
         default: ""
+      dry_run:
+        description: "Print every tag and command without pushing anything. Set to false to perform the release."
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   tag-and-release:
-    name: Create + push release tag
+    name: Ordered multi-module release
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       DISPATCH_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN || secrets.RELEASE_DISPATCH_TOKEN || secrets.GORELEASER_TOKEN }}
       TAG: ${{ inputs.tag }}
+      DRY_RUN: ${{ inputs.dry_run }}
     steps:
       - name: Require a PAT
         run: |
@@ -54,6 +75,13 @@ jobs:
             echo "::error::Tag '$TAG' is not a vX.Y.Z semver tag (release.yml triggers on 'v*.*.*', e.g. v1.2.3 or v1.2.3-rc.1)."
             exit 1
           fi
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "CORE_TAG=core/$TAG" >> "$GITHUB_ENV"
+          echo "GRPC_TAG=remote/grpc/$TAG" >> "$GITHUB_ENV"
+          echo "WARDEN_TAG=adapters/wardenauthz/$TAG" >> "$GITHUB_ENV"
+          echo "FABRIQSERVER_TAG=remote/grpc/cmd/fabriqserver/$TAG" >> "$GITHUB_ENV"
+          echo "Tag format OK. Root will be $TAG, core will be core/$TAG."
 
       - name: Checkout (with PAT so the tag push triggers release.yml)
         uses: actions/checkout@v4
@@ -62,18 +90,217 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
 
-      - name: Create and push the tag
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate module go directives agree with root
         run: |
           set -euo pipefail
-
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "::error::Tag $TAG already exists on origin. Pick a new version or delete the tag first."
+          ROOT_GO=$(grep '^go ' go.mod | awk '{print $2}')
+          echo "Root go directive: $ROOT_GO"
+          MISMATCH=0
+          for gomod in core/go.mod remote/grpc/go.mod adapters/wardenauthz/go.mod remote/grpc/cmd/fabriqserver/go.mod; do
+            if [ ! -f "$gomod" ]; then
+              echo "::error::Expected module not found: $gomod"
+              MISMATCH=1
+              continue
+            fi
+            MOD_GO=$(grep '^go ' "$gomod" | awk '{print $2}')
+            echo "  $gomod: $MOD_GO"
+            if [ "$MOD_GO" != "$ROOT_GO" ]; then
+              echo "::error::$gomod uses go $MOD_GO, root uses go $ROOT_GO. Align them (go mod edit -go=$ROOT_GO in that module) before releasing."
+              MISMATCH=1
+            fi
+          done
+          if [ "$MISMATCH" -ne 0 ]; then
             exit 1
           fi
+          echo "All five modules agree on go $ROOT_GO"
 
+      - name: Check none of the five release tags already exist
+        run: |
+          set -euo pipefail
+          EXISTS=0
+          for t in "$TAG" "$CORE_TAG" "$GRPC_TAG" "$WARDEN_TAG" "$FABRIQSERVER_TAG"; do
+            if git ls-remote --exit-code --tags origin "refs/tags/$t" >/dev/null 2>&1; then
+              echo "::error::Tag $t already exists on origin. Pick a new version or delete the tag first."
+              EXISTS=1
+            else
+              echo "  ok, not on origin yet: $t"
+            fi
+          done
+          if [ "$EXISTS" -ne 0 ]; then
+            exit 1
+          fi
+          echo "None of the five release tags exist yet."
+
+      - name: Print the ordered release plan
+        run: |
+          echo "Release plan for $TAG (dry_run=$DRY_RUN):"
+          echo "  1. tag + push $CORE_TAG"
+          echo "  2. go mod edit -require=github.com/xraph/fabriq/core@v$VERSION"
+          echo "  3. verify github.com/xraph/fabriq/core@v$VERSION resolves on the real proxy (replace not in effect)"
+          echo "  4. commit the require bump"
+          echo "  5. push that commit"
+          echo "  6. tag + push $TAG (triggers release.yml)"
+          echo "  7. tag + push $GRPC_TAG"
+          echo "  8. tag + push $WARDEN_TAG"
+          echo "  9. tag + push $FABRIQSERVER_TAG"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo ""
+            echo "dry_run is true: nothing below actually tags, pushes, edits, commits, or downloads anything."
+          fi
+
+      - name: Tag and push core (must exist before root's require can point at it)
+        run: |
+          set -euo pipefail
+          echo "  + git tag -a $CORE_TAG -m 'Release fabriq/core v$VERSION'"
+          echo "  + git push origin $CORE_TAG"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry_run: not tagging or pushing $CORE_TAG"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$CORE_TAG" -m "Release fabriq/core v$VERSION"
+            git push origin "$CORE_TAG"
+            echo "Pushed $CORE_TAG."
+          fi
+
+      - name: Rewrite root go.mod to require core at the real tag
+        run: |
+          set -euo pipefail
+          echo "  + go mod edit -require=github.com/xraph/fabriq/core@v$VERSION"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry_run: not editing go.mod"
+          else
+            go mod edit "-require=github.com/xraph/fabriq/core@v${VERSION}"
+            grep 'github.com/xraph/fabriq/core' go.mod
+            echo "root go.mod now requires github.com/xraph/fabriq/core@v${VERSION}, replace directive kept for local development."
+          fi
+
+      - name: Verify core resolves for a real consumer (no replace in effect)
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "  + (in a scratch module outside the repo) go mod init scratch"
+            echo "  + GOFLAGS=-mod=mod go mod download github.com/xraph/fabriq/core@v$VERSION"
+            echo "dry_run: not verifying against the real proxy"
+            exit 0
+          fi
+          SCRATCH=$(mktemp -d)
+          trap 'rm -rf "$SCRATCH"' EXIT
+          echo "Verifying in a scratch module at $SCRATCH, outside this repo, replace not in effect."
+          if ! (
+            cd "$SCRATCH"
+            go mod init scratch >/dev/null
+            echo "  + GOFLAGS=-mod=mod go mod download github.com/xraph/fabriq/core@v${VERSION}"
+            GOFLAGS=-mod=mod go mod download "github.com/xraph/fabriq/core@v${VERSION}"
+          ); then
+            echo "::error::github.com/xraph/fabriq/core@v${VERSION} did not resolve on the real module proxy."
+            echo "::error::$CORE_TAG was pushed to origin, but the proxy has not picked it up yet (or the tag failed to propagate)."
+            echo "::error::Root has NOT been tagged. Do not retry v${VERSION} blindly: tags are immutable once pushed, so if $CORE_TAG is genuinely bad, cut the next patch version instead of reusing this one."
+            exit 1
+          fi
+          echo "github.com/xraph/fabriq/core@v${VERSION} resolves cleanly with no replace in effect. Safe to proceed."
+
+      - name: Commit the require bump
+        run: |
+          set -euo pipefail
+          echo "  + git add go.mod go.sum"
+          echo "  + git commit -m 'chore: bump fabriq/core requirement to v$VERSION'"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry_run: not committing"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add go.mod go.sum
+            git commit -m "chore: bump fabriq/core requirement to v${VERSION}"
+          fi
+
+      - name: Push the require-bump commit
+        run: |
+          set -euo pipefail
+          echo "  + git push origin HEAD"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry_run: not pushing the commit"
+          else
+            git push origin HEAD
+            echo "Pushed the require-bump commit."
+          fi
+
+      - name: Tag and push root (triggers release.yml)
+        run: |
+          set -euo pipefail
+          echo "  + git tag -a $TAG -m 'Release fabriq v$VERSION'"
+          echo "  + git push origin $TAG"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry_run: not tagging or pushing $TAG"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Release fabriq v${VERSION}"
+            git push origin "$TAG"
+            echo "Pushed $TAG, the Release workflow will now run on the tag push."
+          fi
+
+      - name: Tag and push the remaining nested modules
+        run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          for pair in "$GRPC_TAG:remote/grpc" "$WARDEN_TAG:adapters/wardenauthz" "$FABRIQSERVER_TAG:remote/grpc/cmd/fabriqserver"; do
+            t="${pair%%:*}"
+            mod="${pair##*:}"
+            echo "  + git tag -a $t -m 'Release ${mod} v$VERSION'"
+            echo "  + git push origin $t"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "dry_run: not tagging or pushing $t"
+            else
+              git tag -a "$t" -m "Release ${mod} v${VERSION}"
+              git push origin "$t"
+              echo "Pushed $t."
+            fi
+          done
 
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
-          echo "Pushed $TAG — the Release workflow will now run on the tag push."
+      - name: Summary
+        if: success()
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run complete. Nothing was tagged, pushed, edited, or committed."
+            echo "Re-run with dry_run=false to perform the release for real:"
+            echo "  gh workflow run release-dispatch.yml -f tag=$TAG -f dry_run=false"
+          else
+            echo "Release $TAG complete. All five modules tagged and pushed:"
+            echo "  $TAG"
+            echo "  $CORE_TAG"
+            echo "  $GRPC_TAG"
+            echo "  $WARDEN_TAG"
+            echo "  $FABRIQSERVER_TAG"
+          fi
+
+      - name: On failure, report tag state and next steps
+        if: failure()
+        run: |
+          set +e
+          echo "::error::Release for tag '$TAG' failed partway through."
+          if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "Tag status on origin:"
+            for t in "$CORE_TAG" "$TAG" "$GRPC_TAG" "$WARDEN_TAG" "$FABRIQSERVER_TAG"; do
+              [ -z "$t" ] && continue
+              if git ls-remote --exit-code --tags origin "refs/tags/$t" >/dev/null 2>&1; then
+                echo "  EXISTS on origin: $t"
+              else
+                echo "  not on origin:    $t"
+              fi
+            done
+          else
+            echo "No repository was checked out yet, so nothing could have been tagged or pushed."
+          fi
+          echo ""
+          echo "Tags are immutable once pushed to the module proxy: do not delete and"
+          echo "re-tag any of the tags marked EXISTS above. If core (or any tag already"
+          echo "on origin) turned out to be bad, cut the next patch version and re-run"
+          echo "this workflow for that version instead of retrying v${VERSION:-$TAG}."

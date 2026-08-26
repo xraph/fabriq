@@ -1,20 +1,28 @@
 #!/bin/bash
-# Release fabriq's five Go modules at the same version.
-# Usage: ./scripts/release-modules.sh <version> [--execute]
+# Read-only preflight for fabriq's five-module release.
 #
-# Dry run is the default and the safe choice: with no --execute flag this
-# script prints every command it would run and pushes nothing. Pass --execute
-# to actually tag and push.
+# This script NEVER tags, pushes, edits go.mod, or commits anything. It only
+# validates preconditions and prints the exact ordered plan that
+# .github/workflows/release-dispatch.yml performs for real. Releases are cut
+# through that workflow, not by running this script with any flag:
+#
+#   gh workflow run release-dispatch.yml -f tag=vX.Y.Z -f dry_run=false
+#
+# Usage: ./scripts/release-modules.sh <version>
 #
 # fabriq's root module requires github.com/xraph/fabriq/core itself (with a
 # local "replace" for development). Consumers ignore replace directives, so a
 # released root that still names core at the v0.0.0 placeholder breaks every
 # `go get github.com/xraph/fabriq@vX.Y.Z` that does not also separately
 # require fabriq/core at a real version. The fix is ordering: tag and push
-# core FIRST, bump the root's require to that real tag, verify it resolves
-# with the replace dropped, THEN tag the root. That order is what this script
-# performs; scripts/check-module-versions.sh is the read-only check for the
-# same problem.
+# core first, bump the root's require to that real tag, verify it resolves
+# with the replace dropped, then tag the root. That ordering now lives in
+# release-dispatch.yml, including the real-proxy verification step. This
+# script is only the local sanity check you run before triggering it.
+#
+# scripts/check-module-versions.sh is the general read-only health check for
+# the same class of problem (placeholders, go-version drift), safe to run at
+# any time, not just before a release.
 
 set -euo pipefail
 
@@ -45,30 +53,32 @@ print_step() {
     echo -e "${BLUE}=== $1 ===${NC}"
 }
 
+usage() {
+    echo "Usage: $0 <version>"
+    echo ""
+    echo "Read-only preflight, no flags. It validates the version, checks the"
+    echo "working tree and module consistency, then prints the ordered plan"
+    echo "release-dispatch.yml will run. It never tags, pushes, edits go.mod,"
+    echo "or commits, so there is no --execute or --dry-run flag here: every"
+    echo "run of this script behaves like a dry run."
+    echo ""
+    echo "Example:"
+    echo "  $0 1.7.0"
+    echo ""
+    echo "To actually cut the release, trigger the workflow:"
+    echo "  gh workflow run release-dispatch.yml -f tag=v1.7.0 -f dry_run=false"
+    echo ""
+    echo "To preview the same plan from the workflow side without pushing"
+    echo "anything, leave dry_run at its default:"
+    echo "  gh workflow run release-dispatch.yml -f tag=v1.7.0"
+}
+
 # --- Argument parsing --------------------------------------------------
 
 VERSION="${1:-}"
-EXECUTE=false
 
-for arg in "${@:2}"; do
-    case "$arg" in
-        --execute) EXECUTE=true ;;
-        --dry-run) EXECUTE=false ;;
-        *)
-            print_error "Unknown argument: $arg"
-            exit 1
-            ;;
-    esac
-done
-
-if [ -z "$VERSION" ]; then
-    echo "Usage: $0 <version> [--execute]"
-    echo ""
-    echo "Examples:"
-    echo "  $0 1.7.0             # Dry run: print the ordered release plan, push nothing"
-    echo "  $0 1.7.0 --execute   # Actually tag and push all five modules"
-    echo ""
-    echo "Dry run is the default. Nothing is tagged or pushed without --execute."
+if [ -z "$VERSION" ] || [ "$#" -ne 1 ]; then
+    usage
     exit 1
 fi
 
@@ -78,12 +88,7 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
     exit 1
 fi
 
-if $EXECUTE; then
-    print_warning "Running in EXECUTE mode. This will tag and push to origin."
-else
-    print_info "Running in DRY RUN mode (default). No tags will be created, nothing will be pushed."
-    print_info "Pass --execute to actually perform the release."
-fi
+print_info "Read-only preflight for v$VERSION. This script makes no changes: no tag, no push, no go.mod edit, no commit."
 
 # --- Preconditions ------------------------------------------------------
 
@@ -113,117 +118,64 @@ TAG_FABRIQSERVER="remote/grpc/cmd/fabriqserver/v$VERSION"
 
 for tag in "$TAG_ROOT" "$TAG_CORE" "$TAG_GRPC" "$TAG_WARDEN" "$TAG_FABRIQSERVER"; do
     if git rev-parse "$tag" >/dev/null 2>&1; then
-        print_error "Tag $tag already exists!"
+        print_error "Tag $tag already exists locally!"
         exit 1
     fi
 done
 
-print_success "None of the five release tags exist yet"
+print_success "None of the five release tags exist locally yet"
+
+# --- Module go-directive consistency -------------------------------------
+
+print_step "Checking go directives agree across all five modules"
+
+ROOT_GO=$(grep '^go ' go.mod | awk '{print $2}')
+MISMATCH=0
+for gomod in core/go.mod remote/grpc/go.mod adapters/wardenauthz/go.mod remote/grpc/cmd/fabriqserver/go.mod; do
+    if [ ! -f "$gomod" ]; then
+        print_error "Expected module not found: $gomod"
+        MISMATCH=1
+        continue
+    fi
+    MOD_GO=$(grep '^go ' "$gomod" | awk '{print $2}')
+    if [ "$MOD_GO" != "$ROOT_GO" ]; then
+        print_error "$gomod uses go $MOD_GO, root uses go $ROOT_GO"
+        MISMATCH=1
+    else
+        print_success "$gomod: go $MOD_GO"
+    fi
+done
+
+if [ "$MISMATCH" -ne 0 ]; then
+    print_error "Fix the go-directive mismatch(es) above before releasing (go mod edit -go=$ROOT_GO in the affected module)."
+    exit 1
+fi
+
+print_success "All five modules agree on go $ROOT_GO"
 
 CORE_IMPORT="github.com/xraph/fabriq/core"
 
-# run CMD... - in dry run, just print what would be run. In execute mode,
-# print it too, then actually run it.
-run() {
-    echo "  + $*"
-    if $EXECUTE; then
-        "$@"
-    fi
-}
+# --- Print the ordered plan (this script performs none of it) -----------
 
-# --- Step 1: tag and push core FIRST ------------------------------------
+print_step "Ordered release plan (release-dispatch.yml performs this; this script does not)"
 
-print_step "Step 1: tag and push core ($TAG_CORE)"
-print_info "core has to exist at a real tag before the root's require can point at it."
-run git tag -a "$TAG_CORE" -m "Release fabriq/core v$VERSION"
-run git push origin "$TAG_CORE"
-print_success "core tagged and pushed: $TAG_CORE"
-
-# --- Step 2: bump the root's require for fabriq/core --------------------
-
-print_step "Step 2: bump root's require for $CORE_IMPORT to $TAG_CORE"
-run go mod edit "-require=${CORE_IMPORT}@${TAG_CORE}"
-print_success "go.mod now requires ${CORE_IMPORT}@${TAG_CORE}"
-
-# --- Step 3: verify the require resolves without the local replace ------
-
-print_step "Step 3: verify $CORE_IMPORT@$TAG_CORE resolves standalone"
-print_info "Temporarily dropping the local replace directive, downloading the module,"
-print_info "then restoring the replace whether or not the download succeeded."
-
-if $EXECUTE; then
-    RESTORE_REPLACE="go mod edit -replace=${CORE_IMPORT}=./core"
-    # A trap guarantees the replace directive comes back even if this shell
-    # is interrupted mid-verification, so go.mod is never left mangled.
-    trap '$RESTORE_REPLACE' EXIT INT TERM
-
-    echo "  + go mod edit -dropreplace=${CORE_IMPORT}"
-    go mod edit "-dropreplace=${CORE_IMPORT}"
-
-    echo "  + go mod download ${CORE_IMPORT}"
-    if go mod download "${CORE_IMPORT}"; then
-        DOWNLOAD_OK=true
-    else
-        DOWNLOAD_OK=false
-    fi
-
-    echo "  + ${RESTORE_REPLACE}"
-    eval "$RESTORE_REPLACE"
-    trap - EXIT INT TERM
-
-    if ! $DOWNLOAD_OK; then
-        print_error "${CORE_IMPORT}@${TAG_CORE} did not resolve without the replace directive."
-        print_error "The replace directive has been restored. Nothing further was tagged."
-        print_error "Investigate before retrying: was $TAG_CORE actually pushed and visible to the Go proxy?"
-        exit 1
-    fi
-    print_success "${CORE_IMPORT}@${TAG_CORE} resolves cleanly on its own"
-else
-    echo "  + go mod edit -dropreplace=${CORE_IMPORT}"
-    echo "  + go mod download ${CORE_IMPORT}"
-    echo "  + go mod edit -replace=${CORE_IMPORT}=./core   (restored via trap, always runs)"
-    print_info "(dry run: verification not actually performed)"
-fi
-
-# --- Step 4: commit the require bump ------------------------------------
-
-print_step "Step 4: commit the require bump"
-run git add go.mod go.sum
-run git commit -m "chore: bump fabriq/core requirement to ${TAG_CORE}"
-print_success "Committed the require bump"
-
-# --- Step 5: tag and push the root --------------------------------------
-
-print_step "Step 5: tag and push root ($TAG_ROOT)"
-run git tag -a "$TAG_ROOT" -m "Release fabriq v$VERSION"
-run git push origin "$TAG_ROOT"
-print_success "root tagged and pushed: $TAG_ROOT"
-
-# --- Step 6: tag and push the remaining nested modules -------------------
-
-print_step "Step 6: tag and push the remaining nested modules"
-for pair in "$TAG_GRPC:remote/grpc" "$TAG_WARDEN:adapters/wardenauthz" "$TAG_FABRIQSERVER:remote/grpc/cmd/fabriqserver"; do
-    tag="${pair%%:*}"
-    mod="${pair##*:}"
-    run git tag -a "$tag" -m "Release ${mod} v${VERSION}"
-    run git push origin "$tag"
-    print_success "${mod} tagged and pushed: ${tag}"
-done
-
-# --- Also push the commit itself -----------------------------------------
-
-print_step "Step 7: push the require-bump commit"
-run git push origin HEAD
-print_success "Pushed the require-bump commit"
+cat <<PLAN
+  1. tag + push $TAG_CORE
+  2. go mod edit -require=${CORE_IMPORT}@v${VERSION}
+  3. verify ${CORE_IMPORT}@v${VERSION} resolves on the real module proxy, in
+     a scratch module outside this repo, with the replace directive not in
+     effect (the release aborts here, before root is tagged, if this fails)
+  4. commit the require bump
+  5. push that commit
+  6. tag + push $TAG_ROOT   (triggers release.yml)
+  7. tag + push $TAG_GRPC
+  8. tag + push $TAG_WARDEN
+  9. tag + push $TAG_FABRIQSERVER
+PLAN
 
 echo ""
-if $EXECUTE; then
-    print_success "Release v$VERSION complete. All five modules tagged and pushed:"
-else
-    print_success "Dry run complete. Nothing was tagged or pushed. Re-run with --execute to perform it for real:"
-fi
-echo "  $TAG_ROOT"
-echo "  $TAG_CORE"
-echo "  $TAG_GRPC"
-echo "  $TAG_WARDEN"
-echo "  $TAG_FABRIQSERVER"
+print_success "Preflight passed for v$VERSION. Nothing was tagged, pushed, edited, or committed."
+print_info "Run the release for real:"
+echo "  gh workflow run release-dispatch.yml -f tag=$TAG_ROOT -f dry_run=false"
+print_info "Or trigger the workflow's own dry run first, to see this same plan echoed there:"
+echo "  gh workflow run release-dispatch.yml -f tag=$TAG_ROOT"
