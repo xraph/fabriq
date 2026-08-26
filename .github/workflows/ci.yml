@@ -77,6 +77,34 @@ jobs:
 
 
   # ===========================================================================
+  # Module version check (not in the required gate). fabriq's five Go modules
+  # need to move together: matching go directives, no placeholder v0.0.0
+  # requires between them, no module lagging the root's latest tag. This runs
+  # scripts/check-module-versions.sh, the read-only counterpart to the
+  # release-time gate in internal/relguard. Needs full tag history, unlike the
+  # shallow checkout the other jobs use.
+  # ===========================================================================
+  module-versions:
+    name: Module version check
+    runs-on: ubuntu-latest
+    needs: ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Check module versions
+        run: ./scripts/check-module-versions.sh
+
+  # ===========================================================================
   # core module (required gate). Nested module under core/, with its own go.mod,
   # so the root `go test ./...` never touches it. This is the port layer the
   # whole split exists for, including the driver-dependency fence
