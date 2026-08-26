@@ -16,7 +16,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
 	github.com/xraph/confy v1.0.2
-	github.com/xraph/forge v1.9.10
+	github.com/xraph/forge v1.9.13
 	github.com/xraph/grove v1.6.2
 	github.com/xraph/grove/drivers/pgdriver v1.6.2
 	github.com/xraph/grove/kv v1.6.2
@@ -24,7 +24,7 @@ require (
 	github.com/xraph/shield v1.6.2
 	github.com/xraph/trove v1.6.5
 	github.com/xraph/vessel v1.0.4
-	golang.org/x/crypto v0.54.0
+	golang.org/x/crypto v0.55.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )
 
@@ -164,7 +164,7 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xraph/fabriq/core v0.0.0
-	github.com/xraph/go-utils v1.1.6 // indirect
+	github.com/xraph/go-utils v1.1.8 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
@@ -183,7 +183,7 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260708182218-49f421fb7959 // indirect
 	golang.org/x/term v0.45.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
