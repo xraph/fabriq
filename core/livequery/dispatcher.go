@@ -37,6 +37,12 @@ type view struct {
 
 	win           *Window
 	streamMembers map[string]bool // Streamed mode membership ID-set
+	// streamVals is the before-image per member, and it exists ONLY when the
+	// subscription asked for field deltas. A streamed view is deliberately an
+	// ID-set: it holds membership and no payloads, so this is the one place
+	// the feature costs memory rather than nothing, and it is why the flag is
+	// opt-in instead of always on.
+	streamVals map[string]map[string]any
 
 	initialPage []Row // Streamed-mode initial render page
 
@@ -62,6 +68,9 @@ func newView(id string, q LiveQuery, pred match.Predicate) *view {
 	}
 	if q.Mode == ModeStreamed {
 		v.streamMembers = map[string]bool{}
+		if q.FieldDeltas {
+			v.streamVals = map[string]map[string]any{}
+		}
 	}
 	return v
 }
@@ -125,14 +134,43 @@ func (v *view) applyStreamed(ch Change) []LiveDelta {
 	switch {
 	case matches && !was:
 		v.streamMembers[ch.AggID] = true
+		// The baseline the NEXT update will be measured against. A match
+		// itself carries no field delta: the client had no previous state for
+		// this row, so there is nothing for one to be relative to.
+		v.rememberVals(ch)
 		return []LiveDelta{{Op: OpMatch, AggID: ch.AggID, Version: ch.Version, Row: ch.Raw, Cursor: SortKeyOf(ch.Vals, v.q.Sort, ch.AggID)}}
 	case !matches && was:
 		delete(v.streamMembers, ch.AggID)
+		// Released with the membership. Held past the unmatch it would be a
+		// leak on a view that churns, and a stale baseline if the row ever
+		// matched again.
+		delete(v.streamVals, ch.AggID)
 		return []LiveDelta{{Op: OpUnmatch, AggID: ch.AggID, Version: ch.Version}}
 	case matches && was:
-		return []LiveDelta{{Op: OpUpdate, AggID: ch.AggID, Version: ch.Version, Row: ch.Raw, Cursor: SortKeyOf(ch.Vals, v.q.Sort, ch.AggID)}}
+		changes := v.fieldChanges(ch)
+		v.rememberVals(ch)
+		return []LiveDelta{{Op: OpUpdate, AggID: ch.AggID, Version: ch.Version, Row: ch.Raw, Cursor: SortKeyOf(ch.Vals, v.q.Sort, ch.AggID), Changes: changes}}
 	}
 	return nil
+}
+
+// fieldChanges measures this change against the baseline held for the row, or
+// returns nil when this subscription keeps none.
+func (v *view) fieldChanges(ch Change) map[string]any {
+	if v.streamVals == nil {
+		return nil
+	}
+	return diffVals(v.streamVals[ch.AggID], ch.Vals)
+}
+
+// rememberVals keeps this change as the baseline for the next one. A no-op
+// unless the subscription asked for field deltas, which is what keeps a
+// streamed view an ID-set for everyone else.
+func (v *view) rememberVals(ch Change) {
+	if v.streamVals == nil {
+		return
+	}
+	v.streamVals[ch.AggID] = ch.Vals
 }
 
 // snapshot returns the current state a newly-attached subscriber renders.

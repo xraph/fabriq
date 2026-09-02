@@ -127,10 +127,18 @@ func (w *Window) remove(ctx context.Context, pos int, _ Change) []LiveDelta {
 
 func (w *Window) reposition(ctx context.Context, old int, ch Change) []LiveDelta {
 	r := w.rowFromChange(ch)
+	// THE BEFORE-IMAGE, TAKEN BEFORE ANYTHING SPLICES.
+	//
+	// `w.rows[old]` is the row as the client last saw it and `r` is what
+	// arrived; one line down the first is overwritten and one branch down it
+	// is spliced out. This is the only moment both exist, and it is why a
+	// field delta costs the maintained window nothing: it is already paying to
+	// keep that row.
+	changes := w.fieldChanges(w.rows[old], r)
 	if CompareCursors(w.rows[old].Cursor, r.Cursor, w.q.Sort) == 0 {
 		w.rows[old] = r // same position, payload-only change
 		if old < w.n {
-			return []LiveDelta{w.delta(OpUpdate, r, old, old)}
+			return []LiveDelta{withChanges(w.delta(OpUpdate, r, old, old), changes)}
 		}
 		return nil
 	}
@@ -146,7 +154,9 @@ func (w *Window) reposition(ctx context.Context, old int, ch Change) []LiveDelta
 	newVisible := pos < w.n
 	switch {
 	case oldVisible && newVisible:
-		deltas = append(deltas, w.delta(OpMove, r, old, pos))
+		// A move is a payload change too — the row would not have re-sorted
+		// otherwise — so it carries the same delta an in-place update would.
+		deltas = append(deltas, withChanges(w.delta(OpMove, r, old, pos), changes))
 	case oldVisible && !newVisible:
 		deltas = append(deltas, w.delta(OpLeave, r, old, -1))
 		if w.n-1 < len(w.rows) {
@@ -191,6 +201,15 @@ func (w *Window) maybeRefill(ctx context.Context) {
 		w.complete = true
 	}
 	w.rows = append(w.rows, more...)
+}
+
+// fieldChanges is the per-field delta between the row the client holds and the
+// one that arrived, or nil when this subscription did not ask for one.
+func (w *Window) fieldChanges(prev, next Row) map[string]any {
+	if !w.q.FieldDeltas {
+		return nil
+	}
+	return diffVals(prev.Vals, next.Vals)
 }
 
 func (w *Window) delta(op DeltaOp, r Row, oldIdx, newIdx int) LiveDelta {
