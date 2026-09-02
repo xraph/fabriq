@@ -36,6 +36,15 @@ type liveRequest struct {
 	Filter map[string]any `json:"filter,omitempty"`
 	// Limit bounds the maintained window and the snapshot rows (default 50, max 200).
 	Limit int `json:"limit,omitempty"`
+	// FieldDeltas asks each update to name the fields that actually moved, so
+	// a client rendering cells can repaint one instead of the whole row.
+	//
+	// Opt-in rather than always on because it is not free in every mode — see
+	// livequery.LiveQuery.FieldDeltas. This endpoint runs ModeMaintained,
+	// where the window already holds the previous row and the diff costs
+	// nothing, but the flag stays a client's choice so the wire does not grow
+	// a field nobody reads.
+	FieldDeltas bool `json:"fieldDeltas,omitempty"`
 }
 
 // liveSnapshotEvent is the first SSE event of a live stream: the initial
@@ -59,6 +68,49 @@ type liveDeltaEvent struct {
 	Row      json.RawMessage `json:"row,omitempty"`
 	OldIndex int             `json:"oldIndex"`
 	NewIndex int             `json:"newIndex"`
+	// Changes names the fields that moved, present only when the request asked
+	// for field deltas and the engine had a before-image to measure against.
+	//
+	// ADDITIVE: Row still carries the whole row in every case, so a client that
+	// ignores this is unaffected, and one that reads it can repaint a single
+	// cell. Absent on enter/leave, which have no previous state to differ from.
+	Changes map[string]any `json:"changes,omitempty"`
+}
+
+// liveQueryFrom builds the engine's query from a validated request.
+//
+// EXTRACTED so a test can exercise it, which is the same reason
+// `writeLiveSnapshot` is its own function. Inline in the handler, the only way
+// to assert that a request flag reaches the engine was to rebuild the struct
+// in the test — which passes whatever the handler actually does.
+func liveQueryFrom(req liveRequest, limit int) livequery.LiveQuery {
+	lq := livequery.LiveQuery{
+		Entity:      req.Entity,
+		Limit:       limit,
+		Mode:        livequery.ModeMaintained,
+		FieldDeltas: req.FieldDeltas,
+	}
+	if len(req.Filter) > 0 {
+		lq.Where = query.Eqs(req.Filter)
+	}
+	return lq
+}
+
+// deltaEventFrom maps an engine delta onto the SSE event shape.
+//
+// The whole row rides along in every case, so `Changes` is additive: a client
+// that ignores it is unaffected, and one that reads it repaints a cell instead
+// of a row.
+func deltaEventFrom(d livequery.LiveDelta) liveDeltaEvent {
+	return liveDeltaEvent{
+		Type:     "delta",
+		Op:       d.Op.String(),
+		ID:       d.AggID,
+		Row:      d.Row,
+		OldIndex: d.OldIndex,
+		NewIndex: d.NewIndex,
+		Changes:  d.Changes,
+	}
 }
 
 // registerLiveRoutes wires the live-query SSE endpoint onto r.
@@ -105,14 +157,7 @@ func (c *adminController) handleLive(ctx forge.Context) error {
 		limit = maxLiveLimit
 	}
 
-	lq := livequery.LiveQuery{
-		Entity: req.Entity,
-		Limit:  limit,
-		Mode:   livequery.ModeMaintained,
-	}
-	if len(req.Filter) > 0 {
-		lq.Where = query.Eqs(req.Filter)
-	}
+	lq := liveQueryFrom(req, limit)
 
 	reqCtx := ctx.Request().Context()
 	snap, deltas, handle, serr := fab.LiveQuery(reqCtx, lq)
@@ -171,15 +216,7 @@ func streamLiveDeltas(ctx context.Context, sse *subscribe.SSEWriter, deltas <-ch
 			if !ok {
 				return nil
 			}
-			ev := liveDeltaEvent{
-				Type:     "delta",
-				Op:       d.Op.String(),
-				ID:       d.AggID,
-				Row:      d.Row,
-				OldIndex: d.OldIndex,
-				NewIndex: d.NewIndex,
-			}
-			if eerr := sse.WriteEvent(d.AggID, "delta", ev); eerr != nil {
+			if eerr := sse.WriteEvent(d.AggID, "delta", deltaEventFrom(d)); eerr != nil {
 				return eerr
 			}
 		case <-ticker.C:

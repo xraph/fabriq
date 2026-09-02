@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -160,4 +161,114 @@ func parseFirstSSEData(t *testing.T, body string) string {
 	}
 	t.Fatalf("no data line in SSE body %q", body)
 	return ""
+}
+
+/*
+THE FIELD DELTA HAS TO SURVIVE THE DTO.
+
+The SSE surface does not marshal a livequery.LiveDelta — it maps one onto
+liveDeltaEvent — so a field the engine computes reaches no browser until this
+type carries it. The engine's own tests prove the delta is produced; these
+prove it is not dropped on the way out, which is a different failure and was
+the state of this endpoint before.
+*/
+func TestLiveDeltaEvent_CarriesFieldChanges(t *testing.T) {
+	tests := []struct {
+		name    string
+		delta   livequery.LiveDelta
+		wantOp  string
+		want    map[string]any
+		wantKey bool // whether "changes" should appear on the wire at all
+	}{
+		{
+			name: "an update names the fields that moved",
+			delta: livequery.LiveDelta{
+				Op: livequery.OpUpdate, AggID: "a", OldIndex: 1, NewIndex: 1,
+				Row:     json.RawMessage(`{"id":"a","temp":11}`),
+				Changes: map[string]any{"temp": 11.0},
+			},
+			wantOp: "update", want: map[string]any{"temp": 11.0}, wantKey: true,
+		},
+		{
+			name: "a move carries them too",
+			delta: livequery.LiveDelta{
+				Op: livequery.OpMove, AggID: "a", OldIndex: 3, NewIndex: 0,
+				Row:     json.RawMessage(`{"id":"a","name":"z"}`),
+				Changes: map[string]any{"name": "z"},
+			},
+			wantOp: "move", want: map[string]any{"name": "z"}, wantKey: true,
+		},
+		{
+			// omitempty, so a subscription that did not ask for field deltas
+			// pays no bytes for a key it never reads.
+			name: "no delta means no key on the wire",
+			delta: livequery.LiveDelta{
+				Op: livequery.OpUpdate, AggID: "a",
+				Row: json.RawMessage(`{"id":"a"}`),
+			},
+			wantOp: "update", want: nil, wantKey: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// THE HANDLER'S OWN MAPPING, not a copy of it. Rebuilding the
+			// struct here made this test pass no matter what the handler did:
+			// both halves of the wiring could be deleted and it stayed green.
+			body, err := json.Marshal(deltaEventFrom(tt.delta))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			var got map[string]any
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Fatalf("unmarshal %s: %v", body, err)
+			}
+			if got["op"] != tt.wantOp {
+				t.Errorf("op = %v, want %q", got["op"], tt.wantOp)
+			}
+			raw, present := got["changes"]
+			if present != tt.wantKey {
+				t.Fatalf("changes present = %v, want %v; body = %s", present, tt.wantKey, body)
+			}
+			if tt.wantKey {
+				if !reflect.DeepEqual(raw, tt.want) {
+					t.Errorf("changes = %#v, want %#v", raw, tt.want)
+				}
+			}
+			// ADDITIVE: the whole row still ships either way.
+			if _, ok := got["row"]; !ok {
+				t.Error("row must still be sent beside the delta")
+			}
+		})
+	}
+}
+
+/*
+GUARDS the request half. A client that cannot ASK for field deltas cannot have
+them, however well the engine computes them.
+*/
+func TestLiveRequest_CarriesFieldDeltasFlag(t *testing.T) {
+	var req liveRequest
+	if err := json.Unmarshal([]byte(`{"entity":"asset","fieldDeltas":true}`), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !req.FieldDeltas {
+		t.Fatal("fieldDeltas did not decode off the request body")
+	}
+	// AND REACHES THE ENGINE. Decoding it onto the request proves nothing on
+	// its own: the flag has to arrive on the query the engine is handed.
+	if !liveQueryFrom(req, 50).FieldDeltas {
+		t.Error("the request asked for field deltas and the query did not carry it")
+	}
+
+	// And stays off when not asked, which is what keeps the wire unchanged for
+	// every client written before this existed.
+	var plain liveRequest
+	if err := json.Unmarshal([]byte(`{"entity":"asset"}`), &plain); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if plain.FieldDeltas || liveQueryFrom(plain, 50).FieldDeltas {
+		t.Error("fieldDeltas defaulted to true")
+	}
 }
