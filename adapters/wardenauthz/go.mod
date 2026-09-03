@@ -151,9 +151,9 @@ require (
 )
 
 require (
-	github.com/xraph/fabriq v0.0.0
+	github.com/xraph/fabriq v1.6.4
 	github.com/xraph/forge v1.10.0
-	github.com/xraph/warden v1.6.3
+	github.com/xraph/warden v1.6.4
 )
 
 replace github.com/xraph/fabriq => ../..
