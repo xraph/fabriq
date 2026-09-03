@@ -16,15 +16,16 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
 	github.com/xraph/confy v1.0.2
-	github.com/xraph/forge v1.9.13
-	github.com/xraph/grove v1.6.2
-	github.com/xraph/grove/drivers/pgdriver v1.6.2
-	github.com/xraph/grove/kv v1.6.2
-	github.com/xraph/grove/kv/drivers/redisdriver v1.6.2
-	github.com/xraph/shield v1.6.2
-	github.com/xraph/trove v1.6.5
+	github.com/xraph/fabriq/core v1.6.4
+	github.com/xraph/forge v1.10.0
+	github.com/xraph/grove v1.6.3
+	github.com/xraph/grove/drivers/pgdriver v1.6.3
+	github.com/xraph/grove/kv v1.6.3
+	github.com/xraph/grove/kv/drivers/redisdriver v1.6.3
+	github.com/xraph/shield v1.6.3
+	github.com/xraph/trove v1.6.6
 	github.com/xraph/vessel v1.0.4
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )
 
@@ -163,8 +164,7 @@ require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	github.com/xraph/fabriq/core v1.6.4
-	github.com/xraph/go-utils v1.1.8 // indirect
+	github.com/xraph/go-utils v1.2.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
@@ -177,7 +177,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp v0.0.0-20260727155853-b88d891fe743 // indirect
 	golang.org/x/mod v0.38.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

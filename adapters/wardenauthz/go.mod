@@ -101,13 +101,13 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xraph/confy v1.0.2 // indirect
-	github.com/xraph/fabriq/core v0.0.0 // indirect
-	github.com/xraph/go-utils v1.1.8 // indirect
-	github.com/xraph/grove v1.6.2 // indirect
-	github.com/xraph/grove/drivers/pgdriver v1.6.2 // indirect
-	github.com/xraph/grove/kv v1.6.2 // indirect
-	github.com/xraph/grove/kv/drivers/redisdriver v1.6.2 // indirect
-	github.com/xraph/trove v1.6.5 // indirect
+	github.com/xraph/fabriq/core v1.6.4 // indirect
+	github.com/xraph/go-utils v1.2.2 // indirect
+	github.com/xraph/grove v1.6.3 // indirect
+	github.com/xraph/grove/drivers/pgdriver v1.6.3 // indirect
+	github.com/xraph/grove/kv v1.6.3 // indirect
+	github.com/xraph/grove/kv/drivers/redisdriver v1.6.3 // indirect
+	github.com/xraph/trove v1.6.6 // indirect
 	github.com/xraph/vessel v1.0.4 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
@@ -121,10 +121,10 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/exp v0.0.0-20260727155853-b88d891fe743 // indirect
 	golang.org/x/mod v0.38.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
@@ -151,9 +151,9 @@ require (
 )
 
 require (
-	github.com/xraph/fabriq v0.0.0
-	github.com/xraph/forge v1.9.13
-	github.com/xraph/warden v1.6.3
+	github.com/xraph/fabriq v1.6.4
+	github.com/xraph/forge v1.10.0
+	github.com/xraph/warden v1.6.4
 )
 
 replace github.com/xraph/fabriq => ../..

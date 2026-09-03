@@ -3,8 +3,8 @@ module github.com/xraph/fabriq/remote/grpc/cmd/fabriqserver
 go 1.26.0
 
 require (
-	github.com/xraph/fabriq v0.0.0
-	github.com/xraph/fabriq/remote/grpc v0.0.0-00010101000000-000000000000
+	github.com/xraph/fabriq v1.6.4
+	github.com/xraph/fabriq/remote/grpc v1.6.4
 	google.golang.org/grpc v1.81.1
 )
 
@@ -53,13 +53,13 @@ require (
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-	github.com/xraph/fabriq/core v0.0.0
-	github.com/xraph/go-utils v1.1.8 // indirect
-	github.com/xraph/grove v1.6.2 // indirect
-	github.com/xraph/grove/drivers/pgdriver v1.6.2 // indirect
-	github.com/xraph/grove/kv v1.6.2 // indirect
-	github.com/xraph/grove/kv/drivers/redisdriver v1.6.2 // indirect
-	github.com/xraph/trove v1.6.5 // indirect
+	github.com/xraph/fabriq/core v1.6.4
+	github.com/xraph/go-utils v1.2.2 // indirect
+	github.com/xraph/grove v1.6.3 // indirect
+	github.com/xraph/grove/drivers/pgdriver v1.6.3 // indirect
+	github.com/xraph/grove/kv v1.6.3 // indirect
+	github.com/xraph/grove/kv/drivers/redisdriver v1.6.3 // indirect
+	github.com/xraph/trove v1.6.6 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.jetify.com/typeid/v2 v2.0.0-alpha.3 // indirect
@@ -73,7 +73,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp v0.0.0-20260727155853-b88d891fe743 // indirect
 	golang.org/x/mod v0.38.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260708182218-49f421fb7959 // indirect

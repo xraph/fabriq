@@ -44,6 +44,20 @@ type LiveQuery struct {
 	Limit  int // window size N
 	Cursor *Cursor
 	Mode   Mode
+	// FieldDeltas asks the engine to report WHICH fields moved on an update,
+	// not only that the row did. Off by default, and opt-in because the two
+	// modes pay for it very differently.
+	//
+	// ModeMaintained gets it for nothing: the window already holds the
+	// previous row in order to splice it, so the before-image is in hand at
+	// the moment the update is emitted.
+	//
+	// ModeStreamed holds only an ID-set — membership, no payloads — so a
+	// before-image means retaining the last row per matching aggregate for as
+	// long as it matches. That is real memory on a view that was deliberately
+	// built to hold none, and a subscriber that does not render cells should
+	// not pay it.
+	FieldDeltas bool
 }
 
 // Validate checks the query against an entity: filter columns must exist
@@ -115,6 +129,15 @@ type LiveDelta struct {
 	Cursor   Cursor          `json:"cursor,omitempty"`
 	StreamID string          `json:"stream_id,omitempty"`
 	At       time.Time       `json:"at"`
+	// Changes names the fields that moved, when the subscription asked for
+	// field deltas (LiveQuery.FieldDeltas) and a before-image was available.
+	//
+	// ADDITIVE, never a replacement: Row still carries the whole row, so a
+	// client that ignores this keeps working unchanged, and one that reads it
+	// can repaint a single cell instead of a row. Absent on enter/leave/match/
+	// unmatch, which have no previous state to be relative to, and absent when
+	// nothing moved.
+	Changes map[string]any `json:"changes,omitempty"`
 }
 
 // Row is a result row carried by the snapshot/refill ports.
