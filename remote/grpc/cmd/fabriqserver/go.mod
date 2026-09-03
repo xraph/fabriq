@@ -3,8 +3,8 @@ module github.com/xraph/fabriq/remote/grpc/cmd/fabriqserver
 go 1.26.0
 
 require (
-	github.com/xraph/fabriq v0.0.0
-	github.com/xraph/fabriq/remote/grpc v0.0.0-00010101000000-000000000000
+	github.com/xraph/fabriq v1.6.4
+	github.com/xraph/fabriq/remote/grpc v1.6.4
 	google.golang.org/grpc v1.81.1
 )
 
