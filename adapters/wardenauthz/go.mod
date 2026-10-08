@@ -70,10 +70,10 @@ require (
 	github.com/hashicorp/serf v0.10.4 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.10.0 // indirect
+	github.com/jackc/pgx/v5 v5.11.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.19.1 // indirect
+	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
@@ -100,14 +100,14 @@ require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	github.com/xraph/confy v1.0.2 // indirect
-	github.com/xraph/fabriq/core v1.6.4 // indirect
-	github.com/xraph/go-utils v1.2.2 // indirect
-	github.com/xraph/grove v1.6.3 // indirect
-	github.com/xraph/grove/drivers/pgdriver v1.6.3 // indirect
-	github.com/xraph/grove/kv v1.6.3 // indirect
-	github.com/xraph/grove/kv/drivers/redisdriver v1.6.3 // indirect
-	github.com/xraph/trove v1.6.6 // indirect
+	github.com/xraph/confy v1.0.3 // indirect
+	github.com/xraph/fabriq/core v1.7.0 // indirect
+	github.com/xraph/go-utils v1.3.0 // indirect
+	github.com/xraph/grove v1.7.1 // indirect
+	github.com/xraph/grove/drivers/pgdriver v1.7.1 // indirect
+	github.com/xraph/grove/kv v1.7.1 // indirect
+	github.com/xraph/grove/kv/drivers/redisdriver v1.7.1 // indirect
+	github.com/xraph/trove v1.7.0 // indirect
 	github.com/xraph/vessel v1.0.4 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
@@ -117,8 +117,6 @@ require (
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.56.0 // indirect
@@ -126,7 +124,7 @@ require (
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260708182218-49f421fb7959 // indirect
 	golang.org/x/term v0.45.0 // indirect
@@ -151,9 +149,9 @@ require (
 )
 
 require (
-	github.com/xraph/fabriq v1.6.4
-	github.com/xraph/forge v1.10.0
-	github.com/xraph/warden v1.6.4
+	github.com/xraph/fabriq v1.7.0
+	github.com/xraph/forge v1.12.3
+	github.com/xraph/warden v1.7.0
 )
 
 replace github.com/xraph/fabriq => ../..

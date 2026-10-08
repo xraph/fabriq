@@ -35,7 +35,7 @@ func seedAnalyticsAdmin(t *testing.T) (*warden.Engine, context.Context) {
 	}
 	must(s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "analytics-admin", Slug: "analytics-admin"}))
 	must(s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "analytics:admin", Resource: "analytics", Action: "admin"}))
-	must(s.AttachPermission(ctx, roleID, permission.Ref{Name: "analytics:admin"}))
+	must(s.AttachPermission(ctx, "t1", roleID, permission.Ref{Name: "analytics:admin"}))
 	must(s.CreateAssignment(ctx, &assignment.Assignment{TenantID: "t1", RoleID: roleID, SubjectKind: "user", SubjectID: "alice"}))
 	return eng, ctx
 }
