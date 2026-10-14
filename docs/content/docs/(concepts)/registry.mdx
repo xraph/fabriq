@@ -3,7 +3,7 @@ title: Registry
 description: How an entity is declared once as an EntitySpec and the projection mappings, channel names, and tenant-scoped store names are all derived from it.
 ---
 
-The registry is fabriq's declarative schema. Each entity is described once as an `EntitySpec` — its relational shape via a grove-tagged model, plus the fabric-only concerns layered on top (graph mapping, search mapping, subscription scopes, the CRDT plane) — and everything else is derived: projection mappings, channel names, tenant-scoped store names, conformance checks. For static (Go-struct) entities the registry never generates DDL; the one fenced exception is [dynamic entities](/docs/dynamic-entities), declared from a runtime descriptor.
+The registry is fabriq's declarative schema. Each entity is described once as an `EntitySpec` (its relational shape via a grove-tagged model, plus the fabric-only concerns layered on top: graph mapping, search mapping, subscription scopes, the CRDT plane), and everything else is derived: projection mappings, channel names, tenant-scoped store names, conformance checks. For static (Go-struct) entities the registry never generates DDL; the one fenced exception is [dynamic entities](/docs/dynamic-entities), declared from a runtime descriptor.
 
 ## EntitySpec
 
@@ -50,7 +50,7 @@ type SearchSpec struct {
 }
 ```
 
-The zero value (empty `Index`) means the entity is not indexed. `Fields` must be real columns of the bound table — registration rejects a field that is not.
+The zero value (empty `Index`) means the entity is not indexed. `Fields` must be real columns of the bound table: registration rejects a field that is not.
 
 ### Subscribe scopes
 
@@ -63,7 +63,7 @@ var ByTenant = Scope{Name: "tenant"} // everything in the tenant
 func ByField(name, field string) Scope // e.g. ByField("site", "site_id")
 ```
 
-`ByID` scopes deltas to a single aggregate. `ByTenant` scopes them to everything in the tenant — its channel id is always the context tenant, never client input. `ByField(name, field)` declares a containing scope whose channel id comes from the named column: `ByField("site", "site_id")` lets a client subscribe to all assets at one site, with the channel id taken from each asset's `site_id`. See [Subscriptions](/docs/subscriptions) for how scopes resolve to channels at subscribe time.
+`ByID` scopes deltas to a single aggregate. `ByTenant` scopes them to everything in the tenant: its channel id is always the context tenant, never client input. `ByField(name, field)` declares a containing scope whose channel id comes from the named column: `ByField("site", "site_id")` lets a client subscribe to all assets at one site, with the channel id taken from each asset's `site_id`. See [Subscriptions](/docs/subscriptions) for how scopes resolve to channels at subscribe time.
 
 ### CRDTSpec
 
@@ -75,7 +75,7 @@ type CRDTSpec struct {
 }
 ```
 
-The merge engine itself comes from grove's CRDT packages — referenced, not reimplemented. `SnapshotEvery` governs log compaction cadence; `QuietWindow` is the idle period after which the merged state materializes into one ordinary domain event.
+The merge engine itself comes from grove's CRDT packages: referenced, not reimplemented. `SnapshotEvery` governs log compaction cadence; `QuietWindow` is the idle period after which the merged state materializes into one ordinary domain event.
 
 ## A real spec
 
@@ -124,7 +124,7 @@ type Asset struct {
 }
 ```
 
-Every fabriq-managed table must carry three structural columns — `id` (primary key), `tenant_id`, and `version` — because they are what make the invariants enforceable: tenancy is a column (RLS keys on it) and optimistic concurrency is a column. Binding fails if any is missing.
+Every fabriq-managed table must carry three structural columns (`id` as primary key, `tenant_id`, and `version`) because they are what make the invariants enforceable: tenancy is a column (RLS keys on it) and optimistic concurrency is a column. Binding fails if any is missing.
 
 ## Registering and validating
 
@@ -143,7 +143,7 @@ if err := reg.Validate(); err != nil {
 `Validate()` runs the cross-entity checks once all entities are registered: every edge `Target` must itself be a registered entity, and that target must declare a `GraphNode`. `fabriq.New` and `fabriq.Open` both call `Validate()` for you.
 
 <Callout type="info">
-`RegisterAll` registers the example domain pack (site, asset, tag, page). To model your own domain, build the same shape of `EntitySpec` set against a fresh `registry.New()`. The kernel and adapters are unchanged.
+`RegisterAll` registers the example domain pack (site, asset, tag, page). Fabriq's migrations don't create its tables (the DDL is in `domain.DemoDDL()`, applied by tests and the demo binaries), so writes fail with `schema_mismatch` unless you apply it. To model your own domain, register your own `EntitySpec` set against a fresh `registry.New()` and create the tables in your migrations, as the [Quickstart](/docs/quickstart) does.
 </Callout>
 
 ## What is derived from specs
@@ -151,15 +151,15 @@ if err := reg.Validate(); err != nil {
 The registry is the single place names and mappings are minted, so they are consistent by construction:
 
 - **Projection mappings.** Appliers translate events into engine-neutral mutations using the entity's `GraphNode`, `Edges`, and `Search` declarations. See [Projections](/docs/projections).
-- **Channel names.** Subscription channels are always `changes:{tenant}:{scope}:{id}`, derived from the entity's `Subscribe` scopes and the context tenant — clients never name a channel.
+- **Channel names.** Subscription channels are always `changes:{tenant}:{scope}:{id}`, derived from the entity's `Subscribe` scopes and the context tenant: clients never name a channel.
 - **Event types.** `EventType(entity, verb)` mints types like `asset.updated`; it is the only way type strings are formed, so consumers can rely on the shape.
 - **Tenant-scoped store names.** Per-tenant graph names (`tenant_{id}`), search index aliases (`fabriq_{tenant}_{base}`), and their blue-green versioned variants all derive from the tenant id and the spec, in one place.
 
 ## The registry never generates DDL
 
-This is a hard boundary **for static entities**. grove migrations are the schema authority — they create and alter tables. The registry only *reads* the grove-tagged model to learn the relational shape it must conform to. The bridge between the two is the registry-conformance integration test, which asserts that every registered entity's bound columns match what the migrations actually created. If a migration and a spec disagree, that test fails. See [Migrations](/docs/migrations) for the full schema-discipline workflow.
+This is a hard boundary **for static entities**. grove migrations are the schema authority: they create and alter tables. The registry only *reads* the grove-tagged model to learn the relational shape it must conform to. The bridge between the two is the registry-conformance integration test, which asserts that every registered entity's bound columns match what the migrations actually created. If a migration and a spec disagree, that test fails. See [Migrations](/docs/migrations) for the full schema-discipline workflow.
 
-The one fenced exception is [dynamic entities](/docs/dynamic-entities) — entities declared from a runtime `Schema` descriptor instead of a Go `Model`. For *those*, fabriq does manage DDL (`CREATE`/additive `ALTER`), because there is no compile-time migration to author. It is additive and opt-in, and leaves the static lane's discipline above completely intact.
+The one fenced exception is [dynamic entities](/docs/dynamic-entities): entities declared from a runtime `Schema` descriptor instead of a Go `Model`. For *those*, fabriq does manage DDL (`CREATE`/additive `ALTER`), because there is no compile-time migration to author. It is additive and opt-in, and leaves the static lane's discipline above completely intact.
 
 ## Where to go next
 

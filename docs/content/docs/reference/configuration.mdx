@@ -5,30 +5,38 @@ description: Exhaustive reference for the Fabriq Config struct, functional Optio
 
 This is the exhaustive reference for every `Config` field, functional `Option`, and `FABRIQ_*` environment variable. For the task-oriented walkthrough of how to assemble and pass configuration, see [Getting Started · Configuration](/docs/configuration).
 
-`Config` is Fabriq's declarative configuration: which stores exist and which projections run. It carries `yaml` and `json` struct tags (the same schema the `fabriq` binary loads from YAML). Entities are **not** configured here — they are registered in code via the registry.
+`Config` is Fabriq's declarative configuration: which stores exist and which projections run. It carries `yaml` and `json` struct tags. Entities aren't configured here; you register them in code through the registry.
 
 ```go
 type Config struct {
-	Postgres      PostgresConfig
-	Shards        []ShardConfig
-	Redis         RedisConfig
-	FalkorDB      FalkorDBConfig
-	Elasticsearch ElasticsearchConfig
-	Storage       StorageConfig
-	Projections   ProjectionsConfig
-	Subscriptions SubscriptionsConfig
-	Cache         CacheConfig
-	Encryption    EncryptionConfig
+	Postgres       PostgresConfig
+	Shards         []ShardConfig
+	ShardPins      map[string]string
+	Catalog        CatalogConfig
+	Analytics      AnalyticsConfig
+	Insights       InsightsConfig
+	Redis          RedisConfig
+	FalkorDB       FalkorDBConfig
+	Elasticsearch  ElasticsearchConfig
+	Storage        StorageConfig
+	Documents      DocumentsConfig
+	Projections    ProjectionsConfig
+	Subscriptions  SubscriptionsConfig
+	Cache          CacheConfig
+	Encryption     EncryptionConfig
+	CustomAppliers []projection.CustomApplier // yaml:"-"
 }
 ```
 
+The YAML loader (`forgeext.LoadConfig`, used by the Forge extension for `extensions.fabriq` and by the `fabriq` binary for top-level keys) reads `postgres`, `shards`, `shardPins`, `redis`, `falkordb`, `elasticsearch`, `projections`, `subscriptions` and `storage`. `catalog`, `analytics`, `insights`, `documents`, `cache` and `encryption` have tags but the loader skips them, so set those in code (with `forgeext.WithConfig` under Forge).
+
 ## PostgresConfig
 
-Locates the source of truth. Required unless `shards` is set (a single `postgres` block is the one-shard shorthand). YAML/JSON key: `postgres`.
+Locates the source of truth. Required unless `shards` is set, catalog mode is on, or the Forge extension borrows a `*grove.DB` (a single `postgres` block is the one-shard shorthand). YAML/JSON key: `postgres`.
 
 | Field | Type | yaml/json key | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `DSN` | `string` | `dsn` | `""` | Postgres connection string. Required when `shards` is empty (the single-shard case). |
+| `DSN` | `string` | `dsn` | `""` | Postgres connection string for the single-shard case. Mutually exclusive with catalog mode. |
 | `PoolSize` | `int` | `pool_size` | `0` | Connection pool size passed to the adapter via `postgres.WithPoolSize`. Zero leaves the adapter default. |
 
 ## ShardConfig
@@ -42,8 +50,40 @@ Locates one source-of-truth shard. YAML/JSON key: `shards` (a list). When `shard
 | `PoolSize` | `int` | `pool_size` | `0` | Connection pool size for this shard. Zero leaves the adapter default. |
 
 <Callout type="warn">
-`shards` is a list of structs and cannot be set through the `FABRIQ_*` environment overlay — multi-shard deployments must mount a `config.yaml`, and the shard count is fixed at deploy time. See [Sharding](/docs/sharding).
+`shards` is a list of structs and can't be set through the `FABRIQ_*` environment overlay. Multi-shard deployments mount a `config.yaml`, and the shard count is fixed at deploy time. `shardPins` (a map of tenant ID to shard ID) pins individual tenants. See [Sharding](/docs/sharding).
 </Callout>
+
+## CatalogConfig
+
+Turns on catalog mode: database-per-tenant or schema-per-tenant, routed through a control database. Set in code. Setting `DSN` turns it on, and it's mutually exclusive with `postgres.dsn`, `shards` and `shardPins`. See [Database per tenant](/docs/db-per-tenant) and [Schema per tenant](/docs/schema-per-tenant).
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `DSN` | `string` | `""` | The control database holding `fabriq_tenant_catalog` |
+| `ClusterDSNs` | `map[string]string` | none | Cluster ID to server-level DSN. At least one is required |
+| `ReplicaDSNs` | `[]string` | none | Read replicas of the control database, used for routing reads when the primary is down. Each must be a `postgres://` URL |
+| `CacheTTL` | `time.Duration` | `30s` | How long a route is cached |
+| `MaxActiveShards` | `int` | `128` | Cap on concurrently open tenant database pools (LRU) |
+| `AllowSuperuser` | `bool` | `false` | Skip the refusal of superuser cluster credentials. Development only |
+| `Adaptive` | `AdaptivePoolConfig` | off | Autoscale `MaxActiveShards`: `Enabled`, `Min` (8), `Max`, `Interval` (5s), `ConnBudget`, `PerShardConns` (4), `HeapSoftLimit` |
+| `Isolation` | `string` | `"database"` | `"database"` or `"schema"` |
+| `SharedSchema` | `string` | `"fabriq_shared"` | Schema isolation only: the schema holding shared extensions, appended to every tenant's `search_path` |
+
+## AnalyticsConfig
+
+Configures the analytics sink. Set in code. See [Analytics sink](/docs/analytics-sink).
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `DSN` | `string` | `""` | The analytics database. The scheme picks the backend: `postgres://` (pganalytics), `clickhouse://` (chanalytics) or `duckdb://` (only with the `duckdb` build tag) |
+| `Batch` | `int` | `128` | Backfill write batch size |
+| `EventRetention` | `time.Duration` | `0` | Prune history events older than this; zero keeps them forever |
+| `HashSalt` | `string` | `""` | Salt for pseudonymized `Hash` fields. Required when any entity uses them |
+| `PartitionEvents` | `bool` | `false` | Postgres only: a monthly-partitioned event log, on fresh databases |
+
+## InsightsConfig and DocumentsConfig
+
+`Insights.Enabled` turns the insights plane on. `Documents.ArchiveHistory` is the default for offloading sealed CRDT update history to the blob plane on compaction (per-entity `CRDTSpec.ArchiveHistory` overrides it); it requires `Storage`, and `Open` fails fast without it. Both are set in code.
 
 ## RedisConfig
 
@@ -101,7 +141,7 @@ A zero value in `SubscriptionsConfig` means "leave the default". `Config.Options
 
 ## StorageConfig
 
-Configures the object-store backend that fills `f.Blob()` (the [file-plane](/docs/file-plane) byte plane). YAML/JSON key: `storage`. An empty `StorageDriver` leaves the blob port unconfigured — the byte plane ships dark and `Blob()` calls return `ErrStoreNotConfigured`.
+Configures the object-store backend that fills `f.Blob()` (the [file-plane](/docs/file-plane) byte plane). YAML/JSON key: `storage`. An empty `StorageDriver` leaves the blob port unconfigured: the byte plane ships dark and `Blob()` calls return `ErrStoreNotConfigured`.
 
 | Field | Type | yaml/json key | Default | Meaning |
 | --- | --- | --- | --- | --- |
@@ -125,7 +165,7 @@ Configures field-level encryption for `blob_source` credentials. YAML/JSON key: 
 
 | Field | Type | yaml/json key | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `Key` | `string` | `key` | `""` | Base64-encoded 32-byte AES-256 data-encryption key. Empty disables encryption — writes that carry credentials then fail closed. |
+| `Key` | `string` | `key` | `""` | Base64-encoded 32-byte AES-256 data-encryption key. Empty disables encryption: writes that carry credentials then fail closed. |
 
 ## Functional Options
 
@@ -133,7 +173,7 @@ Configures field-level encryption for `blob_source` credentials. YAML/JSON key: 
 
 | Option | Signature | Default | Effect |
 | --- | --- | --- | --- |
-| `WithConflationWindow` | `WithConflationWindow(d time.Duration) Option` | `150ms` | Tunes the hub's LWW flush window (spec range 100–250ms). Ignored when `d <= 0`. |
+| `WithConflationWindow` | `WithConflationWindow(d time.Duration) Option` | `150ms` | Tunes the hub's LWW flush window (spec range 100 to 250ms). Ignored when `d <= 0`. |
 | `WithSubscribeBuffer` | `WithSubscribeBuffer(n int) Option` | `64` | Sets the per-subscriber delta buffer; full buffers drop (clients refetch + resume by `Last-Event-ID`). Ignored when `n <= 0`. |
 | `WithWaitPollInterval` | `WithWaitPollInterval(d time.Duration) Option` | `25ms` | Tunes `WaitForProjection`'s poll cadence. Ignored when `d <= 0`. |
 | `WithStreamMaxLen` | `WithStreamMaxLen(n int64) Option` | `500` | Approximate `MAXLEN` for per-channel Redis streams (catch-up depth before clients must refetch). Ignored when `n <= 0`. |
@@ -142,9 +182,13 @@ Configures field-level encryption for `blob_source` credentials. YAML/JSON key: 
 | `WithUpcasters` | `WithUpcasters(chain *event.UpcasterChain) Option` | `nil` | Registers the event payload upcaster chain. Projection engines apply it at decode, so appliers only see the latest payload shape. |
 | `WithTraceparent` | `WithTraceparent(fn func(context.Context) string) Option` | `otel.TraceparentFromContext` | Supplies the W3C traceparent extractor stamped into event envelopes. Appended to the executor options. |
 | `WithClock` | `WithClock(now func() time.Time) Option` | system clock | Overrides the command-plane clock (tests). Appended to the executor options. |
+| `WithLiveAuthz` | `WithLiveAuthz(fn livequery.AuthzFunc) Option` | none | Authorization hook for live queries |
+| `WithLiveCushion` | `WithLiveCushion(n int) Option` | none | Extra rows kept beyond a live query's window |
+| `WithLifecycleHook` | `WithLifecycleHook(hooks ...command.LifecycleHook) Option` | none | Hooks around command execution |
+| `WithEncryptor` | `WithEncryptor(e crypto.Encryptor) Option` | none | The encryptor for at-rest secrets |
 
 <Callout type="info">
-`withTailer` is an internal option (wires the hub pump from the Redis transport) and is not part of the public `Option` surface — `Open` selects it automatically when `redis.addr` is set. By default the executor is configured with `command.WithTraceparent(otel.TraceparentFromContext)` so one trace spans command → outbox → relay → projection apply.
+`withTailer` is an internal option (wires the hub pump from the Redis transport) and is not part of the public `Option` surface: `Open` selects it automatically when `redis.addr` is set. By default the executor is configured with `command.WithTraceparent(otel.TraceparentFromContext)` so one trace spans command → outbox → relay → projection apply.
 </Callout>
 
 ## Environment Variables
@@ -161,14 +205,16 @@ The `fabriq` binary (`cmd/fabriq`) is environment-first: the deployment injects 
 | `FABRIQ_RECONCILE_INTERVAL` | serve | `5m` | Go duration string for the reconcile loop cadence. `"0"` disables it. Unparseable values are ignored (default kept). |
 
 <Callout type="warn">
-To serve, both `FABRIQ_POSTGRES_DSN` and `FABRIQ_REDIS_ADDR` must be set — the worker extension fails its start otherwise. Operator commands (`migrate`, `inspect`, `rebuild`, `reconcile`) need only the DSN (via `--dsn` or `FABRIQ_POSTGRES_DSN`), plus the relevant store flag/env for graph or search work.
+To serve, both `FABRIQ_POSTGRES_DSN` and `FABRIQ_REDIS_ADDR` must be set: the worker extension fails its start otherwise. Operator commands (`migrate`, `inspect`, `rebuild`, `reconcile`) need only the DSN (via `--dsn` or `FABRIQ_POSTGRES_DSN`), plus the relevant store flag/env for graph or search work.
 </Callout>
 
 ## Validation Rules
 
-`Config.Validate()` checks cross-field consistency only — it does **not** dial any store. `Open` calls it before opening adapters. The rules:
+`Config.Validate()` checks cross-field consistency only; it doesn't dial any store. `Open` calls it before opening adapters. The rules:
 
-- `postgres.dsn` must be non-empty **unless** `shards` is set. When `shards` is set, every shard needs a non-empty, unique `id` and a non-empty `dsn`.
+- A source of truth is required: `postgres.dsn`, `shards`, catalog mode, or an injected `*grove.DB`.
+- With `shards`, every shard needs a non-empty, unique `id` and a non-empty `dsn`. `shardPins` requires `shards`, and every pin must name a known shard and a non-empty tenant.
+- Catalog mode can't be combined with `shards`, `shardPins` or `postgres.dsn`. It needs at least one entry in `clusterDsns` (each with an ID and a DSN), `maxActiveShards >= 0`, valid `adaptive` bounds, `isolation` of `"database"` or `"schema"`, a bare-identifier `sharedSchema`, and `postgres://` replica URLs.
 - If `projections.graph` is enabled, `falkordb.addr` must be non-empty.
 - If `projections.search` is enabled, `elasticsearch.addrs` must be non-empty.
 - If either projection is enabled, `redis.addr` must be non-empty (projections need the event stream).

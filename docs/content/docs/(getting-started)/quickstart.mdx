@@ -1,172 +1,241 @@
 ---
 title: Quickstart
-description: Build a registry, open the facade, run create and update commands under a tenant context, read back, batch, and subscribe to deltas.
+description: Declare an entity, migrate its table, open the fabric, then create, update, read, batch and subscribe under a tenant.
 ---
 
-This is the shortest end-to-end path through Fabriq: register a domain, open the facade against Postgres and Redis, then exercise the write path (`Exec`, `ExecBatch`), the relational read path (`Relational().Get`), and the live delta stream (`Subscribe`). Every call is tenant-scoped — the tenant lives on the `context.Context`, and the fabric refuses unstamped contexts.
+This is the shortest end-to-end path through Fabriq. You declare one entity, create its table with a migration, open the fabric against Postgres and Redis, and run the write path (`Exec`, `ExecBatch`), the relational read path (`Relational().Get`) and the live delta stream (`Subscribe`). Every call is tenant-scoped: the tenant lives on the `context.Context`, and the fabric refuses a context without one.
 
-## Build the registry and open the facade
+## Start Postgres and Redis
+
+Fabriq's migrations enable TimescaleDB, pgvector and PostGIS, so use an image that has all three:
+
+```bash
+docker run -d --name fabriq-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres timescale/timescaledb-ha:pg16-all
+docker run -d --name fabriq-redis -p 6379:6379 redis:7-alpine
+```
+
+Then create a module:
+
+```bash
+mkdir hello-fabriq && cd hello-fabriq
+go mod init example.com/hello-fabriq
+go get github.com/xraph/fabriq@latest
+```
+
+## The program
+
+Save this as `main.go`:
 
 ```go
 package main
 
 import (
-	"context"
-	"errors"
-	"log"
+    "context"
+    "errors"
+    "fmt"
+    "log"
 
-	"github.com/xraph/fabriq"
-	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/domain"
+    "github.com/xraph/fabriq"
+    "github.com/xraph/fabriq/core/command"
+    "github.com/xraph/fabriq/core/query"
+    "github.com/xraph/fabriq/core/registry"
+    "github.com/xraph/fabriq/core/tenant"
+    "github.com/xraph/fabriq/migrations"
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/pgdriver"
+    "github.com/xraph/grove/migrate"
 )
+
+const dsn = "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+
+// Note is a fabriq entity. id, tenant_id and version are stamped by fabriq.
+type Note struct {
+    grove.BaseModel `grove:"table:notes"`
+
+    ID       string `grove:"id,pk" json:"id"`
+    TenantID string `grove:"tenant_id,notnull" json:"tenant_id"`
+    Version  int64  `grove:"version,notnull" json:"version"`
+    Title    string `grove:"title,notnull" json:"title"`
+}
+
+// The registry never generates DDL, so your tables come from your migrations.
+var appMigrations = migrate.NewGroup("app", migrate.DependsOn(migrations.GroupName))
+
+func init() {
+    appMigrations.MustRegister(&migrate.Migration{
+        Name:    "create_notes",
+        Version: "20260101000001",
+        Up: func(ctx context.Context, exec migrate.Executor) error {
+            _, err := exec.Exec(ctx, `CREATE TABLE IF NOT EXISTS notes (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                version BIGINT NOT NULL,
+                title TEXT NOT NULL
+            )`)
+            return err
+        },
+        Down: func(ctx context.Context, exec migrate.Executor) error {
+            _, err := exec.Exec(ctx, `DROP TABLE notes`)
+            return err
+        },
+    })
+}
 
 func main() {
-	reg := registry.New()
-	if err := domain.RegisterAll(reg); err != nil {
-		log.Fatalf("register domain: %v", err)
-	}
+    ctx := context.Background()
 
-	f, _, err := fabriq.Open(context.Background(), reg, fabriq.Config{
-		Postgres: fabriq.PostgresConfig{DSN: "postgres://user:pass@localhost:5432/fabriq?sslmode=disable"},
-		Redis:    fabriq.RedisConfig{Addr: "localhost:6379"},
-	})
-	if err != nil {
-		log.Fatalf("open fabriq: %v", err)
-	}
-	defer f.Close()
+    // 1. Apply fabriq's migrations, then yours.
+    pg := pgdriver.New()
+    if err := pg.Open(ctx, dsn); err != nil {
+        log.Fatal(err)
+    }
+    exec, err := migrate.NewExecutorFor(pg)
+    if err != nil {
+        log.Fatal(err)
+    }
+    if _, err := migrate.NewOrchestrator(exec, migrations.Group(), appMigrations).Migrate(ctx); err != nil {
+        log.Fatal(err)
+    }
+    _ = pg.Close()
 
-	// ... commands and queries below run against f
+    // 2. Declare the entity and open the fabric.
+    reg := registry.New()
+    if err := reg.Register(registry.EntitySpec{
+        Name:      "note",
+        Kind:      registry.KindAggregate,
+        Model:     (*Note)(nil),
+        Subscribe: []registry.Scope{registry.ByID, registry.ByTenant},
+    }); err != nil {
+        log.Fatal(err)
+    }
+
+    f, _, err := fabriq.Open(ctx, reg, fabriq.Config{
+        Postgres: fabriq.PostgresConfig{DSN: dsn},
+        Redis:    fabriq.RedisConfig{Addr: "localhost:6379"},
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer f.Close()
+
+    // 3. Every call runs as a tenant.
+    tctx, err := tenant.WithTenant(ctx, "acme")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Create.
+    res, err := f.Exec(tctx, command.Command{
+        Entity:  "note",
+        Op:      command.OpCreate,
+        Payload: &Note{Title: "First note"},
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Update, gated on the version we just wrote.
+    expected := res.Version
+    if _, err := f.Exec(tctx, command.Command{
+        Entity:          "note",
+        Op:              command.OpUpdate,
+        AggID:           res.AggID,
+        Payload:         &Note{Title: "First note, edited"},
+        ExpectedVersion: &expected,
+    }); err != nil {
+        if errors.Is(err, fabriq.ErrVersionConflict) {
+            log.Fatal("someone else wrote first; reload and retry")
+        }
+        log.Fatal(err)
+    }
+
+    // Read it back.
+    var n Note
+    if err := f.Relational().Get(tctx, "note", res.AggID, &n); err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("%q at version %d (event %s)\n", n.Title, n.Version, res.EventID)
+
+    // Batch: all or nothing, in one transaction.
+    results, err := f.ExecBatch(tctx, []command.Command{
+        {Entity: "note", Op: command.OpCreate, Payload: &Note{Title: "Second note"}},
+        {Entity: "note", Op: command.OpCreate, Payload: &Note{Title: "Third note"}},
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    for _, r := range results {
+        fmt.Printf("created %s at v%d\n", r.AggID, r.Version)
+    }
+
+    // Subscribe to one note's deltas. Deltas arrive once a worker relays
+    // the outbox to Redis; this program doesn't run one.
+    sctx, cancel := context.WithCancel(tctx)
+    defer cancel()
+    stream, err := f.Subscribe(sctx, query.SubscribeScope{Entity: "note", Scope: "id", ID: res.AggID})
+    if err != nil {
+        log.Fatal(err)
+    }
+    _ = stream
 }
 ```
 
-`domain.RegisterAll` registers the example domain pack. You can register your own `registry.EntitySpec` set instead — the rest of this page assumes the `site` and `asset` entities from that pack.
+Run it:
 
-## Stamp the tenant context
-
-Every fabric entry point calls `tenant.Require` and fails with `ErrNoTenant` on an unstamped context. Stamp the tenant with `tenant.WithTenant`, which validates the id before it ends up in any derived name (graph names, index names, stream keys).
-
-```go
-import "github.com/xraph/fabriq/core/tenant"
-
-ctx, err := tenant.WithTenant(context.Background(), "acme")
-if err != nil {
-	log.Fatalf("invalid tenant id: %v", err)
-}
+```bash
+go mod tidy
+go run .
+# "First note, edited" at version 2 (event 01M4YB1Q...)
+# created 01M4YB1Q... at v1
+# created 01M4YB1Q... at v1
 ```
+
+The rest of this page walks through what each step does.
+
+## Your table, your migration
+
+The registry never generates DDL for a static entity. You create the table yourself, in a Grove migration group that depends on `migrations.GroupName`, and run it in the same orchestrator as `migrations.Group()`. The table needs `id`, `tenant_id` and `version` columns, which Fabriq stamps on every write. Values you set on the payload for those three are ignored.
+
+## Stamp the tenant
+
+Every fabric entry point calls `tenant.Require` and fails with `fabriq.ErrNoTenant` on a context without a tenant. `tenant.WithTenant` validates the ID before it ends up in any derived name (graph names, index names, stream keys).
 
 <Callout type="warn">
-The tenant id MUST come from validated auth claims — a verified JWT, a session, an mTLS identity — never from user input or a forwarded header. `WithTenant` validates the id's *shape* (`^[a-zA-Z0-9_-]{1,64}$`), not its authenticity. Stamping a tenant from a client-controlled value lets a caller read and write another tenant's data. Only auth middleware should call `WithTenant`.
+The tenant ID must come from validated auth claims (a verified JWT, a session, an mTLS identity), never from user input or a forwarded header. `WithTenant` checks the ID's shape (`^[a-zA-Z0-9_-]{1,64}$`), not its authenticity. Only your auth middleware should call it.
 </Callout>
 
-## Create an aggregate
+## Create and update
 
-A write is one `command.Command`. `OpCreate` mints a ULID when `AggID` is empty and starts the aggregate at version 1. The executor stamps `id`, `tenant_id`, and `version` structurally — values you set on the payload for those columns are ignored.
+A write is one `command.Command`. `OpCreate` mints a ULID when `AggID` is empty and starts the aggregate at version 1. The result is a `command.Result` with `AggID`, `Version` and `EventID`, the outbox event written in the same transaction as the row.
 
-```go
-import (
-	"github.com/xraph/fabriq/core/command"
-	"github.com/xraph/fabriq/domain"
-)
-
-res, err := f.Exec(ctx, command.Command{
-	Entity:  "site",
-	Op:      command.OpCreate,
-	Payload: &domain.Site{Name: "North Plant", Code: "NP-1", Region: "eu-west"},
-})
-if err != nil {
-	log.Fatalf("create site: %v", err)
-}
-// res is command.Result{AggID, Version, EventID}:
-// res.AggID    — the minted (or supplied) aggregate id
-// res.Version  — 1 for a create
-// res.EventID  — the outbox event appended in the same transaction
-```
-
-## Update with optimistic concurrency
-
-Set `ExpectedVersion` to gate the write on the stored version. If another writer advanced it first, the command fails with `ErrVersionConflict` instead of clobbering. `OpUpdate` requires `AggID` and bumps the version.
-
-```go
-expected := res.Version // the version we just read/created
-
-upd, err := f.Exec(ctx, command.Command{
-	Entity:          "site",
-	Op:              command.OpUpdate,
-	AggID:           res.AggID,
-	Payload:         &domain.Site{Name: "North Plant A", Code: "NP-1", Region: "eu-west"},
-	ExpectedVersion: &expected,
-})
-if err != nil {
-	if errors.Is(err, fabriq.ErrVersionConflict) {
-		// reload, re-derive, retry
-	}
-	log.Fatalf("update site: %v", err)
-}
-// upd.Version == 2
-```
+`OpUpdate` needs `AggID` and bumps the version. With `ExpectedVersion` set, the write fails with `fabriq.ErrVersionConflict` if another writer got there first, so you never overwrite silently.
 
 ## Read it back
 
-`Relational().Get` loads one row by id into a model pointer. It is structurally tenant-scoped, so the same `ctx` carries the tenant.
+`Relational().Get` loads one row by ID into a model pointer. It's tenant-scoped through the same context, and a row that doesn't exist in this tenant returns `fabriq.ErrNotFound`.
 
-```go
-var site domain.Site
-if err := f.Relational().Get(ctx, "site", res.AggID, &site); err != nil {
-	if errors.Is(err, fabriq.ErrNotFound) {
-		// no such aggregate in this tenant
-	}
-	log.Fatalf("get site: %v", err)
-}
-```
+## Batch writes
 
-## Batch writes atomically
-
-`ExecBatch` runs N commands in one transaction, ordered, all-or-nothing: if any command fails, none are applied. The results slice maps 1:1 to the input commands.
-
-```go
-results, err := f.ExecBatch(ctx, []command.Command{
-	{
-		Entity:  "asset",
-		Op:      command.OpCreate,
-		Payload: &domain.Asset{Name: "Pump 12", Kind: "pump", Serial: "P-0012", SiteID: site.ID},
-	},
-	{
-		Entity:  "asset",
-		Op:      command.OpCreate,
-		Payload: &domain.Asset{Name: "Valve 3", Kind: "valve", Serial: "V-0003", SiteID: site.ID},
-	},
-})
-if err != nil {
-	log.Fatalf("batch: %v", err) // nothing was written
-}
-for _, r := range results {
-	log.Printf("created %s at v%d (event %s)", r.AggID, r.Version, r.EventID)
-}
-```
+`ExecBatch` runs its commands in one transaction, in order, all or nothing. The results map one to one onto the commands.
 
 ## Subscribe to deltas
 
-`Subscribe` resolves the scope to a channel server-side — client input never names a channel or tenant directly — and returns a conflated `<-chan query.Delta`. The scope below follows one aggregate by id; the `Scope` value ("id", "site", "tenant") must be one the entity declared. Cancel the context to unsubscribe.
+`Subscribe` resolves the scope to a channel on the server side (client input never names a channel or a tenant) and returns a conflated `<-chan query.Delta`. The scope must be one the entity declared; `registry.ByID` is `"id"` and `registry.ByTenant` is `"tenant"`. Cancel the context to unsubscribe.
 
 ```go
-import "github.com/xraph/fabriq/core/query"
-
-stream, err := f.Subscribe(ctx, query.SubscribeScope{
-	Entity: "asset",
-	Scope:  "id",
-	ID:     results[0].AggID,
-})
-if err != nil {
-	log.Fatalf("subscribe: %v", err)
-}
-
 for delta := range stream {
-	// delta.Version, delta.Type, delta.Payload (json.RawMessage), delta.StreamID
-	log.Printf("%s %s -> v%d", delta.Aggregate, delta.AggID, delta.Version)
+    // delta.StreamID, delta.Aggregate, delta.AggID, delta.Version, delta.Type, delta.Payload
+    log.Printf("%s %s -> v%d", delta.Aggregate, delta.AggID, delta.Version)
 }
 ```
 
-Each `query.Delta` carries `StreamID` (maps 1:1 onto an SSE `id:` for `Last-Event-ID` resume), `Version`, `Type`, and the event `Payload` as raw JSON — small enough to conflate, complete enough that a simple UI can patch without a refetch. Live delivery requires Redis; without it `Subscribe` has no transport.
+Deltas only flow when a worker is running. The worker relays the outbox to Redis Streams and fans events out to subscribers; `fabriq.Open` doesn't start one. Run it inside a Forge app with `forgeext.WithWorker(true)`, or run the `fabriq serve` binary. `StreamID` maps onto an SSE `id:` for `Last-Event-ID` resume.
+
+Check the outbox to see what the worker would pick up:
+
+```bash
+docker exec fabriq-pg psql -U postgres -c "SELECT count(*) FROM fabriq_outbox"
+```
 
 ## Next steps
 

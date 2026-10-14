@@ -3,28 +3,34 @@ title: Configuration
 description: Configure Fabriq in library code with the Config struct and functional options, or via the environment variables the binary reads.
 ---
 
-Fabriq takes its configuration two ways: library code passes a `fabriq.Config` value (plus functional `Option`s) to `fabriq.Open`, and the `fabriq` binary loads the same shape through Forge's config manager — a `config.yaml` file plus `FABRIQ_*` environment overrides. This page is task-oriented — the exhaustive field-by-field reference lives at [Reference: Configuration](/docs/reference/configuration).
+Fabriq takes its configuration two ways. Library code passes a `fabriq.Config` value (plus functional `Option`s) to `fabriq.Open`, and the `fabriq` binary loads part of the same shape through Forge's config manager: a `config.yaml` file plus `FABRIQ_*` environment overrides. This page is task-oriented; the field-by-field reference lives at [Reference: Configuration](/docs/reference/configuration).
 
 ## The Config shape
 
-`fabriq.Config` declares which stores exist and which projections run. Entities are not configured here — they are registered in code through the registry.
+`fabriq.Config` declares which stores exist and which projections run. Entities aren't configured here; you register them in code through the registry.
 
 ```go
 type Config struct {
-	Postgres      PostgresConfig      // DSN required (single-shard): the source of truth
-	Shards        []ShardConfig       // optional: shard the source of truth by tenant
-	Redis         RedisConfig         // event fan-out; required for subscriptions + projections
-	FalkorDB      FalkorDBConfig      // graph projection engine
-	Elasticsearch ElasticsearchConfig // search projection engine
-	Storage       StorageConfig       // blob/CAS byte plane (file-plane storage)
-	Projections   ProjectionsConfig   // Graph/Search on-off toggles
-	Subscriptions SubscriptionsConfig // delta-plane tuning
-	Cache         CacheConfig         // engine cache (result-set caching at Repo[T])
-	Encryption    EncryptionConfig    // at-rest encryption for blob-source credentials
+	Postgres       PostgresConfig      // the source of truth (single shard)
+	Shards         []ShardConfig       // or: shard the source of truth by tenant
+	ShardPins      map[string]string   // pin tenants to shards
+	Catalog        CatalogConfig       // or: database-per-tenant / schema-per-tenant catalog mode
+	Analytics      AnalyticsConfig     // analytics sink
+	Insights       InsightsConfig      // insights plane
+	Redis          RedisConfig         // event fan-out; required for subscriptions and projections
+	FalkorDB       FalkorDBConfig      // graph projection engine
+	Elasticsearch  ElasticsearchConfig // search projection engine
+	Storage        StorageConfig       // blob/CAS byte plane (file-plane storage)
+	Documents      DocumentsConfig     // document plane
+	Projections    ProjectionsConfig   // Graph/Search on-off toggles
+	Subscriptions  SubscriptionsConfig // delta-plane tuning
+	Cache          CacheConfig         // engine cache (result-set caching at Repo[T])
+	Encryption     EncryptionConfig    // at-rest encryption for blob-source credentials
+	CustomAppliers []projection.CustomApplier // code only
 }
 ```
 
-Postgres is the only required store. `PostgresConfig.DSN` must be set; `PostgresConfig.PoolSize` is optional. Everything else is opt-in and degrades to a typed `ErrStoreNotConfigured` when absent. To scale the source of truth across multiple Postgres instances, set `Shards` in place of `Postgres` — a single `Postgres` block is the one-shard case. See [Sharding](/docs/sharding).
+Postgres is the only required store. Set `PostgresConfig.DSN` (with an optional `PoolSize`), or use `Shards`, catalog mode, or a `*grove.DB` the Forge extension borrows from the container. Everything else is opt-in and degrades to a typed `ErrStoreNotConfigured` when absent. A single `Postgres` block is the one-shard case; see [Sharding](/docs/sharding).
 
 The subscription plane is tuned through three fields:
 
@@ -75,13 +81,13 @@ export FABRIQ_HTTP_ADDR=":8081"
 fabriq serve
 ```
 
-The binary loads its `Config` through Forge's config manager: it auto-discovers `config.yaml` (and `config.local.yaml`) in the working directory and `/etc/fabriq`, then overlays `FABRIQ_*` environment variables on top — **env wins over the file**. So a container can bake the static shape into `config.yaml` and inject endpoints and secrets via env. Every key maps to an env var under the `FABRIQ_` prefix with `_` joining nested keys, so `postgres.dsn` ↔ `FABRIQ_POSTGRES_DSN`, `redis.addr` ↔ `FABRIQ_REDIS_ADDR`, `elasticsearch.addrs` ↔ `FABRIQ_ELASTICSEARCH_ADDRS` (comma-separated).
+The binary loads its `Config` through Forge's config manager: it discovers `config.yaml` (and `config.local.yaml`) in the working directory and `/etc/fabriq`, then overlays `FABRIQ_*` environment variables on top. Env wins over the file. So a container can bake the static shape into `config.yaml` and inject endpoints and secrets via env. Every key maps to an env var under the `FABRIQ_` prefix with `_` joining nested keys, so `postgres.dsn` ↔ `FABRIQ_POSTGRES_DSN`, `redis.addr` ↔ `FABRIQ_REDIS_ADDR`, `elasticsearch.addrs` ↔ `FABRIQ_ELASTICSEARCH_ADDRS` (comma-separated).
 
 </Tab>
 <Tab value="Binary (config.yaml)">
 
 ```yaml
-# config.yaml — discovered from the working directory or /etc/fabriq.
+# config.yaml: discovered from the working directory or /etc/fabriq.
 postgres:
   dsn: postgres://user:pass@pg:5432/fabriq?sslmode=require
   pool_size: 16
@@ -101,7 +107,7 @@ subscriptions:
   subscribe_buffer: 64
 ```
 
-Unlike the env path, `config.yaml` can set the subscription-plane knobs and projection toggles directly. A starter file ships at [`config.example.yaml`](https://github.com/xraph/fabriq/blob/main/config.example.yaml). The operator commands (`migrate`, `inspect`, `rebuild`, `reconcile`) still take their connection from `--dsn`/`FABRIQ_*` rather than the config file — only `serve` reads the full config.
+The binary reads `postgres`, `shards`, `shardPins`, `redis`, `falkordb`, `elasticsearch`, `projections`, `subscriptions` and `storage`. Catalog mode, analytics, insights, documents, caching and encryption aren't read from the file; set them in code. A starter file ships at [`config.example.yaml`](https://github.com/xraph/fabriq/blob/main/config.example.yaml). The operator commands (`migrate`, `inspect`, `rebuild`, `reconcile`) take their connection from `--dsn` or `FABRIQ_POSTGRES_DSN` rather than the config file; only `serve` reads it.
 
 </Tab>
 </Tabs>
@@ -124,15 +130,18 @@ f, stores, err := fabriq.Open(ctx, reg, cfg,
 
 The full set:
 
-- `WithConflationWindow(d time.Duration)` — the hub's last-write-wins flush window (spec range 100–250ms; default 150ms).
-- `WithSubscribeBuffer(n int)` — per-subscriber delta buffer (default 64). A full buffer drops; clients refetch and resume by `Last-Event-ID`.
-- `WithStreamMaxLen(n int64)` — approximate `MAXLEN` for per-channel Redis streams, i.e. catch-up depth before clients must refetch (default 500).
-- `WithWaitPollInterval(d time.Duration)` — poll cadence for `WaitForProjection` (default 25ms).
-- `WithAuthz(fn subscribe.AuthzFunc)` — the subscribe-time authorization hook, consulted when resolving a `SubscribeScope` to a channel.
-- `WithDocumentAuthz(fn func(ctx context.Context, docID string) error)` — the document-plane authorization hook, consulted for both `ApplyUpdate` (writes) and `SubscribeDocument` (reads). Without it, any authenticated member of the tenant may touch any of the tenant's documents.
-- `WithUpcasters(chain *event.UpcasterChain)` — registers the event payload upcaster chain. Projection engines apply it at decode, so appliers only ever see the latest payload shape.
-- `WithTraceparent(fn func(context.Context) string)` — supplies the W3C traceparent extractor stamped into event envelopes. `Open` already installs the production extractor by default, so override only for custom propagation.
-- `WithClock(now func() time.Time)` — overrides the command-plane clock (tests).
+- `WithConflationWindow(d time.Duration)`: the hub's last-write-wins flush window (spec range 100 to 250ms; default 150ms).
+- `WithSubscribeBuffer(n int)`: per-subscriber delta buffer (default 64). A full buffer drops; clients refetch and resume by `Last-Event-ID`.
+- `WithStreamMaxLen(n int64)`: approximate `MAXLEN` for per-channel Redis streams, i.e. catch-up depth before clients must refetch (default 500).
+- `WithWaitPollInterval(d time.Duration)`: poll cadence for `WaitForProjection` (default 25ms).
+- `WithAuthz(fn subscribe.AuthzFunc)`: the subscribe-time authorization hook, consulted when resolving a `SubscribeScope` to a channel.
+- `WithDocumentAuthz(fn func(ctx context.Context, docID string) error)`: the document-plane authorization hook, consulted for both `ApplyUpdate` (writes) and `SubscribeDocument` (reads). Without it, any authenticated member of the tenant may touch any of the tenant's documents.
+- `WithUpcasters(chain *event.UpcasterChain)`: registers the event payload upcaster chain. Projection engines apply it at decode, so appliers only ever see the latest payload shape.
+- `WithTraceparent(fn func(context.Context) string)`: supplies the W3C traceparent extractor stamped into event envelopes. `Open` already installs the production extractor by default, so override only for custom propagation.
+- `WithClock(now func() time.Time)`: overrides the command-plane clock (tests).
+- `WithLiveAuthz(fn livequery.AuthzFunc)` and `WithLiveCushion(n int)`: authorization and window cushion for live queries.
+- `WithLifecycleHook(hooks ...command.LifecycleHook)`: hooks around command execution.
+- `WithEncryptor(e crypto.Encryptor)`: the encryptor for at-rest secrets.
 
 ### Config derives some options for you
 
@@ -162,12 +171,12 @@ Forge's config manager reads these, overlaying them on any `config.yaml` (env wi
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `FABRIQ_POSTGRES_DSN` | to serve | — | Postgres DSN; the source of truth. Overridable with `--dsn`. |
-| `FABRIQ_REDIS_ADDR` | to serve | — | Redis address for the event stream and subscriptions. |
-| `FABRIQ_FALKORDB_ADDR` | no | — | FalkorDB address; enables the graph projection. |
-| `FABRIQ_ELASTICSEARCH_ADDRS` | no | — | Comma-separated Elasticsearch addresses; enables the search projection. |
+| `FABRIQ_POSTGRES_DSN` | to serve | none | Postgres DSN; the source of truth. Overridable with `--dsn`. |
+| `FABRIQ_REDIS_ADDR` | to serve | none | Redis address for the event stream and subscriptions. |
+| `FABRIQ_FALKORDB_ADDR` | no | none | FalkorDB address; enables the graph projection. |
+| `FABRIQ_ELASTICSEARCH_ADDRS` | no | none | Comma-separated Elasticsearch addresses; enables the search projection. |
 | `FABRIQ_HTTP_ADDR` | no | `:8081` | Worker HTTP listen address (health, metrics). |
-| `FABRIQ_RECONCILE_INTERVAL` | no | — | Reconciliation cadence as a Go duration; `"0"` disables it. |
+| `FABRIQ_RECONCILE_INTERVAL` | no | none | Reconciliation cadence as a Go duration; `"0"` disables it. |
 
 <Callout type="info">
 The operator commands (`migrate`, `inspect`, `rebuild`, `reconcile`) open their own stores from `--dsn`/`FABRIQ_POSTGRES_DSN` and never serve. Only `fabriq serve` connects the full worker plane. See [CLI](/docs/cli).
@@ -175,15 +184,14 @@ The operator commands (`migrate`, `inspect`, `rebuild`, `reconcile`) open their 
 
 ## Validation
 
-`Config.Validate()` runs cross-field checks before `Open` dials anything — it never opens a connection. It enforces:
+`Config.Validate()` runs cross-field checks before `Open` dials anything; it never opens a connection. Among them:
 
-- `postgres.dsn` is set (the source of truth).
-- If `projections.graph` is on, `falkordb.addr` is non-empty.
-- If `projections.search` is on, `elasticsearch.addrs` is non-empty.
-- If either projection is on, `redis.addr` is set (projections need the event stream).
-- `subscriptions.conflation_window` is `>= 0`.
+- A source of truth is configured: `postgres.dsn`, or `shards`, or catalog mode, or an injected `*grove.DB`.
+- Every shard has an `id` and a `dsn`, shard IDs are unique, and `shardPins` only name known shards.
+- Catalog mode isn't combined with `shards`, `shardPins` or `postgres.dsn`, and has at least one cluster.
+- If `projections.graph` is on, `falkordb.addr` is set; if `projections.search` is on, `elasticsearch.addrs` is set; if either is on, `redis.addr` is set.
 
-A failed check returns a descriptive error and `Open` aborts before touching the network, so a misconfiguration surfaces at startup rather than on the first request.
+A failed check returns a descriptive error and `Open` stops before touching the network, so a misconfiguration shows up at startup rather than on the first request.
 
 ## Next steps
 
