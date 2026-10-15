@@ -8,6 +8,7 @@ import (
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/agent"
+	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/projection"
 )
 
@@ -15,6 +16,7 @@ import (
 // plus worker knobs. Build it with options; the extension overlays values from
 // the config manager under extensions.fabriq.* at Register (options win).
 type Config struct {
+	LifecycleHooks    []command.LifecycleHook
 	Fabriq            fabriq.Config
 	RunWorker         bool
 	ReconcileInterval time.Duration
@@ -177,4 +179,9 @@ func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 		cfg.Elasticsearch.Addrs = cm.GetStringSlice(prefix + "elasticsearch.addrs")
 	}
 	return cfg
+}
+
+// WithLifecycleHooks installs transaction hooks on the command executor.
+func WithLifecycleHooks(hooks ...command.LifecycleHook) Option {
+	return func(c *Config) { c.LifecycleHooks = append(c.LifecycleHooks, hooks...) }
 }

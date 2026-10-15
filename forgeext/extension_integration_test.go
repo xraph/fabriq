@@ -54,13 +54,21 @@ func TestExtension_Lifecycle_DI(t *testing.T) {
 	})
 
 	// Create the extension.
+	var changes []command.Change
+	hook := command.HookFunc(func(_ context.Context, tx command.Tx, change command.Change) error {
+		if tx == nil {
+			t.Fatal("lifecycle hook received no transaction")
+		}
+		changes = append(changes, change)
+		return nil
+	})
 	ext := forgeext.New(reg, forgeext.WithConfig(fabriq.Config{
 		Postgres: fabriq.PostgresConfig{DSN: appDSN},
 		Redis:    fabriq.RedisConfig{Addr: redisAddr},
 		Subscriptions: fabriq.SubscriptionsConfig{
 			ConflationWindow: 30 * time.Millisecond,
 		},
-	}))
+	}), forgeext.WithLifecycleHooks(hook))
 
 	// Drive the lifecycle directly.
 	if err := ext.Register(app); err != nil {
@@ -101,6 +109,9 @@ func TestExtension_Lifecycle_DI(t *testing.T) {
 	}
 	if res.AggID == "" {
 		t.Fatal("Exec returned empty AggID")
+	}
+	if len(changes) != 1 || changes[0].Envelope.AggID != res.AggID || changes[0].Op != command.OpCreate {
+		t.Fatalf("lifecycle hook received unexpected changes: %+v", changes)
 	}
 
 	var s domain.Site

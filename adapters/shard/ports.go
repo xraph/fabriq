@@ -291,3 +291,19 @@ func (a *Analytics) UpsertInsightFacts(ctx context.Context, facts []insights.Fac
 	}
 	return sink.UpsertInsightFacts(sctx, facts)
 }
+
+// DeleteByMeta removes matching geometry from the caller's resolved shard.
+func (s *Spatial) DeleteByMeta(ctx context.Context, entity string, filter map[string]any) error {
+	sh, sctx, release, err := s.set.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	reset, ok := sh.Spatial.(interface {
+		DeleteByMeta(context.Context, string, map[string]any) error
+	})
+	if !ok {
+		return fmt.Errorf("fabriq: shard spatial adapter %T does not support metadata cleanup", sh.Spatial)
+	}
+	return reset.DeleteByMeta(sctx, entity, filter)
+}

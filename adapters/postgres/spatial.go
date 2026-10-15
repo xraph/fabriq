@@ -250,3 +250,22 @@ func (s *SpatialAdapter) Covering(ctx context.Context, q query.CoverQuery, into 
 		return nil
 	})
 }
+
+// DeleteByMeta removes matching geometries inside the tenant RLS boundary.
+func (s *SpatialAdapter) DeleteByMeta(ctx context.Context, entity string, filter map[string]any) error {
+	if _, err := tenant.Require(ctx); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(filter)
+	if err != nil {
+		return err
+	}
+	if filter == nil {
+		encoded = []byte("{}")
+	}
+	return s.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		tid, _ := tenant.FromContext(ctx)
+		_, err := tx.NewRaw("DELETE FROM fabriq_geometries WHERE tenant_id = $1 AND entity = $2 AND meta @> $3::jsonb", tid, entity, string(encoded)).Exec(ctx)
+		return err
+	})
+}

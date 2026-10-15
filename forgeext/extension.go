@@ -189,7 +189,7 @@ func (e *Extension) Start(ctx context.Context) error {
 	if e.cfg.RunWorker && cfg.Redis.Addr == "" {
 		return fmt.Errorf("fabriq: a Redis address is required to serve (set redis.addr / FABRIQ_REDIS_ADDR)")
 	}
-	fab, stores, err := fabriq.Open(ctx, e.reg, cfg)
+	fab, stores, err := fabriq.Open(ctx, e.reg, cfg, fabriq.WithLifecycleHook(e.cfg.LifecycleHooks...))
 	if err != nil {
 		return err
 	}

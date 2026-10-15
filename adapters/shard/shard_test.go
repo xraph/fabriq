@@ -252,3 +252,25 @@ func TestSet_All_SortedByID(t *testing.T) {
 		t.Fatalf("All not sorted: %+v", got)
 	}
 }
+
+func (s spatialStub) DeleteByMeta(_ context.Context, entity string, filter map[string]any) error {
+	s.parent.calls = append(s.parent.calls, "SpatialDeleteByMeta:"+entity+":"+fmt.Sprint(filter["source_id"]))
+	return nil
+}
+func TestSpatialCleanupRoutesToTenantShard(t *testing.T) {
+	a, b := &stub{id: "a"}, &stub{id: "b"}
+	set, err := shard.New(mapDir{"one": "a", "two": "b"}, shardFor(a), shardFor(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spatial := shard.NewSpatial(set)
+	if err := spatial.DeleteByMeta(ctxFor(t, "one"), "kg_node", map[string]any{"source_id": "drawing"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.calls) != 0 || fmt.Sprint(a.calls) != "[SpatialDeleteByMeta:kg_node:drawing]" {
+		t.Fatalf("wrong shard calls %v %v", a.calls, b.calls)
+	}
+	if err := spatial.DeleteByMeta(context.Background(), "kg_node", nil); err == nil {
+		t.Fatal("missing tenant accepted")
+	}
+}
