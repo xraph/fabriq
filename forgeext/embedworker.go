@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/internal/metrics"
+	"github.com/xraph/fabriq/internal/tracing"
 )
 
 // hasEmbeddableEntity reports whether any registered entity opts into embedding.
@@ -71,14 +75,31 @@ func embedHandler(ctx context.Context, ix *agent.Indexer, m *metrics.Metrics) fu
 			}
 			return nil
 		}
+		if !ix.Embeds(env.Aggregate) {
+			// Not an embeddable entity: IndexEvent would skip it. No span,
+			// so the stream's other traffic mints no traces here.
+			if m != nil {
+				m.EmbedEventsTotal.Inc()
+			}
+			return nil
+		}
+		// One root Consumer span per envelope embedded, linked to the
+		// command that wrote it.
+		tctx, span := tracing.StartConsumer(tctx, "embed event", env.Traceparent,
+			telemetry.AttrConsumerGroup.String("proj:embed"),
+			telemetry.AttrEntity.String(env.Aggregate),
+		)
+		defer span.End()
 		if err := ix.IndexEvent(tctx, env); err != nil {
 			if errors.Is(err, agent.ErrUnindexablePayload) {
 				// skip: poison payload — retrying won't help
+				span.SetAttributes(attribute.Bool("fabriq.embed.skipped", true))
 				if m != nil {
 					m.EmbedEventsTotal.Inc() // ack-skipped poison still counts as handled
 				}
 				return nil
 			}
+			telemetry.Fail(span, "embed failed", err)
 			if m != nil {
 				m.EmbedFailuresTotal.Inc()
 			}

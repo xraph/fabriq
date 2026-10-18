@@ -29,21 +29,30 @@ var _ catalog.Catalog = (*CatalogStore)(nil)
 
 // OpenCatalog dials the control database (the writable PRIMARY) and ensures
 // the catalog schema.
-func OpenCatalog(ctx context.Context, dsn string) (*CatalogStore, error) {
-	return openCatalog(ctx, dsn, false)
+// Only WithMetrics applies among opts.
+func OpenCatalog(ctx context.Context, dsn string, opts ...Option) (*CatalogStore, error) {
+	return openCatalog(ctx, dsn, false, opts)
 }
 
 // OpenCatalogReplica dials a read-only catalog REPLICA (a hot standby): it
 // does NOT run schema DDL (a standby is read-only) and refuses writes. Used
 // only as a routing-read fallback behind catalog.Failover.
-func OpenCatalogReplica(ctx context.Context, dsn string) (*CatalogStore, error) {
-	return openCatalog(ctx, dsn, true)
+// Only WithMetrics applies among opts.
+func OpenCatalogReplica(ctx context.Context, dsn string, opts ...Option) (*CatalogStore, error) {
+	return openCatalog(ctx, dsn, true, opts)
 }
 
-func openCatalog(ctx context.Context, dsn string, readOnly bool) (*CatalogStore, error) {
+func openCatalog(ctx context.Context, dsn string, readOnly bool, opts []Option) (*CatalogStore, error) {
+	var cfg openConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 	db := pgdriver.New()
 	if err := db.Open(ctx, dsn); err != nil {
 		return nil, fmt.Errorf("fabriq: open catalog control db: %w", err)
+	}
+	if cfg.metrics != nil {
+		db.SetMetrics(cfg.metrics)
 	}
 	s := &CatalogStore{db: db, readOnly: readOnly}
 	if !readOnly {

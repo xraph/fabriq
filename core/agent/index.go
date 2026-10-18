@@ -49,6 +49,10 @@ func (ix *Indexer) embedSpec(entity string) *registry.EmbedSpec {
 	return e.Spec.Embed
 }
 
+// Embeds reports whether entity opts into embedding, so a consumer can tell
+// an envelope it will index from one IndexEvent would skip.
+func (ix *Indexer) Embeds(entity string) bool { return ix.embedSpec(entity) != nil }
+
 // embedTextFor builds the text to embed from a row's column values.
 func embedTextFor(spec *registry.EmbedSpec, vals map[string]any) string {
 	if spec.Text != nil {
@@ -77,7 +81,7 @@ func (ix *Indexer) IndexRow(ctx context.Context, entity, id string, vals map[str
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	vecs, err := ix.emb.Embed(ctx, []string{text})
+	vecs, err := embedTexts(ctx, ix.emb, []string{text})
 	if err != nil {
 		return fmt.Errorf("agent: embed %q/%s: %w", entity, id, err)
 	}
@@ -131,7 +135,7 @@ func (ix *Indexer) Reindex(ctx context.Context, entity string) (int, error) {
 			texts = append(texts, text)
 		}
 		if len(texts) > 0 {
-			vecs, eerr := ix.emb.Embed(ctx, texts)
+			vecs, eerr := embedTexts(ctx, ix.emb, texts)
 			if eerr != nil {
 				return indexed, fmt.Errorf("agent: reindex %q embed: %w", entity, eerr)
 			}

@@ -296,14 +296,14 @@ func (c *adminController) requireTenantsAdmin(ctx forge.Context) (tenantAdminOps
 func (c *adminController) handleMeta(ctx forge.Context) error {
 	reqCtx := ctx.Request().Context()
 	caps := make([]string, 0, len(capabilities)+len(gatedCaps))
-	for _, cap := range capabilities {
-		if ok, err := c.ext.cfg.Authorizer.Authorize(reqCtx, cap); err == nil && ok {
-			caps = append(caps, cap)
+	for _, capability := range capabilities {
+		if ok, err := c.ext.cfg.Authorizer.Authorize(reqCtx, capability); err == nil && ok {
+			caps = append(caps, capability)
 		}
 	}
-	for _, cap := range gatedCaps {
-		if ok, err := c.ext.cfg.Authorizer.Authorize(reqCtx, cap); err == nil && ok {
-			caps = append(caps, cap)
+	for _, capability := range gatedCaps {
+		if ok, err := c.ext.cfg.Authorizer.Authorize(reqCtx, capability); err == nil && ok {
+			caps = append(caps, capability)
 		}
 	}
 	resp := metaResponse{

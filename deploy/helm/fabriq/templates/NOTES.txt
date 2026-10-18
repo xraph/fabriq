@@ -11,7 +11,13 @@ Migrations are DISABLED — run "fabriq migrate up" yourself before the worker s
 Health & metrics (port {{ .Values.service.port }}):
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "fabriq.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
   curl localhost:{{ .Values.service.port }}/_/readyz
-  curl localhost:{{ .Values.service.port }}/metrics
+  curl localhost:{{ .Values.service.port }}/metrics     # fabriq_* series
+  curl localhost:{{ .Values.service.port }}/_/metrics   # forge HTTP + grove db_client_* series
+{{- if and .Values.metrics.podAnnotations (not .Values.metrics.serviceMonitor.enabled) }}
+The prometheus.io pod annotations cover /metrics only. Enable
+metrics.serviceMonitor (with metrics.forgeEndpoint) or add a scrape job
+to collect /_/metrics too.
+{{- end }}
 
 Datastores are EXTERNAL. Connections the worker + migrate Job resolve:
   Postgres   {{ if .Values.postgres.existingSecret }}Secret {{ .Values.postgres.existingSecret }} (key {{ .Values.postgres.dsnKey }}){{ else if .Values.postgres.passwordSecret }}composed; password from Secret {{ .Values.postgres.passwordSecret }}{{ else if include "fabriq.postgres.needsChartSecret" . }}chart Secret {{ include "fabriq.fullname" . }} (inline — dev/CI){{ else if .Values.postgres.host }}composed from postgres.host{{ else }}UNSET{{ end }}  (required)

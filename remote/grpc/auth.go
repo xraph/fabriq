@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"strings"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -60,8 +61,14 @@ func WithTenant(ctx context.Context, tenantID string) (context.Context, error) {
 //	})
 //	srv := grpc.NewServer(append(remotegrpc.ServerOptions(auth), grpc.Creds(creds))...)
 //	remotegrpc.Register(srv, handler)
+//
+// The options also trace every call as a Server span on the global tracer
+// provider (otelgrpc), continuing the caller's trace from the call metadata.
+// Spans record the method, status and message sizes; never payloads, and
+// never the authorization header.
 func ServerOptions(auth Authenticator) []grpc.ServerOption {
 	return []grpc.ServerOption{
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(UnaryInterceptor(auth)),
 		grpc.ChainStreamInterceptor(StreamInterceptor(auth)),
 	}
@@ -91,13 +98,19 @@ func StreamInterceptor(auth Authenticator) grpc.StreamServerInterceptor {
 	}
 }
 
+// unauthenticatedMsg is the status message every rejected credential gets.
+const unauthenticatedMsg = "remotegrpc: unauthenticated"
+
 func authenticate(ctx context.Context, auth Authenticator) (context.Context, error) {
 	if auth == nil {
 		return nil, status.Error(codes.Internal, "remotegrpc: nil Authenticator")
 	}
 	out, err := auth(ctx)
 	if err != nil {
-		return nil, status.Error(codes.Unauthenticated, err.Error())
+		// A fixed message: the authenticator's error can quote the
+		// credential it rejected, and otelgrpc copies the status message
+		// onto the server span.
+		return nil, status.Error(codes.Unauthenticated, unauthenticatedMsg)
 	}
 	if out == nil {
 		return nil, status.Error(codes.Internal, "remotegrpc: authenticator returned a nil context")

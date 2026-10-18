@@ -4,12 +4,15 @@ import (
 	"context"
 	"time"
 
+	gometrics "github.com/xraph/go-utils/metrics"
+
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/crypto"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/livequery"
 	"github.com/xraph/fabriq/core/otel"
 	"github.com/xraph/fabriq/core/subscribe"
+	"github.com/xraph/fabriq/core/telemetry"
 )
 
 // settings collects everything Options tune.
@@ -26,6 +29,7 @@ type settings struct {
 	liveAuthz        livequery.AuthzFunc
 	liveCushion      int
 	encryptor        crypto.Encryptor
+	groveMetrics     gometrics.Metrics
 }
 
 func defaultSettings() settings {
@@ -94,6 +98,43 @@ func WithLifecycleHook(hooks ...command.LifecycleHook) Option {
 	return func(s *settings) {
 		s.executorOptions = append(s.executorOptions, command.WithHooks(hooks...))
 	}
+}
+
+// WithCommandObserver records one duration per command batch on o (the forge
+// extension wires fabriq_command_duration_seconds through it). Nil records
+// nothing.
+func WithCommandObserver(o telemetry.CommandObserver) Option {
+	return func(s *settings) {
+		if o != nil {
+			s.executorOptions = append(s.executorOptions, command.WithObserver(o))
+		}
+	}
+}
+
+// WithMetrics hands m to the grove databases and KV stores Open dials (the
+// Postgres shards, the catalog and its replicas, schema-isolation
+// consolidation databases, the Postgres analytics sink and the Redis cache),
+// so grove records db_client_operation_duration_seconds for their calls. In
+// a Forge app pass app.Metrics(): the series then appear on /_/metrics.
+// Open wraps m so the db.collection.name label stays a fixed set (system
+// tables, static entity tables, rollup tables; everything else is "other").
+// Database-isolation tenant databases are left out on purpose: grove labels
+// each series with the database name, which there names the tenant. A
+// borrowed *grove.DB keeps whatever its owner configured. Nil records
+// nothing.
+func WithMetrics(m gometrics.Metrics) Option {
+	return func(s *settings) { s.groveMetrics = m }
+}
+
+// groveMetricsFrom reads the WithMetrics sink out of opts before Open dials
+// anything. Options only set fields, so applying them to a scratch copy here
+// has no side effects.
+func groveMetricsFrom(opts []Option) gometrics.Metrics {
+	s := defaultSettings()
+	for _, o := range opts {
+		o(&s)
+	}
+	return s.groveMetrics
 }
 
 // WithWaitPollInterval tunes WaitForProjection's poll cadence.

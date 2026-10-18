@@ -58,7 +58,12 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		return nil, nil, err
 	}
 
-	catStore, err := postgres.OpenCatalog(ctx, cfg.Catalog.DSN)
+	// WithMetrics: the catalog, its replicas and (schema isolation only) the
+	// consolidation databases record their query durations on this sink
+	// (nil records nothing).
+	groveMetrics := openGroveMetrics(opts, reg)
+
+	catStore, err := postgres.OpenCatalog(ctx, cfg.Catalog.DSN, postgres.WithMetrics(groveMetrics))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -77,7 +82,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 	// not stop serving); malformed DSNs were already rejected in Validate.
 	var replicas []*postgres.CatalogStore
 	for _, rdsn := range cfg.Catalog.ReplicaDSNs {
-		rs, rerr := postgres.OpenCatalogReplica(ctx, rdsn)
+		rs, rerr := postgres.OpenCatalogReplica(ctx, rdsn, postgres.WithMetrics(groveMetrics))
 		if rerr != nil {
 			continue // lazy dialer: this practically never errors at open
 		}
@@ -88,7 +93,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 	dir := shard.CatalogDirectory(routeCatalog, cfg.Catalog.CacheTTL,
 		shard.WithMinVersion(migrations.HeadVersion()))
 
-	stores := &Stores{Catalog: catStore, customAppliers: cfg.CustomAppliers}
+	stores := &Stores{Catalog: catStore, customAppliers: cfg.CustomAppliers, groveMetrics: groveMetrics}
 	stores.catalogReplicas = replicas
 	stores.catalogRoutes = failover
 	stores.state = routingState{stores: stores}
@@ -145,7 +150,16 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 			// Schema isolation: the adapter stamps SET LOCAL search_path from
 			// the tenant schema on ctx, appending this shared schema so
 			// pgvector/postgis types resolve.
-			openOpts = append(openOpts, postgres.WithSharedSchema(cfg.Catalog.sharedSchemaOrDefault()))
+			//
+			// The consolidation databases record their query durations too:
+			// db.namespace is one of a few consolidation database names, and
+			// the tenant schema grove keeps on db.collection.name
+			// (tenant_<id>.fabriq_crdt_docs) is stripped by boundCollections.
+			// Database-isolation tenant databases get no sink at all, since
+			// their db.namespace IS the tenant. Spans still cover them.
+			openOpts = append(openOpts,
+				postgres.WithSharedSchema(cfg.Catalog.sharedSchemaOrDefault()),
+				postgres.WithMetrics(groveMetrics))
 		}
 		a, oerr := postgres.Open(dctx, dsn, reg, openOpts...)
 		if oerr != nil {
@@ -172,7 +186,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 			Spatial:     postgres.NewSpatialAdapter(a),
 			Analytics:   postgres.NewInsightsAdapter(a),
 			Documents:   ds,
-			Maintenance: postgres.NewMaintenance(a, reg, pub, ds),
+			Maintenance: postgres.NewMaintenance(a, reg, pub, ds, stores.relayMetricsOptions()...),
 			Projection:  a.ProjectionState(),
 			Replay:      a,
 			Live:        a.NewLiveStore(),

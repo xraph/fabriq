@@ -9,7 +9,6 @@ import (
 
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/sweep"
-	"github.com/xraph/fabriq/internal/metrics"
 	"github.com/xraph/fabriq/migrations"
 )
 
@@ -39,18 +38,12 @@ func (e *Extension) runCatalogSweeper() error {
 		logger = app.Logger()
 	}
 
-	// Observability: /metrics plus per-pass sweeper counters and pool
-	// gauges (spec P6). Best-effort — a metrics failure never blocks the
-	// worker plane.
-	var m *metrics.Metrics
-	if app != nil {
-		if wired, err := wireObservability(app, stores); err == nil {
-			m = wired
-			stores.AttachMetrics(m)
-			e.mu.Lock()
-			e.metrics = m
-			e.mu.Unlock()
-		}
+	// Observability: fabriq's registry (built and mounted at Start) feeds
+	// the per-pass sweeper counters and pool gauges (spec P6). Best-effort:
+	// a metrics failure never blocks the worker plane.
+	m := e.initMetrics()
+	if m != nil {
+		stores.AttachMetrics(m)
 	}
 
 	engine := sweep.New(stores.Catalog, stores.TenantSweeper(), sweep.Config{
@@ -85,7 +78,7 @@ func (e *Extension) runCatalogSweeper() error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		supervise(runCtx, logger, "sweeper", engine.Run)
+		supervise(runCtx, logger, m, "sweeper", engine.Run)
 	}()
 
 	// Projection consumers are unchanged from the static plane: consumer
@@ -101,10 +94,13 @@ func (e *Extension) runCatalogSweeper() error {
 			cancel()
 			return err
 		}
+		if m != nil {
+			gengine.Observer = m
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "proj:graph", func(c context.Context) error { return gengine.Run(c, consumer) })
+			supervise(runCtx, logger, m, "proj:graph", func(c context.Context) error { return gengine.Run(c, consumer) })
 		}()
 	}
 	if stores.Elastic != nil {
@@ -113,10 +109,13 @@ func (e *Extension) runCatalogSweeper() error {
 			cancel()
 			return err
 		}
+		if m != nil {
+			sengine.Observer = m
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "proj:search", func(c context.Context) error { return sengine.Run(c, consumer) })
+			supervise(runCtx, logger, m, "proj:search", func(c context.Context) error { return sengine.Run(c, consumer) })
 		}()
 	}
 	if stores.Analytics != nil && stores.Redis != nil && hasAnalyticsEntity(e.reg) {
@@ -125,21 +124,22 @@ func (e *Extension) runCatalogSweeper() error {
 			cancel()
 			return err
 		}
-		if e.metrics != nil {
-			cons.OnApplied = e.metrics.AnalyticsAppliedTotal.Inc
-			cons.OnFailure = e.metrics.AnalyticsFailuresTotal.Inc
+		if m != nil {
+			cons.OnApplied = m.AnalyticsAppliedTotal.Inc
+			cons.OnFailure = m.AnalyticsFailuresTotal.Inc
+			cons.Observer = m
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "proj:analytics", func(c context.Context) error { return cons.Run(c, consumer) })
+			supervise(runCtx, logger, m, "proj:analytics", func(c context.Context) error { return cons.Run(c, consumer) })
 		}()
-		if e.metrics != nil {
-			met, sink := e.metrics, stores.Analytics
+		if m != nil {
+			sink := stores.Analytics
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				pollAnalyticsLag(runCtx, met, sink)
+				pollAnalyticsLag(runCtx, m, sink)
 			}()
 		}
 	} else if stores.Analytics != nil && stores.Redis != nil {
@@ -148,11 +148,11 @@ func (e *Extension) runCatalogSweeper() error {
 		}
 	}
 	if stores.Analytics != nil && (e.cfg.Fabriq.Analytics.EventRetention > 0 || e.cfg.Fabriq.Analytics.PartitionEvents) {
-		met, sink, retention := e.metrics, stores.Analytics, e.cfg.Fabriq.Analytics.EventRetention
+		sink, retention := stores.Analytics, e.cfg.Fabriq.Analytics.EventRetention
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			analyticsRetentionLoop(runCtx, met, sink, retention)
+			analyticsRetentionLoop(runCtx, m, sink, retention)
 		}()
 	}
 	if e.cfg.Fabriq.Insights.Enabled && stores.Redis != nil && hasInsightsEntity(e.reg) {
@@ -161,10 +161,13 @@ func (e *Extension) runCatalogSweeper() error {
 			cancel()
 			return err
 		}
+		if m != nil {
+			cons.Observer = m
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "proj:insights", func(c context.Context) error { return cons.Run(c, consumer) })
+			supervise(runCtx, logger, m, "proj:insights", func(c context.Context) error { return cons.Run(c, consumer) })
 		}()
 	} else if e.cfg.Fabriq.Insights.Enabled && stores.Redis != nil {
 		if logger != nil {
@@ -172,7 +175,8 @@ func (e *Extension) runCatalogSweeper() error {
 		}
 	}
 
-	// The tracked-tenants gauge moves slowly; poll it off the pass path.
+	// The tracked-tenants gauge moves slowly; poll it off the pass path. The
+	// catalog read counters are read at scrape time (initMetrics).
 	if m != nil {
 		wg.Add(1)
 		go func() {
@@ -185,11 +189,6 @@ func (e *Extension) runCatalogSweeper() error {
 					return
 				case <-ticker.C:
 					m.SweepTenantsTracked.Set(float64(engine.TrackedTenants()))
-					if p, r, fo, ok := stores.CatalogReadStats(); ok {
-						m.CatalogReadPrimary.Set(float64(p))
-						m.CatalogReadReplica.Set(float64(r))
-						m.CatalogReadFailover.Set(float64(fo))
-					}
 				}
 			}
 		}()
@@ -201,7 +200,7 @@ func (e *Extension) runCatalogSweeper() error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "sweeper:wake", func(c context.Context) error {
+			supervise(runCtx, logger, m, "sweeper:wake", func(c context.Context) error {
 				return stores.Redis.SubscribeWakes(c, engine.Wake, nil)
 			})
 		}()
@@ -217,7 +216,7 @@ func (e *Extension) runCatalogSweeper() error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "reconciler", func(c context.Context) error {
+			supervise(runCtx, logger, m, "reconciler", func(c context.Context) error {
 				return reconElector.Run(c, func(leadCtx context.Context) error {
 					e.runReconciler(leadCtx, reconcileInterval)
 					return leadCtx.Err()
@@ -239,7 +238,7 @@ func (e *Extension) runCatalogSweeper() error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "rollup:insights", func(c context.Context) error {
+			supervise(runCtx, logger, m, "rollup:insights", func(c context.Context) error {
 				return rollupElector.Run(c, func(leadCtx context.Context) error {
 					e.runRollupMaintainer(leadCtx, rollupInterval)
 					return leadCtx.Err()

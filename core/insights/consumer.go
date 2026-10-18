@@ -2,10 +2,11 @@ package insights
 
 import (
 	"context"
+	"time"
 
 	"github.com/xraph/fabriq/core/event"
-	"github.com/xraph/fabriq/core/otel"
 	"github.com/xraph/fabriq/core/projection"
+	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/core/tenant"
 )
 
@@ -33,10 +34,17 @@ type Consumer struct {
 	// payload, un-derivable tenant, or an unmarked entity).
 	OnApplied func()
 	OnFailure func()
+
+	// Observer records one duration per applied envelope under projection
+	// "insights" (optional, nil-safe).
+	Observer telemetry.ApplyObserver
 }
 
 // Run consumes until ctx ends. Scale by running replicas with distinct names.
 func (c *Consumer) Run(ctx context.Context, name string) error {
+	// Detach the loop from any boot or request span; each applied envelope
+	// gets its own root span in handle.
+	ctx = telemetry.Detach(ctx)
 	if err := c.Source.EnsureGroup(ctx, c.Group); err != nil {
 		return err
 	}
@@ -67,16 +75,27 @@ func (c *Consumer) handle(ctx context.Context, env event.Envelope) error {
 			return nil // un-derivable scope can never apply
 		}
 	}
-	tctx = otel.ContextWithTraceparent(tctx, env.Traceparent)
 
-	if err := c.Sink.UpsertInsightFacts(tctx, []Fact{fact}); err != nil {
+	tctx, span := telemetry.StartConsumer(tctx, "apply projection event", env.Traceparent,
+		telemetry.AttrProjection.String("insights"),
+		telemetry.AttrConsumerGroup.String(c.Group),
+		telemetry.AttrEntity.String(env.Aggregate),
+	)
+	start := time.Now()
+	err = c.Sink.UpsertInsightFacts(tctx, []Fact{fact})
+	result := telemetry.ResultOK
+	if err != nil {
+		result = telemetry.ResultError
+		telemetry.Fail(span, "apply failed", err)
 		if c.OnFailure != nil {
 			c.OnFailure()
 		}
-		return err // transient: stay pending, redelivery is safe (version gate is idempotent)
-	}
-	if c.OnApplied != nil {
+	} else if c.OnApplied != nil {
 		c.OnApplied()
 	}
-	return nil
+	span.End()
+	if c.Observer != nil {
+		c.Observer.ObserveApply("insights", result, time.Since(start))
+	}
+	return err // a failure is transient: stay pending, redelivery is safe (version gate is idempotent)
 }

@@ -14,8 +14,17 @@ spec:
       {{- include "fabriq.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: worker
   endpoints:
+    # fabriq's own series (fabriq_*).
     - port: http
       path: /metrics
       interval: {{ .Values.metrics.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+    {{- if .Values.metrics.forgeEndpoint }}
+    # forge's series: HTTP server metrics and grove's
+    # db_client_operation_duration_seconds for every database fabriq dials.
+    - port: http
+      path: /_/metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+    {{- end }}
 {{- end }}

@@ -1,7 +1,9 @@
 // Package otel carries W3C trace context across fabriq's async hop: the
-// command executor stamps the active traceparent into the event envelope,
-// and consumers (relay, projections) restore it so ONE trace spans
-// command -> outbox -> relay -> projection apply.
+// command executor stamps the active traceparent into the event envelope
+// and the outbox row. The relay and the projection consumers start their own
+// root spans and LINK them to that stored context (core/telemetry), because
+// the request that wrote the command has usually ended by the time its
+// event is published or applied.
 //
 // Wire it as fabriq.WithTraceparent(otel.TraceparentFromContext).
 package otel
@@ -28,8 +30,9 @@ func TraceparentFromContext(ctx context.Context) string {
 }
 
 // ContextWithTraceparent restores a traceparent (from an event envelope)
-// onto a context, so consumer-side spans join the original trace. Invalid
-// values are ignored.
+// onto a context as its remote parent. Invalid values are ignored. fabriq's
+// own consumers no longer use it: they link to the stored context with
+// telemetry.StartConsumer instead of parenting on it.
 func ContextWithTraceparent(ctx context.Context, traceparent string) context.Context {
 	if traceparent == "" {
 		return ctx

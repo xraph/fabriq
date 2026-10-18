@@ -199,7 +199,7 @@ func newMigrationJobs() *migrationJobs { return &migrationJobs{jobs: map[string]
 
 // startMigrationJob records a running job and runs it in a detached goroutine
 // (so it outlives the request). Returns an error if a run is already in flight.
-func (c *adminController) startMigrationJob(kind string, run func(context.Context) (*forge.MigrationResult, error)) (*migrationJob, error) {
+func (c *adminController) startMigrationJob(origin context.Context, kind string, run func(context.Context) (*forge.MigrationResult, error)) (*migrationJob, error) {
 	c.jobs.mu.Lock()
 	if c.jobs.running {
 		c.jobs.mu.Unlock()
@@ -211,7 +211,7 @@ func (c *adminController) startMigrationJob(kind string, run func(context.Contex
 	c.jobs.mu.Unlock()
 
 	go func() {
-		res, err := run(context.Background())
+		res, err := runJobTraced(origin, kind, run)
 		c.jobs.mu.Lock()
 		defer c.jobs.mu.Unlock()
 		now := time.Now()
@@ -251,7 +251,7 @@ func (c *adminController) startMigrationRun(ctx forge.Context, kind string, run 
 			"error": "migration execution unavailable: no parent fabriq extension configured",
 		})
 	}
-	job, err := c.startMigrationJob(kind, run)
+	job, err := c.startMigrationJob(ctx.Request().Context(), kind, run)
 	if err != nil {
 		return ctx.JSON(http.StatusConflict, map[string]string{"error": err.Error()})
 	}

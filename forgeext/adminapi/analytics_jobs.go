@@ -38,16 +38,16 @@ type analyticsJobs struct {
 func newAnalyticsJobs() *analyticsJobs { return &analyticsJobs{jobs: map[string]*analyticsJob{}} }
 
 // start records a running job and runs it in a detached goroutine so it
-// outlives the request. run returns a JSON-marshalable result (the per-tenant
+// outlives the request (origin, linked from the job's span). run returns a JSON-marshalable result (the per-tenant
 // counts / reports) stored on completion.
-func (j *analyticsJobs) start(kind string, run func(context.Context) (any, error)) *analyticsJob {
+func (j *analyticsJobs) start(origin context.Context, kind string, run func(context.Context) (any, error)) *analyticsJob {
 	job := &analyticsJob{ID: event.NewID(), Kind: kind, State: "running", StartedAt: time.Now()}
 	j.mu.Lock()
 	j.jobs[job.ID] = job
 	j.mu.Unlock()
 
 	go func() {
-		res, err := run(context.Background())
+		res, err := runJobTraced(origin, kind, run)
 		j.mu.Lock()
 		defer j.mu.Unlock()
 		now := time.Now()

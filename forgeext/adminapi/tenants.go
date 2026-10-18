@@ -244,14 +244,14 @@ func newTenantJobs() *tenantJobs { return &tenantJobs{jobs: map[string]*tenantJo
 // outlives the request). run returns the terminal Entry/Report to merge into
 // the job on success; any non-nil fields on the returned *tenantJob are
 // copied onto the tracked job under lock.
-func (j *tenantJobs) start(kind, tenantID string, run func() (*tenantJob, error)) *tenantJob {
+func (j *tenantJobs) start(origin context.Context, kind, tenantID string, run func(context.Context) (*tenantJob, error)) *tenantJob {
 	job := &tenantJob{ID: event.NewID(), Kind: kind, State: "running", TenantID: tenantID, StartedAt: time.Now()}
 	j.mu.Lock()
 	j.jobs[job.ID] = job
 	j.mu.Unlock()
 
 	go func() {
-		res, err := run()
+		res, err := runJobTraced(origin, kind, run)
 		j.mu.Lock()
 		defer j.mu.Unlock()
 		now := time.Now()
@@ -295,7 +295,7 @@ func (c *adminController) handleTenantProvision(ctx forge.Context) error {
 
 	// Schema isolation needs an explicit consolidation database and provisions
 	// a schema; database isolation provisions a dedicated database.
-	var provisionFn func() (catalog.Entry, error)
+	var provisionFn func(context.Context) (catalog.Entry, error)
 	if c.ext.parent.SchemaMode() {
 		sp := c.ext.parent.SchemaProvisioner()
 		if sp == nil {
@@ -304,21 +304,21 @@ func (c *adminController) handleTenantProvision(ctx forge.Context) error {
 		if body.Database == "" {
 			return ctx.JSON(http.StatusBadRequest, map[string]string{"error": "database is required in schema isolation (the consolidation database)"})
 		}
-		provisionFn = func() (catalog.Entry, error) {
-			return sp.Provision(context.Background(), body.TenantID, body.ClusterID, body.Database)
+		provisionFn = func(jctx context.Context) (catalog.Entry, error) {
+			return sp.Provision(jctx, body.TenantID, body.ClusterID, body.Database)
 		}
 	} else {
 		p := c.ext.parent.Provisioner()
 		if p == nil {
 			return ctx.JSON(http.StatusBadRequest, map[string]string{"error": "tenant management requires catalog mode (db-per-tenant)"})
 		}
-		provisionFn = func() (catalog.Entry, error) {
-			return p.Provision(context.Background(), body.TenantID, body.ClusterID)
+		provisionFn = func(jctx context.Context) (catalog.Entry, error) {
+			return p.Provision(jctx, body.TenantID, body.ClusterID)
 		}
 	}
 
-	job := c.tenantJobs.start("provision", body.TenantID, func() (*tenantJob, error) {
-		e, perr := provisionFn()
+	job := c.tenantJobs.start(ctx.Request().Context(), "provision", body.TenantID, func(jctx context.Context) (*tenantJob, error) {
+		e, perr := provisionFn(jctx)
 		if perr != nil {
 			return nil, perr
 		}
@@ -336,8 +336,8 @@ func (c *adminController) handleTenantMigrateAll(ctx forge.Context) error {
 	if err != nil {
 		return err
 	}
-	job := c.tenantJobs.start("migrate-all", "", func() (*tenantJob, error) {
-		rep, merr := p.MigrateAll(context.Background(), provision.MigrateAllOpts{TargetVersion: migrations.HeadVersion()})
+	job := c.tenantJobs.start(ctx.Request().Context(), "migrate-all", "", func(jctx context.Context) (*tenantJob, error) {
+		rep, merr := p.MigrateAll(jctx, provision.MigrateAllOpts{TargetVersion: migrations.HeadVersion()})
 		if merr != nil {
 			return nil, merr
 		}

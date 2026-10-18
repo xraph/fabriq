@@ -40,7 +40,11 @@ writes still commit. This is a latency incident, not a data-loss incident.
 
 ## Projection lag
 
-Metric: `fabriq_projection_lag_events{projection,tenant}`.
+Metric: `fabriq_projection_lag_events{projection}`. Pair it with
+`fabriq_projection_apply_duration_seconds{projection,result}`: a climb in
+`result="error"` means applies are failing, a climb in latency means they are
+slow. Each failed apply is an `apply projection event` span with an error
+status, linked to the command that wrote the event.
 
 <Steps>
 <Step>

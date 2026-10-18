@@ -186,9 +186,11 @@ Configures field-level encryption for `blob_source` credentials. YAML/JSON key: 
 | `WithLiveCushion` | `WithLiveCushion(n int) Option` | none | Extra rows kept beyond a live query's window |
 | `WithLifecycleHook` | `WithLifecycleHook(hooks ...command.LifecycleHook) Option` | none | Hooks around command execution |
 | `WithEncryptor` | `WithEncryptor(e crypto.Encryptor) Option` | none | The encryptor for at-rest secrets |
+| `WithMetrics` | `WithMetrics(m gometrics.Metrics) Option` | `nil` | A go-utils metrics sink for the grove databases and KV store `Open` dials, so grove records `db_client_operation_duration_seconds`. The Forge extension passes `app.Metrics()`. Database-isolation tenant databases are left out (their database name is the tenant). |
+| `WithCommandObserver` | `WithCommandObserver(o telemetry.CommandObserver) Option` | `nil` | Receives one duration per command batch (op and result). The Forge extension records it as `fabriq_command_duration_seconds`. Appended to the executor options. |
 
 <Callout type="info">
-`withTailer` is an internal option (wires the hub pump from the Redis transport) and is not part of the public `Option` surface: `Open` selects it automatically when `redis.addr` is set. By default the executor is configured with `command.WithTraceparent(otel.TraceparentFromContext)` so one trace spans command → outbox → relay → projection apply.
+`withTailer` is an internal option (wires the hub pump from the Redis transport) and is not part of the public `Option` surface: `Open` selects it automatically when `redis.addr` is set. By default the executor is configured with `command.WithTraceparent(otel.TraceparentFromContext)`, so every envelope carries the trace context of the command that wrote it, and the relay and consumers link their spans back to it.
 </Callout>
 
 ## Environment Variables

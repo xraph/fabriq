@@ -217,7 +217,7 @@ If you've kept Postgres, a search index and a graph in step before, you probably
 | Files | A file plane with folders, permissions, shares and bookmarks, and blobs stored through [Trove](https://github.com/xraph/trove) |
 | Entities defined at runtime | Dynamic entities from a schema descriptor, with Fabriq-managed `CREATE` and additive `ALTER` |
 | Room to grow | Sharding across Postgres databases, database-per-tenant or schema-per-tenant catalog mode, and a remote `Fabric` over gRPC |
-| Answers when something drifts | A reconciler that finds missing, stale and zombie projection rows, `rebuild` and `reconcile` CLI commands, and Prometheus metrics |
+| Answers when something drifts | A reconciler that finds missing, stale and zombie projection rows, `rebuild` and `reconcile` CLI commands, Prometheus metrics and OpenTelemetry spans |
 
 The [architecture page](docs/content/docs/%28concepts%29/architecture.mdx) and [commands and events](docs/content/docs/%28concepts%29/commands-and-events.mdx) cover the write path in detail.
 
@@ -231,7 +231,7 @@ Or run the `fabriq` binary, a Forge CLI app. With no arguments it runs `serve`, 
 
 | Command | What it does |
 | --- | --- |
-| `fabriq serve` | Runs the worker, with Prometheus metrics at `/metrics` on `FABRIQ_HTTP_ADDR` (`:8081` by default) |
+| `fabriq serve` | Runs the worker, with fabriq's Prometheus metrics at `/metrics` and forge's (HTTP, grove's database client) at `/_/metrics` on `FABRIQ_HTTP_ADDR` (`:8081` by default) |
 | `fabriq migrate up`, `down`, `status` | Runs Fabriq's migrations against `--dsn` or `FABRIQ_POSTGRES_DSN` |
 | `fabriq rebuild` | Blue-green projection rebuild for a tenant |
 | `fabriq reconcile` | Compares Postgres with the projections and re-emits drifted aggregates |
@@ -294,6 +294,8 @@ err := app.Router().POST("/notes", func(ctx forge.Context) error {
 The extension opens the fabric in `Start` and provides it three ways: as `*fabriq.Fabriq`, under the name `fabriq`, and as the `query.Fabric` interface from `core/query`. Resolve the interface when you can. Your package then doesn't import every adapter, and a deployment can put a remote `Fabric` behind the same key without your code changing. The registry is provided under the name `registry.ServiceName`.
 
 If you don't configure a Postgres DSN, the extension borrows a `*grove.DB` from the container, so an app that already runs the [Grove](https://github.com/xraph/grove) extension on Postgres can share that connection. The extension also implements `forge.MigratableExtension`, so when you run your app through Forge's `cli.NewAppRunner`, its `migrate up`, `migrate down` and `migrate status` commands run Fabriq's migrations.
+
+You get telemetry with no extra wiring. Commands, relay batches, projection applies and every background job record spans on the tracer provider Forge installs, and a relay batch or consumer links back to the command that wrote its event. fabriq's own series (`fabriq_*`) are on `GET /metrics`; the databases it dials report `db_client_operation_duration_seconds` on Forge's `/_/metrics`. The [observability page](docs/content/docs/%28operations%29/observability.mdx) lists every span and metric.
 
 Next to it in `forgeext/` you'll find `NewGateway` (a live-query edge for SSE and WebSocket clients), `adminapi` (the HTTP API behind the [Fabriq Admin](https://github.com/xraph/fabriq-admin) console), `agentmcp` (the agent toolkit over MCP) and `shieldguard`.
 

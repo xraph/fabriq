@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/xraph/forge"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
@@ -41,6 +42,12 @@ type Extension struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	metrics *metrics.Metrics
+
+	// fabriq's private Prometheus registry (GET /metrics), built once by
+	// initMetrics and mounted once by mountMetrics.
+	metricsOnce    sync.Once
+	promReg        *prometheus.Registry
+	metricsMounted bool
 }
 
 // Compile-time interface assertions: if Extension drifts from any of these
@@ -189,7 +196,7 @@ func (e *Extension) Start(ctx context.Context) error {
 	if e.cfg.RunWorker && cfg.Redis.Addr == "" {
 		return fmt.Errorf("fabriq: a Redis address is required to serve (set redis.addr / FABRIQ_REDIS_ADDR)")
 	}
-	fab, stores, err := fabriq.Open(ctx, e.reg, cfg, fabriq.WithLifecycleHook(e.cfg.LifecycleHooks...))
+	fab, stores, err := fabriq.Open(ctx, e.reg, cfg, e.openOptions()...)
 	if err != nil {
 		return err
 	}
@@ -198,6 +205,21 @@ func (e *Extension) Start(ctx context.Context) error {
 	e.mu.Unlock()
 	e.MarkStarted()
 	return nil
+}
+
+// openOptions are the facade options Start passes to fabriq.Open: the
+// lifecycle hooks, the command-duration observer on fabriq's registry, and
+// the app's metrics for every grove database and KV store Open dials (their
+// db_client_operation_duration_seconds lands on forge's /_/metrics).
+func (e *Extension) openOptions() []fabriq.Option {
+	opts := []fabriq.Option{fabriq.WithLifecycleHook(e.cfg.LifecycleHooks...)}
+	if m := e.initMetrics(); m != nil {
+		opts = append(opts, fabriq.WithCommandObserver(m))
+	}
+	if gm := e.Metrics(); gm != nil {
+		opts = append(opts, fabriq.WithMetrics(gm))
+	}
+	return opts
 }
 
 // Stop implements forge.Extension. Closes the fabriq facade.

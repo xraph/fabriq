@@ -146,7 +146,7 @@ type Envelope struct {
 }
 ```
 
-The payload is the column-keyed row *after* the change, so projections and subscribers always see the table shape. The `ID` is a monotonic ULID minted at command time, which the relay relies on for ordered publishing. The `Traceparent` carries the active W3C trace context across the async hop, so a single trace spans command → outbox → relay → projection apply (the executor stamps it by default).
+The payload is the column-keyed row *after* the change, so projections and subscribers always see the table shape. The `ID` is a monotonic ULID minted at command time, which the relay relies on for ordered publishing. The `Traceparent` carries the W3C trace context of the `execute command` span across the async hop (the executor stamps it by default). The relay and the projection consumers start their own root spans and link them to it, so you can follow a projection apply back to the command that caused it. See [Observability](/docs/observability).
 
 ### Delivery on commit
 

@@ -68,9 +68,14 @@ off).
 ## Operations
 
 - **Health/metrics** on `:8081` (`service.port`): `/_/livez`, `/_/readyz`,
-  `/_/health`, and `/metrics` (Prometheus). Scrape annotations are on by
-  default; set `metrics.serviceMonitor.enabled=true` for a
-  prometheus-operator `ServiceMonitor`.
+  `/_/health`, and two Prometheus endpoints. `/metrics` serves fabriq's own
+  `fabriq_*` series. `/_/metrics` is forge's: HTTP server metrics and
+  grove's `db_client_operation_duration_seconds` for every database fabriq
+  dials. Scrape annotations are on by default and cover `/metrics` only
+  (the annotation convention names one path). Set
+  `metrics.serviceMonitor.enabled=true` for a prometheus-operator
+  `ServiceMonitor`, which scrapes both while `metrics.forgeEndpoint` is
+  `true`.
 - **Disruption**: a `PodDisruptionBudget` keeps `minAvailable: 1` so the
   relay leader fails over cleanly during node drains;
   `terminationGracePeriodSeconds: 30` covers the worker's SIGTERM drain.
@@ -98,6 +103,7 @@ off).
 | `pdb.enabled` / `pdb.minAvailable` | `true` / `1` | |
 | `autoscaling.enabled` | `false` | CPU HPA. |
 | `metrics.serviceMonitor.enabled` | `false` | prometheus-operator. |
+| `metrics.forgeEndpoint` | `true` | The ServiceMonitor also scrapes `/_/metrics`. |
 | `networkPolicy.enabled` | `false` | Egress to your datastores. |
 
 See [`values.yaml`](values.yaml) for the full set.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -24,6 +25,9 @@ import (
 // call; the server's Authenticator maps it (or the mTLS peer cert) to the
 // tenant — identity comes from the verified credential, never a request field.
 // The channel is lazy (grpc.NewClient); the first RPC establishes it.
+//
+// Every RPC is traced as a Client span on the global tracer provider (a Forge
+// app installs one; without one the spans are no-ops).
 func Dial(ctx context.Context, dsn string, opts ...DialOption) (*remote.Fabric, error) {
 	_ = ctx // reserved for a future connection-time handshake/ping
 
@@ -51,6 +55,11 @@ func Dial(ctx context.Context, dsn string, opts ...DialOption) (*remote.Fabric, 
 		net.JoinHostPort(d.Host, d.Port),
 		grpc.WithTransportCredentials(creds),
 		grpc.WithPerRPCCredentials(bearerCreds{token: d.Key, requireSecurity: d.TLS}),
+		// One Client span per RPC on the global tracer provider, with the
+		// trace context injected into the call's metadata. otelgrpc records
+		// the method, status and message sizes; never payloads, and never
+		// the bearer credential.
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("remotegrpc: dial %s: %w", dsn, err)

@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	gometrics "github.com/xraph/go-utils/metrics"
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/driver"
 	"github.com/xraph/grove/drivers/pgdriver"
@@ -70,11 +71,21 @@ type openConfig struct {
 	poolSize      int
 	guardedTables []string
 	sharedSchema  string // consolidation mode: appended to SET LOCAL search_path
+	metrics       gometrics.Metrics
 }
 
 // WithPoolSize sets the pgx pool size.
 func WithPoolSize(n int) Option {
 	return func(c *openConfig) { c.poolSize = n }
+}
+
+// WithMetrics hands m to the grove driver this adapter dials, so it records
+// db_client_operation_duration_seconds (pass a Forge app's Metrics()). It
+// also applies to OpenCatalog and OpenCatalogReplica. Ignored by
+// OpenWithGrove: a borrowed handle keeps its owner's sink. Nil records
+// nothing.
+func WithMetrics(m gometrics.Metrics) Option {
+	return func(c *openConfig) { c.metrics = m }
 }
 
 // WithGuardedTables adds tables to the tenant guard beyond the registry's
@@ -107,7 +118,11 @@ func Open(ctx context.Context, dsn string, reg *registry.Registry, opts ...Optio
 	if err := pg.Open(ctx, dsn, driver.WithPoolSize(cfg.poolSize)); err != nil {
 		return nil, fmt.Errorf("fabriq: open postgres: %w", err)
 	}
-	gdb, err := grove.Open(pg)
+	var gopts []grove.Option
+	if cfg.metrics != nil {
+		gopts = append(gopts, grove.WithMetrics(cfg.metrics))
+	}
+	gdb, err := grove.Open(pg, gopts...)
 	if err != nil {
 		_ = pg.Close()
 		return nil, err

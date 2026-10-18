@@ -5,11 +5,16 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/internal/metrics"
+	"github.com/xraph/fabriq/internal/tracing"
 )
 
 // The proj:distill worker maintains each tenant's context-distillation Merkle
@@ -159,15 +164,54 @@ func (s *distillSweeper) sweep(tenantID string) {
 		if err != nil {
 			return
 		}
+		// One root span per debounced sweep, linked to the commands that
+		// wrote the envelopes it covers (up to maxDistillLinks). The tenant
+		// ID stays off it.
+		ctx, span := tracing.StartRoot(ctx, "distill tenant",
+			trace.WithLinks(distillLinks(envs)...),
+			trace.WithAttributes(attribute.Int("fabriq.distill.refs", len(envs))))
+		defer span.End()
+		var failures int
+		var lastErr error
 		for _, env := range envs {
-			if _, derr := s.d.DistillEvent(ctx, env); derr != nil && s.m != nil {
+			if _, derr := s.d.DistillEvent(ctx, env); derr != nil {
+				failures++
+				lastErr = derr
+				if s.m != nil {
+					s.m.DistillFailuresTotal.Inc()
+				}
+			}
+		}
+		if _, rerr := s.d.Rollup(ctx); rerr != nil {
+			failures++
+			lastErr = rerr
+			if s.m != nil {
 				s.m.DistillFailuresTotal.Inc()
 			}
 		}
-		if _, rerr := s.d.Rollup(ctx); rerr != nil && s.m != nil {
-			s.m.DistillFailuresTotal.Inc()
+		span.SetAttributes(attribute.Int("fabriq.distill.failures", failures))
+		if lastErr != nil {
+			telemetry.Fail(span, "distill failed", lastErr)
 		}
 	})
+}
+
+// maxDistillLinks caps the links one "distill tenant" span carries.
+const maxDistillLinks = 128
+
+// distillLinks links a sweep to the writer of each envelope it covers, from
+// the envelopes' stored traceparents.
+func distillLinks(envs map[ref]event.Envelope) []trace.Link {
+	links := make([]trace.Link, 0, min(len(envs), maxDistillLinks))
+	for _, env := range envs {
+		if len(links) == maxDistillLinks {
+			break
+		}
+		if l, ok := telemetry.LinkFromTraceparent(env.Traceparent); ok {
+			links = append(links, l)
+		}
+	}
+	return links
 }
 
 // distillHandler is the per-event consumer callback: it records the latest

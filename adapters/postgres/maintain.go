@@ -72,10 +72,12 @@ type Maintenance struct {
 // when history offload is configured) — minting a fresh a.Documents() here
 // would silently skip history sealing on compaction. pub may be nil (no
 // event transport): the relay phase is skipped and outbox rows accumulate.
-func NewMaintenance(a *Adapter, reg *registry.Registry, pub event.Publisher, docs *DocStore) *Maintenance {
+// relayOpts tune the relay (WithRelayOnBatch and WithRelayOnPublish carry
+// its metrics).
+func NewMaintenance(a *Adapter, reg *registry.Registry, pub event.Publisher, docs *DocStore, relayOpts ...RelayOption) *Maintenance {
 	m := &Maintenance{a: a, docs: docs}
 	if pub != nil {
-		m.relay = NewRelay(a, reg, pub)
+		m.relay = NewRelay(a, reg, pub, relayOpts...)
 	}
 	return m
 }

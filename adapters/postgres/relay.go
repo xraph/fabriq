@@ -7,12 +7,21 @@ import (
 	"time"
 
 	"github.com/xraph/grove/drivers/pgdriver"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/pathctx"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/subscribe"
+	"github.com/xraph/fabriq/core/telemetry"
+	"github.com/xraph/fabriq/internal/tracing"
 )
+
+// maxBatchLinks caps the links one "publish outbox batch" span carries, at
+// the default batch size. A larger WithRelayBatch still publishes every row;
+// only the links past the cap are dropped.
+const maxBatchLinks = 128
 
 // Relay is the outbox relay: it drains unpublished outbox rows (FOR UPDATE
 // SKIP LOCKED, ULID order) and publishes them through an event.Publisher,
@@ -29,6 +38,7 @@ type Relay struct {
 	batch        int
 	pollInterval time.Duration
 	onPublish    func(n int)
+	onBatch      func(result string, elapsed time.Duration)
 	// sharedSchema is set in schema-per-tenant consolidation mode; when a
 	// tenant schema is on ctx the drain stamps SET LOCAL search_path so the
 	// bare fabriq_outbox resolves to that tenant's schema.
@@ -62,6 +72,13 @@ func WithRelayOnPublish(fn func(n int)) RelayOption {
 	return func(r *Relay) { r.onPublish = fn }
 }
 
+// WithRelayOnBatch installs a per-batch duration callback (metrics). It fires
+// once for every batch that found rows, with result "ok" or "error"; an empty
+// poll reports nothing.
+func WithRelayOnBatch(fn func(result string, elapsed time.Duration)) RelayOption {
+	return func(r *Relay) { r.onBatch = fn }
+}
+
 // NewRelay builds a relay on the adapter's pool.
 func NewRelay(a *Adapter, reg *registry.Registry, pub event.Publisher, opts ...RelayOption) *Relay {
 	r := &Relay{
@@ -80,6 +97,10 @@ func NewRelay(a *Adapter, reg *registry.Registry, pub event.Publisher, opts ...R
 
 // Run drains until ctx ends.
 func (r *Relay) Run(ctx context.Context) error {
+	// The relay outlives the span its ctx was started under (forge's boot
+	// span, or a caller's). Drop it so idle polls trace nothing; each batch
+	// that finds rows starts its own root span.
+	ctx = telemetry.Detach(ctx)
 	wake := make(chan struct{}, 1)
 	go notifyLoop(ctx, r.pg, "fabriq_outbox", wake)
 
@@ -146,7 +167,9 @@ type outboxScanRow struct {
 	Traceparent          string `grove:"traceparent"`
 }
 
-// drainOnce publishes one batch inside one transaction.
+// drainOnce publishes one batch inside one transaction. The rows are
+// selected before any span exists, so an empty poll records nothing; a batch
+// that finds rows is published under a root "publish outbox batch" span.
 func (r *Relay) drainOnce(ctx context.Context) (int, error) {
 	tx, err := r.pg.BeginTxQuery(ctx, nil)
 	if err != nil {
@@ -180,30 +203,74 @@ func (r *Relay) drainOnce(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
+	bctx, span := startBatchSpan(ctx, rows)
+	start := time.Now()
+	class, perr := r.publishBatch(bctx, tx, rows)
+	result := telemetry.ResultOK
+	if perr != nil {
+		result = telemetry.ResultError
+		telemetry.Fail(span, class, perr)
+	}
+	span.End()
+	if r.onBatch != nil {
+		r.onBatch(result, time.Since(start))
+	}
+	if perr != nil {
+		return 0, perr
+	}
+	return len(rows), nil
+}
+
+// startBatchSpan starts the root Producer span for one outbox batch, linked
+// to the span that wrote each row (its stored traceparent). Rows without a
+// traceparent, and links past maxBatchLinks, are skipped.
+func startBatchSpan(ctx context.Context, rows []outboxScanRow) (context.Context, trace.Span) {
+	links := make([]trace.Link, 0, min(len(rows), maxBatchLinks))
+	for _, row := range rows {
+		if len(links) == maxBatchLinks {
+			break
+		}
+		if l, ok := telemetry.LinkFromTraceparent(row.Traceparent); ok {
+			links = append(links, l)
+		}
+	}
+	return tracing.StartRoot(ctx, "publish outbox batch",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithLinks(links...),
+		trace.WithAttributes(
+			telemetry.AttrMessagingSystem.String("redis"),
+			attribute.Int("messaging.batch.message_count", len(rows)),
+		),
+	)
+}
+
+// publishBatch publishes and marks every row, then commits. On failure it
+// returns a short class for the span status alongside the error.
+func (r *Relay) publishBatch(ctx context.Context, tx *pgdriver.PgTx, rows []outboxScanRow) (string, error) {
 	for _, row := range rows {
 		env, err := row.envelope()
 		if err != nil {
-			return 0, err
+			return "invalid outbox row", err
 		}
 		channels, err := subscribe.ChannelsForEnvelope(r.reg, env)
 		if err != nil {
-			return 0, err
+			return "invalid outbox row", err
 		}
 		streamID, err := r.pub.Publish(ctx, env, channels)
 		if err != nil {
-			return 0, fmt.Errorf("fabriq: relay publish %s: %w", env.ID, err)
+			return "publish failed", fmt.Errorf("fabriq: relay publish %s: %w", env.ID, err)
 		}
 		if _, err := tx.NewRaw(
 			`UPDATE fabriq_outbox SET published_at = now(), stream_id = $2 WHERE id = $1`,
 			row.ID, streamID,
 		).Exec(ctx); err != nil {
-			return 0, fmt.Errorf("fabriq: relay mark published %s: %w", row.ID, err)
+			return "mark published failed", fmt.Errorf("fabriq: relay mark published %s: %w", row.ID, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("fabriq: relay commit: %w", err)
+		return "commit failed", fmt.Errorf("fabriq: relay commit: %w", err)
 	}
-	return len(rows), nil
+	return "", nil
 }
 
 // Backlog reports the unpublished outbox depth (metrics).

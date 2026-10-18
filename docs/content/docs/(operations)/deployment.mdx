@@ -157,7 +157,8 @@ Watch it come up and confirm health.
 kubectl rollout status deploy/fabriq
 kubectl port-forward svc/fabriq 8081:8081
 curl localhost:8081/_/readyz
-curl localhost:8081/metrics
+curl localhost:8081/metrics     # fabriq_* series
+curl localhost:8081/_/metrics   # forge HTTP + grove db_client_* series
 ```
 </Step>
 </Steps>
@@ -203,10 +204,11 @@ chart `service.port`):
 | `/_/livez` | Liveness probe (chart: `periodSeconds: 15`). |
 | `/_/readyz` | Readiness probe (chart: `periodSeconds: 10`). |
 | `/_/health` | Aggregate health detail. |
-| `/metrics` | Prometheus scrape (mounted by fabriq). |
+| `/metrics` | Prometheus scrape: fabriq's own `fabriq_*` series (mounted by fabriq). |
+| `/_/metrics` | Prometheus scrape: forge's HTTP metrics and grove's `db_client_operation_duration_seconds`. |
 
 The Service is `ClusterIP` and not internet-facing. See
-[Observability](/docs/observability) for the metric catalog.
+[Observability](/docs/observability) for the metric catalog and the spans.
 
 ### Scaling model
 
@@ -228,9 +230,11 @@ The chart includes:
 - **HPA** (`autoscaling.enabled`, CPU target) — optional. For lag-driven
   scaling of consumers, prefer KEDA on Redis stream lag or
   `fabriq_projection_lag_events` rather than CPU.
-- **ServiceMonitor** (`metrics.serviceMonitor.enabled`) — scrapes `/metrics`
-  on the `http` port for a Prometheus Operator install. Without it, the chart
-  adds `prometheus.io/scrape` pod annotations by default.
+- **ServiceMonitor** (`metrics.serviceMonitor.enabled`): scrapes `/metrics`
+  and, while `metrics.forgeEndpoint` is on (the default), `/_/metrics` on the
+  `http` port for a Prometheus Operator install. Without it, the chart adds
+  `prometheus.io/scrape` pod annotations by default; they can name one path,
+  so they cover `/metrics` only.
 - **NetworkPolicy** (`networkPolicy.enabled`) — allows ingress to the http
   port (scrape + health) and DNS egress; you supply datastore egress peers in
   `networkPolicy.egress`.

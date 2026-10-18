@@ -2,6 +2,7 @@ package fabriq
 
 import (
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -29,5 +30,31 @@ func TestRecordScale_SetsCapAndCountsDirection(t *testing.T) {
 	}
 	if v := testutil.ToFloat64(m.PoolScaleEvents.WithLabelValues("shrink")); v != 1 {
 		t.Fatalf("shrink=%v want 1", v)
+	}
+}
+
+// Catalog mode builds its relays inside Open, before the worker attaches
+// metrics; their callbacks read the metrics when they fire.
+func TestSweeperRelayCallbacksRecordOnceMetricsAttach(t *testing.T) {
+	s := &Stores{}
+	if got := len(s.relayMetricsOptions()); got != 2 {
+		t.Fatalf("relay options = %d, want publish + batch", got)
+	}
+	s.recordRelayBatch("ok", time.Millisecond) // nothing attached yet: a no-op
+	s.recordRelayPublished(3)
+
+	m, err := metrics.New(prometheus.NewRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.AttachMetrics(m)
+	s.recordRelayBatch("error", time.Millisecond)
+	s.recordRelayPublished(5)
+
+	if v := testutil.ToFloat64(m.RelayPublished); v != 5 {
+		t.Fatalf("RelayPublished = %v, want 5 (only after attach)", v)
+	}
+	if n := testutil.CollectAndCount(m.RelayBatchDuration); n != 1 {
+		t.Fatalf("relay batch series = %d, want 1", n)
 	}
 }

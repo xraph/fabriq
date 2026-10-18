@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/telemetry"
 )
 
 // errEmbedderEmpty is returned when a configured embedder yields no vectors for
@@ -251,7 +252,9 @@ func (c *adminController) handleVectorSearch(ctx forge.Context) error {
 				"error": "no embedder configured for text query; pass {id} for similar-to-entity",
 			})
 		}
-		vectors, embErr := emb.Embed(reqCtx, []string{req.Query})
+		// The embedder fronts a model provider: the admin client's inbound
+		// baggage must not travel to it.
+		vectors, embErr := emb.Embed(telemetry.WithoutBaggage(reqCtx), []string{req.Query})
 		if embErr != nil {
 			return renderError(ctx, embErr)
 		}
