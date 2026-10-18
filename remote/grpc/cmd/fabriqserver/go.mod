@@ -3,8 +3,8 @@ module github.com/xraph/fabriq/remote/grpc/cmd/fabriqserver
 go 1.26.0
 
 require (
-	github.com/xraph/fabriq v1.8.0
-	github.com/xraph/fabriq/remote/grpc v1.8.0
+	github.com/xraph/fabriq v1.8.1
+	github.com/xraph/fabriq/remote/grpc v1.8.1
 	google.golang.org/grpc v1.83.2
 )
 
@@ -58,7 +58,7 @@ require (
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-	github.com/xraph/fabriq/core v1.8.0
+	github.com/xraph/fabriq/core v1.8.1
 	github.com/xraph/go-utils v1.4.1 // indirect
 	github.com/xraph/grove v1.8.0 // indirect
 	github.com/xraph/grove/drivers/pgdriver v1.8.0 // indirect
