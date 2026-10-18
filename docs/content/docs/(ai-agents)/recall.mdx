@@ -25,6 +25,20 @@ pack, err := tk.Recall(ctx, agent.RecallRequest{
 })
 ```
 
+## Filter current rows
+
+Use `Filters` to constrain the authoritative rows returned in the pack. The
+conditions are ANDed with the discovered IDs during hydration, after fusion.
+A stale search or vector hit cannot bypass a changed row value, deletion or
+tenant boundary. Filtering can return fewer than `K` results; it does not fetch
+another batch of candidates.
+
+The filter columns must exist on every hydrated entity. With a filter, recall
+does not automatically add `digest_node`, whose schema may differ from your
+requested entities. You can request it explicitly with compatible filters.
+Hydration failures follow `Config.Strict` and appear in `Warnings` in lenient
+mode. Check those warnings when incomplete recall affects your decision.
+
 ## The pipeline
 
 1. **Semantic** — embed `Query` (via the [Embedder](/docs/agent-toolkit#the-embedder-seam)) and run `Vector().Similar` per entity.
