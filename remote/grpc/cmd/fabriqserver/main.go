@@ -12,6 +12,12 @@
 // and the AUTHENTICATOR (here: a DEV bearer-token-as-tenant shim — see auth.go;
 // replace it with real credential verification before production).
 //
+// Telemetry: remotegrpc traces every RPC and fabriq traces its own work, but
+// all of it goes to the global OpenTelemetry tracer provider, and this binary
+// installs none, so every span is a no-op here. That is deliberate for a
+// reference server. To export traces, install a provider before serving (or
+// serve from a Forge app, which installs one); nothing else needs to change.
+//
 // Environment:
 //
 //	FABRIQ_POSTGRES_DSN    (required)

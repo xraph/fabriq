@@ -8,7 +8,10 @@ require (
 	google.golang.org/grpc v1.83.2
 )
 
-require golang.org/x/term v0.46.0 // indirect
+require (
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
+)
 
 require (
 	github.com/ClickHouse/ch-go v0.73.0 // indirect
