@@ -17,15 +17,11 @@ func TestMetrics_RegisterAndObserve(t *testing.T) {
 	}
 
 	m.OutboxBacklog.Set(42)
-	m.TenantHookTrips.Inc()
 	m.ProjectionLag.WithLabelValues("graph").Set(3)
 	m.RelayPublished.Add(128)
 
 	if got := testutil.ToFloat64(m.OutboxBacklog); got != 42 {
 		t.Fatalf("OutboxBacklog = %v", got)
-	}
-	if got := testutil.ToFloat64(m.TenantHookTrips); got != 1 {
-		t.Fatalf("TenantHookTrips = %v", got)
 	}
 
 	families, err := reg.Gather()
@@ -123,6 +119,7 @@ func TestScrapeTimeSeriesReadTheirSources(t *testing.T) {
 	if _, err := New(reg,
 		WithConflationDepth(func() int { return depth }),
 		WithCatalogReads(func() (int64, int64, int64, bool) { return 10, 4, 1, true }),
+		WithBackstopTrips(func() int64 { return 2 }),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -139,10 +136,13 @@ fabriq_catalog_read_replica_total 4
 # HELP fabriq_conflation_depth Deltas buffered in this node's subscription-hub conflation windows.
 # TYPE fabriq_conflation_depth gauge
 fabriq_conflation_depth 7
+# HELP fabriq_tenant_hook_trips_total Tenant-guard backstop trips in this process; non-zero means a fabriq bug.
+# TYPE fabriq_tenant_hook_trips_total counter
+fabriq_tenant_hook_trips_total 2
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want),
 		"fabriq_catalog_read_primary_total", "fabriq_catalog_read_replica_total",
-		"fabriq_catalog_read_failover_total", "fabriq_conflation_depth"); err != nil {
+		"fabriq_catalog_read_failover_total", "fabriq_conflation_depth", "fabriq_tenant_hook_trips_total"); err != nil {
 		t.Fatal(err)
 	}
 	depth = 2

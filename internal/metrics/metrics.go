@@ -9,14 +9,16 @@
 // Operational meaning (see docs/OPERATIONS.md for runbooks):
 //
 //   - fabriq_outbox_backlog: unpublished outbox rows. Sustained growth
-//     means the relay is down or Redis is unreachable.
-//   - fabriq_tenant_hook_trips_total: the tenant backstop fired. Any
-//     non-zero value in production is a fabriq bug. Page.
+//     means the relay is down or Redis is unreachable. Worker only.
+//   - fabriq_tenant_hook_trips_total: the tenant backstop fired in this
+//     process, read at scrape time on every node. Any non-zero value in
+//     production is a fabriq bug. Page.
 //   - fabriq_conflation_depth: deltas buffered in this node's subscription
 //     hub, read at scrape time. Sustained growth means subscribers cannot
 //     keep up.
 //   - fabriq_projection_lag_events{projection}: entries the graph or search
-//     consumer group has not yet acknowledged (lag plus pending).
+//     consumer group has not yet acknowledged (lag plus pending). Worker
+//     only.
 //   - fabriq_relay_published_total: relay publish throughput.
 //   - fabriq_command_duration_seconds{op,result},
 //     fabriq_relay_batch_duration_seconds{result},
@@ -35,10 +37,9 @@ import (
 
 // Metrics bundles fabriq's instruments.
 type Metrics struct {
-	OutboxBacklog   prometheus.Gauge
-	TenantHookTrips prometheus.Counter
-	ProjectionLag   *prometheus.GaugeVec
-	RelayPublished  prometheus.Counter
+	OutboxBacklog  prometheus.Gauge
+	ProjectionLag  *prometheus.GaugeVec
+	RelayPublished prometheus.Counter
 
 	// Durations of the work fabriq traces, and runner restarts.
 	CommandDuration         *prometheus.HistogramVec
@@ -94,6 +95,7 @@ type Option func(*sources)
 type sources struct {
 	catalogReads    func() (primary, replica, failover int64, ok bool)
 	conflationDepth func() int
+	backstopTrips   func() int64
 }
 
 // WithCatalogReads supplies the routing catalog's cumulative read counters
@@ -101,6 +103,13 @@ type sources struct {
 // fabriq_catalog_read_*_total counters; ok=false reads as zero.
 func WithCatalogReads(fn func() (primary, replica, failover int64, ok bool)) Option {
 	return func(s *sources) { s.catalogReads = fn }
+}
+
+// WithBackstopTrips supplies this process's cumulative tenant-guard
+// backstop trips, read at scrape time as fabriq_tenant_hook_trips_total. The
+// trips happen wherever a query runs, so every node reports its own.
+func WithBackstopTrips(fn func() int64) Option {
+	return func(s *sources) { s.backstopTrips = fn }
 }
 
 // WithConflationDepth supplies the subscription hub's buffered delta count,
@@ -146,6 +155,15 @@ func New(reg prometheus.Registerer, opts ...Option) (*Metrics, error) {
 			return float64(src.conflationDepth())
 		}),
 		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "fabriq_tenant_hook_trips_total",
+			Help: "Tenant-guard backstop trips in this process; non-zero means a fabriq bug.",
+		}, func() float64 {
+			if src.backstopTrips == nil {
+				return 0
+			}
+			return float64(src.backstopTrips())
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
 			Name: "fabriq_catalog_read_primary_total",
 			Help: "Routing catalog reads served by the primary.",
 		}, catalogRead(func(p, _, _ int64) int64 { return p })),
@@ -163,10 +181,6 @@ func New(reg prometheus.Registerer, opts ...Option) (*Metrics, error) {
 		OutboxBacklog: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "fabriq_outbox_backlog",
 			Help: "Unpublished transactional-outbox rows.",
-		}),
-		TenantHookTrips: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "fabriq_tenant_hook_trips_total",
-			Help: "Tenant-guard backstop trips; non-zero means a fabriq bug.",
 		}),
 		ProjectionLag: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "fabriq_projection_lag_events",
@@ -307,7 +321,7 @@ func New(reg prometheus.Registerer, opts ...Option) (*Metrics, error) {
 			Name: "fabriq_distill_intermediate_gc_total", Help: "Orphaned adaptive-depth intermediate nodes garbage-collected."}),
 	}
 	for _, c := range append(funcs,
-		m.OutboxBacklog, m.TenantHookTrips, m.ProjectionLag, m.RelayPublished,
+		m.OutboxBacklog, m.ProjectionLag, m.RelayPublished,
 		m.CommandDuration, m.RelayBatchDuration, m.ProjectionApplyDuration, m.ModelCallDuration, m.WorkerRestarts,
 		m.BlobGCBytesFreed, m.BlobGCCollected, m.BlobGCRefDriftCorrected, m.BlobGCBroken, m.BlobGCOrphans,
 		m.EmbedEventsTotal, m.EmbedFailuresTotal,

@@ -203,7 +203,6 @@ func (e *Extension) Start(ctx context.Context) error {
 	e.mu.Lock()
 	e.fab, e.stores = fab, stores
 	e.mu.Unlock()
-	e.mountMetrics()
 	e.MarkStarted()
 	return nil
 }

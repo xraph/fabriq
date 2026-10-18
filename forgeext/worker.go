@@ -33,9 +33,11 @@ const (
 	lockKeyRollup        = postgres.LockKeyRollup
 )
 
-// Run implements forge.RunnableExtension: supervise the leader-elected relay
-// until shutdown. If RunWorker is false this is a no-op.
+// Run implements forge.RunnableExtension: mount fabriq's GET /metrics, then
+// supervise the leader-elected relay until shutdown. If RunWorker is false
+// it only mounts /metrics.
 func (e *Extension) Run(ctx context.Context) error {
+	e.mountMetrics()
 	if !e.cfg.RunWorker {
 		return nil
 	}
@@ -71,7 +73,7 @@ func (e *Extension) Run(ctx context.Context) error {
 			postgres.WithRelayOnPublish(func(n int) { m.RelayPublished.Add(float64(n)) }),
 			postgres.WithRelayOnBatch(m.ObserveRelayBatch),
 		)
-		go pollGauges(runCtx, stores, m, 15*time.Second)
+		go pollGauges(runCtx, storeGaugeReads(stores), m, 15*time.Second)
 	}
 
 	var logger forge.Logger

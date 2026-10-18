@@ -38,6 +38,17 @@ func (s *Stores) ShardPGs() []ShardPG {
 	return out
 }
 
+// BackstopTrips sums the tenant-guard backstop trips counted by every static
+// shard adapter in this process. Catalog mode pools its tenant adapters and
+// reports zero here.
+func (s *Stores) BackstopTrips() int64 {
+	var n int64
+	for _, a := range s.shardPG {
+		n += a.BackstopTrips()
+	}
+	return n
+}
+
 // shardForTenant resolves the concrete adapter that owns a tenant.
 func (s *Stores) shardForTenant(ctx context.Context, tenantID string) (*postgres.Adapter, error) {
 	id, err := s.Shards.ResolveID(ctx, tenantID)

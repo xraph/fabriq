@@ -37,13 +37,19 @@ func newTestApp(t *testing.T) forge.App {
 
 func scrapeRoute(t *testing.T, app forge.App, path string) string {
 	t.Helper()
+	code, body := getRoute(t, app, path)
+	if code != http.StatusOK {
+		t.Fatalf("GET %s = %d", path, code)
+	}
+	return body
+}
+
+func getRoute(t *testing.T, app forge.App, path string) (int, string) {
+	t.Helper()
 	rr := httptest.NewRecorder()
 	app.Router().ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("GET %s = %d", path, rr.Code)
-	}
 	body, _ := io.ReadAll(rr.Body)
-	return string(body)
+	return rr.Code, string(body)
 }
 
 // fabriq's registry stays private: GET /metrics serves fabriq_ names with no
@@ -63,8 +69,18 @@ func TestMetricsEndpointServesFabriqSeries(t *testing.T) {
 	if again := e.initMetrics(); again != m {
 		t.Fatal("initMetrics must build the registry once")
 	}
-	e.mountMetrics()
-	e.mountMetrics() // idempotent: a second mount must not try the route again
+	// The route is not taken during registration: a host extension that
+	// registers after fabriq still gets the chance first.
+	if code, _ := getRoute(t, app, "/metrics"); code == http.StatusOK {
+		t.Fatal("/metrics must not be mounted before Run")
+	}
+	// Run mounts it even without the worker, and only once.
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	m.ObserveCommand("create", "ok", 2*time.Millisecond)
 	m.ProjectionLag.WithLabelValues("graph").Set(4)
@@ -77,6 +93,7 @@ func TestMetricsEndpointServesFabriqSeries(t *testing.T) {
 		`fabriq_worker_restarts_total{runner="relay"} 1`,
 		"# TYPE fabriq_catalog_read_primary_total counter",
 		"# TYPE fabriq_conflation_depth gauge",
+		"# TYPE fabriq_tenant_hook_trips_total counter",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /metrics lacks %q", want)
@@ -325,12 +342,50 @@ func TestAnalyticsRetentionRunIsARootSpan(t *testing.T) {
 	}
 }
 
+// pollGauges starts under forge's boot span; its reads must not see it.
 func TestPollGaugesDropsTheInheritedSpan(t *testing.T) {
-	// pollGauges strips its ctx before it ever ticks; Detach is what makes
-	// its count queries trace-free.
+	m, err := metrics.New(prometheus.NewRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type read struct {
+		what  string
+		valid bool
+	}
+	reads := make(chan read, 8)
+	src := gaugeReads{
+		backlog: func(ctx context.Context) (int64, bool) {
+			reads <- read{"backlog", trace.SpanContextFromContext(ctx).IsValid()}
+			return 7, true
+		},
+		groupLag: func(ctx context.Context, group string) (int64, error) {
+			reads <- read{group, trace.SpanContextFromContext(ctx).IsValid()}
+			return 3, nil
+		},
+	}
 	boot, span := telemetry.Tracer().Start(context.Background(), "start fabriq")
 	defer span.End()
-	if trace.SpanContextFromContext(telemetry.Detach(boot)).IsValid() {
-		t.Fatal("Detach kept the span")
+	ctx, cancel := context.WithCancel(boot)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pollGauges(ctx, src, m, time.Millisecond)
+	}()
+	for _, want := range []string{"backlog", "proj:graph", "proj:search"} {
+		r := <-reads
+		if r.what != want {
+			t.Fatalf("read %q, want %q", r.what, want)
+		}
+		if r.valid {
+			t.Fatalf("the %s read ran under the boot span", r.what)
+		}
+	}
+	cancel()
+	<-done
+	if got := testutil.ToFloat64(m.OutboxBacklog); got != 7 {
+		t.Fatalf("fabriq_outbox_backlog = %v, want 7", got)
+	}
+	if got := testutil.ToFloat64(m.ProjectionLag.WithLabelValues("search")); got != 3 {
+		t.Fatalf("fabriq_projection_lag_events{search} = %v, want 3", got)
 	}
 }

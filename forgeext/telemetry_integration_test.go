@@ -64,11 +64,17 @@ func TestExtension_TelemetryEndpoints(t *testing.T) {
 	if _, err := ext.Fabriq().Exec(tctx, command.Command{Entity: "site", Op: command.OpCreate, Payload: &domain.Site{Name: "Plant A"}}); err != nil {
 		t.Fatal(err)
 	}
+	// forge calls Run after every extension has started; that mounts
+	// /metrics even though this node runs no worker.
+	if err := ext.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	rr := httptest.NewRecorder()
 	app.Router().ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body, _ := io.ReadAll(rr.Body)
-	if rr.Code != http.StatusOK || !strings.Contains(string(body), `fabriq_command_duration_seconds_count{op="create",result="ok"} 1`) {
+	if rr.Code != http.StatusOK || !strings.Contains(string(body), `fabriq_command_duration_seconds_count{op="create",result="ok"} 1`) ||
+		!strings.Contains(string(body), "fabriq_tenant_hook_trips_total 0") {
 		t.Fatalf("GET /metrics = %d, lacks the command histogram:\n%s", rr.Code, body)
 	}
 
