@@ -179,8 +179,10 @@ func Classify(err error) string {
 }
 
 // CommandObserver receives one observation per command batch the executor
-// runs. op is create, update, delete, upsert, or mixed for a batch that
-// combines several; result is ok, invalid, conflict, not_found or error.
+// runs. op is create, update, delete, upsert, mixed for a batch that
+// combines several, or unknown for an op value the executor doesn't define
+// (such a batch always fails validation, so its result is invalid). result
+// is ok, invalid, conflict, not_found or error.
 type CommandObserver interface {
 	ObserveCommand(op, result string, elapsed time.Duration)
 }

@@ -120,3 +120,17 @@ func TestExecNoTenantIsInvalid(t *testing.T) {
 		t.Fatalf("spans = %v", s)
 	}
 }
+
+func TestUnknownOpIsLabelledUnknownAndInvalid(t *testing.T) {
+	obs := &recordingObserver{}
+	x, err := command.NewExecutor(cmdRegistry(t), newFakeStore(), command.WithObserver(obs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.Exec(acmeCtx(t), command.Command{Entity: "site", Op: command.Op(99), AggID: "x"}); err == nil {
+		t.Fatal("an undefined op must fail validation")
+	}
+	if len(obs.got) != 1 || obs.got[0] != (observed{"unknown", "invalid"}) {
+		t.Fatalf("observer got %v, want unknown/invalid", obs.got)
+	}
+}

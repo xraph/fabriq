@@ -159,7 +159,9 @@ func (x *Executor) ExecBatch(ctx context.Context, cmds []Command) (results []Res
 	return results, nil
 }
 
-// opName is the metric and span label for one command op.
+// opName is the metric and span label for one command op. An op value the
+// executor doesn't define labels as "unknown"; prepare rejects it, so the
+// batch's result is always "invalid".
 func opName(op Op) string {
 	switch op {
 	case OpCreate:
