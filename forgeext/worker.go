@@ -4,16 +4,22 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/xraph/forge"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/analytics"
+	"github.com/xraph/fabriq/core/projection"
+	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/internal/metrics"
+	"github.com/xraph/fabriq/internal/tracing"
 )
 
 // Advisory lock keys live with the adapter (postgres.LockKey*) so the
@@ -55,19 +61,17 @@ func (e *Extension) Run(ctx context.Context) error {
 	e.cancel, e.done = cancel, done
 	e.mu.Unlock()
 
-	// Observability: /metrics + gauge pollers.
+	// Observability: fabriq's registry (built and mounted at Start) plus the
+	// gauge poller.
 	app := e.App()
+	m := e.initMetrics()
 	var relayOpts []postgres.RelayOption
-	if app != nil {
-		if m, err := wireObservability(app, stores); err == nil {
-			e.mu.Lock()
-			e.metrics = m
-			e.mu.Unlock()
-			relayOpts = append(relayOpts, postgres.WithRelayOnPublish(func(n int) {
-				m.RelayPublished.Add(float64(n))
-			}))
-			go pollGauges(runCtx, stores, m, 15*time.Second)
-		}
+	if m != nil {
+		relayOpts = append(relayOpts,
+			postgres.WithRelayOnPublish(func(n int) { m.RelayPublished.Add(float64(n)) }),
+			postgres.WithRelayOnBatch(m.ObserveRelayBatch),
+		)
+		go pollGauges(runCtx, stores, m, 15*time.Second)
 	}
 
 	var logger forge.Logger
@@ -91,7 +95,7 @@ func (e *Extension) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, label, func(c context.Context) error { return elector.Run(c, relay.Run) })
+			supervise(runCtx, logger, m, label, func(c context.Context) error { return elector.Run(c, relay.Run) })
 		}()
 	}
 
@@ -100,7 +104,7 @@ func (e *Extension) Run(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		supervise(runCtx, logger, "document-plane", func(c context.Context) error {
+		supervise(runCtx, logger, m, "document-plane", func(c context.Context) error {
 			return docElector.Run(c, func(leadCtx context.Context) error {
 				e.runDocumentPlane(leadCtx, time.Second)
 				return leadCtx.Err()
@@ -115,7 +119,7 @@ func (e *Extension) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "reconciler", func(c context.Context) error {
+			supervise(runCtx, logger, m, "reconciler", func(c context.Context) error {
 				return reconElector.Run(c, func(leadCtx context.Context) error {
 					e.runReconciler(leadCtx, reconcileInterval)
 					return leadCtx.Err()
@@ -131,7 +135,7 @@ func (e *Extension) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "blob-gc", func(c context.Context) error {
+			supervise(runCtx, logger, m, "blob-gc", func(c context.Context) error {
 				return gcElector.Run(c, func(leadCtx context.Context) error {
 					e.runBlobGC(leadCtx, reconcileInterval)
 					return leadCtx.Err()
@@ -153,7 +157,7 @@ func (e *Extension) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "rollup:insights", func(c context.Context) error {
+			supervise(runCtx, logger, m, "rollup:insights", func(c context.Context) error {
 				return rollupElector.Run(c, func(leadCtx context.Context) error {
 					e.runRollupMaintainer(leadCtx, rollupInterval)
 					return leadCtx.Err()
@@ -173,10 +177,13 @@ func (e *Extension) Run(ctx context.Context) error {
 			cancel()
 			return err
 		}
+		if m != nil {
+			engine.Observer = m
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "proj:graph", func(c context.Context) error { return engine.Run(c, consumer) })
+			supervise(runCtx, logger, m, "proj:graph", func(c context.Context) error { return engine.Run(c, consumer) })
 		}()
 	}
 	if stores.Elastic != nil {
@@ -185,10 +192,13 @@ func (e *Extension) Run(ctx context.Context) error {
 			cancel()
 			return err
 		}
+		if m != nil {
+			engine.Observer = m
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "proj:search", func(c context.Context) error { return engine.Run(c, consumer) })
+			supervise(runCtx, logger, m, "proj:search", func(c context.Context) error { return engine.Run(c, consumer) })
 		}()
 	}
 	if stores.Analytics != nil && stores.Redis != nil && hasAnalyticsEntity(e.reg) {
@@ -197,17 +207,18 @@ func (e *Extension) Run(ctx context.Context) error {
 			cancel()
 			return err
 		}
-		if e.metrics != nil {
-			cons.OnApplied = e.metrics.AnalyticsAppliedTotal.Inc
-			cons.OnFailure = e.metrics.AnalyticsFailuresTotal.Inc
+		if m != nil {
+			cons.OnApplied = m.AnalyticsAppliedTotal.Inc
+			cons.OnFailure = m.AnalyticsFailuresTotal.Inc
+			cons.Observer = m
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "proj:analytics", func(c context.Context) error { return cons.Run(c, consumer) })
+			supervise(runCtx, logger, m, "proj:analytics", func(c context.Context) error { return cons.Run(c, consumer) })
 		}()
-		if e.metrics != nil {
-			m, sink := e.metrics, stores.Analytics
+		if m != nil {
+			sink := stores.Analytics
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -220,7 +231,7 @@ func (e *Extension) Run(ctx context.Context) error {
 		}
 	}
 	if stores.Analytics != nil && (e.cfg.Fabriq.Analytics.EventRetention > 0 || e.cfg.Fabriq.Analytics.PartitionEvents) {
-		m, sink, retention := e.metrics, stores.Analytics, e.cfg.Fabriq.Analytics.EventRetention
+		sink, retention := stores.Analytics, e.cfg.Fabriq.Analytics.EventRetention
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -233,10 +244,13 @@ func (e *Extension) Run(ctx context.Context) error {
 			cancel()
 			return err
 		}
+		if m != nil {
+			cons.Observer = m
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "proj:insights", func(c context.Context) error { return cons.Run(c, consumer) })
+			supervise(runCtx, logger, m, "proj:insights", func(c context.Context) error { return cons.Run(c, consumer) })
 		}()
 	} else if e.cfg.Fabriq.Insights.Enabled && stores.Redis != nil {
 		if logger != nil {
@@ -246,16 +260,16 @@ func (e *Extension) Run(ctx context.Context) error {
 
 	// Embedding worker: one consumer per replica, no election needed.
 	if e.cfg.Embedder != nil && stores.Redis != nil && hasEmbeddableEntity(e.reg) {
-		ix, ierr := agent.NewIndexer(fab, e.reg, e.cfg.Embedder)
+		ix, ierr := agent.NewIndexer(fab, e.reg, meteredEmbedder(e.cfg.Embedder, m))
 		if ierr != nil {
 			cancel()
 			return ierr
 		}
-		handle := embedHandler(runCtx, ix, e.metrics)
+		handle := embedHandler(runCtx, ix, m)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "proj:embed", func(c context.Context) error {
+			supervise(runCtx, logger, m, "proj:embed", func(c context.Context) error {
 				if err := stores.Redis.EnsureGroup(c, "proj:embed"); err != nil {
 					return err
 				}
@@ -274,17 +288,17 @@ func (e *Extension) Run(ctx context.Context) error {
 			FailOpenGuard: e.cfg.DistillFailOpenGuard,
 			Clusterer:     e.cfg.Clusterer,
 		}
-		dist, derr := agent.NewDistiller(fab, e.reg, e.cfg.Embedder, e.cfg.Summarizer, e.cfg.Guard, stores.CAS, dcfg)
+		dist, derr := agent.NewDistiller(fab, e.reg, meteredEmbedder(e.cfg.Embedder, m), meteredSummarizer(e.cfg.Summarizer, m), e.cfg.Guard, stores.CAS, dcfg)
 		if derr != nil {
 			cancel()
 			return derr
 		}
-		sw := newDistillSweeper(dist, e.cfg.DistillDebounce, e.cfg.DistillMaxWait, e.metrics)
+		sw := newDistillSweeper(dist, e.cfg.DistillDebounce, e.cfg.DistillMaxWait, m)
 		handle := distillHandler(runCtx, sw)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supervise(runCtx, logger, "proj:distill", func(c context.Context) error {
+			supervise(runCtx, logger, m, "proj:distill", func(c context.Context) error {
 				if err := stores.Redis.EnsureGroup(c, "proj:distill"); err != nil {
 					return err
 				}
@@ -334,9 +348,10 @@ func consumerName() string {
 }
 
 // supervise keeps a runner alive for the worker's lifetime: every exit is
-// logged (never swallowed) and restarted with exponential backoff
-// (1s -> 30s cap), resetting after a healthy stretch.
-func supervise(ctx context.Context, log forge.Logger, name string, run func(ctx context.Context) error) {
+// logged (never swallowed), counted on fabriq_worker_restarts_total when m is
+// set, and restarted with exponential backoff (1s -> 30s cap), resetting
+// after a healthy stretch.
+func supervise(ctx context.Context, log forge.Logger, m *metrics.Metrics, name string, run func(ctx context.Context) error) {
 	const (
 		baseBackoff  = time.Second
 		maxBackoff   = 30 * time.Second
@@ -351,6 +366,9 @@ func supervise(ctx context.Context, log forge.Logger, name string, run func(ctx 
 		}
 		if time.Since(started) >= healthyReset {
 			backoff = baseBackoff
+		}
+		if m != nil {
+			m.WorkerRestarts.WithLabelValues(runnerLabel(name)).Inc()
 		}
 		if log != nil {
 			log.Error("fabriq: runner exited; restarting",
@@ -371,6 +389,17 @@ func supervise(ctx context.Context, log forge.Logger, name string, run func(ctx 
 			}
 		}
 	}
+}
+
+// runnerLabel is the bounded fabriq_worker_restarts_total label for a
+// supervised runner. The static worker names one relay per shard
+// (relay:<shardID>); they all fold to "relay" so shard IDs never become
+// label values. Every other runner name is a fixed string.
+func runnerLabel(name string) string {
+	if strings.HasPrefix(name, "relay:") {
+		return "relay"
+	}
+	return name
 }
 
 // runReconciler is the scheduled drift healer: leader-elected (lock 1002)
@@ -439,10 +468,23 @@ func (e *Extension) gcBlobAll(ctx context.Context) {
 		if err != nil {
 			continue
 		}
+		// One root span per tenant reconciled: the scheduled pass always
+		// does work, and a per-tenant trace stays small.
+		tctx, span := tracing.StartRoot(tctx, "collect blob garbage")
 		rep, err := rec.Reconcile(tctx, true)
 		if err != nil {
+			telemetry.Fail(span, "blob gc failed", err)
+			span.End()
 			continue
 		}
+		span.SetAttributes(
+			attribute.Int64("fabriq.blob.bytes_freed", rep.BytesFreed),
+			attribute.Int("fabriq.blob.collected", rep.GCCount),
+			attribute.Int("fabriq.blob.refs_corrected", rep.RefsCorrected),
+			attribute.Int("fabriq.blob.orphans_deleted", rep.OrphansDeleted),
+			attribute.Int("fabriq.blob.broken", len(rep.Broken)),
+		)
+		span.End()
 		broken += len(rep.Broken)
 		if m != nil {
 			m.BlobGCBytesFreed.Add(float64(rep.BytesFreed))
@@ -516,15 +558,29 @@ func (e *Extension) reconcileAll(ctx context.Context) {
 	for _, tenantID := range tenants {
 		if stores.Falkor != nil {
 			if rec, err := stores.GraphReconciler(e.reg); err == nil {
-				_, _ = rec.Reconcile(ctx, tenantID, true)
+				reconcileTraced(ctx, rec, "graph", tenantID)
 			}
 		}
 		if stores.Elastic != nil {
 			if rec, err := stores.SearchReconciler(e.reg); err == nil {
-				_, _ = rec.Reconcile(ctx, tenantID, true)
+				reconcileTraced(ctx, rec, "search", tenantID)
 			}
 		}
 	}
+}
+
+// reconcileTraced runs one tenant's drift repair for one projection under its
+// own root span. The tenant ID never reaches the span.
+func reconcileTraced(ctx context.Context, rec *projection.Reconciler, proj, tenantID string) {
+	ctx, span := tracing.StartRoot(ctx, "reconcile projection",
+		trace.WithAttributes(telemetry.AttrProjection.String(proj)))
+	defer span.End()
+	drifts, err := rec.Reconcile(ctx, tenantID, true)
+	if err != nil {
+		telemetry.Fail(span, "reconcile failed", err)
+		return
+	}
+	span.SetAttributes(attribute.Int("fabriq.reconcile.drifts", len(drifts)))
 }
 
 // analyticsRetentionLoop keeps the append-only event log bounded on a slow
@@ -537,12 +593,23 @@ func analyticsRetentionLoop(ctx context.Context, m *metrics.Metrics, sink analyt
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	tick := func() {
+		// One root span per run: the hourly pass always does work.
+		sctx, span := tracing.StartRoot(ctx, "enforce analytics retention")
+		defer span.End()
 		// Partition maintenance first (create ahead / drop aged), then a
 		// delete-scan for anything retention-expired that a dropped partition
 		// did not cover (the default partition, or a non-partitioned table).
-		_, _, _ = sink.MaintainPartitions(ctx, retention)
+		if _, _, err := sink.MaintainPartitions(sctx, retention); err != nil {
+			telemetry.Fail(span, "maintain partitions failed", err)
+		}
 		if retention > 0 {
-			if n, err := sink.PruneEvents(ctx, time.Now().Add(-retention)); err == nil && n > 0 && m != nil {
+			n, err := sink.PruneEvents(sctx, time.Now().Add(-retention))
+			if err != nil {
+				telemetry.Fail(span, "prune events failed", err)
+				return
+			}
+			span.SetAttributes(attribute.Int64("fabriq.analytics.events_pruned", n))
+			if n > 0 && m != nil {
 				m.AnalyticsEventsPrunedTotal.Add(float64(n))
 			}
 		}

@@ -9,30 +9,78 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq"
+	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/internal/metrics"
 )
 
-// wireObservability registers fabriq's Prometheus instruments, mounts
-// GET /metrics on the forge router, and returns the instruments for use by
-// the relay callback and gauge pollers.
-func wireObservability(app forge.App, _ *fabriq.Stores) (*metrics.Metrics, error) {
-	reg := prometheus.NewRegistry()
-	m, err := metrics.New(reg)
-	if err != nil {
-		return nil, err
+// initMetrics builds fabriq's private Prometheus registry and instruments,
+// once. Everything on it keeps its fabriq_ name (forge's /_/metrics prefixes
+// the series it owns with forge_). The scrape-time series read the facade
+// and stores through the extension, so they report zero until Start has run.
+func (e *Extension) initMetrics() *metrics.Metrics {
+	e.metricsOnce.Do(func() {
+		reg := prometheus.NewRegistry()
+		m, err := metrics.New(reg,
+			metrics.WithCatalogReads(func() (primary, replica, failover int64, ok bool) {
+				st := e.Stores()
+				if st == nil {
+					return 0, 0, 0, false
+				}
+				return st.CatalogReadStats()
+			}),
+			metrics.WithConflationDepth(func() int {
+				f := e.Fabriq()
+				if f == nil || f.Hub() == nil {
+					return 0
+				}
+				return f.Hub().ConflationDepth()
+			}),
+		)
+		if err != nil {
+			return // a fresh registry cannot collide; metrics stay off
+		}
+		e.mu.Lock()
+		e.promReg, e.metrics = reg, m
+		e.mu.Unlock()
+	})
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.metrics
+}
+
+// mountMetrics serves fabriq's registry at GET /metrics on the app's router,
+// once. It runs from Start, so every node that opens the facade serves it
+// (command latency and conflation depth are request-path series), not only
+// the worker. A route conflict is logged and leaves the series unserved
+// rather than failing Start.
+func (e *Extension) mountMetrics() {
+	app := e.App()
+	e.mu.Lock()
+	reg, mounted := e.promReg, e.metricsMounted
+	if app == nil || reg == nil || mounted {
+		e.mu.Unlock()
+		return
 	}
+	e.metricsMounted = true
+	e.mu.Unlock()
+
 	handler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	if err := app.Router().GET("/metrics", func(ctx forge.Context) error {
 		handler.ServeHTTP(ctx.Response(), ctx.Request())
 		return nil
 	}); err != nil {
-		return nil, err
+		if log := e.Logger(); log != nil {
+			log.Warn("fabriq: could not mount GET /metrics; fabriq's series are recorded but not served",
+				forge.String("reason", "route registration failed"))
+		}
 	}
-	return m, nil
 }
 
-// pollGauges keeps the slow-moving gauges fresh.
+// pollGauges keeps the slow-moving gauges fresh. It polls on a fixed cadence
+// and records no spans: its ctx is detached from any trace, so its queries
+// stay out of every trace too.
 func pollGauges(ctx context.Context, stores *fabriq.Stores, m *metrics.Metrics, every time.Duration) {
+	ctx = telemetry.Detach(ctx)
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	var lastTrips int64
@@ -60,7 +108,7 @@ func pollGauges(ctx context.Context, stores *fabriq.Stores, m *metrics.Metrics, 
 			if stores.Redis != nil {
 				for _, proj := range []string{"graph", "search"} {
 					if lag, err := stores.Redis.GroupLag(ctx, "proj:"+proj); err == nil {
-						m.ProjectionLag.WithLabelValues(proj, "_all").Set(float64(lag))
+						m.ProjectionLag.WithLabelValues(proj).Set(float64(lag))
 					}
 				}
 			}
