@@ -186,7 +186,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 			Spatial:     postgres.NewSpatialAdapter(a),
 			Analytics:   postgres.NewInsightsAdapter(a),
 			Documents:   ds,
-			Maintenance: postgres.NewMaintenance(a, reg, pub, ds),
+			Maintenance: postgres.NewMaintenance(a, reg, pub, ds, stores.relayMetricsOptions()...),
 			Projection:  a.ProjectionState(),
 			Replay:      a,
 			Live:        a.NewLiveStore(),

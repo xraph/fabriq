@@ -501,6 +501,36 @@ func (s *Stores) AttachMetrics(m *metrics.Metrics) {
 	s.metricsMu.Unlock()
 }
 
+// relayMetricsOptions are the relay callbacks for relays built inside Open
+// (the catalog-mode sweeper's per-tenant relays). Metrics attach after Open,
+// so each callback reads them when it fires and records nothing until then.
+func (s *Stores) relayMetricsOptions() []postgres.RelayOption {
+	return []postgres.RelayOption{
+		postgres.WithRelayOnPublish(s.recordRelayPublished),
+		postgres.WithRelayOnBatch(s.recordRelayBatch),
+	}
+}
+
+func (s *Stores) currentMetrics() *metrics.Metrics {
+	s.metricsMu.Lock()
+	defer s.metricsMu.Unlock()
+	return s.metrics
+}
+
+// recordRelayPublished counts events a sweeper relay published.
+func (s *Stores) recordRelayPublished(n int) {
+	if m := s.currentMetrics(); m != nil {
+		m.RelayPublished.Add(float64(n))
+	}
+}
+
+// recordRelayBatch records one sweeper relay batch's duration and result.
+func (s *Stores) recordRelayBatch(result string, elapsed time.Duration) {
+	if m := s.currentMetrics(); m != nil {
+		m.ObserveRelayBatch(result, elapsed)
+	}
+}
+
 // recordScale is the pool autoscaler's OnScale hook: reflect the new cap and
 // count the decision. Best-effort; never blocks the controller.
 func (s *Stores) recordScale(ev shard.ScaleEvent) {
