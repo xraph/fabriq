@@ -1,7 +1,11 @@
 # Operations Runbooks
 
-Metrics referenced here are defined in `internal/metrics` and exposed by
-the binaries at `/_/metrics` (forge).
+Metrics referenced here are defined in `internal/metrics` and served by
+the fabriq extension at `/metrics` on `FABRIQ_HTTP_ADDR` (all `fabriq_*`,
+no prefix). forge's own `/_/metrics` on the same port carries HTTP metrics
+and grove's `db_client_operation_duration_seconds`. Scrape both. Traces go
+to whatever OpenTelemetry provider the app installs; see
+docs/content/docs/(operations)/observability.mdx for every span.
 
 ## Outbox backlog grows (`fabriq_outbox_backlog`)
 
@@ -19,9 +23,12 @@ unreachable.
 4. Commands never fail because the relay is down (the outbox IS the
    buffer); this is a latency incident, not a data-loss incident.
 
-## Projection lag (`fabriq_projection_lag_events`)
+## Projection lag (`fabriq_projection_lag_events{projection}`)
 
-1. Identify the lagging group: `XINFO GROUPS fabriq:events`.
+1. Identify the lagging group: `XINFO GROUPS fabriq:events`. The
+   `projection` label already names it for graph and search;
+   `fabriq_projection_apply_duration_seconds{result="error"}` shows whether
+   applies are failing rather than slow.
 2. Consumers scale by replica count (consumer groups, no election) — add
    replicas if apply throughput is the limit.
 3. A poisoned event (handler error loop) stays pending and is XAUTOCLAIMed

@@ -138,6 +138,7 @@ The full set:
 - `WithDocumentAuthz(fn func(ctx context.Context, docID string) error)`: the document-plane authorization hook, consulted for both `ApplyUpdate` (writes) and `SubscribeDocument` (reads). Without it, any authenticated member of the tenant may touch any of the tenant's documents.
 - `WithUpcasters(chain *event.UpcasterChain)`: registers the event payload upcaster chain. Projection engines apply it at decode, so appliers only ever see the latest payload shape.
 - `WithTraceparent(fn func(context.Context) string)`: supplies the W3C traceparent extractor stamped into event envelopes. `Open` already installs the production extractor by default, so override only for custom propagation.
+- `WithMetrics(m gometrics.Metrics)`: hands grove a metrics sink for the databases and KV store `Open` dials. The Forge extension does this for you with `app.Metrics()`; see [Observability](/docs/observability).
 - `WithClock(now func() time.Time)`: overrides the command-plane clock (tests).
 - `WithLiveAuthz(fn livequery.AuthzFunc)` and `WithLiveCushion(n int)`: authorization and window cushion for live queries.
 - `WithLifecycleHook(hooks ...command.LifecycleHook)`: hooks around command execution.

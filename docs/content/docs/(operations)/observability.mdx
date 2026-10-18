@@ -1,98 +1,188 @@
 ---
 title: Observability
-description: The fabriq metric catalog, health endpoints, and W3C trace propagation across the async event hop.
+description: "fabriq's spans, its two metrics endpoints, health endpoints, and how a trace crosses the outbox."
 ---
 
-The worker exposes Prometheus metrics and health on `FABRIQ_HTTP_ADDR`
-(default `:8081`). Metrics are at `/metrics` (mounted by fabriq) and forge's
-own `/_/metrics`; health is at the forge endpoints below.
+Point an OTLP collector at the app and you get traces. Scrape two endpoints
+and you get metrics. Both live on `FABRIQ_HTTP_ADDR` (default `:8081`):
 
-## Metrics
+| Path | What it serves |
+| --- | --- |
+| `/metrics` | fabriq's own Prometheus registry. Every series is named `fabriq_*`, with no `forge_` prefix. |
+| `/_/metrics` | forge's registry: HTTP server metrics, and grove's `db_client_operation_duration_seconds` for the databases fabriq dials. |
 
-Five instruments, defined in `internal/metrics`. The names are exact.
+```bash
+curl localhost:8081/metrics     # fabriq_* series
+curl localhost:8081/_/metrics   # forge HTTP + grove db_client_* series
+```
 
-| Metric | Type | Meaning | Direction |
+fabriq mounts `/metrics` when the extension starts, so every node that opens
+the facade serves it, worker or not. If your app already owns `GET /metrics`,
+fabriq logs a warning and its series are recorded but not served.
+
+## Traces
+
+Spans go to the global OpenTelemetry tracer provider, which `forge.New`
+installs. Spans fabriq's core starts carry the instrumentation scope
+`github.com/xraph/fabriq/core`; spans the root module starts carry
+`github.com/xraph/fabriq`. You don't configure anything in fabriq to get
+them. forge already traces every HTTP request, and grove v1.8.0 adds a
+`db.client` span for every query under whichever fabriq span is active.
+
+| Span | Kind | Starts | Attributes |
 | --- | --- | --- | --- |
-| `fabriq_outbox_backlog` | gauge | Unpublished transactional-outbox rows. | Near zero is healthy. Sustained growth means the relay is down, has no leader, or Redis is unreachable. |
-| `fabriq_projection_lag_events` | gauge | Events between a projection's position and the stream head. Labels `projection` (`graph`/`search`) and `tenant`. | Near zero is healthy. Sustained growth means consumers cannot keep up or a projection is stalled. |
-| `fabriq_tenant_hook_trips_total` | counter | Tenant-guard backstop trips. | Must stay zero. **Any non-zero value is a fabriq bug.** |
-| `fabriq_conflation_depth` | gauge | Deltas buffered in subscription-hub conflation windows. | Low is healthy. Sustained growth means subscribers cannot drain. |
-| `fabriq_relay_published_total` | counter | Events published by the outbox relay. | Monotonic; flatlining while backlog grows confirms a stalled relay. |
-| `fabriq_analytics_applied_total` | counter | Envelopes successfully applied by the [analytics sink](/docs/analytics-sink)'s `proj:analytics` consumer. | Monotonic while analytics is configured and traffic flows; only emitted when `Config.Analytics` is set. |
-| `fabriq_analytics_failures_total` | counter | Envelopes the analytics consumer failed to apply (transient; left pending for redelivery). | Must stay near zero. Sustained growth means the analytics database is unreachable or rejecting writes. |
-| `fabriq_analytics_lag_seconds` | gauge | Worst-case analytics freshness: the **stalest** tenant's lag (`now()` minus that tenant's newest fact). Per-tenant under the hood, so one stalled tenant moves it — it is not masked by others still flowing. Sampled every 15s. | Low is healthy (sub-second under active traffic). A climb means at least one tenant's consumer is behind. |
-| `fabriq_analytics_tenants_behind` | gauge | Number of tenants whose analytics lag exceeds the alarm threshold (60s). | Zero is healthy. Non-zero names how many tenants are stalled; query `fabriq_analytics_facts` grouped by `tenant_id` to find which. |
-| `fabriq_analytics_events_pruned_total` | counter | Analytics history events deleted by the retention pruner (only when `analytics.eventRetention` is set). | Monotonic; flat means either retention is off or nothing is old enough to prune yet. |
+| `execute command` | Internal, child of the caller | every `Exec` / `ExecBatch` | `fabriq.command.op` (`create`, `update`, `delete`, `upsert`, `mixed`), `fabriq.batch_size`, `fabriq.entity` (when the batch writes one entity), `fabriq.result` |
+| `publish outbox batch` | Producer, new root | each relay batch that found rows | `messaging.system=redis`, `messaging.batch.message_count`; a link to the span that wrote each row (up to 128) |
+| `apply projection event` | Consumer, new root | each envelope the graph, search, analytics and insights consumers apply | `fabriq.projection`, `messaging.consumer.group.name`, `fabriq.entity`, `fabriq.mutations` (graph and search); a link to the writer |
+| `embed event` | Consumer, new root | each envelope for an entity with an `Embed` spec | `messaging.consumer.group.name=proj:embed`, `fabriq.entity`, `fabriq.embed.skipped` (poison payload); a link to the writer |
+| `call embedder`, `call summarizer` | Internal | every model call `core/agent` makes | `fabriq.model.kind` (`embed`, `summarize`), `fabriq.model.inputs` |
+| `recall context` | Internal | `Toolkit.Recall` | `fabriq.recall.entities`, `fabriq.recall.budget`, `fabriq.recall.items`, `fabriq.recall.omitted` |
+| `materialize document` | Internal, new root | each quiet document the document plane materializes | `fabriq.entity`, `fabriq.document.materialized` |
+| `compact document` | Internal, new root | each document due for compaction | `fabriq.entity` |
+| `reconcile projection` | Internal, new root | each tenant and projection, every reconcile interval | `fabriq.projection`, `fabriq.reconcile.drifts` |
+| `collect blob garbage` | Internal, new root | each tenant, every reconcile interval | `fabriq.blob.bytes_freed`, `fabriq.blob.collected`, `fabriq.blob.refs_corrected`, `fabriq.blob.orphans_deleted`, `fabriq.blob.broken` |
+| `maintain rollup` | Internal, new root | each tenant and materialized metric, every rollup interval | `fabriq.metric` |
+| `enforce analytics retention` | Internal, new root | the hourly retention run | `fabriq.analytics.events_pruned` |
+| `distill tenant` | Internal, new root | each debounced distill sweep | `fabriq.distill.refs`, `fabriq.distill.failures` |
+| `run admin job` | Internal, new root | each async admin job (analytics backfill, reconcile and reproject, migrations, tenant provisioning) | `fabriq.job.kind`; a link to the request that started it |
+
+`fabriq.result` on `execute command` is `ok`, `invalid` (no tenant, or the
+command failed validation), `conflict`, `not_found` or `error`. Only `error`
+marks the span failed.
+
+`remote/grpc` traces every RPC with otelgrpc: a Client span from `Dial`, and a
+Server span from `ServerOptions` (and so `NewServer`) that continues the
+caller's trace. The reference `fabriqserver` binary installs no tracer
+provider, so its spans are no-ops until you add one.
+
+### What never reaches a span
+
+Tenant IDs, aggregate, event, document and node IDs, payloads, query and
+recall text, SQL, DSNs and bearer keys stay off every fabriq span. A failed
+span's status description is a short class (`apply failed`, `publish failed`),
+and its `exception` event carries only `exception.type`. Error text never
+gets copied, because driver messages quote values.
+
+The entity name (`fabriq.entity`) is on spans but never on a metric label:
+runtime dynamic entities make it unbounded.
+
+### Across the outbox
+
+The executor stamps the `execute command` span's W3C `traceparent` into the
+envelope and the `fabriq_outbox.traceparent` column, as it always has. What
+changed is how the far side uses it. The request that wrote the command has
+usually finished long before its event is published or applied, so the relay
+and every consumer start a **new root span** and **link** it to that stored
+context. You follow the link from a projection apply back to the command
+that caused it; you don't get one trace that stays open across the hop.
+
+Background loops (the relay, the consumers, the sweeper, the document plane,
+the live-query feed, the L1 evict tailer) drop the span they were started
+under, so an idle poll never files a query under forge's boot trace or an
+ended request. They only start a span when there's work.
+
+## Metrics on `/metrics`
+
+All of these are on fabriq's private registry. The names are exact.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `fabriq_command_duration_seconds` | histogram | `op` (`create`, `update`, `delete`, `upsert`, `mixed`), `result` (`ok`, `invalid`, `conflict`, `not_found`, `error`) | One command batch, validation through commit. |
+| `fabriq_relay_batch_duration_seconds` | histogram | `result` (`ok`, `error`) | One outbox batch the relay published. Empty polls aren't observed. |
+| `fabriq_projection_apply_duration_seconds` | histogram | `projection` (`graph`, `search`, `analytics`, `insights`), `result` (`ok`, `error`) | Applying one envelope. Skipped envelopes aren't observed. |
+| `fabriq_model_call_duration_seconds` | histogram | `kind` (`embed`, `summarize`), `result` (`ok`, `error`) | One Embedder or Summarizer call by the embed and distill workers. |
+| `fabriq_worker_restarts_total` | counter | `runner` (`relay`, `document-plane`, `reconciler`, `blob-gc`, `rollup:insights`, `proj:graph`, `proj:search`, `proj:analytics`, `proj:insights`, `proj:embed`, `proj:distill`, `sweeper`, `sweeper:wake`) | A background runner exited and the supervisor restarted it. Per-shard relays all count as `relay`. |
+| `fabriq_outbox_backlog` | gauge | | Unpublished outbox rows, summed across shards every 15s. |
+| `fabriq_relay_published_total` | counter | | Events the relay published. |
+| `fabriq_projection_lag_events` | gauge | `projection` (`graph`, `search`) | Entries the consumer group hasn't acknowledged (lag plus pending), every 15s. |
+| `fabriq_tenant_hook_trips_total` | counter | | Tenant-guard backstop trips. Must stay zero. |
+| `fabriq_conflation_depth` | gauge | | Deltas buffered in this node's subscription hub, read at scrape time. |
+| `fabriq_analytics_applied_total` | counter | | Envelopes the `proj:analytics` consumer applied. |
+| `fabriq_analytics_failures_total` | counter | | Envelopes it failed to apply (left pending for redelivery). |
+| `fabriq_analytics_lag_seconds` | gauge | | The stalest tenant's analytics lag, sampled every 15s. |
+| `fabriq_analytics_tenants_behind` | gauge | | Tenants whose analytics lag is past 60s. |
+| `fabriq_analytics_events_pruned_total` | counter | | History events the retention run deleted. |
+| `fabriq_embed_events_total` | counter | | Events the embed worker handled (indexed or ack-skipped). |
+| `fabriq_embed_failures_total` | counter | | Events it failed to index (left pending). |
+| `fabriq_distill_nodes_total`, `fabriq_distill_summaries_total`, `fabriq_distill_shortcircuit_total`, `fabriq_distill_guard_blocked_total`, `fabriq_distill_failures_total`, `fabriq_distill_splits_total`, `fabriq_distill_dedup_total`, `fabriq_distill_intermediate_gc_total` | counter | | The distill worker's work, see [Distillation](/docs/distillation). |
+| `fabriq_blob_gc_bytes_freed_total`, `fabriq_blob_gc_collected_total`, `fabriq_blob_gc_ref_drift_corrected_total`, `fabriq_blob_gc_orphans_total` | counter | | Blob GC work, see [Blob GC](/docs/blob-gc). |
+| `fabriq_blob_gc_broken` | gauge | | Referenced hashes with missing bytes, last GC cycle. |
+| `fabriq_sweep_pass_duration_seconds` | histogram | | One catalog sweep pass (catalog mode). |
+| `fabriq_sweep_tenants_tracked`, `fabriq_sweep_tenants_eligible` | gauge | | The sweeper's backoff table and eligible tenants. |
+| `fabriq_sweep_swept_total`, `fabriq_sweep_busy_total`, `fabriq_sweep_errors_total` | counter | | Tenant passes dispatched, that found work, and that failed. |
+| `fabriq_pool_shards_open`, `fabriq_pool_shards_held`, `fabriq_pool_cap` | gauge | | Catalog-mode tenant pools open, in use, and the current cap. |
+| `fabriq_pool_scale_events_total` | counter | `direction` (`grow`, `shrink`) | Adaptive pool cap decisions. |
+| `fabriq_catalog_read_primary_total`, `fabriq_catalog_read_replica_total`, `fabriq_catalog_read_failover_total` | counter | | Routing catalog reads by where they were served, read at scrape time. Zero without catalog replicas. |
 
 <Callout type="error">
 `fabriq_tenant_hook_trips_total` is a correctness alarm, not a capacity one. A
-non-zero value means a query reached an engine without tenant scoping — RLS
-contained the blast radius, but the call site must be found and fixed. Page the
-owning team. See [Runbooks](/docs/runbooks).
+non-zero value means a query reached an engine without tenant scoping. RLS
+contained the blast radius, but the call site has to be found and fixed. Page
+the owning team. See [Runbooks](/docs/runbooks).
 </Callout>
 
-<Callout type="info">
-Planned, not yet built: a `fabriq_analytics_backfill_rows_total` counter
-(backfill runs outside the worker's metrics loop today). See
-[Analytics sink](/docs/analytics-sink).
-</Callout>
+### Changes in v1.8.0
 
-### How they are populated
+If you have dashboards on the older series, three things moved:
 
-- `fabriq_relay_published_total` increments on every relay publish (an
-  on-publish callback wired into the relay).
-- The gauges are refreshed by a poller that runs **every 15s** while the worker
-  leads. Each tick: counts unpublished `fabriq_outbox` rows into
-  `fabriq_outbox_backlog`; folds new backstop trips into
-  `fabriq_tenant_hook_trips_total`; and reads consumer-group lag for the
-  `graph` and `search` projections into `fabriq_projection_lag_events`. Lag is
-  a group property, so the poller emits it under the `tenant` label `_all`.
+- `fabriq_projection_lag_events` lost its `tenant` label, which was always
+  `_all`. Match on `projection` alone.
+- `fabriq_catalog_read_*_total` are counters now (they were gauges holding
+  cumulative values), so `rate()` works on them.
+- `fabriq_conflation_depth` used to be registered and never set. It now
+  reports the hub's real buffered count.
+
+## Metrics on `/_/metrics`
+
+forge owns this registry. fabriq hands `app.Metrics()` to every grove
+database and KV store it opens: the Postgres shards, the catalog and its
+replicas, schema-isolation consolidation databases, the Postgres analytics
+sink and the Redis cache. grove then records:
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `db_client_operation_duration_seconds` | histogram | `db_system_name` (`postgresql`, `redis`), `db_namespace`, `db_operation_name`, `db_collection_name`, `db_response_status_code`, `error_type` |
+
+Tenant databases in database-isolation catalog mode are left out on purpose.
+grove labels every series with the database name, and there the database is
+the tenant. Their queries are still traced. A `*grove.DB` that fabriq borrows
+from your container keeps whatever sink you gave it.
+
+forge's own HTTP server metrics are on the same endpoint. fabriq doesn't
+measure its own Redis Streams, Elasticsearch or ClickHouse client calls
+separately; the fabriq spans above cover that work.
 
 ## Health endpoints
 
-Forge serves three health endpoints on the same address:
+forge serves three health endpoints on the same address:
 
 | Path | Use |
 | --- | --- |
-| `/_/livez` | Liveness — process is up. Kubernetes liveness probe. |
-| `/_/readyz` | Readiness — ready to serve. Kubernetes readiness probe. |
+| `/_/livez` | Liveness: the process is up. Kubernetes liveness probe. |
+| `/_/readyz` | Readiness: ready to serve. Kubernetes readiness probe. |
 | `/_/health` | Aggregate health detail, including the worker's store ping. |
 
-The worker's health check pings Postgres through grove; it reports unhealthy if
-the stores are not open.
-
-```bash
-curl localhost:8081/_/readyz
-curl localhost:8081/_/health
-curl localhost:8081/metrics
-```
-
-## Trace propagation
-
-Every command stamps the active **W3C `traceparent`** into the event envelope
-by default (`otel.TraceparentFromContext`). The projection engine restores that
-trace context when it applies the event, so a trace flows across the async hop
-from command to projection — the write transaction, the relay publish, and the
-downstream apply share one trace. The `traceparent` column on `fabriq_outbox`
-persists it.
+The worker's health check pings Postgres through grove. It reports unhealthy
+if the stores aren't open.
 
 ## Scraping
 
-The Helm chart adds `prometheus.io/scrape` pod annotations by default
-(`/metrics` on the http port). For a Prometheus Operator install, enable the
-ServiceMonitor (`metrics.serviceMonitor.enabled`) to scrape the `http` port at
-`/metrics`. See [Deployment](/docs/deployment).
+The Helm chart adds `prometheus.io/scrape` pod annotations by default. They
+can name only one path, so they cover `/metrics`. Enable the ServiceMonitor
+(`metrics.serviceMonitor.enabled`) and it scrapes both `/metrics` and
+`/_/metrics` on the `http` port (`metrics.forgeEndpoint`, on by default). See
+[Deployment](/docs/deployment).
 
 For lag-driven autoscaling of projection consumers, drive a KEDA scaler off
-Redis stream lag or `fabriq_projection_lag_events` rather than CPU — the
-singleton runners are leader-elected and do not scale with replica count, but
-the consumers do.
+Redis stream lag or `fabriq_projection_lag_events` and not CPU. The singleton
+runners are leader-elected and don't scale with replica count, but the
+consumers do.
 
 <Cards>
   <Card title="Runbooks" href="/docs/runbooks">
     What to do when each metric goes the wrong direction.
   </Card>
   <Card title="Deployment" href="/docs/deployment">
-    Probes, ServiceMonitor, and the metrics scrape configuration.
+    Probes, ServiceMonitor, and the scrape configuration.
   </Card>
 </Cards>
