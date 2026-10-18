@@ -26,7 +26,7 @@ type labelRecorder struct {
 	labels []map[string]string
 }
 
-func (r *labelRecorder) Histogram(name string, opts ...gometrics.MetricOption) gometrics.Histogram {
+func (r *labelRecorder) Histogram(_ string, opts ...gometrics.MetricOption) gometrics.Histogram {
 	var o gometrics.MetricOptions
 	for _, opt := range opts {
 		opt(&o)
