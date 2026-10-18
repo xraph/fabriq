@@ -56,11 +56,11 @@ require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/xraph/fabriq/core v1.7.1
-	github.com/xraph/go-utils v1.3.0 // indirect
-	github.com/xraph/grove v1.7.3 // indirect
-	github.com/xraph/grove/drivers/pgdriver v1.7.3 // indirect
-	github.com/xraph/grove/kv v1.7.3 // indirect
-	github.com/xraph/grove/kv/drivers/redisdriver v1.7.3 // indirect
+	github.com/xraph/go-utils v1.4.1 // indirect
+	github.com/xraph/grove v1.8.0 // indirect
+	github.com/xraph/grove/drivers/pgdriver v1.8.0 // indirect
+	github.com/xraph/grove/kv v1.8.0 // indirect
+	github.com/xraph/grove/kv/drivers/redisdriver v1.8.0 // indirect
 	github.com/xraph/trove v1.7.0 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
@@ -80,7 +80,7 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 )
 
