@@ -79,7 +79,7 @@ func (t *Toolkit) vectorSimilarTool() Tool {
 			if t.emb == nil {
 				return nil, fmt.Errorf("agent: vector_similar requires an embedder")
 			}
-			vecs, err := t.emb.Embed(ctx, []string{a.Query})
+			vecs, err := embedTexts(ctx, t.emb, []string{a.Query})
 			if err != nil {
 				return nil, fmt.Errorf("agent: vector_similar embed: %w", err)
 			}

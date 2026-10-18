@@ -320,7 +320,7 @@ func (d *Distiller) rollupNode(ctx context.Context, args persistArgs, refs []chi
 		children = append(children, ChildDigest{ID: r.ID, Kind: r.Kind, Summary: summary})
 	}
 
-	summary, err := d.sum.Summarize(ctx, SummaryInput{
+	summary, err := summarizeText(ctx, d.sum, SummaryInput{
 		Level:    args.level,
 		Kind:     args.kind,
 		Scope:    ScopeRef{Name: args.scopeName, ID: args.scopeID},

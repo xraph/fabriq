@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/xraph/fabriq/core/query"
+	"github.com/xraph/fabriq/core/telemetry"
 )
 
 // RecallRequest is the input to the auto-context recall pipeline.
@@ -26,7 +30,28 @@ type RecallRequest struct {
 // Recall runs the auto-context pipeline: build per-channel ranked candidates
 // (vector, search; graph added in Task 2) → RRF fuse → hydrate authoritative
 // rows → token-budget pack.
+//
+// It runs under a "recall context" span. The query text never reaches the
+// span; only counts do.
 func (t *Toolkit) Recall(ctx context.Context, req RecallRequest) (ContextPack, error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "recall context", trace.WithAttributes(
+		attribute.Int("fabriq.recall.entities", len(req.Entities)),
+		attribute.Int("fabriq.recall.budget", req.Budget),
+	))
+	defer span.End()
+	pack, err := t.recall(ctx, req)
+	if err != nil {
+		telemetry.Fail(span, "recall failed", err)
+		return pack, err
+	}
+	span.SetAttributes(
+		attribute.Int("fabriq.recall.items", len(pack.Items)),
+		attribute.Int("fabriq.recall.omitted", pack.Omitted),
+	)
+	return pack, nil
+}
+
+func (t *Toolkit) recall(ctx context.Context, req RecallRequest) (ContextPack, error) {
 	if req.Query == "" {
 		return ContextPack{}, fmt.Errorf("agent: recall requires a non-empty Query")
 	}
@@ -169,7 +194,7 @@ func (t *Toolkit) vectorChannel(ctx context.Context, req RecallRequest, k int) (
 	if t.emb == nil {
 		return nil, []string{"semantic channel skipped: no embedder configured"}, nil
 	}
-	vecs, err := t.emb.Embed(ctx, []string{req.Query})
+	vecs, err := embedTexts(ctx, t.emb, []string{req.Query})
 	if err != nil {
 		if t.cfg.Strict {
 			return nil, nil, fmt.Errorf("agent: embed query: %w", err)

@@ -290,7 +290,7 @@ func (d *Distiller) prepareL0(ctx context.Context, entity, id string, vals map[s
 	if d.obs != nil {
 		d.obs.Summarized()
 	}
-	summary, err := d.sum.Summarize(ctx, SummaryInput{
+	summary, err := summarizeText(ctx, d.sum, SummaryInput{
 		Level: LevelEntity, Kind: KindEntityNode, Raw: []byte(gi.Text), Budget: budget,
 	})
 	if err != nil {
@@ -361,7 +361,7 @@ type persistArgs struct {
 func (d *Distiller) persistSummary(ctx context.Context, args persistArgs) error {
 	vec := args.reuseVector
 	if vec == nil {
-		vecs, err := d.emb.Embed(ctx, []string{args.summaryText})
+		vecs, err := embedTexts(ctx, d.emb, []string{args.summaryText})
 		if err != nil {
 			return fmt.Errorf("agent: embed summary %s: %w", args.id, err)
 		}
@@ -792,7 +792,7 @@ func (d *Distiller) Distill(ctx context.Context) (BackfillReport, error) {
 				pendingText = append(pendingText, text)
 			}
 			if len(pendingText) > 0 {
-				vecs, eerr := d.emb.Embed(ctx, pendingText)
+				vecs, eerr := embedTexts(ctx, d.emb, pendingText)
 				if eerr != nil {
 					return rep, fmt.Errorf("agent: distill %q embed: %w", e.Spec.Name, eerr)
 				}
