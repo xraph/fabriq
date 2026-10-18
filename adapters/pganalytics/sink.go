@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	gometrics "github.com/xraph/go-utils/metrics"
 	"github.com/xraph/grove/drivers/pgdriver"
 
 	"github.com/xraph/fabriq/core/analytics"
@@ -23,6 +24,7 @@ import (
 type Sink struct {
 	db          *pgdriver.PgDB
 	partitioned bool // fabriq_analytics_events is range-partitioned by month on `at`
+	metrics     gometrics.Metrics
 }
 
 var _ analytics.Sink = (*Sink)(nil)
@@ -37,6 +39,11 @@ type Option func(*Sink)
 // events table; migrating an existing deployment is a manual step.
 func WithEventPartitioning() Option { return func(s *Sink) { s.partitioned = true } }
 
+// WithMetrics hands m to the sink's grove driver, so it records
+// db_client_operation_duration_seconds (pass a Forge app's Metrics()). Nil
+// records nothing.
+func WithMetrics(m gometrics.Metrics) Option { return func(s *Sink) { s.metrics = m } }
+
 // Open dials the analytics database and ensures the schema.
 // ensureSchema proves reachability (it requires a live connection).
 func Open(ctx context.Context, dsn string, opts ...Option) (*Sink, error) {
@@ -47,6 +54,9 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Sink, error) {
 	s := &Sink{db: db}
 	for _, o := range opts {
 		o(s)
+	}
+	if s.metrics != nil {
+		db.SetMetrics(s.metrics)
 	}
 	if err := s.ensureSchema(ctx); err != nil {
 		_ = db.Close()

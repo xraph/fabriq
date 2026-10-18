@@ -10,6 +10,8 @@ import (
 
 	"encoding/base64"
 
+	gometrics "github.com/xraph/go-utils/metrics"
+
 	fcache "github.com/xraph/fabriq/adapters/cache"
 	"github.com/xraph/fabriq/adapters/chanalytics"
 	"github.com/xraph/fabriq/adapters/elastic"
@@ -31,6 +33,7 @@ import (
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/subscribe"
 	"github.com/xraph/fabriq/core/sweep"
+	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/internal/metrics"
 )
 
@@ -60,6 +63,10 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 	if cfg.Catalog.Enabled() {
 		return openCatalogMode(ctx, reg, cfg, opts...)
 	}
+
+	// WithMetrics: every grove handle dialed below records its query
+	// durations on this sink (nil records nothing).
+	groveMetrics := groveMetricsFrom(opts)
 
 	// Dial the source-of-truth shard(s). Config.Shards routes tenants across
 	// several Postgres databases (ADR 0007); a bare Postgres.DSN is the
@@ -91,6 +98,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			a, oerr = postgres.Open(ctx, sc.DSN, reg,
 				postgres.WithPoolSize(sc.PoolSize),
 				postgres.WithGuardedTables(cfg.guardedTables()...),
+				postgres.WithMetrics(groveMetrics),
 			)
 		}
 		if oerr != nil {
@@ -121,7 +129,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		return nil, nil, err
 	}
 
-	stores := &Stores{Postgres: pg, Shards: set, shardPG: shardPG, customAppliers: cfg.CustomAppliers}
+	stores := &Stores{Postgres: pg, Shards: set, shardPG: shardPG, customAppliers: cfg.CustomAppliers, groveMetrics: groveMetrics}
 	stores.state = routingState{stores: stores}
 	docStore := pg.Documents()
 	stores.Docs = docStore
@@ -181,6 +189,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			DB:       cfg.Redis.DB,
 			Username: cfg.Redis.Username,
 			Password: cfg.Redis.Password,
+			Metrics:  groveMetrics,
 		})
 		if cerr != nil {
 			closeDialed()
@@ -205,7 +214,9 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			// detached from the request ctx (WithoutCancel) so it outlives
 			// individual requests, but remains cancellable via tctx so that
 			// Stores.Close() can stop it before tearing down the connection.
-			tctx, cancel := context.WithCancel(context.WithoutCancel(ctx)) // #nosec G118 -- cancel is retained in cancelFns and invoked by Stores.Close()
+			// It drops the caller's span too: under forge, Open runs inside
+			// the "start fabriq" boot span, and the tailer outlives it.
+			tctx, cancel := backgroundCtx(ctx) // #nosec G118 -- cancel is retained in cancelFns and invoked by Stores.Close()
 			// Cold-start window: commits between Open() returning and the tailer's
 			// first XRead attach are missed on this node and bounded by L1TTL (not
 			// stream lag). L1 is opt-in and TTL-backstopped; acceptable for P4a.
@@ -286,6 +297,15 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 	return f, stores, nil
 }
 
+// backgroundCtx derives the ctx for a goroutine that outlives the call that
+// starts it: the caller's values (tenant, schema) stay, its cancellation and
+// its span go, and the returned cancel stops it. Under forge, Open runs inside
+// the "start fabriq" boot span; a goroutine that kept it would file its work
+// under a trace that ended at boot.
+func backgroundCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithCancel(telemetry.Detach(context.WithoutCancel(ctx)))
+}
+
 // openAnalytics validates and dials the analytics sink into stores when
 // configured. Shared by Open and openCatalogMode so the sink is available
 // in every tenancy mode. No-op (nil sink) when analytics is disabled.
@@ -312,7 +332,7 @@ func openAnalytics(ctx context.Context, cfg Config, reg *registry.Registry, stor
 	var err error
 	switch scheme {
 	case "postgres", "postgresql", "":
-		var aopts []pganalytics.Option
+		aopts := []pganalytics.Option{pganalytics.WithMetrics(stores.groveMetrics)}
 		if cfg.Analytics.PartitionEvents {
 			aopts = append(aopts, pganalytics.WithEventPartitioning())
 		}
@@ -433,6 +453,9 @@ type Stores struct {
 	customAppliers []projection.CustomApplier
 	// cancelFns stop background workers (e.g. the L1 evict tailer) on Close.
 	cancelFns []func()
+	// groveMetrics is the WithMetrics sink every grove handle Open dials
+	// records on (nil records nothing).
+	groveMetrics gometrics.Metrics
 }
 
 // TenantSweeper returns the catalog-mode per-tenant maintenance seam for

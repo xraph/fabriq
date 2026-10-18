@@ -58,7 +58,11 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		return nil, nil, err
 	}
 
-	catStore, err := postgres.OpenCatalog(ctx, cfg.Catalog.DSN)
+	// WithMetrics: the catalog, its replicas and every tenant database
+	// record their query durations on this sink (nil records nothing).
+	groveMetrics := groveMetricsFrom(opts)
+
+	catStore, err := postgres.OpenCatalog(ctx, cfg.Catalog.DSN, postgres.WithMetrics(groveMetrics))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -77,7 +81,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 	// not stop serving); malformed DSNs were already rejected in Validate.
 	var replicas []*postgres.CatalogStore
 	for _, rdsn := range cfg.Catalog.ReplicaDSNs {
-		rs, rerr := postgres.OpenCatalogReplica(ctx, rdsn)
+		rs, rerr := postgres.OpenCatalogReplica(ctx, rdsn, postgres.WithMetrics(groveMetrics))
 		if rerr != nil {
 			continue // lazy dialer: this practically never errors at open
 		}
@@ -88,7 +92,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 	dir := shard.CatalogDirectory(routeCatalog, cfg.Catalog.CacheTTL,
 		shard.WithMinVersion(migrations.HeadVersion()))
 
-	stores := &Stores{Catalog: catStore, customAppliers: cfg.CustomAppliers}
+	stores := &Stores{Catalog: catStore, customAppliers: cfg.CustomAppliers, groveMetrics: groveMetrics}
 	stores.catalogReplicas = replicas
 	stores.catalogRoutes = failover
 	stores.state = routingState{stores: stores}
@@ -140,6 +144,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		openOpts := []postgres.Option{
 			postgres.WithPoolSize(cfg.Postgres.PoolSize),
 			postgres.WithGuardedTables(cfg.guardedTables()...),
+			postgres.WithMetrics(groveMetrics),
 		}
 		if cfg.Catalog.SchemaMode() {
 			// Schema isolation: the adapter stamps SET LOCAL search_path from

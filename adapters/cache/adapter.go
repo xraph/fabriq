@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/redis/go-redis/v9"
+	gometrics "github.com/xraph/go-utils/metrics"
 	"github.com/xraph/grove/kv"
 	"github.com/xraph/grove/kv/drivers/redisdriver"
 
@@ -22,6 +23,10 @@ type Config struct {
 	DB       int
 	Username string
 	Password string
+	// Metrics, when set, receives grove kv's
+	// db_client_operation_duration_seconds for every command (pass a Forge
+	// app's Metrics()).
+	Metrics gometrics.Metrics
 }
 
 // Adapter implements core/cache.Cache over a grove kv Store.
@@ -57,7 +62,11 @@ func Open(ctx context.Context, cfg Config) (*Adapter, error) {
 	if err := rdb.Open(ctx, dsn); err != nil {
 		return nil, fmt.Errorf("fabriq/cache: open redis driver: %w", err)
 	}
-	store, err := kv.Open(rdb)
+	var kvOpts []kv.Option
+	if cfg.Metrics != nil {
+		kvOpts = append(kvOpts, kv.WithMetrics(cfg.Metrics))
+	}
+	store, err := kv.Open(rdb, kvOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("fabriq/cache: open kv store: %w", err)
 	}
