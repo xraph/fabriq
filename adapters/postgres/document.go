@@ -14,14 +14,19 @@ import (
 
 	"github.com/xraph/grove/crdt"
 	"github.com/xraph/grove/drivers/pgdriver"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/fabriq/core/blob"
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/document"
 	"github.com/xraph/fabriq/core/event"
+	"github.com/xraph/fabriq/core/otel"
 	"github.com/xraph/fabriq/core/pathctx"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/core/tenant"
+	"github.com/xraph/fabriq/internal/tracing"
 )
 
 // DocStore is the Postgres document plane: an append-only update log
@@ -466,7 +471,16 @@ func (d *DocStore) CompactDue(ctx context.Context) (int, error) {
 		if terr != nil {
 			return compacted, terr
 		}
-		if cerr := d.Compact(tctx, doc.DocID); cerr != nil {
+		// One root span per document that is actually due; the scans above
+		// run span-free, so an idle sweep records nothing.
+		tctx, span := tracing.StartRoot(tctx, "compact document",
+			trace.WithAttributes(telemetry.AttrEntity.String(doc.Entity)))
+		cerr := d.Compact(tctx, doc.DocID)
+		if cerr != nil {
+			telemetry.Fail(span, "compact failed", cerr)
+		}
+		span.End()
+		if cerr != nil {
 			// A poisoned or transiently failing doc must not starve the
 			// rest of the fleet: remember the failure, keep sweeping.
 			sweepErr = cerr
@@ -794,7 +808,7 @@ func (d *DocStore) MaterializeQuiet(ctx context.Context, validate ValidateFunc) 
 		if err != nil || !quiet {
 			continue
 		}
-		wrote, err := d.materializeOne(ctx, doc.TenantID, doc.Scope, doc.DocID, ent, validate)
+		wrote, err := d.materializeTraced(ctx, doc.TenantID, doc.Scope, doc.DocID, ent, validate)
 		if err != nil {
 			return materialized, err
 		}
@@ -803,6 +817,23 @@ func (d *DocStore) MaterializeQuiet(ctx context.Context, validate ValidateFunc) 
 		}
 	}
 	return materialized, nil
+}
+
+// materializeTraced runs materializeOne under its own root span: one per
+// quiet document, so the scans that find nothing to do record nothing. The
+// emitted event's traceparent names this span, so the relay and consumers
+// link back to it.
+func (d *DocStore) materializeTraced(ctx context.Context, tenantID, scope, docID string, ent *registry.Entity, validate ValidateFunc) (bool, error) {
+	ctx, span := tracing.StartRoot(ctx, "materialize document",
+		trace.WithAttributes(telemetry.AttrEntity.String(ent.Spec.Name)))
+	defer span.End()
+	wrote, err := d.materializeOne(ctx, tenantID, scope, docID, ent, validate)
+	if err != nil {
+		telemetry.Fail(span, "materialize failed", err)
+		return wrote, err
+	}
+	span.SetAttributes(attribute.Bool("fabriq.document.materialized", wrote))
+	return wrote, nil
 }
 
 // crdtDocsRef returns the fabriq_crdt_docs table reference for a POOL-PATH
@@ -929,6 +960,7 @@ func (d *DocStore) materializeOne(ctx context.Context, tenantID, scope, docID st
 			ID: event.NewID(), TenantID: tenantID, Aggregate: ent.Spec.Name, AggID: docID,
 			Version: next, Type: registry.EventType(ent.Spec.Name, registry.VerbUpdated),
 			At: time.Now().UTC(), PayloadSchemaVersion: 1, Payload: payload,
+			Traceparent: otel.TraceparentFromContext(txCtx),
 		}); obErr != nil {
 			return obErr
 		}
