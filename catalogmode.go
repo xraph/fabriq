@@ -150,13 +150,15 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 			// Schema isolation: the adapter stamps SET LOCAL search_path from
 			// the tenant schema on ctx, appending this shared schema so
 			// pgvector/postgis types resolve.
-			openOpts = append(openOpts, postgres.WithSharedSchema(cfg.Catalog.sharedSchemaOrDefault()))
+			//
 			// The few consolidation databases are a bounded label set, so
-			// their query durations are recorded. In database isolation
+			// their query durations are recorded too. In database isolation
 			// they are not: grove labels every series with db.namespace,
 			// the database name, and there the database IS the tenant.
 			// Spans still cover those queries.
-			openOpts = append(openOpts, postgres.WithMetrics(groveMetrics))
+			openOpts = append(openOpts,
+				postgres.WithSharedSchema(cfg.Catalog.sharedSchemaOrDefault()),
+				postgres.WithMetrics(groveMetrics))
 		}
 		a, oerr := postgres.Open(dctx, dsn, reg, openOpts...)
 		if oerr != nil {

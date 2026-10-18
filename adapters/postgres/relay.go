@@ -205,18 +205,18 @@ func (r *Relay) drainOnce(ctx context.Context) (int, error) {
 
 	bctx, span := startBatchSpan(ctx, rows)
 	start := time.Now()
-	class, err := r.publishBatch(bctx, tx, rows)
+	class, perr := r.publishBatch(bctx, tx, rows)
 	result := telemetry.ResultOK
-	if err != nil {
+	if perr != nil {
 		result = telemetry.ResultError
-		telemetry.Fail(span, class, err)
+		telemetry.Fail(span, class, perr)
 	}
 	span.End()
 	if r.onBatch != nil {
 		r.onBatch(result, time.Since(start))
 	}
-	if err != nil {
-		return 0, err
+	if perr != nil {
+		return 0, perr
 	}
 	return len(rows), nil
 }
