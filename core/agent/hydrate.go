@@ -6,12 +6,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+
+	"github.com/xraph/fabriq/core/query"
 )
 
 // hydrate loads the given ids of one entity as JSON rows keyed by id. It
 // handles typed (Go model) and dynamic (map-native) entities. Missing ids are
 // absent from the result.
 func (t *Toolkit) hydrate(ctx context.Context, entity string, ids []string) (map[string]json.RawMessage, error) {
+	return t.hydrateWhere(ctx, entity, ids, nil)
+}
+
+func (t *Toolkit) hydrateWhere(ctx context.Context, entity string, ids []string, filters query.Where) (map[string]json.RawMessage, error) {
 	if len(ids) == 0 {
 		return map[string]json.RawMessage{}, nil
 	}
@@ -20,10 +26,19 @@ func (t *Toolkit) hydrate(ctx context.Context, entity string, ids []string) (map
 		return nil, fmt.Errorf("agent: unknown entity %q", entity)
 	}
 	out := make(map[string]json.RawMessage, len(ids))
+	load := func(into any) error {
+		if len(filters) == 0 {
+			return t.fab.Relational().GetMany(ctx, entity, ids, into)
+		}
+		where := make(query.Where, 0, len(filters)+1)
+		where = append(where, filters...)
+		where = append(where, query.In("id", ids))
+		return t.fab.Relational().List(ctx, entity, query.ListQuery{Where: where, Limit: len(ids)}, into)
+	}
 
 	if ent.Binding.IsDynamic() {
 		var maps []map[string]any
-		if err := t.fab.Relational().GetMany(ctx, entity, ids, &maps); err != nil {
+		if err := load(&maps); err != nil {
 			return nil, err
 		}
 		for _, m := range maps {
@@ -42,7 +57,7 @@ func (t *Toolkit) hydrate(ctx context.Context, entity string, ids []string) (map
 
 	mt := ent.Binding.ModelType()
 	slicePtr := reflect.New(reflect.SliceOf(mt)) // *[]Model
-	if err := t.fab.Relational().GetMany(ctx, entity, ids, slicePtr.Interface()); err != nil {
+	if err := load(slicePtr.Interface()); err != nil {
 		return nil, err
 	}
 	slice := slicePtr.Elem()

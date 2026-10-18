@@ -15,12 +15,14 @@ import (
 
 // RecallRequest is the input to the auto-context recall pipeline.
 type RecallRequest struct {
-	Query    string      `json:"query"`
-	Budget   int         `json:"budget"`
-	Entities []string    `json:"entities"`
-	K        int         `json:"k"`
-	Hops     int         `json:"hops"`
-	Filters  query.Where `json:"filters,omitempty"`
+	Query    string   `json:"query"`
+	Budget   int      `json:"budget"`
+	Entities []string `json:"entities"`
+	K        int      `json:"k"`
+	Hops     int      `json:"hops"`
+	// Filters apply to authoritative rows in every requested entity. Filtered
+	// recall does not add digest_node automatically; its schema may differ.
+	Filters query.Where `json:"filters,omitempty"`
 	// Altitude selects which layer of the distillation tree surfaces. AltAuto
 	// (the zero value) defers to Config.Altitude, which itself defaults to
 	// AltAuto: the budget then decides between entities and the tenant digest.
@@ -108,7 +110,7 @@ func (t *Toolkit) recall(ctx context.Context, req RecallRequest) (ContextPack, e
 	}
 	rows := map[ref]json.RawMessage{}
 	for ent, ids := range byEntity {
-		hydrated, herr := t.hydrate(ctx, ent, ids)
+		hydrated, herr := t.hydrateWhere(ctx, ent, ids, req.Filters)
 		if herr != nil {
 			if t.cfg.Strict {
 				return ContextPack{}, fmt.Errorf("agent: hydrate %q: %w", ent, herr)
@@ -213,7 +215,7 @@ func (t *Toolkit) vectorChannel(ctx context.Context, req RecallRequest, k int) (
 	// name them. This is additive and leaves req.Entities untouched: registries
 	// without digest_node behave exactly as before.
 	entities := req.Entities
-	if _, ok := t.reg.Get(DigestEntity); ok {
+	if _, ok := t.reg.Get(DigestEntity); ok && len(req.Filters) == 0 {
 		entities = append(append([]string(nil), req.Entities...), DigestEntity)
 	}
 

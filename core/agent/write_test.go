@@ -146,3 +146,34 @@ func TestRemember_LifecycleHookVeto(t *testing.T) {
 		t.Fatalf("want exec_failed for hook veto, got %q", we.Code)
 	}
 }
+
+func TestRememberExplicitCreateRejectsDuplicate(t *testing.T) {
+	reg := testRegistry(t)
+	w := fabriqtest.NewWorld(reg)
+	ff := newFakeFabric(t, w)
+	tk, err := NewToolkit(ff, reg, nil, Config{Write: writePolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testCtx(t)
+	zero := int64(0)
+	req := RememberRequest{Entity: "doc", Op: "create", AggID: "stable-publication", ExpectedVersion: &zero, Payload: []byte(`{"title":"original"}`)}
+	res, err := tk.Remember(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AggID != req.AggID || res.Version != 1 {
+		t.Fatalf("unexpected create result %+v", res)
+	}
+	req.Payload = []byte(`{"title":"replacement"}`)
+	if _, err = tk.Remember(ctx, req); !errors.Is(err, fabriqerr.ErrVersionConflict) {
+		t.Fatalf("duplicate create: %v", err)
+	}
+	var row tDoc
+	if err = w.Rel.Get(ctx, "doc", req.AggID, &row); err != nil {
+		t.Fatal(err)
+	}
+	if row.Title != "original" || row.Version != 1 {
+		t.Fatalf("duplicate overwrote source row: %+v", row)
+	}
+}
