@@ -28,6 +28,9 @@ spec:
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
         {{- if .Values.metrics.podAnnotations }}
+        # The prometheus.io annotations name one path, so they cover fabriq's
+        # /metrics. Scrape forge's /_/metrics with the ServiceMonitor
+        # (metrics.forgeEndpoint) or a scrape job of your own.
         prometheus.io/scrape: "true"
         prometheus.io/path: "/metrics"
         prometheus.io/port: {{ .Values.service.port | quote }}

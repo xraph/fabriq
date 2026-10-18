@@ -77,7 +77,8 @@ elasticsearch:
 
 # --- Non-secret tuning (ConfigMap) ------------------------------------
 config:
-  # Bind address for health (/_/livez,/_/readyz,/_/health) + /metrics.
+  # Bind address for health (/_/livez,/_/readyz,/_/health), fabriq's
+  # /metrics and forge's /_/metrics.
   httpAddr: ":8081"
   # Scheduled reconciler cadence (Go duration). "0" disables; empty uses
   # the binary default (5m).
@@ -134,7 +135,7 @@ worker:
       drop: ["ALL"]
 
 service:
-  # Health + /metrics. ClusterIP; not internet-facing.
+  # Health, /metrics and /_/metrics. ClusterIP; not internet-facing.
   port: 8081
 
 # --- Disruption budget -------------------------------------------------
@@ -153,8 +154,12 @@ autoscaling:
 
 # --- Metrics -----------------------------------------------------------
 metrics:
-  # Add prometheus.io/scrape pod annotations.
+  # Add prometheus.io/scrape pod annotations. They name one path, so they
+  # cover fabriq's /metrics (the fabriq_* series) only.
   podAnnotations: true
+  # Also scrape forge's /_/metrics (HTTP server metrics and grove's
+  # db_client_operation_duration_seconds) from the ServiceMonitor.
+  forgeEndpoint: true
   serviceMonitor:
     enabled: false
     interval: 30s
