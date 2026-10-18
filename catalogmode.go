@@ -58,8 +58,9 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		return nil, nil, err
 	}
 
-	// WithMetrics: the catalog, its replicas and every tenant database
-	// record their query durations on this sink (nil records nothing).
+	// WithMetrics: the catalog, its replicas and (schema isolation only) the
+	// consolidation databases record their query durations on this sink
+	// (nil records nothing).
 	groveMetrics := groveMetricsFrom(opts)
 
 	catStore, err := postgres.OpenCatalog(ctx, cfg.Catalog.DSN, postgres.WithMetrics(groveMetrics))
@@ -144,13 +145,18 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		openOpts := []postgres.Option{
 			postgres.WithPoolSize(cfg.Postgres.PoolSize),
 			postgres.WithGuardedTables(cfg.guardedTables()...),
-			postgres.WithMetrics(groveMetrics),
 		}
 		if cfg.Catalog.SchemaMode() {
 			// Schema isolation: the adapter stamps SET LOCAL search_path from
 			// the tenant schema on ctx, appending this shared schema so
 			// pgvector/postgis types resolve.
 			openOpts = append(openOpts, postgres.WithSharedSchema(cfg.Catalog.sharedSchemaOrDefault()))
+			// The few consolidation databases are a bounded label set, so
+			// their query durations are recorded. In database isolation
+			// they are not: grove labels every series with db.namespace,
+			// the database name, and there the database IS the tenant.
+			// Spans still cover those queries.
+			openOpts = append(openOpts, postgres.WithMetrics(groveMetrics))
 		}
 		a, oerr := postgres.Open(dctx, dsn, reg, openOpts...)
 		if oerr != nil {

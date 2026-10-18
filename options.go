@@ -111,12 +111,15 @@ func WithCommandObserver(o telemetry.CommandObserver) Option {
 	}
 }
 
-// WithMetrics hands m to every grove database and KV store Open dials (the
-// Postgres shards, catalog-mode tenant databases, the catalog and its
-// replicas, the Postgres analytics sink and the Redis cache), so grove
-// records db_client_operation_duration_seconds for their calls. In a Forge
-// app pass app.Metrics(): the series then appear on /_/metrics. A borrowed
-// *grove.DB keeps whatever its owner configured. Nil records nothing.
+// WithMetrics hands m to the grove databases and KV stores Open dials (the
+// Postgres shards, the catalog and its replicas, schema-isolation
+// consolidation databases, the Postgres analytics sink and the Redis cache),
+// so grove records db_client_operation_duration_seconds for their calls. In
+// a Forge app pass app.Metrics(): the series then appear on /_/metrics.
+// Database-isolation tenant databases are left out on purpose: grove labels
+// each series with the database name, which there names the tenant. A
+// borrowed *grove.DB keeps whatever its owner configured. Nil records
+// nothing.
 func WithMetrics(m gometrics.Metrics) Option {
 	return func(s *settings) { s.groveMetrics = m }
 }
