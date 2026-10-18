@@ -61,8 +61,8 @@ func TestAdminLive_NotConfigured(t *testing.T) {
 // capability set served by GET /admin/meta.
 func TestAdminLive_Capability(t *testing.T) {
 	found := false
-	for _, cap := range capabilities {
-		if cap == "live.read" {
+	for _, capability := range capabilities {
+		if capability == "live.read" {
 			found = true
 			break
 		}
