@@ -164,8 +164,11 @@ func (s *distillSweeper) sweep(tenantID string) {
 		if err != nil {
 			return
 		}
-		// One root span per debounced sweep. The tenant ID stays off it.
+		// One root span per debounced sweep, linked to the commands that
+		// wrote the envelopes it covers (up to maxDistillLinks). The tenant
+		// ID stays off it.
 		ctx, span := tracing.StartRoot(ctx, "distill tenant",
+			trace.WithLinks(distillLinks(envs)...),
 			trace.WithAttributes(attribute.Int("fabriq.distill.refs", len(envs))))
 		defer span.End()
 		var failures int
@@ -191,6 +194,24 @@ func (s *distillSweeper) sweep(tenantID string) {
 			telemetry.Fail(span, "distill failed", lastErr)
 		}
 	})
+}
+
+// maxDistillLinks caps the links one "distill tenant" span carries.
+const maxDistillLinks = 128
+
+// distillLinks links a sweep to the writer of each envelope it covers, from
+// the envelopes' stored traceparents.
+func distillLinks(envs map[ref]event.Envelope) []trace.Link {
+	links := make([]trace.Link, 0, min(len(envs), maxDistillLinks))
+	for _, env := range envs {
+		if len(links) == maxDistillLinks {
+			break
+		}
+		if l, ok := telemetry.LinkFromTraceparent(env.Traceparent); ok {
+			links = append(links, l)
+		}
+	}
+	return links
 }
 
 // distillHandler is the per-event consumer callback: it records the latest

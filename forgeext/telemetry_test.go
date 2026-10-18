@@ -254,7 +254,8 @@ func TestDistillSweepIsOneRootSpan(t *testing.T) {
 	}
 	sw := newDistillSweeper(d, time.Hour, time.Hour, nil)
 	env := event.Envelope{TenantID: "acme", Aggregate: "note", AggID: "n1", Type: "note.created",
-		Payload: json.RawMessage(`{"id":"n1","title":"alice@example.com","body":"vibration","site_id":"s1"}`)}
+		Payload:     json.RawMessage(`{"id":"n1","title":"alice@example.com","body":"vibration","site_id":"s1"}`),
+		Traceparent: producerTP}
 	sw.mu.Lock()
 	sw.dirty["acme"] = map[ref]event.Envelope{{entity: "note", id: "n1"}: env}
 	sw.mu.Unlock()
@@ -266,6 +267,9 @@ func TestDistillSweepIsOneRootSpan(t *testing.T) {
 	}
 	if n, _ := telemetrytest.Attr(spans[0], "fabriq.distill.refs"); n != "1" {
 		t.Fatalf("fabriq.distill.refs = %q", n)
+	}
+	if l := spans[0].Links(); len(l) != 1 || l[0].SpanContext.SpanID().String() != "00f067aa0ba902b7" {
+		t.Fatalf("links = %+v, want one to the envelope's writer", l)
 	}
 	if spans[0].Status().Code == codes.Error {
 		t.Fatalf("status = %+v", spans[0].Status())
