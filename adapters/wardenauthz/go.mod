@@ -106,7 +106,7 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xraph/confy v1.1.0 // indirect
-	github.com/xraph/fabriq/core v1.7.1 // indirect
+	github.com/xraph/fabriq/core v1.8.0 // indirect
 	github.com/xraph/go-utils v1.4.1 // indirect
 	github.com/xraph/grove v1.8.0 // indirect
 	github.com/xraph/grove/drivers/pgdriver v1.8.0 // indirect
@@ -164,7 +164,7 @@ require (
 )
 
 require (
-	github.com/xraph/fabriq v1.7.1
+	github.com/xraph/fabriq v1.8.0
 	github.com/xraph/forge v1.12.9
 	github.com/xraph/warden v1.8.0
 )
