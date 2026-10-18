@@ -2,16 +2,22 @@ package remotegrpc_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/xraph/fabriq/core/command"
 	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/core/telemetry/telemetrytest"
+	"github.com/xraph/fabriq/remote"
 	remotegrpc "github.com/xraph/fabriq/remote/grpc"
 )
 
@@ -60,4 +66,31 @@ func TestRPCsAreTracedWithoutCredentialsOrPayloads(t *testing.T) {
 	}
 	telemetrytest.AssertNoValue(t, rec, "s3cret")
 	telemetrytest.AssertNoValue(t, rec, "alice@example.com")
+}
+
+// A rejected credential gets a fixed status message, so neither the client
+// nor the server span (otelgrpc copies the message) sees the authenticator's
+// error text, which can quote the credential.
+func TestRejectedCredentialsGetAFixedMessage(t *testing.T) {
+	rec := telemetrytest.Record(t)
+	srv := grpc.NewServer(remotegrpc.ServerOptions(func(context.Context) (context.Context, error) {
+		return nil, errors.New("token s3cret-for-alice@example.com is revoked")
+	})...)
+	remotegrpc.Register(srv, remote.NewHandler(&fakeFabric{}, assetRegistry(t)))
+	addr := serveOnLoopback(t, srv)
+
+	f, err := remotegrpc.Dial(context.Background(), fmt.Sprintf("fabriq+grpc://k@%s/acme?tls=false", addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.Exec(context.Background(), command.Command{Entity: "asset", Op: command.OpCreate,
+		Payload: &asset{ID: "a", TenantID: "acme", Name: "x"}})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("err = %v, want Unauthenticated", err)
+	}
+	if strings.Contains(err.Error(), "alice@example.com") || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("the client saw the authenticator's error text: %v", err)
+	}
+	telemetrytest.AssertNoValue(t, rec, "alice@example.com")
+	telemetrytest.AssertNoValue(t, rec, "s3cret")
 }

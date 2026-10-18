@@ -98,13 +98,19 @@ func StreamInterceptor(auth Authenticator) grpc.StreamServerInterceptor {
 	}
 }
 
+// unauthenticatedMsg is the status message every rejected credential gets.
+const unauthenticatedMsg = "remotegrpc: unauthenticated"
+
 func authenticate(ctx context.Context, auth Authenticator) (context.Context, error) {
 	if auth == nil {
 		return nil, status.Error(codes.Internal, "remotegrpc: nil Authenticator")
 	}
 	out, err := auth(ctx)
 	if err != nil {
-		return nil, status.Error(codes.Unauthenticated, err.Error())
+		// A fixed message: the authenticator's error can quote the
+		// credential it rejected, and otelgrpc copies the status message
+		// onto the server span.
+		return nil, status.Error(codes.Unauthenticated, unauthenticatedMsg)
 	}
 	if out == nil {
 		return nil, status.Error(codes.Internal, "remotegrpc: authenticator returned a nil context")
