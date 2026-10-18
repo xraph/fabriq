@@ -3,7 +3,9 @@
 Metrics referenced here are defined in `internal/metrics` and served by
 the fabriq extension at `/metrics` on `FABRIQ_HTTP_ADDR` (all `fabriq_*`,
 no prefix). forge's own `/_/metrics` on the same port carries HTTP metrics
-and grove's `db_client_operation_duration_seconds`. Scrape both. Traces go
+and grove's `db_client_operation_duration_seconds`. Scrape both. The
+backlog, lag and other worker series only move on worker pods, so alert on
+those; backstop trips are counted on every node. Traces go
 to whatever OpenTelemetry provider the app installs; see
 docs/content/docs/(operations)/observability.mdx for every span.
 
