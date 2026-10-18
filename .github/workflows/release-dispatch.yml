@@ -193,14 +193,23 @@ jobs:
           SCRATCH=$(mktemp -d)
           trap 'rm -rf "$SCRATCH"' EXIT
           echo "Verifying in a scratch module at $SCRATCH, outside this repo, replace not in effect."
-          if ! (
-            cd "$SCRATCH"
-            go mod init scratch >/dev/null
-            echo "  + GOFLAGS=-mod=mod go mod download github.com/xraph/fabriq/core@v${VERSION}"
-            GOFLAGS=-mod=mod go mod download "github.com/xraph/fabriq/core@v${VERSION}"
-          ); then
-            echo "::error::github.com/xraph/fabriq/core@v${VERSION} did not resolve on the real module proxy."
-            echo "::error::$CORE_TAG was pushed to origin, but the proxy has not picked it up yet (or the tag failed to propagate)."
+          (cd "$SCRATCH" && go mod init scratch >/dev/null)
+          # The proxy can answer "unknown revision" for a few minutes after a
+          # tag is pushed, especially when something asked for that version
+          # before it existed and the not-found answer is still cached. Keep
+          # asking for up to 30 minutes before giving up.
+          resolved=false
+          for attempt in $(seq 1 30); do
+            echo "  + (attempt $attempt/30) GOFLAGS=-mod=mod go mod download github.com/xraph/fabriq/core@v${VERSION}"
+            if (cd "$SCRATCH" && GOFLAGS=-mod=mod go mod download "github.com/xraph/fabriq/core@v${VERSION}"); then
+              resolved=true
+              break
+            fi
+            sleep 60
+          done
+          if [ "$resolved" != "true" ]; then
+            echo "::error::github.com/xraph/fabriq/core@v${VERSION} did not resolve on the real module proxy after 30 minutes."
+            echo "::error::$CORE_TAG was pushed to origin, but the proxy has not picked it up (or the tag failed to propagate)."
             echo "::error::Root has NOT been tagged. Do not retry v${VERSION} blindly: tags are immutable once pushed, so if $CORE_TAG is genuinely bad, cut the next patch version instead of reusing this one."
             exit 1
           fi
