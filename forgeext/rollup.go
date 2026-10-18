@@ -5,10 +5,14 @@ import (
 	"time"
 
 	"github.com/xraph/forge"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/core/tenant"
+	"github.com/xraph/fabriq/internal/tracing"
 )
 
 // defaultRollupInterval is used when Config.RollupInterval is left at zero:
@@ -171,8 +175,15 @@ func (e *Extension) rollupOne(ctx context.Context, stores *fabriq.Stores, logger
 		}
 		return
 	}
+	// One root span per (tenant, metric) pass; the scheduled pass always
+	// does work. The tenant ID stays off the span; the metric name is a
+	// developer-declared spec name.
+	tctx, span := tracing.StartRoot(tctx, "maintain rollup",
+		trace.WithAttributes(attribute.String("fabriq.metric", m.Name)))
+	defer span.End()
 	rs, sctx, release, err := stores.RollupSurfaceFor(tctx, tenantID)
 	if err != nil {
+		telemetry.Fail(span, "resolve tenant failed", err)
 		if logger != nil {
 			logger.Warn("fabriq: rollup:insights resolve tenant surface failed",
 				forge.String("tenant", tenantID), forge.String("metric", m.Name), forge.Error(err))
@@ -185,6 +196,7 @@ func (e *Extension) rollupOne(ctx context.Context, stores *fabriq.Stores, logger
 	// static sharding, this is what bootstraps catalog/db-per-tenant mode
 	// (and any tenant provisioned after boot in static mode too).
 	if err := rs.EnsureRollupTable(sctx, m); err != nil {
+		telemetry.Fail(span, "ensure rollup table failed", err)
 		if logger != nil {
 			logger.Warn("fabriq: rollup:insights ensure-table failed",
 				forge.String("tenant", tenantID), forge.String("metric", m.Name), forge.Error(err))
@@ -192,6 +204,7 @@ func (e *Extension) rollupOne(ctx context.Context, stores *fabriq.Stores, logger
 		return
 	}
 	if err := rs.MaintainRollup(sctx, m, now); err != nil {
+		telemetry.Fail(span, "maintain rollup failed", err)
 		if logger != nil {
 			logger.Warn("fabriq: rollup:insights maintain failed",
 				forge.String("tenant", tenantID), forge.String("metric", m.Name), forge.Error(err))

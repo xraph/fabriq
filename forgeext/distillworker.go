@@ -5,11 +5,16 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/internal/metrics"
+	"github.com/xraph/fabriq/internal/tracing"
 )
 
 // The proj:distill worker maintains each tenant's context-distillation Merkle
@@ -159,13 +164,31 @@ func (s *distillSweeper) sweep(tenantID string) {
 		if err != nil {
 			return
 		}
+		// One root span per debounced sweep. The tenant ID stays off it.
+		ctx, span := tracing.StartRoot(ctx, "distill tenant",
+			trace.WithAttributes(attribute.Int("fabriq.distill.refs", len(envs))))
+		defer span.End()
+		var failures int
+		var lastErr error
 		for _, env := range envs {
-			if _, derr := s.d.DistillEvent(ctx, env); derr != nil && s.m != nil {
+			if _, derr := s.d.DistillEvent(ctx, env); derr != nil {
+				failures++
+				lastErr = derr
+				if s.m != nil {
+					s.m.DistillFailuresTotal.Inc()
+				}
+			}
+		}
+		if _, rerr := s.d.Rollup(ctx); rerr != nil {
+			failures++
+			lastErr = rerr
+			if s.m != nil {
 				s.m.DistillFailuresTotal.Inc()
 			}
 		}
-		if _, rerr := s.d.Rollup(ctx); rerr != nil && s.m != nil {
-			s.m.DistillFailuresTotal.Inc()
+		span.SetAttributes(attribute.Int("fabriq.distill.failures", failures))
+		if lastErr != nil {
+			telemetry.Fail(span, "distill failed", lastErr)
 		}
 	})
 }

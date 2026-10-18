@@ -205,7 +205,7 @@ func (c *adminController) handleAnalyticsBackfill(ctx forge.Context) error {
 	if body.All {
 		if body.Async {
 			conc := body.Concurrency
-			job := c.analyticsJobs.start("backfill", func(jctx context.Context) (any, error) {
+			job := c.analyticsJobs.start(ctx.Request().Context(), "backfill", func(jctx context.Context) (any, error) {
 				tenants, terr := c.ext.parent.Stores().AllTenants(jctx)
 				if terr != nil {
 					return nil, terr
@@ -287,7 +287,7 @@ func (c *adminController) handleAnalyticsReconcile(ctx forge.Context) error {
 	if body.All {
 		if body.Async {
 			conc := body.Concurrency
-			job := c.analyticsJobs.start("reconcile", func(jctx context.Context) (any, error) {
+			job := c.analyticsJobs.start(ctx.Request().Context(), "reconcile", func(jctx context.Context) (any, error) {
 				tenants, terr := c.ext.parent.Stores().AllTenants(jctx)
 				if terr != nil {
 					return nil, terr
@@ -346,7 +346,7 @@ func (c *adminController) handleAnalyticsReproject(ctx forge.Context) error {
 	if body.All {
 		if body.Async {
 			conc := body.Concurrency
-			job := c.analyticsJobs.start("reproject", func(jctx context.Context) (any, error) {
+			job := c.analyticsJobs.start(ctx.Request().Context(), "reproject", func(jctx context.Context) (any, error) {
 				tenants, terr := c.ext.parent.Stores().AllTenants(jctx)
 				if terr != nil {
 					return nil, terr

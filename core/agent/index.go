@@ -49,6 +49,10 @@ func (ix *Indexer) embedSpec(entity string) *registry.EmbedSpec {
 	return e.Spec.Embed
 }
 
+// Embeds reports whether entity opts into embedding, so a consumer can tell
+// an envelope it will index from one IndexEvent would skip.
+func (ix *Indexer) Embeds(entity string) bool { return ix.embedSpec(entity) != nil }
+
 // embedTextFor builds the text to embed from a row's column values.
 func embedTextFor(spec *registry.EmbedSpec, vals map[string]any) string {
 	if spec.Text != nil {

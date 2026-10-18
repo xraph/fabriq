@@ -180,7 +180,7 @@ func TestAnalyticsReconcile_403WhenGateOff(t *testing.T) {
 // recorded result and terminal state.
 func TestAnalyticsJobs_LifecycleDone(t *testing.T) {
 	j := newAnalyticsJobs()
-	job := j.start("backfill", func(context.Context) (any, error) {
+	job := j.start(context.Background(), "backfill", func(context.Context) (any, error) {
 		return map[string]int{"t1": 3}, nil
 	})
 	got := waitJob(t, j, job.ID)
@@ -198,7 +198,7 @@ func TestAnalyticsJobs_LifecycleDone(t *testing.T) {
 // TestAnalyticsJobs_LifecycleFailed records a failed run.
 func TestAnalyticsJobs_LifecycleFailed(t *testing.T) {
 	j := newAnalyticsJobs()
-	job := j.start("reproject", func(context.Context) (any, error) {
+	job := j.start(context.Background(), "reproject", func(context.Context) (any, error) {
 		return nil, boomError("boom")
 	})
 	got := waitJob(t, j, job.ID)

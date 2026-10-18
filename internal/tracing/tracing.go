@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/fabriq/core/telemetry"
@@ -26,4 +27,15 @@ func Tracer() trace.Tracer { return otel.Tracer(ScopeName) }
 func StartRoot(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	opts = append([]trace.SpanStartOption{trace.WithNewRoot()}, opts...)
 	return Tracer().Start(telemetry.Detach(ctx), name, opts...)
+}
+
+// StartConsumer starts the span for one consumed message under the root's
+// scope: a new root of kind Consumer, linked (not parented) to the producer
+// context stored in traceparent.
+func StartConsumer(ctx context.Context, name, traceparent string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	opts := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindConsumer), trace.WithAttributes(attrs...)}
+	if link, ok := telemetry.LinkFromTraceparent(traceparent); ok {
+		opts = append(opts, trace.WithLinks(link))
+	}
+	return StartRoot(ctx, name, opts...)
 }
