@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/xraph/fabriq/core/livequery/match"
+	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/core/tenant"
 )
 
@@ -293,7 +294,10 @@ func (e *Engine) partitionFor(ctx context.Context, key string, q LiveQuery) (*pa
 	}
 	// The feed must outlive any single subscriber, so detach its cancellation
 	// from the caller's request context while keeping its values (tenant).
-	base := context.WithoutCancel(ctx)
+	// The first subscriber's request span goes too: the feed and its refills
+	// outlive that request, and a kept span would pin every later refill
+	// query to a trace that has already ended.
+	base := telemetry.Detach(context.WithoutCancel(ctx))
 	fctx, pcancel := context.WithCancel(base)
 	changes, feedCancel, err := e.feed.Changes(fctx, q, "$")
 	if err != nil {

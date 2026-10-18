@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/xraph/fabriq/core/catalog"
+	"github.com/xraph/fabriq/core/telemetry"
 )
 
 // Result reports what one tenant maintenance pass did.
@@ -195,6 +196,11 @@ func (e *Engine) TrackedTenants() int {
 
 // Run passes until ctx ends: every ScanInterval, or immediately on a wake.
 func (e *Engine) Run(ctx context.Context) error {
+	// The engine outlives whatever span its ctx carried. Sweeps record no
+	// span of their own (most dispatches find nothing to do); the work they
+	// do find starts its own root spans (publish outbox batch, materialize
+	// document, compact document).
+	ctx = telemetry.Detach(ctx)
 	for {
 		e.Pass(ctx)
 		select {

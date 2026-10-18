@@ -3,9 +3,10 @@ package projection
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/xraph/fabriq/core/event"
-	"github.com/xraph/fabriq/core/otel"
+	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/core/tenant"
 )
 
@@ -85,6 +86,9 @@ type Engine struct {
 	// AND building targets, so live events catch the new target up while
 	// the snapshot replays (version gating makes the overlap safe).
 	TargetsFor func(ctx context.Context, tenantID string) ([]string, error)
+
+	// Observer records one duration per applied envelope (optional, nil-safe).
+	Observer telemetry.ApplyObserver
 }
 
 // Run consumes until ctx ends. Scale by running replicas with distinct
@@ -93,6 +97,9 @@ func (e *Engine) Run(ctx context.Context, consumer string) error {
 	if e.Source == nil || e.Sink == nil || e.Applier == nil || e.State == nil {
 		return fmt.Errorf("fabriq: projection engine %q missing source/sink/applier/state", e.Projection)
 	}
+	// The loop outlives whatever span its ctx carried (a boot or request
+	// span). Each envelope gets its own root span in handle instead.
+	ctx = telemetry.Detach(ctx)
 	if err := e.Source.EnsureGroup(ctx, e.Group); err != nil {
 		return err
 	}
@@ -122,22 +129,48 @@ func (e *Engine) handle(ctx context.Context, env event.Envelope) error {
 	if err != nil {
 		return nil // un-derivable tenant can never apply; skip
 	}
-	tctx = otel.ContextWithTraceparent(tctx, env.Traceparent)
 
+	// One root Consumer span per applied envelope, linked to the command
+	// that produced it: that request has usually finished by now, so the
+	// apply gets its own trace instead of hanging off an ended one.
+	tctx, span := telemetry.StartConsumer(tctx, "apply projection event", env.Traceparent,
+		telemetry.AttrProjection.String(e.Projection),
+		telemetry.AttrConsumerGroup.String(e.Group),
+		telemetry.AttrEntity.String(env.Aggregate),
+		telemetry.AttrMutations.Int(len(muts)),
+	)
+	start := time.Now()
+	err = e.apply(tctx, env, muts)
+	result := telemetry.ResultOK
+	if err != nil {
+		result = telemetry.ResultError
+		telemetry.Fail(span, "apply failed", err)
+	}
+	span.End()
+	if e.Observer != nil {
+		e.Observer.ObserveApply(e.Projection, result, time.Since(start))
+	}
+	return err
+}
+
+// apply writes one envelope's mutations to every target and records the
+// applied version. Any error is transient: the entry stays pending.
+func (e *Engine) apply(ctx context.Context, env event.Envelope, muts []Mutation) error {
 	if len(muts) > 0 {
 		targets := []string{""}
 		if e.TargetsFor != nil {
-			targets, err = e.TargetsFor(tctx, env.TenantID)
+			var err error
+			targets, err = e.TargetsFor(ctx, env.TenantID)
 			if err != nil {
 				return err // transient (state lookup): retry via redelivery
 			}
 		}
 		for _, target := range targets {
-			if err := e.Sink.ApplyMutations(tctx, target, muts); err != nil {
+			if err := e.Sink.ApplyMutations(ctx, target, muts); err != nil {
 				return err // transient engine failure: stay pending
 			}
 		}
 	}
 
-	return e.State.SetApplied(tctx, env.TenantID, e.Projection, env.Aggregate, env.AggID, env.Version)
+	return e.State.SetApplied(ctx, env.TenantID, e.Projection, env.Aggregate, env.AggID, env.Version)
 }
