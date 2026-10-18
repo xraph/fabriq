@@ -65,8 +65,9 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 	}
 
 	// WithMetrics: every grove handle dialed below records its query
-	// durations on this sink (nil records nothing).
-	groveMetrics := groveMetricsFrom(opts)
+	// durations on this sink (nil records nothing), with the collection
+	// label held to a fixed set (boundCollections).
+	groveMetrics := openGroveMetrics(opts, reg)
 
 	// Dial the source-of-truth shard(s). Config.Shards routes tenants across
 	// several Postgres databases (ADR 0007); a bare Postgres.DSN is the

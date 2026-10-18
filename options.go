@@ -116,6 +116,8 @@ func WithCommandObserver(o telemetry.CommandObserver) Option {
 // consolidation databases, the Postgres analytics sink and the Redis cache),
 // so grove records db_client_operation_duration_seconds for their calls. In
 // a Forge app pass app.Metrics(): the series then appear on /_/metrics.
+// Open wraps m so the db.collection.name label stays a fixed set (system
+// tables, static entity tables, rollup tables; everything else is "other").
 // Database-isolation tenant databases are left out on purpose: grove labels
 // each series with the database name, which there names the tenant. A
 // borrowed *grove.DB keeps whatever its owner configured. Nil records

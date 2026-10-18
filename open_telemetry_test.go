@@ -3,9 +3,13 @@ package fabriq
 import (
 	"context"
 	"testing"
+	"time"
 
+	gometrics "github.com/xraph/go-utils/metrics"
+	"github.com/xraph/grove/observability"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/telemetry"
 	"github.com/xraph/fabriq/core/telemetry/telemetrytest"
 	"github.com/xraph/fabriq/core/tenant"
@@ -42,10 +46,19 @@ func TestBackgroundCtxDropsSpanAndCancellation(t *testing.T) {
 }
 
 func TestWithMetricsReachesOpen(t *testing.T) {
-	if groveMetricsFrom(nil) != nil {
-		t.Fatal("no option, no sink")
+	if openGroveMetrics(nil, registry.New()) != nil {
+		t.Fatal("without WithMetrics, Open must dial grove with no sink")
 	}
-	if groveMetricsFrom([]Option{WithConflationWindow(0), WithMetrics(nil)}) != nil {
-		t.Fatal("a nil sink stays nil")
+	rec := &labelRecorder{Metrics: gometrics.NewMockMetrics()}
+	sink := openGroveMetrics([]Option{WithConflationWindow(time.Second), WithMetrics(rec), WithStreamMaxLen(10)}, registry.New())
+	if sink == nil {
+		t.Fatal("WithMetrics did not reach the sink Open dials grove with")
+	}
+	// What Open hands grove records on the caller's sink, collection label
+	// already bounded.
+	sink.Histogram(observability.OperationDurationMetric,
+		gometrics.WithLabels(map[string]string{collectionLabel: "tenant_acme.fabriq_outbox", "db.system.name": "postgresql"}))
+	if len(rec.labels) != 1 || rec.labels[0][collectionLabel] != "fabriq_outbox" {
+		t.Fatalf("recorded labels = %v", rec.labels)
 	}
 }

@@ -61,7 +61,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 	// WithMetrics: the catalog, its replicas and (schema isolation only) the
 	// consolidation databases record their query durations on this sink
 	// (nil records nothing).
-	groveMetrics := groveMetricsFrom(opts)
+	groveMetrics := openGroveMetrics(opts, reg)
 
 	catStore, err := postgres.OpenCatalog(ctx, cfg.Catalog.DSN, postgres.WithMetrics(groveMetrics))
 	if err != nil {
@@ -151,11 +151,12 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 			// the tenant schema on ctx, appending this shared schema so
 			// pgvector/postgis types resolve.
 			//
-			// The few consolidation databases are a bounded label set, so
-			// their query durations are recorded too. In database isolation
-			// they are not: grove labels every series with db.namespace,
-			// the database name, and there the database IS the tenant.
-			// Spans still cover those queries.
+			// The consolidation databases record their query durations too:
+			// db.namespace is one of a few consolidation database names, and
+			// the tenant schema grove keeps on db.collection.name
+			// (tenant_<id>.fabriq_crdt_docs) is stripped by boundCollections.
+			// Database-isolation tenant databases get no sink at all, since
+			// their db.namespace IS the tenant. Spans still cover them.
 			openOpts = append(openOpts,
 				postgres.WithSharedSchema(cfg.Catalog.sharedSchemaOrDefault()),
 				postgres.WithMetrics(groveMetrics))
