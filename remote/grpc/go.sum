@@ -24,8 +24,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/xraph/go-utils v1.4.1 h1:uP4CD+AaCKThbfR8kdQUh0kKHCFFaGb300fKMEJoSJY=
 github.com/xraph/go-utils v1.4.1/go.mod h1:fMahP6kPUjJP5UmzVje2GSL7OGT9+xpYkukK2dLjSMM=
-github.com/xraph/grove v1.8.0 h1:j1QsA/sqnc3WlVRSqvkRXrksC1ckv17hPvEEMjinwAc=
-github.com/xraph/grove v1.8.0/go.mod h1:pZsulQT7WO3Owv9f2bxjW/qZxaz8y75SwdtVTPWKod8=
+github.com/xraph/grove v1.9.0 h1:p6VKpYlLDLso/i35PKL1AhhrRERCdhname7qATNAhMw=
+github.com/xraph/grove v1.9.0/go.mod h1:pZsulQT7WO3Owv9f2bxjW/qZxaz8y75SwdtVTPWKod8=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
 go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
 go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0 h1:oECp5f+hN7nkwjU/8BxQ/q23bGPb8FIrD839owX222E=

@@ -17,12 +17,12 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
 	github.com/xraph/confy v1.1.0
 	github.com/xraph/fabriq/core v1.8.2
-	github.com/xraph/forge v1.12.9
+	github.com/xraph/forge v1.12.10
 	github.com/xraph/go-utils v1.4.1
-	github.com/xraph/grove v1.8.0
-	github.com/xraph/grove/drivers/pgdriver v1.8.0
-	github.com/xraph/grove/kv v1.8.0
-	github.com/xraph/grove/kv/drivers/redisdriver v1.8.0
+	github.com/xraph/grove v1.9.0
+	github.com/xraph/grove/drivers/pgdriver v1.9.0
+	github.com/xraph/grove/kv v1.9.0
+	github.com/xraph/grove/kv/drivers/redisdriver v1.9.0
 	github.com/xraph/shield v1.8.0
 	github.com/xraph/trove v1.7.0
 	github.com/xraph/vessel v1.0.4
