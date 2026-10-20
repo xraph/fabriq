@@ -3,7 +3,7 @@ module github.com/xraph/fabriq/remote/grpc
 go 1.26.0
 
 require (
-	github.com/xraph/fabriq v1.8.1
+	github.com/xraph/fabriq v1.8.3
 	github.com/xraph/grove v1.9.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0
 	google.golang.org/grpc v1.83.2
@@ -23,7 +23,7 @@ require (
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.2 // indirect
-	github.com/xraph/fabriq/core v1.8.2
+	github.com/xraph/fabriq/core v1.8.3
 	github.com/xraph/go-utils v1.4.1 // indirect
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
