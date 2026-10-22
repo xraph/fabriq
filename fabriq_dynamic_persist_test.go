@@ -168,7 +168,7 @@ func TestDefineDynamicConflictWhenDifferent(t *testing.T) {
 		t.Fatalf("define: %v", err)
 	}
 	other := spec()
-	other.Schema.Columns = append(other.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	other.Schema.Columns[0].Type = registry.ColInt // a type change is not additive
 	err := defineDynamic(context.Background(), reg, ddl, store, loaded, other)
 	if err == nil || !strings.Contains(err.Error(), "registered twice") {
 		t.Fatalf("err = %v, want registered twice", err)
@@ -682,7 +682,7 @@ func TestDefineDynamicRefusesDifferentSpecPersistedElsewhere(t *testing.T) {
 	store.put(t, spec(), 1)
 	before := string(store.rows["widget"].Spec)
 	other := spec()
-	other.Schema.Columns = append(other.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	other.Schema.Columns[0].NotNull = true // tightening a column is not additive
 	err := defineDynamic(context.Background(), reg, ddl, store, loaded, other)
 	if err == nil || !strings.Contains(err.Error(), "registered twice") {
 		t.Fatalf("err = %v, want registered twice", err)
@@ -724,5 +724,157 @@ func TestDropDynamicLeavesRowOfTypeRegisteredInCode(t *testing.T) {
 		if op == "delete:site" {
 			t.Fatalf("ops = %v, want no delete:site", ops)
 		}
+	}
+}
+
+// additiveSpec is spec() plus a new size column and a new index on it.
+func additiveSpec() registry.EntitySpec {
+	sp := spec()
+	sp.Schema.Columns = append(sp.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	sp.Schema.Indexes = append(sp.Schema.Indexes, registry.DynamicIndex{Name: "ds_widget_size_idx", Columns: []string{"size"}})
+	return sp
+}
+
+// TestDefineDynamicAdditiveChangeAlters: a library app that adds a column to
+// its boot-time define, over a type the Open-time sync loaded, gets the alter
+// path (DDL, registry swap with its in-process fields, save) and no
+// "registered twice".
+func TestDefineDynamicAdditiveChangeAlters(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	store.put(t, spec(), 1)
+	if _, err := syncPersistedDynamic(context.Background(), reg, ddl, store, loaded); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	next := additiveSpec()
+	next.Validate = func(map[string]any) error { return nil }
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, next); err != nil {
+		t.Fatalf("additive define: %v", err)
+	}
+	if store.saves != 1 || store.rows["widget"].Revision != 2 {
+		t.Fatalf("saves = %d row = %+v, want one save at revision 2", store.saves, store.rows["widget"])
+	}
+	got := store.lastSaved(t, "widget")
+	if len(got.Schema.Columns) != 2 || len(got.Schema.Indexes) != 1 {
+		t.Fatalf("saved schema = %+v, want colour+size and one index", got.Schema)
+	}
+	if loaded["widget"] != 2 {
+		t.Fatalf("loaded = %v, want widget:2", loaded)
+	}
+	if len(ddl.ensured) != 2 {
+		t.Fatalf("ensured = %v, want the sync's and the alter's EnsureDynamic", ddl.ensured)
+	}
+	ent, ok := reg.Get("widget")
+	if !ok || !ent.Binding.HasColumn("size") || ent.Spec.Validate == nil {
+		t.Fatal("registry does not hold the altered spec with the caller's Validate")
+	}
+
+	// The next sync sees its own revision and leaves the type alone.
+	res, err := syncPersistedDynamic(context.Background(), reg, ddl, store, loaded)
+	if err != nil {
+		t.Fatalf("sync after alter: %v", err)
+	}
+	if len(res.Updated) != 0 {
+		t.Fatalf("sync after alter updated %v, want nothing", res.Updated)
+	}
+}
+
+// TestDefineDynamicNonAdditiveChangeStillRegisteredTwice: anything other than
+// new columns and indexes keeps failing, and the persisted row stays as it was.
+func TestDefineDynamicNonAdditiveChangeStillRegisteredTwice(t *testing.T) {
+	cases := map[string]func(*registry.EntitySpec){
+		"column type change": func(sp *registry.EntitySpec) { sp.Schema.Columns[0].Type = registry.ColInt },
+		"not null change":    func(sp *registry.EntitySpec) { sp.Schema.Columns[0].NotNull = true },
+		"default change":     func(sp *registry.EntitySpec) { sp.Schema.Columns[0].Default = "'red'" },
+		"dropped column": func(sp *registry.EntitySpec) {
+			sp.Schema.Columns = []registry.DynamicColumn{{Name: "size", Type: registry.ColInt}}
+			sp.Schema.Indexes = nil
+		},
+		"dropped index":   func(sp *registry.EntitySpec) { sp.Schema.Indexes = nil },
+		"different table": func(sp *registry.EntitySpec) { sp.Schema.Table = "ds_widget2" },
+		"changed index": func(sp *registry.EntitySpec) {
+			sp.Schema.Indexes = []registry.DynamicIndex{{Name: "ds_widget_colour_idx", Columns: []string{"colour"}, Unique: true}}
+		},
+		"graph node change": func(sp *registry.EntitySpec) { sp.GraphNode = "Gizmo" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+			base := spec()
+			base.Schema.Indexes = []registry.DynamicIndex{{Name: "ds_widget_colour_idx", Columns: []string{"colour"}}}
+			store.put(t, base, 1)
+			if _, err := syncPersistedDynamic(context.Background(), reg, ddl, store, loaded); err != nil {
+				t.Fatalf("sync: %v", err)
+			}
+			before := string(store.rows["widget"].Spec)
+			next := base
+			sc := *base.Schema
+			sc.Columns = append([]registry.DynamicColumn(nil), base.Schema.Columns...)
+			sc.Indexes = append([]registry.DynamicIndex(nil), base.Schema.Indexes...)
+			next.Schema = &sc
+			mutate(&next)
+			err := defineDynamic(context.Background(), reg, ddl, store, loaded, next)
+			if err == nil || !strings.Contains(err.Error(), "registered twice") {
+				t.Fatalf("err = %v, want registered twice", err)
+			}
+			if store.saves != 0 || string(store.rows["widget"].Spec) != before {
+				t.Fatalf("row changed: saves=%d row=%s", store.saves, store.rows["widget"].Spec)
+			}
+			ent, _ := reg.Get("widget")
+			if ent == nil || !sameDynamicEncoding(ent.Spec, base) {
+				t.Fatal("registry no longer holds the loaded spec")
+			}
+		})
+	}
+}
+
+// TestDefineDynamicAdditiveChangeOfCodeTypeStillRegisteredTwice: a type
+// registered in code is not this facade's to alter through a define.
+func TestDefineDynamicAdditiveChangeOfCodeTypeStillRegisteredTwice(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	reg.MustRegister(spec())
+	err := defineDynamic(context.Background(), reg, ddl, store, loaded, additiveSpec())
+	if err == nil || !strings.Contains(err.Error(), "registered twice") {
+		t.Fatalf("err = %v, want registered twice", err)
+	}
+	if store.saves != 0 {
+		t.Fatalf("saves = %d, want 0", store.saves)
+	}
+}
+
+// TestSchemaOpsOnCodeTypeWriteNoRow: alter, rename-field and drop-field on a
+// dynamic type registered in code run their DDL and update the registry, but
+// never write a row to the shared table (another instance may own that name).
+func TestSchemaOpsOnCodeTypeWriteNoRow(t *testing.T) {
+	ctx := context.Background()
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	base := spec()
+	base.Schema.Columns = append(base.Schema.Columns, registry.DynamicColumn{Name: "shape", Type: registry.ColText})
+	reg.MustRegister(base)
+
+	altered := spec()
+	altered.Schema.Columns = append(altered.Schema.Columns,
+		registry.DynamicColumn{Name: "shape", Type: registry.ColText},
+		registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	if err := alterDynamic(ctx, reg, ddl, store, loaded, altered); err != nil {
+		t.Fatalf("alter: %v", err)
+	}
+	if err := renameDynamicField(ctx, reg, ddl, store, loaded, "widget", "colour", "hue"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if err := dropDynamicField(ctx, reg, ddl, store, loaded, "widget", "shape"); err != nil {
+		t.Fatalf("drop field: %v", err)
+	}
+	if store.saves != 0 || len(store.rows) != 0 {
+		t.Fatalf("saves = %d rows = %v, want no row written", store.saves, store.rows)
+	}
+	if _, ok := loaded["widget"]; ok {
+		t.Fatal("code-registered widget recorded as loaded")
+	}
+	ent, _ := reg.Get("widget")
+	if ent == nil || !ent.Binding.HasColumn("hue") || !ent.Binding.HasColumn("size") || ent.Binding.HasColumn("shape") {
+		t.Fatal("registry does not reflect the alter, rename and drop")
+	}
+	if len(ddl.renamed) != 1 || len(ddl.droppedCols) != 1 {
+		t.Fatalf("ddl renamed=%v droppedCols=%v, want one each", ddl.renamed, ddl.droppedCols)
 	}
 }

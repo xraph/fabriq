@@ -42,7 +42,10 @@ func assertDynamicAggregate(spec registry.EntitySpec) error {
 // already registered is a no-op success, so a library app can repeat its
 // boot-time defines over types the Open-time sync already loaded. That path
 // swaps in the caller's spec (no DDL, no save) so in-process fields such as
-// Validate attach to the loaded type.
+// Validate attach to the loaded type. When the type came from the store and
+// the caller's spec only adds columns or indexes (see additiveDynamicChange),
+// the define runs as AlterDynamic instead. Any other difference still fails
+// as registered twice.
 func defineDynamic(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, store DynamicSpecStore, loaded map[string]int64, spec registry.EntitySpec) error {
 	_, err := defineDynamicSynced(ctx, reg, ddl, store, loaded, spec)
 	return err
@@ -77,8 +80,15 @@ func defineDynamicSynced(ctx context.Context, reg *registry.Registry, ddl Dynami
 				return synced, fmt.Errorf("fabriq: dynamic entity %q has a persisted descriptor this process cannot load (%s)", spec.Name, reason)
 			}
 		}
-		if cur, ok := reg.Get(spec.Name); ok && cur.Spec.Schema != nil && cur.Spec.Kind == registry.KindAggregate && sameDynamicEncoding(cur.Spec, spec) {
-			return synced, reg.Replace(spec)
+		if cur, ok := reg.Get(spec.Name); ok && cur.Spec.Schema != nil && cur.Spec.Kind == registry.KindAggregate {
+			if sameDynamicEncoding(cur.Spec, spec) {
+				return synced, reg.Replace(spec)
+			}
+			// A type this facade loaded or persisted (never one registered in
+			// code) that the caller only grew: treat the define as an alter.
+			if _, owned := loaded[spec.Name]; owned && additiveDynamicChange(cur.Spec, spec) {
+				return synced, alterDynamic(ctx, reg, ddl, store, loaded, spec)
+			}
 		}
 		b, err := encodeDynamicSpec(spec)
 		if err != nil {
@@ -106,7 +116,8 @@ func defineDynamicSynced(ctx context.Context, reg *registry.Registry, ddl Dynami
 
 // alterDynamic: additive add-field via idempotent EnsureDynamic, then
 // re-register, then persist. A save failure returns the error but keeps the
-// new spec registered, because its DDL has already run.
+// new spec registered, because its DDL has already run. A type registered in
+// code (not in loaded) is altered without writing a row.
 func alterDynamic(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, store DynamicSpecStore, loaded map[string]int64, spec registry.EntitySpec) error {
 	if err := assertDynamicAggregate(spec); err != nil {
 		return err
@@ -115,8 +126,12 @@ func alterDynamic(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, s
 	if !ok {
 		return fmt.Errorf("fabriq: cannot alter unknown entity %q", spec.Name)
 	}
+	// Only a type this facade persisted or loaded owns its row. A dynamic
+	// type registered in code must never write one (see dropDynamic).
+	_, owned := loaded[spec.Name]
+	persist := store != nil && owned
 	var encoded []byte
-	if store != nil {
+	if persist {
 		b, err := encodeDynamicSpec(spec)
 		if err != nil {
 			return err
@@ -136,7 +151,7 @@ func alterDynamic(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, s
 		_ = reg.Replace(prev.Spec)
 		return err
 	}
-	if store != nil {
+	if persist {
 		return saveDynamicSpec(ctx, store, loaded, spec.Name, encoded)
 	}
 	return nil
@@ -208,13 +223,15 @@ func dropDynamicField(ctx context.Context, reg *registry.Registry, ddl DynamicDD
 	return replaceAndPersist(ctx, reg, store, loaded, next)
 }
 
-// replaceAndPersist swaps next into the registry and, with a store, saves it.
-// A save failure keeps next registered: the DDL behind it already ran.
+// replaceAndPersist swaps next into the registry and, with a store, saves it
+// when this facade owns the row (the name is in loaded). A type registered in
+// code never writes one. A save failure keeps next registered: the DDL behind
+// it already ran.
 func replaceAndPersist(ctx context.Context, reg *registry.Registry, store DynamicSpecStore, loaded map[string]int64, next registry.EntitySpec) error {
 	if err := reg.Replace(next); err != nil {
 		return err
 	}
-	if store == nil {
+	if _, owned := loaded[next.Name]; store == nil || !owned {
 		return nil
 	}
 	b, err := encodeDynamicSpec(next)
@@ -222,6 +239,47 @@ func replaceAndPersist(ctx context.Context, reg *registry.Registry, store Dynami
 		return persistError(next.Name, err)
 	}
 	return saveDynamicSpec(ctx, store, loaded, next.Name, b)
+}
+
+// additiveDynamicChange reports whether next only grows cur: every column of
+// cur is in next with the same type, NotNull and Default, every index of cur
+// is in next unchanged, the table is the same, and so is every other persisted
+// field (graph, edges, search, scopes, live, cache, NoTypeCheck). next may add
+// columns and indexes, nothing else. The check projects next onto cur's
+// columns and indexes and compares the persisted encodings, so it covers
+// whatever the encoding covers.
+func additiveDynamicChange(cur, next registry.EntitySpec) bool {
+	if cur.Schema == nil || next.Schema == nil || cur.Schema.Table != next.Schema.Table {
+		return false
+	}
+	cols := make(map[string]registry.DynamicColumn, len(next.Schema.Columns))
+	for _, c := range next.Schema.Columns {
+		cols[c.Name] = c
+	}
+	idx := make(map[string]registry.DynamicIndex, len(next.Schema.Indexes))
+	for _, i := range next.Schema.Indexes {
+		idx[i.Name] = i
+	}
+	sc := *next.Schema
+	sc.Columns = make([]registry.DynamicColumn, 0, len(cur.Schema.Columns))
+	for _, c := range cur.Schema.Columns {
+		nc, ok := cols[c.Name]
+		if !ok {
+			return false
+		}
+		sc.Columns = append(sc.Columns, nc)
+	}
+	sc.Indexes = make([]registry.DynamicIndex, 0, len(cur.Schema.Indexes))
+	for _, i := range cur.Schema.Indexes {
+		ni, ok := idx[i.Name]
+		if !ok {
+			return false
+		}
+		sc.Indexes = append(sc.Indexes, ni)
+	}
+	projected := next
+	projected.Schema = &sc
+	return sameDynamicEncoding(cur, projected)
 }
 
 // cloneSpecRenamingColumn returns a copy of spec with the given schema column
@@ -272,7 +330,10 @@ func (f *Fabriq) dynamicDDL() (DynamicDDL, error) {
 // declarative part persists: Validate, Embed, Distill, Analytics, Insights,
 // Metrics and CRDT stay in-process, so an app that needs them defines the type
 // again at boot. Defining a spec whose persisted part equals the registered
-// type then succeeds without DDL and attaches those fields.
+// type then succeeds without DDL and attaches those fields. When the
+// registered type came from the store and the new spec only adds columns or
+// indexes, DefineDynamic applies it as AlterDynamic would; any other change
+// fails with "registered twice".
 func (f *Fabriq) DefineDynamic(ctx context.Context, spec registry.EntitySpec) error {
 	ddl, err := f.dynamicDDL()
 	if err != nil {
