@@ -76,17 +76,37 @@ func TestInsightsRollupMigration_DownDropsTable(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	rb, err := orch.Rollback(ctx)
-	if err != nil {
-		t.Fatalf("rollback: %v", err)
+	const table = "fabriq_insights_rollup_state"
+
+	// orch.Rollback undoes exactly one migration per call, and 0032 is not
+	// the newest migration (later ones stack on top of it). Roll back
+	// repeatedly, bounded so a Down that never drops the table fails fast,
+	// until the table is gone.
+	const maxRollbacks = 20
+	rolledBackAny := false
+	var n int
+	for i := 0; i < maxRollbacks; i++ {
+		if err := db.QueryRow(ctx,
+			`SELECT count(*) FROM information_schema.tables WHERE table_name = $1`, table,
+		).Scan(&n); err != nil {
+			t.Fatalf("check %s absent: %v", table, err)
+		}
+		if n == 0 {
+			break
+		}
+		rb, err := orch.Rollback(ctx)
+		if err != nil {
+			t.Fatalf("rollback: %v", err)
+		}
+		if len(rb.Rollback) == 0 {
+			t.Fatalf("rollback rolled back nothing (ran out of migrations before %s was dropped)", table)
+		}
+		rolledBackAny = true
 	}
-	if len(rb.Rollback) == 0 {
+	if !rolledBackAny {
 		t.Fatal("rollback rolled back nothing")
 	}
 
-	const table = "fabriq_insights_rollup_state"
-
-	var n int
 	if err := db.QueryRow(ctx,
 		`SELECT count(*) FROM information_schema.tables WHERE table_name = $1`, table,
 	).Scan(&n); err != nil {
