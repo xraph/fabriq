@@ -31,7 +31,7 @@ var systemTables = []string{
 	"fabriq_dynamic_entity", "fabriq_embeddings", "fabriq_geometries",
 	"fabriq_insights_events", "fabriq_insights_facts", "fabriq_insights_rollup_state",
 	"fabriq_live_subscriptions", "fabriq_outbox", "fabriq_projection_applied", "fabriq_projection_state",
-	"fabriq_tenant_catalog",
+	"fabriq_tenant", "fabriq_tenant_catalog",
 }
 
 // rollupTablePrefix matches adapters/postgres: a materialized metric's rollup

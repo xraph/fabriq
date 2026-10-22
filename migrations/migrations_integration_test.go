@@ -91,6 +91,8 @@ func TestMigrate_CoreTablesExist(t *testing.T) {
 		"fabriq_fs_nodes", "fabriq_digest_nodes",
 		// Added by 0033 (persisted dynamic entity descriptors).
 		"fabriq_dynamic_entity",
+		// Added by 0034 (static-mode tenant registry).
+		"fabriq_tenant",
 	} {
 		var n int
 		row := db.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_name = $1`, table)

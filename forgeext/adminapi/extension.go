@@ -92,6 +92,11 @@ type config struct {
 	// attach authMiddleware(store, basePath) via WithRouteOptions to actually
 	// gate requests; WithAuth only wires the key-management surface.
 	KeyStore KeyStore
+	// TenantRegistry is the static-mode tenant registry behind POST/GET
+	// /tenants. When nil (and no catalog), those routes answer 400 "requires
+	// catalog mode". Register auto-provisions one from the fabric DB when the
+	// parent has no catalog; set it explicitly with WithTenantRegistry.
+	TenantRegistry TenantRegistry
 	// AdminLoginUser and AdminLoginHash back the dashboard-login surface
 	// (POST {BasePath}/login + /logout), set together via WithAdminLogin.
 	// AdminLoginUser == "" (the default) means login is disabled and
@@ -205,6 +210,12 @@ func WithAdminLogin(username, password string) Option {
 		}
 		c.AdminLoginHash = string(hash)
 	}
+}
+
+// WithTenantRegistry sets the static-mode tenant registry that serves
+// POST/GET /tenants when the fabric runs without a catalog.
+func WithTenantRegistry(r TenantRegistry) Option {
+	return func(c *config) { c.TenantRegistry = r }
 }
 
 // WithAuthDisabled turns OFF secure-by-default auth: no KeyStore is
@@ -329,7 +340,26 @@ func (e *Extension) Register(app forge.App) error {
 	if err := e.applyAuthDefaults(); err != nil {
 		return err
 	}
+	e.applyTenantRegistryDefault()
 	return app.RegisterController(newAdminController(e))
+}
+
+// applyTenantRegistryDefault auto-provisions the static-mode tenant registry
+// from the fabric DB. It does nothing when the host set one, when the DB is
+// not reachable, or when the parent runs a catalog (db-per-tenant keeps its
+// own directory).
+func (e *Extension) applyTenantRegistryDefault() {
+	if e.cfg.TenantRegistry != nil {
+		return
+	}
+	gdb := groveFromParent(e)
+	if gdb == nil {
+		return
+	}
+	if stores := e.parent.Stores(); stores != nil && stores.Catalog != nil {
+		return
+	}
+	e.cfg.TenantRegistry = NewTenantRegistry(gdb)
 }
 
 // applyAuthDefaults resolves and applies secure-by-default auth: auto-provision a

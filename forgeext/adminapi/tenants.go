@@ -20,7 +20,9 @@ import (
 
 // registerTenantRoutes wires the db-per-tenant management surface (catalog
 // mode). All handlers gate on requireTenantsAdmin — the HTTP twin of the
-// `fabriq tenant` CLI.
+// `fabriq tenant` CLI. In static mode (a TenantRegistry and no catalog) the
+// create, list and get routes dispatch to the registry handlers in
+// tenants_static.go; suspend, resume, migrate-all and jobs stay catalog-only.
 func (c *adminController) registerTenantRoutes(r forge.Router) error {
 	base := c.ext.cfg.BasePath
 	opts := c.ext.cfg.RouteOptions
@@ -122,6 +124,9 @@ func toTenantView(e catalog.Entry) tenantView {
 // handleTenantList serves GET {BasePath}/tenants — pages through the entire
 // catalog and returns every tenant entry.
 func (c *adminController) handleTenantList(ctx forge.Context) error {
+	if reg := c.staticTenantRegistry(); reg != nil {
+		return c.handleStaticTenantList(ctx, reg)
+	}
 	if _, err := c.requireTenantsAdmin(ctx); err != nil {
 		return err
 	}
@@ -153,6 +158,9 @@ func (c *adminController) handleTenantList(ctx forge.Context) error {
 
 // handleTenantGet serves GET {BasePath}/tenants/:id.
 func (c *adminController) handleTenantGet(ctx forge.Context) error {
+	if reg := c.staticTenantRegistry(); reg != nil {
+		return c.handleStaticTenantGet(ctx, reg)
+	}
 	if _, err := c.requireTenantsAdmin(ctx); err != nil {
 		return err
 	}
@@ -282,6 +290,9 @@ type provisionBody struct {
 // pollable jobId. The provisioning itself runs detached from the request
 // (context.Background()) so it survives the response being written.
 func (c *adminController) handleTenantProvision(ctx forge.Context) error {
+	if reg := c.staticTenantRegistry(); reg != nil {
+		return c.handleStaticTenantCreate(ctx, reg)
+	}
 	if err := c.ensureTenantsAdmin(ctx); err != nil {
 		return err
 	}
