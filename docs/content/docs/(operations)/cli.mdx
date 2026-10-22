@@ -43,8 +43,9 @@ The serve path reads everything from the environment:
 | `FABRIQ_RECONCILE_INTERVAL` | no | Scheduled reconciler cadence (Go duration; `0` disables; default 5m). |
 | `FABRIQ_DOMAIN_PACK` | no | `example` (default) registers the demo entities, `none` registers none. |
 | `FABRIQ_DYNAMIC_PERSIST` | no | Persist and reload runtime-defined entity types (default `true`). |
+| `FABRIQ_DYNAMIC_SYNC_INTERVAL` | no | How often a process picks up entity types defined by another process (default `15s`). |
 
-The admin API variables (`FABRIQ_ADMIN_API`, `FABRIQ_ADMIN_KEY`, the dashboard login pair, `FABRIQ_DYNAMIC_SYNC_INTERVAL` and `FABRIQ_ALLOW_RLS_BYPASS`) are in the [hosted server](/docs/deployment#hosted-server) table.
+The admin API variables (`FABRIQ_ADMIN_API`, `FABRIQ_ADMIN_KEY`, the dashboard login pair and `FABRIQ_ALLOW_RLS_BYPASS`) are in the [hosted server](/docs/deployment#hosted-server) table.
 
 The operator commands read the credential variables, `FABRIQ_DOMAIN_PACK` and `FABRIQ_DYNAMIC_PERSIST` as well, so a Job that rebuilds a projection needs the same engine password the server uses. `rebuild`, `rebuild finalize` and `reconcile` dial every engine whose address is set in the environment. The address flags still win over the variables.
 
