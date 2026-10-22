@@ -613,3 +613,162 @@ func TestAuthMiddleware_KeyspaceSibling_NotInstanceRoute(t *testing.T) {
 		}
 	}
 }
+
+// rawReq sends method + path to srv, keeping path byte for byte (no client-side
+// cleaning), with an optional bearer token.
+func rawReq(t *testing.T, method, srv, path, bearer string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, srv+path, nil)
+	if err != nil {
+		t.Fatalf("new request %s: %v", path, err)
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request %s: %v", path, err)
+	}
+	return resp
+}
+
+// instanceProbePaths are the route patterns the path-form tests register, so
+// the router (forgemux) and the middleware both see every request.
+var instanceProbePaths = []string{
+	"/admin/keys", "/admin/keys/:id", "/admin/tenants", "/admin/tenants/:id", "/admin/keyspace",
+}
+
+// TestAuthMiddleware_SlashVariants_NonManageKey_403 pins C1: forgemux drops
+// empty segments when it routes, so every one of these paths reaches a keys or
+// tenants handler, and the gate must see it as one.
+func TestAuthMiddleware_SlashVariants_NonManageKey_403(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_plain", KeyRecord{ID: "k1", TenantID: testTenantID, CanManageKeys: false})
+	srv := buildInstanceProbeServer(t, store, instanceProbePaths...)
+	defer srv.Close()
+
+	for _, path := range []string{
+		"/admin//keys", "//admin/keys", "/admin/keys//x", "/admin/keys/", "/admin%2Fkeys",
+		"/admin//tenants", "//admin//tenants/acme", "/admin/tenants/", "/admin/tenants%2Facme",
+	} {
+		resp := rawReq(t, http.MethodGet, srv.URL, path, "fq_plain")
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s: status = %d, want 403, body = %s", path, resp.StatusCode, body)
+		}
+	}
+}
+
+// TestAuthMiddleware_SlashVariants_ManageKey_InstanceRoute_200 checks the other
+// direction: the instance-route relaxation follows the same path form.
+func TestAuthMiddleware_SlashVariants_ManageKey_InstanceRoute_200(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_multi_admin", KeyRecord{ID: "k-multi-admin", CanManageKeys: true})
+	srv := buildInstanceProbeServer(t, store, instanceProbePaths...)
+	defer srv.Close()
+
+	for _, path := range []string{"/admin//keys", "//admin/keys/", "//admin//tenants/acme"} {
+		resp := rawReq(t, http.MethodGet, srv.URL, path, "fq_multi_admin")
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200, body = %s", path, resp.StatusCode, body)
+		}
+	}
+}
+
+// TestAuthMiddleware_SlashVariants_KeyspaceSibling_400 confirms a sibling with
+// extra slashes is still a data route.
+func TestAuthMiddleware_SlashVariants_KeyspaceSibling_400(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_multi_admin", KeyRecord{ID: "k1", CanManageKeys: true})
+	srv := buildInstanceProbeServer(t, store, instanceProbePaths...)
+	defer srv.Close()
+
+	for _, path := range []string{"/admin//keyspace", "//admin/keyspace/"} {
+		resp := rawReq(t, http.MethodGet, srv.URL, path, "fq_multi_admin")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400 (a sibling is not an instance route)", path, resp.StatusCode)
+		}
+	}
+}
+
+// TestAuthMiddleware_RouterDoesNotRoute_CaseOrDots pins the two ways a path
+// could differ that the router itself refuses: static segments match case
+// sensitively and dot segments are literal. These never reach a keys handler,
+// so the middleware's case-sensitive, dot-preserving form agrees with it.
+func TestAuthMiddleware_RouterDoesNotRoute_CaseOrDots(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_plain", KeyRecord{ID: "k1", TenantID: testTenantID, CanManageKeys: false})
+	srv := buildInstanceProbeServer(t, store, "/admin/keys", "/admin/tenants")
+	defer srv.Close()
+
+	for _, path := range []string{"/admin/KEYS", "/Admin/keys", "/admin/./keys", "/admin/x/../keys", "/admin/Tenants"} {
+		resp := rawReq(t, http.MethodGet, srv.URL, path, "fq_plain")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404 (the router does not route it)", path, resp.StatusCode)
+		}
+	}
+}
+
+// TestAuthMiddleware_LoginExemption_SlashVariant keeps the login exemption on
+// the routed path too: "//admin/login" reaches the login handler, so it is
+// exempt like "/admin/login".
+func TestAuthMiddleware_LoginExemption_SlashVariant(t *testing.T) {
+	srv := buildLoginProbeServer(t, newFakeKeyStore())
+	defer srv.Close()
+
+	resp := rawReq(t, http.MethodPost, srv.URL, "//admin//login", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestAuthMiddleware_TenantBoundManageKey_TenantsRoute_403(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_bound_admin", KeyRecord{ID: "k1", TenantID: testTenantID, CanManageKeys: true})
+	srv := buildInstanceProbeServer(t, store, instanceProbePaths...)
+	defer srv.Close()
+
+	for _, path := range []string{"/admin/tenants", "/admin/tenants/" + testTenantID, "//admin//tenants"} {
+		resp := rawReq(t, http.MethodGet, srv.URL, path, "fq_bound_admin")
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s: status = %d, want 403, body = %s", path, resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "this API key may not manage tenants") {
+			t.Errorf("%s: body = %s, want the manage-tenants message", path, body)
+		}
+	}
+
+	// R11: the same key keeps its /keys access.
+	resp := rawReq(t, http.MethodGet, srv.URL, "/admin/keys", "fq_bound_admin")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/admin/keys: status = %d, want 200 for a tenant-bound manage key", resp.StatusCode)
+	}
+}
+
+func TestRoutePath(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                  "/",
+		"/":                 "/",
+		"//":                "/",
+		"/admin":            "/admin",
+		"/admin/":           "/admin",
+		"admin":             "/admin",
+		"//admin//keys//x/": "/admin/keys/x",
+		"/admin/./keys":     "/admin/./keys",
+		"/admin/../keys":    "/admin/../keys",
+		"/Admin/Keys":       "/Admin/Keys",
+	} {
+		if got := routePath(in); got != want {
+			t.Errorf("routePath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

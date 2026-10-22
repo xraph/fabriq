@@ -57,12 +57,16 @@ on the instance instead:
 
 On those routes a multi-tenant key may leave out `X-Tenant-ID`. The request goes through with
 no tenant on the context, though the key id is still put there. If you do send a selector,
-it's validated and stamped as usual. The match is exact, so a
-sibling like `{base}/keyspace` is a data route and still answers `400` without a selector.
+it's validated and stamped as usual. The match is exact, so a sibling like `{base}/keyspace`
+is a data route and still answers `400` without a selector. Paths are compared the way the
+router resolves them, with repeated and trailing slashes collapsed, so `/admin//keys` gets
+the same rules as `/admin/keys`.
 
-Both subtrees also need a key with `can_manage_keys`. A key without it gets `403` with
-`this API key may not manage keys` on `{base}/keys*` and `this API key may not manage
-tenants` on `{base}/tenants*`.
+`{base}/keys*` needs a key with `can_manage_keys`, and a key without it gets `403` with
+`this API key may not manage keys`. `{base}/tenants*` is stricter. Tenants are
+instance-wide, so it takes a multi-tenant key with `can_manage_keys`. Anything else,
+including a tenant-bound key that can manage keys, gets `403` with `this API key may not
+manage tenants`.
 
 ### Managing keys
 
@@ -118,8 +122,9 @@ short or otherwise malformed value stops the server with `adminapi: FABRIQ_ADMIN
 set to fq_ followed by at least 32 letters or digits`, and no key is ever generated or
 logged.
 
-`WithoutDefaultLogin` keeps the `admin`/`admin` dashboard login off. You can still turn a
-login on with `WithAdminLogin` and a real password.
+`WithAuthRequired` on its own doesn't turn off the default `admin`/`admin` dashboard login.
+That's what `WithoutDefaultLogin` is for, so a hosted server passes both. You can still turn
+a login on with `WithAdminLogin` and a real password.
 
 The usual setup is one operator key in `FABRIQ_ADMIN_KEY`. Your control plane uses it to
 create tenants on `{base}/tenants` and to issue a key per service on `{base}/keys`, and then
@@ -139,7 +144,7 @@ ext := adminapi.NewAdminAPI(
 )
 ```
 
-The password is bcrypt-hashed at startup (never stored in plaintext), and login is
+The password is bcrypt-hashed at startup and never stored in plaintext. Login is
 constant-time. Two routes are added:
 
 ```text

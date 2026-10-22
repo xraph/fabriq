@@ -37,8 +37,9 @@ func resolvedKeyID(ctx context.Context) (string, bool) {
 // resolves the tenant into the request context for downstream handlers.
 //
 // basePath is the admin API mount point (e.g. "/admin"). Requests under
-// basePath+"/keys" or basePath+"/tenants" additionally require a key with
-// CanManageKeys.
+// basePath+"/keys" additionally require a key with CanManageKeys; requests
+// under basePath+"/tenants" require a multi-tenant key with CanManageKeys.
+// Paths are compared in routePath form, the form the router resolves.
 //
 // Those two subtrees are the instance routes: they act on the instance, not
 // on one tenant's data. On an instance route a multi-tenant key may omit
@@ -64,12 +65,17 @@ func resolvedKeyID(ctx context.Context) (string, bool) {
 //	multi-tenant key, X-Tenant-ID absent,
 //	  on a data route                      → 400
 //	.../keys route, !CanManageKeys         → 403
-//	.../tenants route, !CanManageKeys      → 403
+//	.../tenants route, !CanManageKeys or a
+//	  tenant-bound key                     → 403
 //	X-Fabriq-Api-Version present, major ≠  → 426
 //	otherwise                              → next(ctx)
 func authMiddleware(store KeyStore, basePath string) forge.Middleware {
-	keysPrefix := strings.TrimRight(basePath, "/") + "/keys"
-	tenantsPrefix := strings.TrimRight(basePath, "/") + "/tenants"
+	// Every route decision below compares routePath forms, so a request the
+	// router resolves to a keys or tenants handler can never dodge the gates
+	// with extra slashes ("/admin//keys", "//admin/keys").
+	loginPath := routePath(basePath + "/login")
+	keysPrefix := routePath(basePath + "/keys")
+	tenantsPrefix := routePath(basePath + "/tenants")
 
 	return func(next forge.Handler) forge.Handler {
 		return func(ctx forge.Context) error {
@@ -79,7 +85,8 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 			// before the version header is set / anything else runs, so a
 			// POST to basePath+"/login" is a pure pass-through.
 			req := ctx.Request()
-			if req.Method == http.MethodPost && req.URL.Path == basePath+"/login" {
+			path := routePath(req.URL.Path)
+			if req.Method == http.MethodPost && path == loginPath {
 				return next(ctx)
 			}
 
@@ -109,8 +116,8 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 			}
 
 			selector := req.Header.Get("X-Tenant-ID")
-			keysRoute := isKeysRoute(req.URL.Path, keysPrefix)
-			tenantsRoute := isKeysRoute(req.URL.Path, tenantsPrefix)
+			keysRoute := isUnderRoute(path, keysPrefix)
+			tenantsRoute := isUnderRoute(path, tenantsPrefix)
 
 			// 3/4. Resolve the effective tenant. tid stays "" only for a
 			// multi-tenant key on an instance route with no selector.
@@ -135,7 +142,9 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 			if !rec.CanManageKeys && keysRoute {
 				return deny(ctx, http.StatusForbidden, "this API key may not manage keys")
 			}
-			if !rec.CanManageKeys && tenantsRoute {
+			// Tenants are instance-wide, so only a multi-tenant manage key may
+			// touch them: a tenant-bound key is refused even with CanManageKeys.
+			if tenantsRoute && (!rec.CanManageKeys || rec.TenantID != "") {
 				return deny(ctx, http.StatusForbidden, "this API key may not manage tenants")
 			}
 
@@ -186,10 +195,28 @@ func deny(ctx forge.Context, status int, message string) error {
 	return nil
 }
 
-// isKeysRoute reports whether path targets the management surface rooted at
-// keysPrefix (the keys or the tenants subtree). It matches keysPrefix exactly
-// and any sub-path, but not sibling paths that merely share the prefix string
-// (e.g. "/admin/keyspace").
-func isKeysRoute(path, keysPrefix string) bool {
-	return path == keysPrefix || strings.HasPrefix(path, keysPrefix+"/")
+// isUnderRoute reports whether path targets the subtree rooted at prefix (the
+// keys or the tenants subtree). It matches prefix exactly and any sub-path, but
+// not sibling paths that merely share the prefix string (e.g.
+// "/admin/keyspace"). Both arguments must already be in routePath form.
+func isUnderRoute(path, prefix string) bool {
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
+}
+
+// routePath returns p the way forge's default router (forgemux) resolves it:
+// empty segments are dropped, so repeated, leading and trailing slashes
+// collapse, and the result has exactly one leading slash. Dot segments are
+// kept as they are, because the router matches "." and ".." as literal
+// segments rather than resolving them. Matching is case-sensitive, like the
+// router's static segments. p is the decoded r.URL.Path the router walks, so
+// an encoded slash ("%2F") has already become a separator in both.
+func routePath(p string) string {
+	segs := strings.Split(p, "/")
+	kept := segs[:0]
+	for _, seg := range segs {
+		if seg != "" {
+			kept = append(kept, seg)
+		}
+	}
+	return "/" + strings.Join(kept, "/")
 }

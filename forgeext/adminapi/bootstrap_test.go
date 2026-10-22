@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -304,6 +305,35 @@ func TestBootstrapAdminKey_Required_ValidEnv_Ensures(t *testing.T) {
 	}
 	if got := countManageKeys(t, store); got != 1 {
 		t.Fatalf("manage keys = %d, want 1", got)
+	}
+}
+
+// TestBootstrapAdminKey_Required_StoreWithoutEnsure_Errors verifies a required
+// bootstrap fails closed when the store cannot register a preset key, even
+// with a well-formed FABRIQ_ADMIN_KEY, and generates nothing.
+func TestBootstrapAdminKey_Required_StoreWithoutEnsure_Errors(t *testing.T) {
+	envKey, _, _, err := generateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	t.Setenv("FABRIQ_ADMIN_KEY", envKey)
+
+	store := newLiveKeyStore() // no Ensure method
+	if err := bootstrapAdminKey(context.Background(), store, true); err == nil {
+		t.Fatal("bootstrap: err = nil, want an error for a store without Ensure")
+	}
+	if got := countManageKeys(t, store); got != 0 {
+		t.Fatalf("manage keys = %d, want 0", got)
+	}
+}
+
+// TestStart_AuthRequiredWithoutKeyStore_Refuses verifies Start fails closed for
+// a caller that skipped Register: required auth with no KeyStore never serves.
+func TestStart_AuthRequiredWithoutKeyStore_Refuses(t *testing.T) {
+	e := NewAdminAPI(nil, WithAuthRequired())
+	err := e.Start(context.Background())
+	if !errors.Is(err, errAuthRequiredNoDB) {
+		t.Fatalf("Start = %v, want %v", err, errAuthRequiredNoDB)
 	}
 }
 

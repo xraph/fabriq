@@ -557,3 +557,40 @@ func TestListKeys_IncludesExpiresAt(t *testing.T) {
 		t.Fatalf("saw %d of the 2 seeded keys in %+v", seen, list.Keys)
 	}
 }
+
+// TestKeyRoutes_SlashVariants_NonManageKey_403 is C1 end to end on the real
+// controller routes: a non-manage key can neither list nor mint keys by
+// doubling a slash.
+func TestKeyRoutes_SlashVariants_NonManageKey_403(t *testing.T) {
+	e, _, store := buildKeysExtWith(t)
+	const plainKey = "fq_plain_seed"
+	store.seed(plainKey, KeyRecord{ID: "seed-plain", TenantID: testTenantID})
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	before := len(store.byID)
+	for _, path := range []string{"/admin//keys", "//admin/keys", "/admin/keys/"} {
+		resp := keysReq(t, http.MethodPost, srv.URL, path, plainKey,
+			strings.NewReader(`{"label":"escalate","canManageKeys":true}`))
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("POST %s: status = %d, want 403, body = %s", path, resp.StatusCode, b)
+		}
+
+		resp = keysReq(t, http.MethodGet, srv.URL, path, plainKey, nil)
+		b, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("GET %s: status = %d, want 403, body = %s", path, resp.StatusCode, b)
+		}
+	}
+	resp := keysReq(t, http.MethodDelete, srv.URL, "/admin//keys/seed-admin", plainKey, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("DELETE /admin//keys/seed-admin: status = %d, want 403", resp.StatusCode)
+	}
+	if after := len(store.byID); after != before {
+		t.Fatalf("store grew from %d to %d keys, want none minted", before, after)
+	}
+}

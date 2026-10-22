@@ -237,6 +237,9 @@ func WithAuthDisabled() Option { return func(c *config) { c.authDisabled = true 
 // serving the admin API unauthenticated. Start then requires FABRIQ_ADMIN_KEY
 // to hold a well-formed key (fq_ followed by at least 32 letters or digits)
 // and never generates and logs a bootstrap key.
+//
+// WithAuthRequired alone does not turn off the default admin/admin dashboard
+// login. A hosted server passes WithoutDefaultLogin as well.
 func WithAuthRequired() Option { return func(c *config) { c.authRequired = true } }
 
 // WithoutDefaultLogin stops secure-by-default auth from enabling the admin/admin
