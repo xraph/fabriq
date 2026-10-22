@@ -113,9 +113,15 @@ func rebuildCommand() cli.Command {
 			cfg.Elasticsearch.Addrs = strings.Split(addrs, ",")
 		}
 
+		persist, err := envBool(os.Getenv, "FABRIQ_DYNAMIC_PERSIST", true)
+		if err != nil {
+			return cliError(err.Error())
+		}
+		cfg.Dynamic.Persist = persist
+
 		r := registry.New()
-		if err := domain.RegisterAll(r); err != nil {
-			return err
+		if err = registerDomainPack(r, os.Getenv("FABRIQ_DOMAIN_PACK")); err != nil {
+			return cliError(err.Error())
 		}
 		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
 		if err != nil {
@@ -239,9 +245,15 @@ func reconcileCommand() cli.Command {
 			return cliError("nothing to reconcile: pass --falkordb and/or --elasticsearch")
 		}
 
+		persist, err := envBool(os.Getenv, "FABRIQ_DYNAMIC_PERSIST", true)
+		if err != nil {
+			return cliError(err.Error())
+		}
+		cfg.Dynamic.Persist = persist
+
 		r := registry.New()
-		if err := domain.RegisterAll(r); err != nil {
-			return err
+		if err = registerDomainPack(r, os.Getenv("FABRIQ_DOMAIN_PACK")); err != nil {
+			return cliError(err.Error())
 		}
 		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
 		if err != nil {

@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/core/agent"
 	"github.com/xraph/fabriq/core/analytics"
@@ -173,6 +174,23 @@ func (e *Extension) Run(ctx context.Context) error {
 	e.mu.Lock()
 	fab := e.fab
 	e.mu.Unlock()
+
+	// Dynamic-entity sync: not leader-elected, because every process keeps
+	// its own registry and has to catch up on its own.
+	if e.cfg.Fabriq.Dynamic.Persist {
+		interval := e.cfg.Fabriq.Dynamic.SyncInterval
+		if interval <= 0 {
+			interval = defaultDynamicSyncInterval
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			supervise(runCtx, logger, m, "dynamic-sync", func(c context.Context) error {
+				runDynamicSyncLoop(c, interval, fab.SyncPersistedDynamic, logger)
+				return c.Err()
+			})
+		}()
+	}
 	if stores.Falkor != nil {
 		engine, err := stores.GraphEngine(e.reg, fab.Upcasters())
 		if err != nil {
@@ -402,6 +420,55 @@ func runnerLabel(name string) string {
 		return "relay"
 	}
 	return name
+}
+
+// defaultDynamicSyncInterval is how often the worker re-syncs persisted
+// dynamic entity descriptors when dynamic.syncInterval is unset.
+const defaultDynamicSyncInterval = 15 * time.Second
+
+// runDynamicSyncLoop calls syncFn every interval until ctx is done, so a type
+// another process defined or removed reaches this process's registry. A sync
+// error is logged at warn and the loop carries on. Added, updated and removed
+// types log at info. A skipped type logs at warn when its reason is new, not
+// on every pass, so a permanently bad row does not repeat itself forever.
+func runDynamicSyncLoop(ctx context.Context, interval time.Duration, syncFn func(context.Context) (fabriq.DynamicSyncResult, error), log forge.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	reported := map[string]string{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		res, err := syncFn(ctx)
+		if err != nil {
+			if ctx.Err() == nil && log != nil {
+				log.Warn("fabriq: dynamic entity sync failed", forge.Error(err))
+			}
+			continue
+		}
+		if log == nil {
+			continue
+		}
+		for _, n := range res.Added {
+			log.Info("fabriq: dynamic entity added", forge.String("entity", n))
+		}
+		for _, n := range res.Updated {
+			log.Info("fabriq: dynamic entity updated", forge.String("entity", n))
+		}
+		for _, n := range res.Removed {
+			log.Info("fabriq: dynamic entity removed", forge.String("entity", n))
+		}
+		for n, reason := range res.Skipped {
+			if reported[n] == reason {
+				continue
+			}
+			log.Warn("fabriq: dynamic entity skipped",
+				forge.String("entity", n), forge.String("reason", reason))
+		}
+		reported = res.Skipped
+	}
 }
 
 // runReconciler is the scheduled drift healer: leader-elected (lock 1002)

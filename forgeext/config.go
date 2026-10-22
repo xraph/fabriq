@@ -175,6 +175,7 @@ func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 	bind("projections", &cfg.Projections)
 	bind("subscriptions", &cfg.Subscriptions)
 	bind("storage", &cfg.Storage)
+	bind("dynamic", &cfg.Dynamic)
 	if cm.IsSet(prefix + "elasticsearch.addrs") {
 		cfg.Elasticsearch.Addrs = cm.GetStringSlice(prefix + "elasticsearch.addrs")
 	}

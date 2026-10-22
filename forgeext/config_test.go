@@ -1,10 +1,13 @@
 package forgeext_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/xraph/confy"
+	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/forgeext"
@@ -97,5 +100,32 @@ func TestOptions_Distill(t *testing.T) {
 	}
 	if !cfg.DistillFailOpenGuard || cfg.DistillRecipeVersion != "v2" || cfg.DistillDebounce != 2*time.Second {
 		t.Fatalf("distill options not applied: %+v", cfg)
+	}
+}
+
+// TestLoadConfig_DynamicSection verifies the dynamic block binds both fields.
+// It goes through a real forge app and a config.yaml, the way cmd/fabriq does,
+// because confy's in-memory test manager does not decode durations.
+func TestLoadConfig_DynamicSection(t *testing.T) {
+	dir := t.TempDir()
+	yaml := "dynamic:\n  persist: true\n  syncInterval: 30s\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := forge.NewApp(forge.AppConfig{
+		Name:                      "fabriq",
+		Version:                   "0.0.0",
+		EnableConfigAutoDiscovery: true,
+		EnableEnvConfig:           true,
+		EnvOverridesFile:          true,
+		EnvPrefix:                 "FABRIQ_",
+		ConfigSearchPaths:         []string{dir},
+	})
+	got := forgeext.LoadConfig(app.Config(), "")
+	if !got.Dynamic.Persist {
+		t.Errorf("dynamic.persist = false, want true")
+	}
+	if got.Dynamic.SyncInterval != 30*time.Second {
+		t.Errorf("dynamic.syncInterval = %v, want 30s", got.Dynamic.SyncInterval)
 	}
 }

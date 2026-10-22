@@ -203,6 +203,12 @@ func (e *Extension) Start(ctx context.Context) error {
 	e.mu.Lock()
 	e.fab, e.stores = fab, stores
 	e.mu.Unlock()
+	if log := e.Logger(); log != nil {
+		for name, reason := range fab.LastDynamicSync().Skipped {
+			log.Warn("fabriq: dynamic entity skipped",
+				forge.String("entity", name), forge.String("reason", reason))
+		}
+	}
 	e.MarkStarted()
 	return nil
 }
