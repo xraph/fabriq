@@ -205,13 +205,17 @@ Everything that is a Go function or an in-process hook stays out: `Validate`, `E
 
 A sync registers new rows and ensures their tables, replaces types whose row moved on, and removes types whose row is gone. It never drops a table, and it never touches a type registered in code.
 
-Two processes defining the same name behave sensibly. If another process already saved it and the specs are equal, yours adopts it. If they differ you get a "registered twice" error, and fabriq refuses to overwrite a row it can't read (a newer format, say). A row a sync has to skip is logged at warn level the first time it appears and whenever the reason changes.
+Until a process has synced a new type, which can take up to one sync interval, it doesn't know the type, and its projection consumers drop that type's events. The rows are still in Postgres, so the next reconcile pass (every `FABRIQ_RECONCILE_INTERVAL`, 5 minutes by default) finds what the graph and search projections are missing and re-emits it.
+
+Two processes defining the same name behave sensibly. If another process already saved it and the specs are equal, yours adopts it. If yours only adds columns or indexes, it's applied as an alter, the same as `AlterDynamic`. Any other difference gets a "registered twice" error, and fabriq refuses to overwrite a row it can't read (a newer format, say). A row a sync has to skip is logged at warn level the first time it appears and whenever the reason changes.
 
 Two cautions. `Open` runs `EnsureDynamic` for every saved type in every process, so on a big, busy table an `ALTER` can wait on locks during a rolling restart. And [catalog mode](/docs/tenancy) refuses persistence, so `fabriq serve` keeps it off there.
 
 ### Library mode with the stock worker
 
 You can run your own app against a dynamic-only schema and let the published image do the background work. In your app, open with `Dynamic.Persist` set and define the types at boot. Calling `DefineDynamic` again with an identical spec is a no-op, so it's safe to leave in your startup path.
+
+You can grow a type right there too. Add a column or an index to the boot-time spec and the next boot applies it as an alter: the table gets the new column, the saved descriptor is updated, and the other processes pick it up on their next sync. Anything else, like changing a column's type, `NotNull` or default, removing a column, or pointing at another table, fails with "registered twice". For those, call `RenameDynamicField` or `DropDynamicField`, or define a new type.
 
 ```go
 if err := f.DefineDynamic(ctx, registry.EntitySpec{
