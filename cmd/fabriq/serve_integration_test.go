@@ -419,7 +419,13 @@ func TestServe_RedisPassword(t *testing.T) {
 		return serveApp(t, app)
 	}
 
-	const wrong = "not-the-redis-password"
+	const (
+		wrong   = "not-the-redis-password"
+		rotated = "rotated-redis-password"
+	)
+	// redact hides the fixture passwords in failure output, so a test that
+	// guards against a leak never prints one itself.
+	redact := strings.NewReplacer(password, "[REDACTED]", wrong, "[REDACTED]", rotated, "[REDACTED]").Replace
 	t.Setenv("FABRIQ_REDIS_PASSWORD", wrong)
 	bad := setupApp()
 	err := bad.start(t)
@@ -427,14 +433,14 @@ func TestServe_RedisPassword(t *testing.T) {
 		t.Fatal("Start with a wrong Redis password succeeded")
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "redis") || strings.Contains(err.Error(), wrong) {
-		t.Fatalf("Start err = %v, want it to name Redis and not echo the password", err)
+		t.Fatalf("Start err = %q, want it to name Redis and not echo the password", redact(err.Error()))
 	}
 	bad.expect(t, http.StatusServiceUnavailable, http.MethodGet, "/_/readyz", "", nil)
 
 	t.Setenv("FABRIQ_REDIS_PASSWORD", password)
 	good := setupApp()
 	if err := good.start(t); err != nil {
-		t.Fatalf("Start with FABRIQ_REDIS_PASSWORD: %v", err)
+		t.Fatalf("Start with FABRIQ_REDIS_PASSWORD: %s", redact(err.Error()))
 	}
 	good.expect(t, http.StatusOK, http.MethodGet, "/_/readyz", "", nil)
 
@@ -442,7 +448,7 @@ func TestServe_RedisPassword(t *testing.T) {
 	// has to log in again with the password it was started with.
 	rc := goredis.NewClient(&goredis.Options{Addr: redisAddr, Password: password})
 	defer func() { _ = rc.Close() }()
-	if err := rc.ConfigSet(ctx, "requirepass", "rotated-redis-password").Err(); err != nil {
+	if err := rc.ConfigSet(ctx, "requirepass", rotated).Err(); err != nil {
 		t.Fatalf("CONFIG SET requirepass: %v", err)
 	}
 	if err := rc.Do(ctx, "CLIENT", "KILL", "TYPE", "normal").Err(); err != nil {
@@ -457,7 +463,7 @@ func TestServe_RedisPassword(t *testing.T) {
 				Reason string `json:"reason"`
 			}
 			if err := json.Unmarshal(body, &resp); err != nil {
-				t.Fatalf("decode readyz: %v; body = %s", err, body)
+				t.Fatalf("decode readyz: %v; body = %s", err, redact(string(body)))
 			}
 			reason = resp.Reason
 			break
@@ -465,9 +471,9 @@ func TestServe_RedisPassword(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	if !strings.Contains(strings.ToLower(reason), "redis") {
-		t.Fatalf("readyz after rotation: reason = %q, want 503 with a reason naming Redis", reason)
+		t.Fatalf("readyz after rotation: reason = %q, want 503 with a reason naming Redis", redact(reason))
 	}
-	if strings.Contains(reason, password) {
-		t.Fatalf("readyz reason %q echoes the password", reason)
+	if redact(reason) != reason {
+		t.Fatalf("readyz reason %q echoes a password", redact(reason))
 	}
 }

@@ -77,7 +77,8 @@ func TestRebuild_AllTenantsStaticWithPasswords(t *testing.T) {
 		t.Fatalf("wrong password: exit code = %d (err %v), want 1", code, err)
 	}
 	if strings.Contains(err.Error(), wrong) {
-		t.Fatalf("wrong password: err = %v, must not contain the password", err)
+		t.Fatalf("wrong password: err = %q, must not contain the password",
+			strings.ReplaceAll(err.Error(), wrong, "[REDACTED]"))
 	}
 
 	t.Setenv("FABRIQ_REDIS_PASSWORD", redisPassword)
@@ -104,5 +105,23 @@ func TestRebuild_AllTenantsStaticWithPasswords(t *testing.T) {
 	}
 	if len(nodes) != 1 {
 		t.Fatalf("Order nodes = %v, want exactly one", nodes)
+	}
+}
+
+// TestRebuild_AllTenantsNone pins the empty case: a migrated database with no
+// tenants prints "no tenants to rebuild" and exits 0.
+func TestRebuild_AllTenantsNone(t *testing.T) {
+	superDSN := fabriqtest.StartPostgres(t)
+	falkorAddr := fabriqtest.StartFalkorDB(t)
+	migrateUp(t, superDSN)
+
+	clearStoreEnv(t)
+	t.Setenv("FABRIQ_DOMAIN_PACK", "none")
+	code, out, err := runRebuild(t, "--dsn", superDSN, "--falkordb", falkorAddr, "--projection", "graph", "--all-tenants")
+	if code != 0 {
+		t.Fatalf("exit code = %d (err %v), want 0; output:\n%s", code, err, out)
+	}
+	if !strings.Contains(out, "no tenants to rebuild") {
+		t.Fatalf("output lacks %q:\n%s", "no tenants to rebuild", out)
 	}
 }
