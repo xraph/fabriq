@@ -47,12 +47,13 @@ Keys are stored as a `sha256` hash plus a short display prefix. You get the plai
 
 ### Instance routes
 
-Most admin routes read or write one tenant's data, so they need a tenant. Two subtrees act
-on the instance instead:
+Most admin routes read or write one tenant's data, so they need a tenant. Two subtrees and
+one route act on the instance instead:
 
 ```text
 {base}/keys      {base}/keys/*
 {base}/tenants   {base}/tenants/*
+GET {base}/migrations
 ```
 
 On those routes a multi-tenant key may leave out `X-Tenant-ID`. The request goes through with
@@ -66,7 +67,10 @@ the same rules as `/admin/keys`.
 `this API key may not manage keys`. `{base}/tenants*` is stricter. Tenants are
 instance-wide, so it takes a multi-tenant key with `can_manage_keys`. Anything else,
 including a tenant-bound key that can manage keys, gets `403` with `this API key may not
-manage tenants`.
+manage tenants`. `GET {base}/migrations` reports the migration status of the whole instance,
+so it needs `can_manage_keys` too (`403` with `this API key may not read migration status`).
+Only that exact `GET` is an instance route. `POST {base}/migrations/up` and anything deeper
+is a data route.
 
 ### Managing keys
 
@@ -87,7 +91,10 @@ isn't registered there is refused with `404 {"error":"unknown tenant"}`. Create 
 `WithTenantRegistry`.
 
 The list returns `createdAt`, plus `revokedAt` once a key is revoked and `expiresAt` for keys
-that expire (dashboard sessions). Both are left out when they don't apply.
+that expire (dashboard sessions). Both are left out when they don't apply. `lastUsedAt` says
+when the key last authenticated a request. It's accurate to about a minute, because each
+process records a key's use at most once a minute. You won't see it on a key that has never
+been used, or at all until migration 0035 has run.
 
 Revoke is safe to retry. Revoking a key that's already revoked returns `200` again and keeps
 the first `revokedAt`, so a client that lost the first response can just send it again. An
@@ -127,6 +134,22 @@ logged.
 `WithAuthRequired` on its own doesn't turn off the default `admin`/`admin` dashboard login.
 That's what `WithoutDefaultLogin` is for, so a hosted server passes both. You can still turn
 a login on with `WithAdminLogin` and a real password.
+
+A hosted server should also pass `WithOperatorOnlyInstanceOps`. Some routes reach past one
+tenant: raw SQL on `POST {base}/query` runs as the serving role and can read the instance
+tables that row-level security doesn't fence (API keys, the tenant registry), and a dynamic
+type's table is shared by every tenant. With the option on, these need a key with
+`can_manage_keys`:
+
+```text
+POST   {base}/query                         → 403 "this API key may not run raw SQL"
+DELETE {base}/schema/{type}                 → 403 "this API key may not drop or rename schema"
+DELETE {base}/schema/{type}/fields/{column} → same
+POST   {base}/schema/{type}/rename-field    → same
+```
+
+Defining a type (`POST {base}/schema`) and adding fields stay open to any key. `fabriq serve`
+turns the option on. Library hosts get it only if they ask for it.
 
 The usual setup is one operator key in `FABRIQ_ADMIN_KEY`. Your control plane uses it to
 create tenants on `{base}/tenants` and to issue a key per service on `{base}/keys`, and then

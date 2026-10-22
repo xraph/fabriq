@@ -246,8 +246,40 @@ func TestServe_HostedLifecycle(t *testing.T) {
 		t.Fatal("CreateEntity returned no id")
 	}
 
-	// 7. A tenant key cannot manage tenants.
+	// 7. A tenant key cannot manage tenants, run raw SQL (which would read
+	// the instance tables RLS does not fence) or drop a shared type.
 	a.expect(t, http.StatusForbidden, http.MethodGet, "/admin/tenants", issued.Key, nil)
+	a.expect(t, http.StatusForbidden, http.MethodPost, "/admin/query", issued.Key,
+		map[string]any{"sql": "SELECT id, key_hash FROM fabriq_api_key"})
+	a.expect(t, http.StatusForbidden, http.MethodDelete, "/admin/schema/orders?confirm=orders", issued.Key, nil)
+
+	// 7a. The bootstrap key reads migration status with no X-Tenant-ID while
+	// the server runs as fabriq_app, and sees every fabriq migration applied.
+	out = a.expect(t, http.StatusOK, http.MethodGet, "/admin/migrations", bootstrap, nil)
+	var status struct {
+		Groups []struct {
+			Name    string            `json:"name"`
+			Applied []json.RawMessage `json:"applied"`
+			Pending []json.RawMessage `json:"pending"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal(out, &status); err != nil {
+		t.Fatalf("decode migration status: %v; body = %s", err, out)
+	}
+	wantApplied := len(migrations.Group().Migrations())
+	foundGroup := false
+	for _, g := range status.Groups {
+		if g.Name != migrations.GroupName {
+			continue
+		}
+		foundGroup = true
+		if len(g.Applied) != wantApplied || len(g.Pending) != 0 {
+			t.Fatalf("fabriq group applied = %d pending = %d, want %d and 0", len(g.Applied), len(g.Pending), wantApplied)
+		}
+	}
+	if !foundGroup {
+		t.Fatalf("migration status has no %q group; body = %s", migrations.GroupName, out)
+	}
 
 	// 7b. One multi-tenant key without canManageKeys serves several tenants:
 	// the DSN's tenant by default, another per request through WithTenant.

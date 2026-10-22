@@ -117,6 +117,9 @@ type config struct {
 	// noDefaultLogin suppresses the admin/admin default login. Set via
 	// WithoutDefaultLogin.
 	noDefaultLogin bool
+	// operatorOnlyInstanceOps makes raw SQL and destructive schema ops need a
+	// key with CanManageKeys. Set via WithOperatorOnlyInstanceOps.
+	operatorOnlyInstanceOps bool
 	// Authorizer decides per-request whether a capability is permitted. When nil,
 	// NewAdminAPI installs a flagAuthorizer that reproduces the global-flag gates.
 	// Set a host authorizer (e.g. a warden adapter) via WithAuthorizer for per-user RBAC.
@@ -245,6 +248,25 @@ func WithAuthDisabled() Option { return func(c *config) { c.authDisabled = true 
 // WithAuthRequired alone does not turn off the default admin/admin dashboard
 // login. A hosted server passes WithoutDefaultLogin as well.
 func WithAuthRequired() Option { return func(c *config) { c.authRequired = true } }
+
+// WithOperatorOnlyInstanceOps limits the admin routes that reach past one
+// tenant to operator keys, the ones with CanManageKeys. With it set, these
+// answer 403 for any other key:
+//
+//	POST   {BasePath}/query                        raw SQL (query.raw)
+//	DELETE {BasePath}/schema/:type                 drop a dynamic type
+//	DELETE {BasePath}/schema/:type/fields/:column  drop a field
+//	POST   {BasePath}/schema/:type/rename-field    rename a field
+//
+// Raw SQL runs as the serving role, which can read instance tables that RLS
+// does not fence (API keys, the tenant registry), and a dynamic type's table
+// is shared by every tenant, so dropping or renaming it touches them all.
+// Defining a type and adding fields stay open to any key. A request with no
+// resolved key (auth off) is refused too, so the gate fails closed. A hosted
+// server (fabriq serve) sets this; library defaults leave it off.
+func WithOperatorOnlyInstanceOps() Option {
+	return func(c *config) { c.operatorOnlyInstanceOps = true }
+}
 
 // WithoutDefaultLogin stops secure-by-default auth from enabling the admin/admin
 // dashboard login. Login stays off unless the host sets WithAdminLogin.

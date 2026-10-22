@@ -168,6 +168,9 @@ func registerServe(app forge.App, s serveSettings, cfg fabriq.Config) error {
 			adminapi.WithAuthRequired(),
 			adminapi.WithoutDefaultLogin(),
 			adminapi.WithTenantsAdmin(),
+			// Raw SQL and dropping or renaming shared schema reach past one
+			// tenant, so only operator keys get them on a hosted server.
+			adminapi.WithOperatorOnlyInstanceOps(),
 		}
 		if s.AdminLoginUser != "" && s.AdminLoginPassword != "" {
 			opts = append(opts, adminapi.WithAdminLogin(s.AdminLoginUser, s.AdminLoginPassword))

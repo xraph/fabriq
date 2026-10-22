@@ -34,6 +34,17 @@ func resolvedKeyID(ctx context.Context) (string, bool) {
 	return id, ok
 }
 
+// keyCanManageCtxKey stashes whether the resolved API key has CanManageKeys,
+// for handlers that gate on it (see requireOperatorKey).
+type keyCanManageCtxKey struct{}
+
+// resolvedKeyCanManage reports whether authMiddleware resolved a key with
+// CanManageKeys for this request. False when no key was resolved.
+func resolvedKeyCanManage(ctx context.Context) bool {
+	ok, _ := ctx.Value(keyCanManageCtxKey{}).(bool)
+	return ok
+}
+
 // authMiddleware verifies a per-tenant API key on every admin request and
 // resolves the tenant into the request context for downstream handlers.
 //
@@ -196,6 +207,7 @@ func authMiddlewareWithTouch(store KeyStore, basePath string, touches *touchThro
 					return deny(ctx, http.StatusBadRequest, "invalid tenant id: "+err.Error())
 				}
 			}
+			tctx = context.WithValue(tctx, keyCanManageCtxKey{}, rec.CanManageKeys)
 			ctx.WithContext(context.WithValue(tctx, keyIDCtxKey{}, rec.ID))
 
 			// Every check passed: record the use. touch never blocks.

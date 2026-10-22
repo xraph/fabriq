@@ -91,7 +91,7 @@ Some things to know about a multi-tenant key:
 
 - It reaches any tenant id, registered or not. The tenant registry is bookkeeping for your control plane, and row-level security is what actually fences tenants apart.
 - A data route called without `X-Tenant-ID` returns 400. The `/admin/keys*` and `/admin/tenants*` routes don't need the header.
-- Without `canManageKeys` it gets 403 on `/admin/keys*`, `/admin/tenants*` and the migration status route.
+- Without `canManageKeys` it gets 403 on `/admin/keys*`, `/admin/tenants*` and the migration status route. On `fabriq serve` it also gets 403 on raw SQL (`POST /admin/query`) and on dropping or renaming a type or field.
 - A tenant-bound key (issued with a `tenantId`) still works, and it answers 403 for any other tenant. It can define entity types too, with `POST /admin/schema` or `client.CreateEntityType`. Types belong to the whole server, not to one tenant, so every tenant sees them.
 
 <Callout type="warn">

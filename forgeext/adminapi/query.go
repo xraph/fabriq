@@ -132,6 +132,9 @@ func (c *adminController) registerQueryRoutes(r forge.Router) error {
 // tenant-guard trip, or SQL error; 501 when no relational store is opened;
 // 504 when the query is cancelled/times out (e.g. the statement_timeout).
 func (c *adminController) handleRawQuery(ctx forge.Context) error {
+	if handled, err := c.requireOperatorKey(ctx, "this API key may not run raw SQL"); handled {
+		return err
+	}
 	var req queryRequest
 	if err := json.NewDecoder(ctx.Request().Body).Decode(&req); err != nil {
 		return forge.BadRequest("invalid request body: " + err.Error())

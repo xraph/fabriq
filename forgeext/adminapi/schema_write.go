@@ -279,6 +279,9 @@ func unionColumns(existing, add []registry.DynamicColumn) []registry.DynamicColu
 //
 // Request body: { "from": "<oldColumn>", "to": "<newColumn>" }
 func (c *adminController) handleRenameField(ctx forge.Context) error {
+	if handled, err := c.requireOperatorKey(ctx, "this API key may not drop or rename schema"); handled {
+		return err
+	}
 	w, err := c.ext.resolveDynamicWriter()
 	if err != nil {
 		return forge.InternalError(err)
@@ -303,6 +306,9 @@ func (c *adminController) handleRenameField(ctx forge.Context) error {
 //
 //	confirm  must equal the column name being dropped (guards accidental drops)
 func (c *adminController) handleDropField(ctx forge.Context) error {
+	if handled, err := c.requireOperatorKey(ctx, "this API key may not drop or rename schema"); handled {
+		return err
+	}
 	w, err := c.ext.resolveDynamicWriter()
 	if err != nil {
 		return forge.InternalError(err)
@@ -326,6 +332,9 @@ func (c *adminController) handleDropField(ctx forge.Context) error {
 //
 //	confirm  must equal the type name being dropped (guards accidental drops)
 func (c *adminController) handleDropType(ctx forge.Context) error {
+	if handled, err := c.requireOperatorKey(ctx, "this API key may not drop or rename schema"); handled {
+		return err
+	}
 	w, err := c.ext.resolveDynamicWriter()
 	if err != nil {
 		return forge.InternalError(err)
