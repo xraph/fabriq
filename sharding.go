@@ -62,27 +62,39 @@ func (s *Stores) shardForTenant(ctx context.Context, tenantID string) (*postgres
 	return pg, nil
 }
 
-// AllTenants unions every shard's known tenants (the outbox-derived
-// discovery the reconciler and rebuild --all-tenants scan). Sorted, deduped.
-// In catalog mode the catalog IS the tenant authority: the active entries,
-// without dialing 10k databases to ask each one.
+// AllTenants is every tenant the reconciler and rebuild --all-tenants scan.
+// Sorted, deduped. In static mode it unions the tenant registry on the
+// primary shard (fabriq_tenant, so a registered tenant counts before it
+// writes anything) with every shard's outbox-derived tenants. In catalog mode
+// the catalog IS the tenant authority: the active entries, without dialing
+// 10k databases to ask each one.
 func (s *Stores) AllTenants(ctx context.Context) ([]string, error) {
 	if s.Catalog != nil {
 		return allTenantsFromCatalog(ctx, s.Catalog)
 	}
 	seen := map[string]struct{}{}
 	var out []string
-	for _, sp := range s.ShardPGs() {
-		ts, err := sp.PG.ProjectionState().Tenants(ctx)
-		if err != nil {
-			return nil, err
-		}
+	add := func(ts []string) {
 		for _, t := range ts {
 			if _, ok := seen[t]; !ok {
 				seen[t] = struct{}{}
 				out = append(out, t)
 			}
 		}
+	}
+	if s.Postgres != nil {
+		ts, err := s.Postgres.RegisteredTenants(ctx)
+		if err != nil {
+			return nil, err
+		}
+		add(ts)
+	}
+	for _, sp := range s.ShardPGs() {
+		ts, err := sp.PG.ProjectionState().Tenants(ctx)
+		if err != nil {
+			return nil, err
+		}
+		add(ts)
 	}
 	sort.Strings(out)
 	return out, nil

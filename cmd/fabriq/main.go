@@ -20,11 +20,16 @@
 //
 // Configuration is environment-first (the deployment injects a secret +
 // configmap); --dsn overrides FABRIQ_POSTGRES_DSN for ad-hoc operator use.
+// rebuild and reconcile read the same store addresses and credentials, and
+// their --falkordb and --elasticsearch flags override the addresses.
 //
 //	FABRIQ_POSTGRES_DSN          (required to serve)
 //	FABRIQ_REDIS_ADDR            (required to serve)
 //	FABRIQ_FALKORDB_ADDR         (optional: graph projection)
 //	FABRIQ_ELASTICSEARCH_ADDRS   (optional, comma-separated: search projection)
+//	FABRIQ_REDIS_USERNAME, FABRIQ_REDIS_PASSWORD                 (optional)
+//	FABRIQ_FALKORDB_USERNAME, FABRIQ_FALKORDB_PASSWORD           (optional)
+//	FABRIQ_ELASTICSEARCH_USERNAME, FABRIQ_ELASTICSEARCH_PASSWORD (optional)
 //	FABRIQ_HTTP_ADDR             (default :8081)
 //	FABRIQ_RECONCILE_INTERVAL    (Go duration, default 5m; "0" disables)
 //	FABRIQ_DOMAIN_PACK           (example (default) or none)

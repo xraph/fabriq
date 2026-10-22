@@ -1,6 +1,7 @@
 package forgeext
 
 import (
+	"os"
 	"strings"
 	"time"
 
@@ -156,6 +157,10 @@ func WithCustomAppliers(a ...projection.CustomApplier) Option {
 // cmd/fabriq's loadFabriqConfig; the elasticsearch.addrs GetStringSlice
 // handling is preserved (confy does not split a comma env string into a Go
 // slice).
+//
+// With prefix "" the store credentials are also read from the bare FABRIQ_*
+// variables (see overlayStoreCredentialsFromEnv). A host app's
+// extensions.fabriq.* config never picks those up.
 func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 	var cfg fabriq.Config
 	if cm == nil {
@@ -190,7 +195,31 @@ func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 	if cm.IsSet(prefix + "elasticsearch.addrs") {
 		cfg.Elasticsearch.Addrs = cm.GetStringSlice(prefix + "elasticsearch.addrs")
 	}
+	if prefix == "" {
+		overlayStoreCredentialsFromEnv(&cfg, os.Getenv)
+	}
 	return cfg
+}
+
+// overlayStoreCredentialsFromEnv sets the Redis, FalkorDB and Elasticsearch
+// usernames and passwords from FABRIQ_REDIS_USERNAME, FABRIQ_REDIS_PASSWORD,
+// FABRIQ_FALKORDB_USERNAME, FABRIQ_FALKORDB_PASSWORD,
+// FABRIQ_ELASTICSEARCH_USERNAME and FABRIQ_ELASTICSEARCH_PASSWORD. A non-empty
+// value wins over config.yaml, like the rest of FABRIQ_*; an empty one leaves
+// the file's value alone. The config manager's own env overlay usually binds
+// these already. This makes it hold whatever it does with underscores.
+func overlayStoreCredentialsFromEnv(cfg *fabriq.Config, getenv func(string) string) {
+	set := func(target *string, key string) {
+		if v := getenv(key); v != "" {
+			*target = v
+		}
+	}
+	set(&cfg.Redis.Username, "FABRIQ_REDIS_USERNAME")
+	set(&cfg.Redis.Password, "FABRIQ_REDIS_PASSWORD")
+	set(&cfg.FalkorDB.Username, "FABRIQ_FALKORDB_USERNAME")
+	set(&cfg.FalkorDB.Password, "FABRIQ_FALKORDB_PASSWORD")
+	set(&cfg.Elasticsearch.Username, "FABRIQ_ELASTICSEARCH_USERNAME")
+	set(&cfg.Elasticsearch.Password, "FABRIQ_ELASTICSEARCH_PASSWORD")
 }
 
 // WithLifecycleHooks installs transaction hooks on the command executor.

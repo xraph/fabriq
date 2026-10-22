@@ -264,6 +264,32 @@ func StartRedis(t testing.TB) string {
 	return ep
 }
 
+// StartRedisWithPassword launches a Redis container that only accepts clients
+// that log in with password (requirepass) and returns its address
+// (host:port). The container terminates with the test.
+func StartRedisWithPassword(t testing.TB, password string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	// The image's entrypoint runs redis-server with arguments that start
+	// with a dash.
+	r, err := tcredis.Run(ctx, RedisImage, testcontainers.WithCmdArgs("--requirepass", password))
+	if err != nil {
+		t.Fatalf("fabriqtest: start redis container: %v", err)
+	}
+	t.Cleanup(func() {
+		if termErr := testcontainers.TerminateContainer(r); termErr != nil {
+			t.Logf("fabriqtest: terminate redis: %v", termErr)
+		}
+	})
+
+	ep, err := r.Endpoint(ctx, "")
+	if err != nil {
+		t.Fatalf("fabriqtest: redis endpoint: %v", err)
+	}
+	return ep
+}
+
 // QueryStrings runs a single-column query against dsn and returns the rows
 // as strings — the seam integration tests use for schema-shape assertions
 // (information_schema / pg_catalog checks).

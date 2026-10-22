@@ -20,7 +20,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/xraph/forge"
 
 	"github.com/xraph/fabriq"
@@ -90,6 +92,12 @@ func newServedApp(t *testing.T, s serveSettings, cfg fabriq.Config) *servedApp {
 	if err != nil {
 		t.Fatalf("buildServeApp: %v", err)
 	}
+	return serveApp(t, app)
+}
+
+// serveApp serves app's router through httptest. The app is not started.
+func serveApp(t *testing.T, app forge.App) *servedApp {
+	t.Helper()
 	srv := httptest.NewServer(app.Router().Handler())
 	t.Cleanup(srv.Close)
 	return &servedApp{app: app, srv: srv}
@@ -241,6 +249,36 @@ func TestServe_HostedLifecycle(t *testing.T) {
 	// 7. A tenant key cannot manage tenants.
 	a.expect(t, http.StatusForbidden, http.MethodGet, "/admin/tenants", issued.Key, nil)
 
+	// 7b. One multi-tenant key without canManageKeys serves several tenants:
+	// the DSN's tenant by default, another per request through WithTenant.
+	var multi struct {
+		Key string `json:"key"`
+	}
+	out = a.expect(t, http.StatusCreated, http.MethodPost, "/admin/keys", bootstrap, map[string]any{"label": "svc-multi"})
+	if err := json.Unmarshal(out, &multi); err != nil || multi.Key == "" {
+		t.Fatalf("decode multi-tenant key: %v; body = %s", err, out)
+	}
+	mc := a.connect(t, multi.Key, "acme")
+	if _, err := mc.CreateEntity(ctx, client.EntityWriteInput{Type: "orders", Data: map[string]any{"sku": "M1"}}); err != nil {
+		t.Fatalf("CreateEntity with the multi-tenant key: %v", err)
+	}
+	acmeRows, err := mc.ListEntities(ctx, client.ListEntitiesParams{Type: "orders"})
+	if err != nil {
+		t.Fatalf("ListEntities(acme): %v", err)
+	}
+	if len(acmeRows.Items) != 2 {
+		t.Fatalf("acme rows = %d, want 2 (A1 and M1)", len(acmeRows.Items))
+	}
+	betaRows, err := mc.WithTenant("beta").ListEntities(ctx, client.ListEntitiesParams{Type: "orders"})
+	if err != nil {
+		t.Fatalf("ListEntities(beta): %v", err)
+	}
+	if len(betaRows.Items) != 0 {
+		t.Fatalf("beta sees %d of acme's rows, want none: %+v", len(betaRows.Items), betaRows.Items)
+	}
+	a.expect(t, http.StatusForbidden, http.MethodGet, "/admin/tenants", multi.Key, nil)
+	a.expect(t, http.StatusBadRequest, http.MethodGet, "/admin/entities?type=orders", multi.Key, nil)
+
 	// 8. Restart: a fresh app over a new registry reloads the persisted type
 	// and the row is still there.
 	if err := a.app.Stop(ctx); err != nil {
@@ -353,4 +391,83 @@ func TestServe_SuperuserRefused(t *testing.T) {
 		t.Fatalf("Start with FABRIQ_ALLOW_RLS_BYPASS=true: %v", err)
 	}
 	allowed.expect(t, http.StatusOK, http.MethodGet, "/_/readyz", "", nil)
+}
+
+// TestServe_RedisPassword drives serve through setup, so the Redis password
+// travels the production path: FABRIQ_REDIS_PASSWORD, forgeext.LoadConfig,
+// the Redis adapter. The right password serves; a wrong one never starts and
+// never echoes the password; a password rotated under a running server turns
+// readyz to 503 with a reason naming Redis.
+func TestServe_RedisPassword(t *testing.T) {
+	ctx := context.Background()
+	const password = "serve-redis-password"
+	superDSN := fabriqtest.StartPostgres(t)
+	redisAddr := fabriqtest.StartRedisWithPassword(t, password)
+	migrateUp(t, superDSN)
+	appDSN := appRoleDSN(t, superDSN)
+
+	clearStoreEnv(t)
+	t.Setenv("FABRIQ_POSTGRES_DSN", appDSN)
+	t.Setenv("FABRIQ_REDIS_ADDR", redisAddr)
+	t.Setenv("FABRIQ_DOMAIN_PACK", "none")
+	setupApp := func() *servedApp {
+		t.Helper()
+		app, err := setup(nil)
+		if err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		return serveApp(t, app)
+	}
+
+	const wrong = "not-the-redis-password"
+	t.Setenv("FABRIQ_REDIS_PASSWORD", wrong)
+	bad := setupApp()
+	err := bad.start(t)
+	if err == nil {
+		t.Fatal("Start with a wrong Redis password succeeded")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "redis") || strings.Contains(err.Error(), wrong) {
+		t.Fatalf("Start err = %v, want it to name Redis and not echo the password", err)
+	}
+	bad.expect(t, http.StatusServiceUnavailable, http.MethodGet, "/_/readyz", "", nil)
+
+	t.Setenv("FABRIQ_REDIS_PASSWORD", password)
+	good := setupApp()
+	if err := good.start(t); err != nil {
+		t.Fatalf("Start with FABRIQ_REDIS_PASSWORD: %v", err)
+	}
+	good.expect(t, http.StatusOK, http.MethodGet, "/_/readyz", "", nil)
+
+	// Rotate the password and drop every connection, so the server's pool
+	// has to log in again with the password it was started with.
+	rc := goredis.NewClient(&goredis.Options{Addr: redisAddr, Password: password})
+	defer func() { _ = rc.Close() }()
+	if err := rc.ConfigSet(ctx, "requirepass", "rotated-redis-password").Err(); err != nil {
+		t.Fatalf("CONFIG SET requirepass: %v", err)
+	}
+	if err := rc.Do(ctx, "CLIENT", "KILL", "TYPE", "normal").Err(); err != nil {
+		t.Fatalf("CLIENT KILL: %v", err)
+	}
+	var reason string
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		code, body := good.do(t, http.MethodGet, "/_/readyz", "", nil)
+		if code == http.StatusServiceUnavailable {
+			var resp struct {
+				Reason string `json:"reason"`
+			}
+			if err := json.Unmarshal(body, &resp); err != nil {
+				t.Fatalf("decode readyz: %v; body = %s", err, body)
+			}
+			reason = resp.Reason
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !strings.Contains(strings.ToLower(reason), "redis") {
+		t.Fatalf("readyz after rotation: reason = %q, want 503 with a reason naming Redis", reason)
+	}
+	if strings.Contains(reason, password) {
+		t.Fatalf("readyz reason %q echoes the password", reason)
+	}
 }
