@@ -613,3 +613,116 @@ func TestConfigValidate_DynamicPersistRejectsCatalogMode(t *testing.T) {
 		t.Fatalf("static with persist: %v", err)
 	}
 }
+
+func TestSyncPersistedDynamic_UpdatesWhenRedefinedAtSameRevision(t *testing.T) {
+	ctx := context.Background()
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	store.put(t, spec(), 1)
+	if _, err := syncPersistedDynamic(ctx, reg, ddl, store, loaded); err != nil {
+		t.Fatalf("sync 1: %v", err)
+	}
+	// Another instance drops and redefines widget between two passes: the
+	// row restarts at revision 1 with a different spec.
+	redefined := spec()
+	redefined.Schema.Columns = append(redefined.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	store.put(t, redefined, 1)
+	res, err := syncPersistedDynamic(ctx, reg, ddl, store, loaded)
+	if err != nil {
+		t.Fatalf("sync 2: %v", err)
+	}
+	if !reflect.DeepEqual(res.Updated, []string{"widget"}) {
+		t.Fatalf("sync 2 = %+v, want Updated [widget]", res)
+	}
+	if ent, _ := reg.Get("widget"); ent == nil || !ent.Binding.HasColumn("size") {
+		t.Fatal("widget not replaced with the redefined spec")
+	}
+}
+
+func TestSyncPersistedDynamic_UpdatesWhenRevisionGoesDown(t *testing.T) {
+	ctx := context.Background()
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	store.put(t, spec(), 3)
+	if _, err := syncPersistedDynamic(ctx, reg, ddl, store, loaded); err != nil {
+		t.Fatalf("sync 1: %v", err)
+	}
+	redefined := spec()
+	redefined.Schema.Columns = append(redefined.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	store.put(t, redefined, 1)
+	res, err := syncPersistedDynamic(ctx, reg, ddl, store, loaded)
+	if err != nil {
+		t.Fatalf("sync 2: %v", err)
+	}
+	if !reflect.DeepEqual(res.Updated, []string{"widget"}) || loaded["widget"] != 1 {
+		t.Fatalf("sync 2 = %+v loaded = %v, want Updated [widget] at revision 1", res, loaded)
+	}
+}
+
+func TestDefineDynamicAdoptsEqualSpecPersistedElsewhere(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	store.put(t, spec(), 1) // persisted by another instance; this one has not synced
+	withValidate := spec()
+	withValidate.Validate = func(map[string]any) error { return nil }
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, withValidate); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	if store.saves != 0 {
+		t.Fatalf("saves = %d, want 0", store.saves)
+	}
+	ent, ok := reg.Get("widget")
+	if !ok || ent.Spec.Validate == nil {
+		t.Fatal("widget not registered with the caller's Validate")
+	}
+	if loaded["widget"] != 1 {
+		t.Fatalf("loaded = %v, want widget:1", loaded)
+	}
+}
+
+func TestDefineDynamicRefusesDifferentSpecPersistedElsewhere(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	store.put(t, spec(), 1)
+	before := string(store.rows["widget"].Spec)
+	other := spec()
+	other.Schema.Columns = append(other.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	err := defineDynamic(context.Background(), reg, ddl, store, loaded, other)
+	if err == nil || !strings.Contains(err.Error(), "registered twice") {
+		t.Fatalf("err = %v, want registered twice", err)
+	}
+	if store.saves != 0 || string(store.rows["widget"].Spec) != before || store.rows["widget"].Revision != 1 {
+		t.Fatalf("stored row changed: saves=%d row=%+v", store.saves, store.rows["widget"])
+	}
+}
+
+func TestDefineDynamicRefusesUnloadablePersistedRow(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	future := []byte(`{"format":2,"name":"widget","table":"ds_widget","columns":[]}`)
+	store.rows["widget"] = postgres.DynamicSpecRecord{Name: "widget", Spec: future, Revision: 4}
+	err := defineDynamic(context.Background(), reg, ddl, store, loaded, spec())
+	if err == nil || !strings.Contains(err.Error(), "cannot load") {
+		t.Fatalf("err = %v, want cannot load", err)
+	}
+	if store.saves != 0 || string(store.rows["widget"].Spec) != string(future) {
+		t.Fatal("unloadable row overwritten")
+	}
+	if _, ok := reg.Get("widget"); ok {
+		t.Fatal("widget registered")
+	}
+}
+
+func TestDropDynamicLeavesRowOfTypeRegisteredInCode(t *testing.T) {
+	var ops []string
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(&ops), map[string]int64{}
+	ddl.ops = &ops
+	reg.MustRegister(namedSpec("site"))
+	store.put(t, namedSpec("site"), 1)
+	if err := dropDynamic(context.Background(), reg, ddl, store, loaded, "site"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	if _, ok := store.rows["site"]; !ok {
+		t.Fatal("another instance's site row was deleted")
+	}
+	for _, op := range ops {
+		if op == "delete:site" {
+			t.Fatalf("ops = %v, want no delete:site", ops)
+		}
+	}
+}

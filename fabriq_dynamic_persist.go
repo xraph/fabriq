@@ -335,9 +335,11 @@ func syncPersistedDynamic(ctx context.Context, reg *registry.Registry, ddl Dynam
 			ddl.AddGuardedTable(spec.Schema.Table)
 			loaded[rec.Name] = rec.Revision
 			res.Added = append(res.Added, rec.Name)
-		case rec.Revision != known:
+		case rec.Revision != known || !sameDynamicEncoding(cur.Spec, spec):
 			// A different revision, higher or (after a drop and redefine
-			// elsewhere) lower, means the row changed under us.
+			// elsewhere) lower, means the row changed under us. So does a
+			// different encoding at the same revision: a drop and redefine
+			// between two passes restarts the row at revision 1.
 			prev := cur.Spec
 			next := withInProcessFields(spec, prev)
 			if rerr := reg.Replace(next); rerr != nil {

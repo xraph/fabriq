@@ -44,36 +44,64 @@ func assertDynamicAggregate(spec registry.EntitySpec) error {
 // swaps in the caller's spec (no DDL, no save) so in-process fields such as
 // Validate attach to the loaded type.
 func defineDynamic(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, store DynamicSpecStore, loaded map[string]int64, spec registry.EntitySpec) error {
+	_, err := defineDynamicSynced(ctx, reg, ddl, store, loaded, spec)
+	return err
+}
+
+// defineDynamicSynced is defineDynamic that also returns the sync it ran
+// first, if any, so the facade can record it as the last sync.
+//
+// With a store and a name this process has not registered, it syncs before
+// defining: another instance may already have persisted the name. The synced
+// type then goes through the usual checks, so an equal spec succeeds without
+// a save and a different one fails as registered twice, leaving the other
+// instance's row alone. A persisted row the sync had to skip (unreadable, a
+// newer format, or a table it could not ensure) blocks the define rather than
+// being overwritten.
+func defineDynamicSynced(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, store DynamicSpecStore, loaded map[string]int64, spec registry.EntitySpec) (*DynamicSyncResult, error) {
 	if err := assertDynamicAggregate(spec); err != nil {
-		return err
+		return nil, err
 	}
-	var encoded []byte
+	var (
+		encoded []byte
+		synced  *DynamicSyncResult
+	)
 	if store != nil {
+		if _, ok := reg.Get(spec.Name); !ok {
+			res, err := syncPersistedDynamic(ctx, reg, ddl, store, loaded)
+			if err != nil {
+				return nil, fmt.Errorf("fabriq: sync persisted dynamic entities before defining %q: %w", spec.Name, err)
+			}
+			synced = &res
+			if reason, skipped := res.Skipped[spec.Name]; skipped {
+				return synced, fmt.Errorf("fabriq: dynamic entity %q has a persisted descriptor this process cannot load (%s)", spec.Name, reason)
+			}
+		}
 		if cur, ok := reg.Get(spec.Name); ok && cur.Spec.Schema != nil && cur.Spec.Kind == registry.KindAggregate && sameDynamicEncoding(cur.Spec, spec) {
-			return reg.Replace(spec)
+			return synced, reg.Replace(spec)
 		}
 		b, err := encodeDynamicSpec(spec)
 		if err != nil {
-			return err
+			return synced, err
 		}
 		encoded = b
 	}
 	if err := reg.Register(spec); err != nil {
-		return err
+		return synced, err
 	}
 	ent, _ := reg.Get(spec.Name)
 	if err := ddl.EnsureDynamic(ctx, ent); err != nil {
 		_ = reg.Unregister(spec.Name) // rollback
-		return err
+		return synced, err
 	}
 	if store != nil {
 		if err := saveDynamicSpec(ctx, store, loaded, spec.Name, encoded); err != nil {
 			_ = reg.Unregister(spec.Name) // rollback
-			return err
+			return synced, err
 		}
 	}
 	ddl.AddGuardedTable(spec.Schema.Table)
-	return nil
+	return synced, nil
 }
 
 // alterDynamic: additive add-field via idempotent EnsureDynamic, then
@@ -114,8 +142,8 @@ func alterDynamic(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, s
 	return nil
 }
 
-// dropDynamic removes a dynamic type. With a store the persisted row goes
-// first, so a crash between the steps leaves an orphan table rather than a
+// dropDynamic removes a dynamic type. With a store, and when this facade
+// persisted or loaded the type, the persisted row goes first, so a crash between the steps leaves an orphan table rather than a
 // row that would bring the type back without its data. If the table drop
 // fails, the previous spec is saved again (best effort) and the DDL error
 // returned.
@@ -128,13 +156,17 @@ func dropDynamic(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, st
 		return err
 	}
 	table := ent.Spec.Schema.Table
-	if store != nil {
+	// Only a type this facade persisted or loaded owns its row. A dynamic
+	// type registered in code must never delete another instance's row.
+	_, owned := loaded[name]
+	persisted := store != nil && owned
+	if persisted {
 		if err := store.DeleteDynamicSpec(ctx, name); err != nil {
 			return fmt.Errorf("fabriq: delete persisted dynamic entity %q: %w", name, err)
 		}
 	}
 	if err := ddl.DropDynamic(ctx, table); err != nil {
-		if store != nil {
+		if persisted {
 			if b, eerr := encodeDynamicSpec(ent.Spec); eerr == nil {
 				_ = saveDynamicSpec(ctx, store, loaded, name, b)
 			}
@@ -248,7 +280,11 @@ func (f *Fabriq) DefineDynamic(ctx context.Context, spec registry.EntitySpec) er
 	}
 	f.dynMu.Lock()
 	defer f.dynMu.Unlock()
-	return defineDynamic(ctx, f.reg, ddl, f.dynamicStore(), f.dynLoadedMap(), spec)
+	synced, err := defineDynamicSynced(ctx, f.reg, ddl, f.dynamicStore(), f.dynLoadedMap(), spec)
+	if synced != nil {
+		f.dynLast = *synced
+	}
+	return err
 }
 
 // AlterDynamic additively evolves a dynamic type (new columns/indexes only).
