@@ -270,10 +270,141 @@ docker run --rm \
 Run migrations as a discrete step first, as the schema owner:
 
 ```bash
-docker run --rm \
+docker run --rm --entrypoint /usr/local/bin/fabriq \
   -e FABRIQ_POSTGRES_DSN='postgres://owner:...@pg:5432/fabriq' \
   ghcr.io/xraph/fabriq:latest migrate up
 ```
+
+## Hosted server
+
+`fabriq serve` can run as a standalone server that other services call over HTTP with a key. You turn the admin API on, give it one operator key, and issue a key per service from there. You don't write any Go. This section is the whole contract: the two database roles, the run order, every environment variable, and what the probes mean.
+
+<Callout type="info">
+The Helm chart deploys the worker only. It doesn't mount the admin API and has no value that injects a Secret-backed `FABRIQ_ADMIN_KEY`, so run a hosted server from the image directly. The [chart README](https://github.com/xraph/fabriq/blob/main/deploy/helm/fabriq/README.md) lists what it can and can't do.
+</Callout>
+
+### Two roles, four steps
+
+You need two Postgres roles. A privileged one (a superuser, or any role that can `CREATE EXTENSION`) runs the setup commands. A second role, `fabriq_app`, serves traffic. They are separate because row-level security is the only tenant fence behind the admin API, and a superuser or a `BYPASSRLS` role walks straight past it. With the admin API on, `serve` refuses to start as such a role. `FABRIQ_ALLOW_RLS_BYPASS=true` overrides the check, and you should only ever set it on a laptop.
+
+Run the steps in this order, and stop at the first non-zero exit. The image's entrypoint is `fabriq serve`, so the one-shot commands below pass `--entrypoint` to `docker run`. In Kubernetes you'd set `command` on the Job instead.
+
+<Steps>
+<Step>
+Check the database has what fabriq needs. Preflight wants `timescaledb`, `vector` and `postgis`, and `timescaledb` has to be in `shared_preload_libraries`. The `timescale/timescaledb-ha:pg16-all` image has all three.
+
+```bash
+docker run --rm --entrypoint /usr/local/bin/fabriq \
+  -e FABRIQ_POSTGRES_DSN="$PRIVILEGED_DSN" \
+  ghcr.io/xraph/fabriq:1.9.0 migrate preflight --json
+```
+
+It exits 0 when everything is there, 4 when an extension is missing or `timescaledb` isn't preloaded, and 1 when it can't connect or query. Don't skip it. `migrate up` quietly leaves out the pgvector and PostGIS tables when those extensions are missing, and you'd find out later.
+
+The JSON report has this shape (trimmed to one extension here):
+
+```json
+{"ok":true,"extensions":[{"name":"timescaledb","available":true,"installed":"2.17.2","preloaded":true,"ok":true}],"problems":[]}
+```
+
+Use `--require a,b` to check a different set.
+</Step>
+
+<Step>
+Apply the migrations with the privileged DSN. The command takes an advisory lock, so running it from several places at once, or on every release, is safe.
+
+```bash
+docker run --rm --entrypoint /usr/local/bin/fabriq \
+  -e FABRIQ_POSTGRES_DSN="$PRIVILEGED_DSN" \
+  ghcr.io/xraph/fabriq:1.9.0 migrate up
+```
+
+On an upgrade, do this before you roll out the new binaries. Version 1.9.0 adds two tables (`fabriq_dynamic_entity` and `fabriq_tenant`) and a `last_used_at` column on `fabriq_api_key`. The code copes with a database that hasn't got the last two yet, but with persistence on (the default) it needs `fabriq_dynamic_entity`.
+</Step>
+
+<Step>
+Create the serving role. The password comes from the environment and nowhere else, so it never shows up in a process listing.
+
+```bash
+docker run --rm --entrypoint /usr/local/bin/fabriq \
+  -e FABRIQ_POSTGRES_DSN="$PRIVILEGED_DSN" \
+  -e FABRIQ_APP_ROLE_PASSWORD="$APP_ROLE_PASSWORD" \
+  ghcr.io/xraph/fabriq:1.9.0 migrate app-role --role fabriq_app
+```
+
+The role is created, or reset if it exists, as `LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION`. It gets `USAGE` and `CREATE` on schema `public`, DML on every table and sequence, and default privileges for the ones created later. Running the command again rotates the password and strips any attribute the role picked up since.
+
+It exits 2 for a usage problem (no `--role`, no `FABRIQ_APP_ROLE_PASSWORD`, a bad role name, or a role equal to the one the DSN connects as) and 1 for a database error. One caveat: if your server runs with `log_statement` set to `ddl` or `all`, Postgres may write the password to its log.
+</Step>
+
+<Step>
+Start the server with the `fabriq_app` DSN.
+
+```bash
+docker run -d --name fabriq -p 8081:8081 \
+  -e FABRIQ_POSTGRES_DSN='postgres://fabriq_app:...@pg:5432/fabriq?sslmode=require' \
+  -e FABRIQ_REDIS_ADDR=redis:6379 \
+  -e FABRIQ_ADMIN_API=true \
+  -e FABRIQ_ADMIN_KEY="$FABRIQ_ADMIN_KEY" \
+  -e FABRIQ_DOMAIN_PACK=none \
+  ghcr.io/xraph/fabriq:1.9.0
+```
+
+If it can't start, it exits 1 with a message naming the cause: an unmigrated database, a missing or malformed `FABRIQ_ADMIN_KEY`, a role that bypasses RLS, or a bad value in one of the variables below.
+</Step>
+</Steps>
+
+### Environment
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `FABRIQ_POSTGRES_DSN` | yes | | The serving DSN, for the `fabriq_app` role. |
+| `FABRIQ_REDIS_ADDR` | yes | | `host:port`. |
+| `FABRIQ_REDIS_USERNAME`, `FABRIQ_REDIS_PASSWORD` | no | | Redis ACL user and password. |
+| `FABRIQ_FALKORDB_ADDR` | no | | `host:port`. Turns the graph projection on. |
+| `FABRIQ_FALKORDB_USERNAME`, `FABRIQ_FALKORDB_PASSWORD` | no | | FalkorDB credentials. |
+| `FABRIQ_ELASTICSEARCH_ADDRS` | no | | Comma-separated URLs. Turns search on. |
+| `FABRIQ_ELASTICSEARCH_USERNAME`, `FABRIQ_ELASTICSEARCH_PASSWORD` | no | | Elasticsearch basic-auth credentials. |
+| `FABRIQ_HTTP_ADDR` | no | `:8081` | Listen address for everything. |
+| `FABRIQ_RECONCILE_INTERVAL` | no | `5m` | A Go duration. `0` turns the scheduled reconciler off. |
+| `FABRIQ_ADMIN_API` | no | `false` | `true` mounts the admin API under `/admin` with key auth. |
+| `FABRIQ_ADMIN_KEY` | with the admin API | | The bootstrap operator key, matching `^fq_[0-9A-Za-z]{32,}$`. Ensured at every start as a multi-tenant key that can manage keys. |
+| `FABRIQ_ADMIN_LOGIN_USER`, `FABRIQ_ADMIN_LOGIN_PASSWORD` | no, as a pair | unset | Enable `POST /admin/login` for the dashboard. Unset means no password login at all. |
+| `FABRIQ_DOMAIN_PACK` | no | `example` | `none` registers no demo entity types. Use it on a hosted server. |
+| `FABRIQ_DYNAMIC_PERSIST` | no | `true` | Persist runtime-defined entity types and reload them at start. |
+| `FABRIQ_DYNAMIC_SYNC_INTERVAL` | no | `15s` | How often a process picks up types another process defined. |
+| `FABRIQ_ALLOW_RLS_BYPASS` | no | `false` | Development only. Lets `serve` run as a superuser. |
+
+A few rules about how these behave:
+
+- A non-empty environment variable beats the same setting in `config.yaml`. That includes all six credential variables.
+- The admin-only variables (`FABRIQ_ADMIN_API`, the login pair and `FABRIQ_ALLOW_RLS_BYPASS`) are checked when the server starts. A bad one makes `fabriq serve` exit 1 and name the variable, while every other command ignores them. A bad value in any other variable fails every command.
+- The login password can't be longer than 72 bytes (a bcrypt limit), and there is no default login. Leave the pair unset and nobody can log in with a password.
+- `fabriq serve` replaces any `dynamic:` block in `config.yaml` with the values above. In [catalog mode](/docs/tenancy) it keeps persistence off whatever `FABRIQ_DYNAMIC_PERSIST` says.
+- `migrate` doesn't read any `FABRIQ_ADMIN_*` variable.
+
+### One port, two probes
+
+Everything listens on `8081`: the admin API under `/admin`, the probes, `/metrics` (fabriq's own series) and `/_/metrics` (forge's).
+
+| Path | Answers |
+| --- | --- |
+| `GET /_/livez` | 200 `{"status":"alive"}` whenever the process is serving HTTP. |
+| `GET /_/readyz` | 200 `{"status":"ready"}` when the facade is open (migrations applied, persisted entity types loaded), Postgres answers a ping, Redis answers a ping if you configured it, and, with the admin API on, the bootstrap key has been ensured. Otherwise 503 `{"status":"not ready","reason":"..."}`. |
+
+Each readiness check gets two seconds, and there is no startup grace period. Point your orchestrator at these two and ignore forge's `/_/health/*`, which reports ready for the first 60 seconds whatever the state of the stores.
+
+A wrong engine password at boot stops the process with an error that names the engine. A credential that goes bad later turns `/_/readyz` into a 503 with a reason naming it. That reason echoes the driver's error (never the password), so keep `:8081` on a private network.
+
+### Keys and tenants
+
+The operator key in `FABRIQ_ADMIN_KEY` is for your control plane. Use it to register tenants on `POST /admin/tenants` and to issue keys on `POST /admin/keys`. The usual pattern is one multi-tenant key per consuming service, issued without a `tenantId`, with `canManageKeys` off. The service picks its tenant per request. See [Authentication](/docs/authentication) for the full route list and [Connection string](/docs/connection-string) for how a client uses the key.
+
+To rotate the operator key, set the new value and restart, which ensures the new key. Then revoke the old key's id with `DELETE /admin/keys/:id`. Don't revoke the key that is still in `FABRIQ_ADMIN_KEY`: that locks the operator out until the variable changes and the server restarts.
+
+### The admin console image
+
+The console ships as its own image, `ghcr.io/xraph/fabriq-admin:0.1.0` (`linux/amd64` and `linux/arm64`), listening on `8080`. Point `FABRIQ_ADMIN_UPSTREAM` at the server's private address and give it a key, and the container proxies `/admin/` there. Never route it publicly. The variables, the key to use and a Compose example are on the [Admin Console](/docs/admin-console#running-the-container-image) page.
 
 <Cards>
   <Card title="CLI" href="/docs/cli">

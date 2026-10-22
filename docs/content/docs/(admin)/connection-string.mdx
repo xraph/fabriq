@@ -65,6 +65,35 @@ typed `*client.APIError` carrying the HTTP status. This is the client
 [weave](/docs/weave) and [cortex](/docs/cortex) use to reach a remote fabriq as a
 [vector store](/docs/weave) and a [living brain](/docs/cortex).
 
+## One key per service, many tenants
+
+A hosted server usually hands each consuming service one **multi-tenant** key. Your control plane issues it with `POST /admin/keys` and no `tenantId`, with `canManageKeys` left off. The service then picks the tenant per request, and that is what the DSN path and `WithTenant` are for.
+
+```go
+c, err := client.Connect(ctx, "fabriq://fq_live_…@fabriq.internal:8081/acme?tls=false")
+if err != nil {
+    return err
+}
+
+// Acts for "acme", the default tenant from the DSN path.
+mine, err := c.ListEntities(ctx, client.ListEntitiesParams{Type: "order", Limit: 20})
+
+// Same key, same connection settings, another tenant.
+globex := c.WithTenant("globex")
+theirs, err := globex.ListEntities(ctx, client.ListEntitiesParams{Type: "order", Limit: 20})
+```
+
+`WithTenant(id)` returns a copy of the client that sends `id` as `X-Tenant-ID` on every request. The key, API version and transport are shared, and the original client keeps its own tenant, so it's safe to derive one per request. An empty `id` sends no `X-Tenant-ID` header at all.
+
+The `?tls=false` matters on a private network. The client turns TLS on for any host other than `localhost` and `127.0.0.1`, so a plain-HTTP server inside your cluster needs it spelled out.
+
+Some things to know about a multi-tenant key:
+
+- It reaches any tenant id, registered or not. The tenant registry is bookkeeping for your control plane, and row-level security is what actually fences tenants apart.
+- A data route called without `X-Tenant-ID` returns 400. The `/admin/keys*` and `/admin/tenants*` routes don't need the header.
+- Without `canManageKeys` it gets 403 on `/admin/keys*`, `/admin/tenants*` and the migration status route.
+- A tenant-bound key (issued with a `tenantId`) still works, and it answers 403 for any other tenant. It can define entity types too, with `POST /admin/schema` or `client.CreateEntityType`. Types belong to the whole server, not to one tenant, so every tenant sees them.
+
 <Callout type="warn">
 A connection string embeds a secret in a URL — treat it like a `postgres://` DSN. Keep
 tokens revocable and per-tenant, and prefer supplying them from the environment or a secret

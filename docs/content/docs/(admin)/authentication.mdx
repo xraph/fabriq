@@ -134,7 +134,7 @@ and digits will do, so a password generator limited to alphanumerics is enough.
 ## Dashboard login
 
 For an interactive login screen on the [console](/docs/admin-console), enable a
-username/password credential (this requires `WithAuth` — login mints into the key store):
+username/password credential. This requires `WithAuth`, because login mints into the key store:
 
 ```go
 ext := adminapi.NewAdminAPI(
@@ -152,7 +152,7 @@ POST {base}/login   {username, password}  → 201 {token, expiresAt}   (exempt f
 POST {base}/logout                        → 200  (revokes the presented session)
 ```
 
-A successful login mints a **session token** — a key-store row that is multi-tenant,
+A successful login mints a **session token**, a key-store row that is multi-tenant,
 `can_manage_keys`, and carries an `expires_at` (default 12h). The console stores it and
 sends it as `Authorization: Bearer <token>`, so the ordinary key-verify middleware
 validates every subsequent request; an expired or logged-out session simply fails
