@@ -4,6 +4,7 @@ package migrations_test
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -57,6 +58,26 @@ func migrated(t *testing.T) (superDSN string, super *pgdriver.PgDB) {
 	return superDSN, super
 }
 
+// roleFlags reads the attributes that decide whether a role escapes RLS or can
+// mint more privileged roles.
+func roleFlags(t *testing.T, db *pgdriver.PgDB, role string) (super, bypass, createdb, createrole, repl bool) {
+	t.Helper()
+	row := db.QueryRow(context.Background(),
+		`SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication FROM pg_roles WHERE rolname = $1::text`, role)
+	if err := row.Scan(&super, &bypass, &createdb, &createrole, &repl); err != nil {
+		t.Fatalf("read pg_roles for %s: %v", role, err)
+	}
+	return
+}
+
+func assertSafeRole(t *testing.T, db *pgdriver.PgDB, role string) {
+	t.Helper()
+	su, by, cdb, crr, rep := roleFlags(t, db, role)
+	if su || by || cdb || crr || rep {
+		t.Fatalf("role %s: super=%v bypassrls=%v createdb=%v createrole=%v replication=%v, want all false", role, su, by, cdb, crr, rep)
+	}
+}
+
 func TestEnsureAppRole_CreatesNonBypassRole(t *testing.T) {
 	ctx := context.Background()
 	superDSN, super := migrated(t)
@@ -65,14 +86,7 @@ func TestEnsureAppRole_CreatesNonBypassRole(t *testing.T) {
 		t.Fatalf("EnsureAppRole: %v", err)
 	}
 
-	var rolsuper, bypass, createdb, createrole bool
-	row := super.QueryRow(ctx, `SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = 'fabriq_app'`)
-	if err := row.Scan(&rolsuper, &bypass, &createdb, &createrole); err != nil {
-		t.Fatalf("read pg_roles: %v", err)
-	}
-	if rolsuper || bypass || createdb || createrole {
-		t.Fatalf("role flags super=%v bypassrls=%v createdb=%v createrole=%v, want all false", rolsuper, bypass, createdb, createrole)
-	}
+	assertSafeRole(t, super, "fabriq_app")
 
 	app, err := connectAs(dsnAs(t, superDSN, "fabriq_app", "pw-one"))
 	if err != nil {
@@ -113,7 +127,7 @@ func TestEnsureAppRole_GrantsFutureTables(t *testing.T) {
 
 func TestEnsureAppRole_Idempotent_RotatesPassword(t *testing.T) {
 	ctx := context.Background()
-	superDSN, _ := migrated(t)
+	superDSN, super := migrated(t)
 
 	if err := migrations.EnsureAppRole(ctx, superDSN, "fabriq_app", "old-pw"); err != nil {
 		t.Fatalf("first EnsureAppRole: %v", err)
@@ -122,6 +136,7 @@ func TestEnsureAppRole_Idempotent_RotatesPassword(t *testing.T) {
 		t.Fatalf("second EnsureAppRole: %v", err)
 	}
 
+	assertSafeRole(t, super, "fabriq_app")
 	if db, err := connectAs(dsnAs(t, superDSN, "fabriq_app", "old-pw")); err == nil {
 		_ = db.Close()
 		t.Fatal("old password still connects after rotation")
@@ -183,4 +198,38 @@ func TestEnsureAppRole_ErrorDoesNotLeakPassword(t *testing.T) {
 	if strings.Contains(err.Error(), "leak-me-not-123") {
 		t.Fatalf("error leaks the password: %v", err)
 	}
+}
+
+func TestEnsureAppRole_ResetsPreexistingDangerousRole(t *testing.T) {
+	ctx := context.Background()
+	superDSN, super := migrated(t)
+
+	if _, err := super.Exec(ctx, `CREATE ROLE fabriq_app LOGIN PASSWORD 'old-pw' SUPERUSER BYPASSRLS CREATEDB CREATEROLE REPLICATION`); err != nil {
+		t.Fatalf("create dangerous role: %v", err)
+	}
+	if su, by, cdb, crr, rep := roleFlags(t, super, "fabriq_app"); !su || !by || !cdb || !crr || !rep {
+		t.Fatalf("precondition: flags super=%v bypassrls=%v createdb=%v createrole=%v replication=%v, want all true", su, by, cdb, crr, rep)
+	}
+
+	if err := migrations.EnsureAppRole(ctx, superDSN, "fabriq_app", "new-pw"); err != nil {
+		t.Fatalf("EnsureAppRole: %v", err)
+	}
+	assertSafeRole(t, super, "fabriq_app")
+}
+
+func TestEnsureAppRole_RefusesConnectingRole(t *testing.T) {
+	ctx := context.Background()
+	superDSN, _ := migrated(t)
+
+	// StartPostgres connects as "fabriq" with password "fabriq".
+	err := migrations.EnsureAppRole(ctx, superDSN, "fabriq", "locked-out-pw")
+	if !errors.Is(err, migrations.ErrInvalidAppRole) {
+		t.Fatalf("err = %v, want ErrInvalidAppRole", err)
+	}
+	// The privileged role's password must be untouched.
+	db, cerr := connectAs(superDSN)
+	if cerr != nil {
+		t.Fatalf("privileged role locked out: %v", cerr)
+	}
+	_ = db.Close()
 }

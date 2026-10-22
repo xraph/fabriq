@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -166,6 +167,15 @@ func TestMigrateAppRole_ExitCodes(t *testing.T) {
 		t.Setenv("FABRIQ_APP_ROLE_PASSWORD", "pw")
 		if code, _ := runMigrate(t, "app-role", "--dsn", "postgres://x", "--role", "fabriq_app"); code != 1 {
 			t.Fatalf("exit code = %d, want 1", code)
+		}
+	})
+
+	t.Run("refused by the library is a usage error", func(t *testing.T) {
+		calls = nil
+		stub(fmt.Errorf("%w: role is the connecting role", migrations.ErrInvalidAppRole))
+		t.Setenv("FABRIQ_APP_ROLE_PASSWORD", "pw")
+		if code, _ := runMigrate(t, "app-role", "--dsn", "postgres://x", "--role", "fabriq"); code != 2 {
+			t.Fatalf("exit code = %d, want 2", code)
 		}
 	})
 
