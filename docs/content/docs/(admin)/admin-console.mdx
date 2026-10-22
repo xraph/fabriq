@@ -129,6 +129,8 @@ services:
       FABRIQ_ADMIN_DEFAULT_TENANT: acme
 ```
 
+The published port in the example is for local use. In a real deployment, leave it off and reach the container only through your authenticated proxy.
+
 `GET /healthz` returns 200 `ok`, which is what your orchestrator should probe. The container runs as uid 101 and only needs `/tmp` to be writable, so a read-only root filesystem works with an `emptyDir` or a tmpfs mounted there. If an environment value is invalid, the container exits 1 at start.
 
 | Variable | Meaning |

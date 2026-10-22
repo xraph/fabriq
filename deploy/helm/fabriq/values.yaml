@@ -83,7 +83,8 @@ config:
   # Scheduled reconciler cadence (Go duration). "0" disables; empty uses
   # the binary default (5m).
   reconcileInterval: ""
-  # Extra plain (non-secret) env vars merged into worker + migrate.
+  # Extra plain (non-secret) env vars for the worker. The migrate Job does
+  # not read this ConfigMap.
   extraEnv: {}
 
 # --- Schema migrations (Helm hook Job) --------------------------------

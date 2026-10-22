@@ -48,8 +48,8 @@ helm install fabriq deploy/helm/fabriq \
 ```
 
 The `projections.*` switches are optional. Turning one on makes the chart fail
-the install when that engine's address is missing, which catches the
-"I meant to wire search" mistake before it reaches the cluster. The worker
+the install when that engine's address is missing, which catches a forgotten
+address before it reaches the cluster. The worker
 starts a projection whenever its address is present, switch or not.
 
 For dev and CI, let the chart create the Secret from a literal DSN:
@@ -76,21 +76,24 @@ you want the hosted server described in the Deployment page of the docs
 site, because `FABRIQ_ADMIN_API=true` needs a `FABRIQ_ADMIN_KEY`, and the engine
 passwords have variables of their own.
 
-The plain settings work today. Put them in `config.extraEnv`, which lands in
-the worker's ConfigMap:
+Plain settings that the worker needs on its own work today. Put them in
+`config.extraEnv`, which lands in the worker's ConfigMap:
 
 ```yaml
 config:
   extraEnv:
     FABRIQ_DOMAIN_PACK: none
-    FABRIQ_ADMIN_API: "true"
+    FABRIQ_DYNAMIC_SYNC_INTERVAL: 30s
 ```
 
-Don't put the admin key or any password there. A ConfigMap is readable by
-anyone who can read the namespace. Until the chart grows a Secret-backed env
-hook, run the hosted server from the image directly (a Deployment you write
-yourself, or `helm template` output you patch) with the key and the engine
-credentials coming from a Secret you own.
+Leave `FABRIQ_ADMIN_API` out. With it on, `serve` exits 1 unless
+`FABRIQ_ADMIN_KEY` is set, and the chart can't supply that, so the worker would
+crash-loop. Don't put the admin key or any password in `config.extraEnv` either.
+A ConfigMap is readable by anyone who can read the namespace. Until the chart
+grows a Secret-backed env hook, run the hosted server from the image directly
+(a Deployment you write yourself, or `helm template` output you patch) with
+`FABRIQ_ADMIN_API=true`, the key and the engine credentials coming from a Secret
+you own.
 
 Two more things to know. The migration Job and the worker share one Postgres
 DSN, so the Job connects as whatever role the worker uses. A hosted server

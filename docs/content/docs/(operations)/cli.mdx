@@ -23,8 +23,9 @@ subcommand level.
 <Callout type="info">
 Operator commands take a single `--dsn` and are not shard-aware. In a
 [sharded](/docs/sharding) deployment, point `--dsn` at one shard's database and
-run the command once per shard, including `rebuild --all-tenants`, which then
-iterates only that shard's tenants.
+run the command once per shard, including `rebuild --all-tenants`. In static
+mode that covers the registered tenants plus any tenant with projection state on
+the shard you point at.
 </Callout>
 
 The serve path reads everything from the environment:
@@ -46,6 +47,7 @@ The serve path reads everything from the environment:
 The admin API variables (`FABRIQ_ADMIN_API`, `FABRIQ_ADMIN_KEY`, the dashboard login pair, `FABRIQ_DYNAMIC_SYNC_INTERVAL` and `FABRIQ_ALLOW_RLS_BYPASS`) are in the [hosted server](/docs/deployment#hosted-server) table.
 
 The operator commands read the credential variables, `FABRIQ_DOMAIN_PACK` and `FABRIQ_DYNAMIC_PERSIST` as well, so a Job that rebuilds a projection needs the same engine password the server uses. `rebuild`, `rebuild finalize` and `reconcile` dial every engine whose address is set in the environment. The address flags still win over the variables.
+
 ## serve: run the worker
 
 ```bash
@@ -197,7 +199,7 @@ Exit codes:
 | --- | --- |
 | 0 | Every selected tenant was rebuilt. That includes the case where there was nothing to rebuild. |
 | 1 | A runtime error, or no DSN. The command stops at the first tenant that fails. The tenants before it stay rebuilt, and rerunning is safe. |
-| 2 | A usage error: a `--projection` other than `graph` or `search`, no tenant selector, or no engine address. |
+| 2 | A usage error: a `--projection` other than `graph` or `search`, no tenant selector, no engine address, or a bad `FABRIQ_DOMAIN_PACK` or `FABRIQ_DYNAMIC_PERSIST` value. |
 
 ## reconcile: drift reconciliation
 

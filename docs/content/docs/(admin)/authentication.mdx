@@ -159,7 +159,7 @@ validates every subsequent request; an expired or logged-out session simply fail
 verification (`401`) and the console returns to the login screen. Because the session is
 multi-tenant, the console's tenant switcher selects the working tenant per request.
 
-`POST {base}/login` is the only route exempt from the verify middleware — it is the way in.
+`POST {base}/login` is the only route exempt from the verify middleware, because it is the way in.
 Everything else, including `/logout`, stays gated.
 
 ## Custom authorization (per-user RBAC)
