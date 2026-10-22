@@ -157,3 +157,48 @@ func TestRunDynamicSyncLoop_LogsSkipped(t *testing.T) {
 		t.Fatal("an added type should be logged at info")
 	}
 }
+
+// TestRunDynamicSyncLoop_DedupesSkipped pins that a skip repeated across
+// passes warns once, and warns again when its reason changes.
+func TestRunDynamicSyncLoop_DedupesSkipped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	log := newRecordingLogger()
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runDynamicSyncLoop(ctx, 5*time.Millisecond, func(context.Context) (fabriq.DynamicSyncResult, error) {
+			n := calls.Add(1)
+			reason := "invalid spec: x"
+			if n > 4 {
+				reason = "invalid spec: y"
+			}
+			return fabriq.DynamicSyncResult{Skipped: map[string]string{"bad": reason}}, nil
+		}, log)
+	}()
+	deadline := time.After(2 * time.Second)
+	for calls.Load() < 7 {
+		select {
+		case <-deadline:
+			t.Fatalf("sync called %d times, want at least 7", calls.Load())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+
+	var reasons []any
+	for _, e := range log.snapshot() {
+		if e.level != "warn" {
+			continue
+		}
+		if e.fields["entity"] != "bad" {
+			t.Fatalf("warn fields = %v, want entity=bad", e.fields)
+		}
+		reasons = append(reasons, e.fields["reason"])
+	}
+	if len(reasons) != 2 || reasons[0] != "invalid spec: x" || reasons[1] != "invalid spec: y" {
+		t.Fatalf("warn reasons = %v, want [invalid spec: x, invalid spec: y]", reasons)
+	}
+}
