@@ -176,6 +176,61 @@ An end-to-end test verifies a dynamic `widget` projects to **FalkorDB** (a `MATC
 
 Evolution is **strictly additive**: destructive changes are never applied automatically, and the unsafe `NOT NULL`-without-default-on-populated-table case is surfaced as an error rather than worked around. A consumer that needs a destructive change supplies a `Default` (for new required columns) or authors a migration.
 
+## Surviving a restart
+
+A type you define at runtime lives in the registry, and the registry lives in memory. Without persistence the type is gone at the next boot, although its table stays in Postgres. Turn persistence on and fabriq saves each descriptor to `fabriq_dynamic_entity` and loads it back when it opens.
+
+```go
+cfg := fabriq.Config{
+	Postgres: fabriq.PostgresConfig{DSN: dsn},
+	Redis:    fabriq.RedisConfig{Addr: redisAddr},
+	Dynamic:  fabriq.DynamicConfig{Persist: true},
+}
+f, stores, err := fabriq.Open(ctx, reg, cfg)
+```
+
+If you use the forge extension, the same switch is `extensions.fabriq.dynamic.persist: true` in YAML. In the library it is off until you set it. In `fabriq serve` it is on by default, and `FABRIQ_DYNAMIC_PERSIST=false` turns it off.
+
+The table comes from a migration, so run `fabriq migrate up` first. `fabriq_dynamic_entity` is shared by the whole instance and has no row-level security, which matches the fact that a type belongs to the server and not to a tenant.
+
+### What is saved
+
+Only the declarative part of the spec is. That covers the table, columns and indexes, the graph node and edge declarations, search, subscribe scopes, the live-query spec and the cache spec.
+
+Everything that is a Go function or an in-process hook stays out: `Validate`, `Embed`, `Distill`, `Analytics`, `Insights`, `Metrics` and CRDT. A type that needs one of those has to be defined again in code at every boot. That works well, because defining a spec whose saved part equals the registered type succeeds without touching the database and just attaches the extra fields. Entities modelled as Go structs are never saved. They are compiled in, so they don't need to be.
+
+### Keeping processes in step
+
+`DefineDynamic`, `AlterDynamic`, `RenameDynamicField` and `DropDynamicField` save the new descriptor, and `DropDynamic` deletes it. Another process won't see the change until it syncs. `Open` syncs once, and the worker syncs again on a timer, every 15 seconds unless you change `DynamicConfig.SyncInterval` (or `FABRIQ_DYNAMIC_SYNC_INTERVAL` for the server). You can call `(*Fabriq).SyncPersistedDynamic` yourself to sync now, and `LastDynamicSync` returns what the last pass did.
+
+A sync registers new rows and ensures their tables, replaces types whose row moved on, and removes types whose row is gone. It never drops a table, and it never touches a type registered in code.
+
+Until a process has synced a new type, which can take up to one sync interval, it doesn't know the type, and its projection consumers drop that type's events. The rows are still in Postgres, so the next reconcile pass (every `FABRIQ_RECONCILE_INTERVAL`, 5 minutes by default) finds what the graph and search projections are missing and re-emits it.
+
+Two processes defining the same name behave sensibly. If another process already saved it and the specs are equal, yours adopts it. If yours only adds columns or indexes, it's applied as an alter, the same as `AlterDynamic`. Any other difference gets a "registered twice" error, and fabriq refuses to overwrite a row it can't read (a newer format, say). A row a sync has to skip is logged at warn level the first time it appears and whenever the reason changes.
+
+Two cautions. `Open` runs `EnsureDynamic` for every saved type in every process, so on a big, busy table an `ALTER` can wait on locks during a rolling restart. And [catalog mode](/docs/tenancy) refuses persistence, so `fabriq serve` keeps it off there.
+
+### Library mode with the stock worker
+
+You can run your own app against a dynamic-only schema and let the published image do the background work. In your app, open with `Dynamic.Persist` set and define the types at boot. Calling `DefineDynamic` again with an identical spec is a no-op, so it's safe to leave in your startup path.
+
+You can grow a type right there too. Add a column or an index to the boot-time spec and the next boot applies it as an alter: the table gets the new column, the saved descriptor is updated, and the other processes pick it up on their next sync. Anything else, like changing a column's type, `NotNull` or default, removing a column, or pointing at another table, fails with "registered twice". For those, call `RenameDynamicField` or `DropDynamicField`, or define a new type.
+
+```go
+if err := f.DefineDynamic(ctx, registry.EntitySpec{
+	Name:   "orders",
+	Kind:   registry.KindAggregate,
+	Schema: &registry.DynamicSchema{ /* ... */ },
+}); err != nil {
+	return err
+}
+```
+
+Then run `ghcr.io/xraph/fabriq` as the worker, with the same `FABRIQ_POSTGRES_DSN` and `FABRIQ_REDIS_ADDR` as your app, plus `FABRIQ_FALKORDB_ADDR` and `FABRIQ_ELASTICSEARCH_ADDRS` if you project to them (and the matching credential variables). Set `FABRIQ_DOMAIN_PACK=none` so it registers no demo types, leave `FABRIQ_DYNAMIC_PERSIST` at its default of `true`, and don't set `FABRIQ_ADMIN_API`. The worker picks up a new or changed type within one sync interval. Migrations run the same way as for a [hosted server](/docs/deployment#hosted-server).
+
+The stock worker has limits. It can't serve entities modelled as Go structs, and it can't run the hooks that aren't saved. If you rely on `Validate`, embedding, distillation, analytics, insights or metrics for a type, you need your own binary built with `forgeext.WithWorker(true)`.
+
 ## Invariants
 
 - **The static lane is untouched** — compile-time entities keep migrations-as-authority and the model↔DDL conformance test.

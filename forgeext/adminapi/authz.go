@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 
 	"github.com/xraph/forge"
 )
@@ -63,4 +64,15 @@ func (c *adminController) requireCap(ctx forge.Context, capability string) error
 		return forge.Forbidden(capability + " not permitted")
 	}
 	return nil
+}
+
+// requireOperatorKey enforces WithOperatorOnlyInstanceOps. It returns
+// handled=true after writing a 403 when the option is on and the request's key
+// lacks CanManageKeys (or no key was resolved); the handler then returns err
+// as is. With the option off it always lets the request through.
+func (c *adminController) requireOperatorKey(ctx forge.Context, message string) (handled bool, err error) {
+	if !c.ext.cfg.operatorOnlyInstanceOps || resolvedKeyCanManage(ctx.Request().Context()) {
+		return false, nil
+	}
+	return true, deny(ctx, http.StatusForbidden, message)
 }

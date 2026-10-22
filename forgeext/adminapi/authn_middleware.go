@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xraph/forge"
@@ -33,11 +34,36 @@ func resolvedKeyID(ctx context.Context) (string, bool) {
 	return id, ok
 }
 
+// keyCanManageCtxKey stashes whether the resolved API key has CanManageKeys,
+// for handlers that gate on it (see requireOperatorKey).
+type keyCanManageCtxKey struct{}
+
+// resolvedKeyCanManage reports whether authMiddleware resolved a key with
+// CanManageKeys for this request. False when no key was resolved.
+func resolvedKeyCanManage(ctx context.Context) bool {
+	ok, _ := ctx.Value(keyCanManageCtxKey{}).(bool)
+	return ok
+}
+
 // authMiddleware verifies a per-tenant API key on every admin request and
 // resolves the tenant into the request context for downstream handlers.
 //
-// basePath is the admin API mount point (e.g. "/admin"); requests under
-// basePath+"/keys" additionally require a key with CanManageKeys.
+// basePath is the admin API mount point (e.g. "/admin"). Requests under
+// basePath+"/keys" additionally require a key with CanManageKeys; requests
+// under basePath+"/tenants" require a multi-tenant key with CanManageKeys.
+// Paths are compared in routePath form, the form the router resolves.
+//
+// Those two subtrees, plus exactly GET basePath+"/migrations" (the migration
+// status), are the instance routes: they act on the instance, not on one
+// tenant's data. On an instance route a multi-tenant key may omit X-Tenant-ID;
+// the request then proceeds with no tenant stamped (the key id is still
+// stashed). The migration status needs CanManageKeys like /keys does. Every
+// other route, including POST basePath+"/migrations/up" and any deeper
+// migrations path, is a data route and keeps the 400.
+//
+// A request that passes every check records the key's last use through the
+// store's optional KeyToucher (see touchThrottle): at most once a minute per
+// key, off the request path, never failing the request.
 //
 // The X-Fabriq-Api-Version response header is set on EVERY response (success or
 // short-circuit), so clients can always read the server's contract version.
@@ -55,12 +81,29 @@ func resolvedKeyID(ctx context.Context) (string, bool) {
 //	ExpiresAt != nil and in the past       → 401
 //	Lookup error                           → 500
 //	tenant-bound key, X-Tenant-ID mismatch → 403
-//	multi-tenant key, X-Tenant-ID absent   → 400
+//	multi-tenant key, X-Tenant-ID absent,
+//	  on a data route                      → 400
 //	.../keys route, !CanManageKeys         → 403
+//	.../tenants route, !CanManageKeys or a
+//	  tenant-bound key                     → 403
+//	GET .../migrations, !CanManageKeys     → 403
 //	X-Fabriq-Api-Version present, major ≠  → 426
 //	otherwise                              → next(ctx)
 func authMiddleware(store KeyStore, basePath string) forge.Middleware {
-	keysPrefix := strings.TrimRight(basePath, "/") + "/keys"
+	return authMiddlewareWithTouch(store, basePath, newTouchThrottle(store))
+}
+
+// authMiddlewareWithTouch is authMiddleware with the last-use throttle
+// supplied by the caller, so tests can drive it with their own clock and a
+// synchronous runner. A nil throttle records no last use.
+func authMiddlewareWithTouch(store KeyStore, basePath string, touches *touchThrottle) forge.Middleware {
+	// Every route decision below compares routePath forms, so a request the
+	// router resolves to a keys or tenants handler can never dodge the gates
+	// with extra slashes ("/admin//keys", "//admin/keys").
+	loginPath := routePath(basePath + "/login")
+	keysPrefix := routePath(basePath + "/keys")
+	tenantsPrefix := routePath(basePath + "/tenants")
+	migrationsStatusPath := routePath(basePath + "/migrations")
 
 	return func(next forge.Handler) forge.Handler {
 		return func(ctx forge.Context) error {
@@ -70,7 +113,8 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 			// before the version header is set / anything else runs, so a
 			// POST to basePath+"/login" is a pure pass-through.
 			req := ctx.Request()
-			if req.Method == http.MethodPost && req.URL.Path == basePath+"/login" {
+			path := routePath(req.URL.Path)
+			if req.Method == http.MethodPost && path == loginPath {
 				return next(ctx)
 			}
 
@@ -100,8 +144,13 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 			}
 
 			selector := req.Header.Get("X-Tenant-ID")
+			keysRoute := isUnderRoute(path, keysPrefix)
+			tenantsRoute := isUnderRoute(path, tenantsPrefix)
+			migrationsStatus := req.Method == http.MethodGet && path == migrationsStatusPath
+			instanceRoute := keysRoute || tenantsRoute || migrationsStatus
 
-			// 3/4. Resolve the effective tenant.
+			// 3/4. Resolve the effective tenant. tid stays "" only for a
+			// multi-tenant key on an instance route with no selector.
 			var tid string
 			if rec.TenantID != "" {
 				// Tenant-bound key: it dictates the tenant. A conflicting
@@ -111,16 +160,27 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 				}
 				tid = rec.TenantID
 			} else {
-				// Multi-tenant key: the selector is required.
-				if selector == "" {
+				// Multi-tenant key: the selector is required on data routes.
+				// Instance routes act on no single tenant, so it may be absent.
+				if selector == "" && !instanceRoute {
 					return deny(ctx, http.StatusBadRequest, "X-Tenant-ID header is required for a multi-tenant key")
 				}
 				tid = selector
 			}
 
-			// 5. Key-management routes require CanManageKeys.
-			if !rec.CanManageKeys && isKeysRoute(req.URL.Path, keysPrefix) {
+			// 5. Key- and tenant-management routes require CanManageKeys.
+			if !rec.CanManageKeys && keysRoute {
 				return deny(ctx, http.StatusForbidden, "this API key may not manage keys")
+			}
+			// The migration status describes the whole instance, so it is an
+			// operator view: it needs the same CanManageKeys as /keys.
+			if !rec.CanManageKeys && migrationsStatus {
+				return deny(ctx, http.StatusForbidden, "this API key may not read migration status")
+			}
+			// Tenants are instance-wide, so only a multi-tenant manage key may
+			// touch them: a tenant-bound key is refused even with CanManageKeys.
+			if tenantsRoute && (!rec.CanManageKeys || rec.TenantID != "") {
+				return deny(ctx, http.StatusForbidden, "this API key may not manage tenants")
 			}
 
 			// 6. Version negotiation: if the client advertises a version, its
@@ -138,15 +198,101 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 			// logout handler reads this via resolvedKeyID to revoke the
 			// presented session). WithContext replaces the request's context
 			// in place, so both must land in the same call.
-			tctx, err := tenant.WithTenant(req.Context(), tid)
-			if err != nil {
-				return deny(ctx, http.StatusBadRequest, "invalid tenant id: "+err.Error())
+			// An instance-route request with no tenant skips the stamp, so
+			// anything below that needs a tenant still fails with ErrNoTenant.
+			tctx := req.Context()
+			if tid != "" {
+				tctx, err = tenant.WithTenant(tctx, tid)
+				if err != nil {
+					return deny(ctx, http.StatusBadRequest, "invalid tenant id: "+err.Error())
+				}
 			}
+			tctx = context.WithValue(tctx, keyCanManageCtxKey{}, rec.CanManageKeys)
 			ctx.WithContext(context.WithValue(tctx, keyIDCtxKey{}, rec.ID))
+
+			// Every check passed: record the use. touch never blocks.
+			touches.touch(rec.ID)
 
 			return next(ctx)
 		}
 	}
+}
+
+const (
+	// touchInterval is the least time between two recorded uses of one key in
+	// one process. lastUsedAt is therefore accurate to about this long.
+	touchInterval = time.Minute
+	// touchTimeout bounds one Touch call. It runs on a context detached from
+	// the request, so a slow database can neither stall nor cancel it.
+	touchTimeout = 2 * time.Second
+)
+
+// touchThrottle records a key's last use through a KeyToucher without ever
+// getting in the request's way: the write runs in its own goroutine on a
+// context detached from the request with a 2s timeout, and a key is written at
+// most once per touchInterval per process. The throttle state is in memory, so
+// a restart or a second replica may write a key a little more often; both are
+// harmless because the write is a plain UPDATE.
+//
+// The zero value is not usable; build one with newTouchThrottle. A nil
+// *touchThrottle is a valid no-op.
+type touchThrottle struct {
+	toucher  KeyToucher
+	interval time.Duration
+	now      func() time.Time
+	// spawn runs fn off the request path. Production uses a goroutine; tests
+	// replace it with a synchronous call so they can assert without sleeping.
+	spawn func(fn func())
+
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+// newTouchThrottle returns a throttle over store's KeyToucher capability, or
+// nil when the store does not have one (it then reports no last use).
+func newTouchThrottle(store KeyStore) *touchThrottle {
+	kt, ok := store.(KeyToucher)
+	if !ok {
+		return nil
+	}
+	return &touchThrottle{
+		toucher:  kt,
+		interval: touchInterval,
+		now:      time.Now,
+		spawn:    func(fn func()) { go fn() },
+		last:     map[string]time.Time{},
+	}
+}
+
+// touch records a use of the key id unless it was recorded within the
+// interval. A failed write is dropped: the next request after the interval
+// tries again, and the request itself has long since moved on.
+func (t *touchThrottle) touch(id string) {
+	if t == nil {
+		return
+	}
+	at := t.now()
+	t.mu.Lock()
+	if prev, seen := t.last[id]; seen && at.Sub(prev) < t.interval {
+		t.mu.Unlock()
+		return
+	}
+	// Entries older than the interval can never throttle anything again, so
+	// drop them on every insert: the map then holds only the keys seen in the
+	// last interval, not one id per login for the life of the process.
+	for k, prev := range t.last {
+		if at.Sub(prev) >= t.interval {
+			delete(t.last, k)
+		}
+	}
+	t.last[id] = at
+	t.mu.Unlock()
+
+	t.spawn(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), touchTimeout)
+		defer cancel()
+		_ = t.toucher.Touch(ctx, id, at)
+	})
 }
 
 // deny writes a JSON error body with the given status and returns nil. Returning
@@ -165,9 +311,28 @@ func deny(ctx forge.Context, status int, message string) error {
 	return nil
 }
 
-// isKeysRoute reports whether path targets the key-management surface rooted at
-// keysPrefix. It matches keysPrefix exactly and any sub-path, but not sibling
-// paths that merely share the prefix string (e.g. "/admin/keyspace").
-func isKeysRoute(path, keysPrefix string) bool {
-	return path == keysPrefix || strings.HasPrefix(path, keysPrefix+"/")
+// isUnderRoute reports whether path targets the subtree rooted at prefix (the
+// keys or the tenants subtree). It matches prefix exactly and any sub-path, but
+// not sibling paths that merely share the prefix string (e.g.
+// "/admin/keyspace"). Both arguments must already be in routePath form.
+func isUnderRoute(path, prefix string) bool {
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
+}
+
+// routePath returns p the way forge's default router (forgemux) resolves it:
+// empty segments are dropped, so repeated, leading and trailing slashes
+// collapse, and the result has exactly one leading slash. Dot segments are
+// kept as they are, because the router matches "." and ".." as literal
+// segments rather than resolving them. Matching is case-sensitive, like the
+// router's static segments. p is the decoded r.URL.Path the router walks, so
+// an encoded slash ("%2F") has already become a separator in both.
+func routePath(p string) string {
+	segs := strings.Split(p, "/")
+	kept := segs[:0]
+	for _, seg := range segs {
+		if seg != "" {
+			kept = append(kept, seg)
+		}
+	}
+	return "/" + strings.Join(kept, "/")
 }

@@ -6,8 +6,9 @@ import (
 	"net/http"
 )
 
-// Client is a remote fabriq client bound to a single tenant/key over a
-// transport (currently HTTP only).
+// Client is a remote fabriq client bound to one key and one tenant over a
+// transport (currently HTTP only). WithTenant derives a client for another
+// tenant on the same key.
 type Client struct {
 	baseURL string
 	key     string
@@ -61,4 +62,14 @@ func Connect(ctx context.Context, dsn string, opts ...Option) (*Client, error) {
 	}
 
 	return c, nil
+}
+
+// WithTenant returns a shallow copy of c that sends id as X-Tenant-ID. The
+// key, API version and transport are shared with c, which keeps its own
+// tenant. An app holding one multi-tenant key uses it to act for each tenant
+// per request. An empty id sends no X-Tenant-ID.
+func (c *Client) WithTenant(id string) *Client {
+	cp := *c
+	cp.tenant = id
+	return &cp
 }

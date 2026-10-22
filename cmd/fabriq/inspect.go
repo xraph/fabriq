@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/xraph/forge/cli"
@@ -81,6 +84,11 @@ func inspectCommand() cli.Command {
 	return cmd
 }
 
+// rebuildCommand is `fabriq rebuild`. It exits 0 when every selected tenant
+// rebuilt (including --all-tenants with none to rebuild), 1 on a runtime
+// error and 2 on a usage error. It stops at the first tenant that fails:
+// the tenants before it stay rebuilt, and a rerun is safe because each run
+// builds a fresh target.
 func rebuildCommand() cli.Command {
 	cmd := cli.NewCommand("rebuild", "Blue-green projection rebuild for a tenant", func(ctx cli.CommandContext) error {
 		dsn, ok := dsnFromContext(ctx)
@@ -89,39 +97,37 @@ func rebuildCommand() cli.Command {
 		}
 		proj := ctx.String("projection")
 		if proj != "graph" && proj != "search" {
-			return cliError("--projection must be graph or search")
+			return usageError("--projection must be graph or search")
 		}
-		cfg := fabriq.Config{Postgres: fabriq.PostgresConfig{DSN: dsn}}
+		allTenants := ctx.Bool("all-tenants")
+		tenantID := ctx.String("tenant")
+		if !allTenants && tenantID == "" {
+			return usageError("--tenant is required (or pass --all-tenants)")
+		}
+		cfg := operatorStoreConfig(ctx, dsn)
 		switch proj {
 		case "graph":
-			addr := ctx.String("falkordb")
-			if addr == "" {
-				addr = os.Getenv("FABRIQ_FALKORDB_ADDR")
+			if cfg.FalkorDB.Addr == "" {
+				return usageError("--falkordb (or FABRIQ_FALKORDB_ADDR) is required for graph rebuilds")
 			}
-			if addr == "" {
-				return cliError("--falkordb (or FABRIQ_FALKORDB_ADDR) is required for graph rebuilds")
-			}
-			cfg.FalkorDB.Addr = addr
 		case "search":
-			addrs := ctx.String("elasticsearch")
-			if addrs == "" {
-				addrs = os.Getenv("FABRIQ_ELASTICSEARCH_ADDRS")
+			if len(cfg.Elasticsearch.Addrs) == 0 {
+				return usageError("--elasticsearch (or FABRIQ_ELASTICSEARCH_ADDRS) is required for search rebuilds")
 			}
-			if addrs == "" {
-				return cliError("--elasticsearch (or FABRIQ_ELASTICSEARCH_ADDRS) is required for search rebuilds")
-			}
-			cfg.Elasticsearch.Addrs = strings.Split(addrs, ",")
 		}
-
-		r := registry.New()
-		if err := domain.RegisterAll(r); err != nil {
+		r, err := operatorRegistry(os.Getenv, &cfg)
+		if err != nil {
 			return err
 		}
-		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+
+		f, stores, err := fabriq.Open(ctx.Context(), r, cfg)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = stores.Close() }()
+		if serr := refuseSkippedDynamic(os.Stderr, "rebuild", f.LastDynamicSync()); serr != nil {
+			return serr
+		}
 
 		var rebuilder *projection.Rebuilder
 		if proj == "graph" {
@@ -133,36 +139,21 @@ func rebuildCommand() cli.Command {
 			return err
 		}
 
-		tenants := []string{ctx.String("tenant")}
-		if ctx.Bool("all-tenants") {
+		tenants := []string{tenantID}
+		if allTenants {
 			tenants, err = stores.AllTenants(ctx.Context())
 			if err != nil {
 				return err
 			}
-		} else if tenants[0] == "" {
-			return cliError("--tenant is required (or pass --all-tenants)")
+			if len(tenants) == 0 {
+				ctx.Info("no tenants to rebuild")
+				return nil
+			}
 		}
 
-		for _, tenantID := range tenants {
-			oldTarget, newTarget, err := rebuilder.Rebuild(ctx.Context(), tenantID)
-			if err != nil {
-				return err
-			}
-			ctx.Success(fmt.Sprintf("tenant %s: built %s (was %q), status=soaking", tenantID, newTarget, oldTarget))
-			if ctx.Bool("drop-old") {
-				if oldTarget == "" {
-					if proj == "graph" {
-						oldTarget = "tenant_" + tenantID // the unversioned initial live graph
-					} else {
-						oldTarget = "v1" // the initial live search model
-					}
-				}
-				if err := rebuilder.Finalize(ctx.Context(), tenantID, oldTarget); err != nil {
-					return err
-				}
-				ctx.Success(fmt.Sprintf("tenant %s: dropped %s, status=live", tenantID, oldTarget))
-			} else {
-				ctx.Info(fmt.Sprintf("soak, then: fabriq rebuild finalize --tenant %s --old %s", tenantID, oldTarget))
+		for _, tid := range tenants {
+			if err := rebuildTenant(ctx, rebuilder, proj, tid); err != nil {
+				return fmt.Errorf("tenant %s: %w", tid, err)
 			}
 		}
 		return nil
@@ -180,26 +171,23 @@ func rebuildCommand() cli.Command {
 		if !ok {
 			return errMissingDSN
 		}
-		falkorAddr := ctx.String("falkordb")
-		if falkorAddr == "" {
-			falkorAddr = os.Getenv("FABRIQ_FALKORDB_ADDR")
-		}
+		cfg := operatorStoreConfig(ctx, dsn)
 		tenantID := ctx.String("tenant")
-		if tenantID == "" || falkorAddr == "" {
-			return cliError("--tenant and --falkordb are required")
+		if tenantID == "" || cfg.FalkorDB.Addr == "" {
+			return usageError("--tenant and --falkordb (or FABRIQ_FALKORDB_ADDR) are required")
 		}
-		r := registry.New()
-		if err := domain.RegisterAll(r); err != nil {
+		r, err := operatorRegistry(os.Getenv, &cfg)
+		if err != nil {
 			return err
 		}
-		_, stores, err := fabriq.Open(ctx.Context(), r, fabriq.Config{
-			Postgres: fabriq.PostgresConfig{DSN: dsn},
-			FalkorDB: fabriq.FalkorDBConfig{Addr: falkorAddr},
-		})
+		f, stores, err := fabriq.Open(ctx.Context(), r, cfg)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = stores.Close() }()
+		if serr := refuseSkippedDynamic(os.Stderr, "rebuild finalize", f.LastDynamicSync()); serr != nil {
+			return serr
+		}
 		rebuilder, err := stores.GraphRebuilder(r)
 		if err != nil {
 			return err
@@ -228,26 +216,22 @@ func reconcileCommand() cli.Command {
 		if tenantID == "" {
 			return cliError("--tenant is required")
 		}
-		cfg := fabriq.Config{Postgres: fabriq.PostgresConfig{DSN: dsn}}
-		if addr := orEnv(ctx.String("falkordb"), "FABRIQ_FALKORDB_ADDR"); addr != "" {
-			cfg.FalkorDB.Addr = addr
-		}
-		if addrs := orEnv(ctx.String("elasticsearch"), "FABRIQ_ELASTICSEARCH_ADDRS"); addrs != "" {
-			cfg.Elasticsearch.Addrs = strings.Split(addrs, ",")
-		}
+		cfg := operatorStoreConfig(ctx, dsn)
 		if cfg.FalkorDB.Addr == "" && len(cfg.Elasticsearch.Addrs) == 0 {
 			return cliError("nothing to reconcile: pass --falkordb and/or --elasticsearch")
 		}
-
-		r := registry.New()
-		if err := domain.RegisterAll(r); err != nil {
+		r, err := operatorRegistry(os.Getenv, &cfg)
+		if err != nil {
 			return err
 		}
-		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+		f, stores, err := fabriq.Open(ctx.Context(), r, cfg)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = stores.Close() }()
+		if serr := refuseSkippedDynamic(os.Stderr, "reconcile", f.LastDynamicSync()); serr != nil {
+			return serr
+		}
 
 		repair := ctx.Bool("repair")
 		run := func(name string, rec *projection.Reconciler) error {
@@ -299,9 +283,96 @@ func reconcileCommand() cli.Command {
 	return cmd
 }
 
-func orEnv(v, env string) string {
-	if v != "" {
-		return v
+// rebuildTenant rebuilds one tenant's projection into a fresh target. With
+// --drop-old it also drops the old target and marks the tenant live; without
+// it the tenant stays soaking and the command prints the finalize step.
+func rebuildTenant(ctx cli.CommandContext, rebuilder *projection.Rebuilder, proj, tenantID string) error {
+	oldTarget, newTarget, err := rebuilder.Rebuild(ctx.Context(), tenantID)
+	if err != nil {
+		return err
 	}
-	return os.Getenv(env)
+	ctx.Success(fmt.Sprintf("tenant %s: built %s (was %q), status=soaking", tenantID, newTarget, oldTarget))
+	if !ctx.Bool("drop-old") {
+		ctx.Info(fmt.Sprintf("soak, then: fabriq rebuild finalize --tenant %s --old %s", tenantID, oldTarget))
+		return nil
+	}
+	if oldTarget == "" {
+		if proj == "graph" {
+			oldTarget = "tenant_" + tenantID // the unversioned initial live graph
+		} else {
+			oldTarget = "v1" // the initial live search model
+		}
+	}
+	if err := rebuilder.Finalize(ctx.Context(), tenantID, oldTarget); err != nil {
+		return err
+	}
+	ctx.Success(fmt.Sprintf("tenant %s: dropped %s, status=live", tenantID, oldTarget))
+	return nil
+}
+
+// usageError is a problem with an operator command's flags or environment.
+// It exits 2, where a runtime failure exits 1.
+func usageError(msg string) error { return cli.NewError(msg, exitUsage) }
+
+// operatorStoreConfig is the store config an operator command opens with:
+// the engine addresses and credentials from storeConfigFromEnv, the DSN, and
+// then the --falkordb and --elasticsearch flags over the env addresses.
+func operatorStoreConfig(ctx cli.CommandContext, dsn string) fabriq.Config {
+	cfg := storeConfigFromEnv(os.Getenv)
+	cfg.Postgres.DSN = dsn
+	if addr := ctx.String("falkordb"); addr != "" {
+		cfg.FalkorDB.Addr = addr
+	}
+	if addrs := splitAddrs(ctx.String("elasticsearch")); len(addrs) > 0 {
+		cfg.Elasticsearch.Addrs = addrs
+	}
+	return cfg
+}
+
+// operatorRegistry builds the registry an operator command opens fabriq with
+// and sets cfg.Dynamic.Persist, the way serve does: FABRIQ_DOMAIN_PACK picks
+// the code-registered entities and FABRIQ_DYNAMIC_PERSIST (default true)
+// loads the runtime-defined ones. A bad value in either is a usage error; a
+// pack that fails to register is a runtime one. Catalog mode refuses
+// dynamic.persist, so persistence stays off with a catalog config.
+func operatorRegistry(getenv func(string) string, cfg *fabriq.Config) (*registry.Registry, error) {
+	persist, err := envBool(getenv, "FABRIQ_DYNAMIC_PERSIST", true)
+	if err != nil {
+		return nil, usageError(err.Error())
+	}
+	cfg.Dynamic.Persist = persist && !cfg.Catalog.Enabled()
+
+	r := registry.New()
+	if err := registerDomainPack(r, getenv("FABRIQ_DOMAIN_PACK")); err != nil {
+		if errors.Is(err, errUnknownDomainPack) {
+			return nil, usageError(err.Error())
+		}
+		return nil, err
+	}
+	return r, nil
+}
+
+// refuseSkippedDynamic stops an operator command when the Open-time dynamic
+// sync left out a persisted type for any reason other than its name being
+// registered in code (an unreadable or newer-format row, a table that could
+// not be ensured). Such a type is missing from the registry, so a rebuild
+// would build a target without it and --drop-old would drop its projection
+// data. It prints each "entity: reason" to w and returns a runtime error
+// (exit 1) before any projection is touched.
+func refuseSkippedDynamic(w io.Writer, command string, res fabriq.DynamicSyncResult) error {
+	names := make([]string, 0, len(res.Skipped))
+	for name, reason := range res.Skipped {
+		if reason != "registered in code" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		_, _ = fmt.Fprintf(w, "%s: %s\n", name, res.Skipped[name])
+	}
+	return fmt.Errorf("%s: %d persisted entity type(s) could not be loaded (%s); fix or drop them first",
+		command, len(names), strings.Join(names, ", "))
 }

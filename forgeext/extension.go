@@ -2,6 +2,7 @@ package forgeext
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -200,9 +201,21 @@ func (e *Extension) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if e.cfg.RequireRLS {
+		if err := requireRLS(ctx, stores); err != nil {
+			_ = fab.Close()
+			return err
+		}
+	}
 	e.mu.Lock()
 	e.fab, e.stores = fab, stores
 	e.mu.Unlock()
+	if log := e.Logger(); log != nil {
+		for name, reason := range fab.LastDynamicSync().Skipped {
+			log.Warn("fabriq: dynamic entity skipped",
+				forge.String("entity", name), forge.String("reason", reason))
+		}
+	}
 	e.MarkStarted()
 	return nil
 }
@@ -244,6 +257,49 @@ func (e *Extension) Health(ctx context.Context) error {
 		return fmt.Errorf("fabriq: stores not open")
 	}
 	return stores.Postgres.Grove().Ping(ctx)
+}
+
+// requireRLS refuses a Postgres role that bypasses row-level security. It
+// checks every source-of-truth shard, since each may connect as its own role.
+// Catalog mode has no shared Postgres store and is not checked here.
+func requireRLS(ctx context.Context, stores *fabriq.Stores) error {
+	if stores == nil || stores.Postgres == nil {
+		return nil
+	}
+	for _, sp := range stores.ShardPGs() {
+		bypass, err := sp.PG.BypassesRLS(ctx)
+		if err != nil {
+			return err
+		}
+		if bypass {
+			return errors.New("fabriq: the serving role bypasses row-level security (superuser or BYPASSRLS), so tenants would not be isolated; connect as a NOSUPERUSER NOBYPASSRLS role (fabriq migrate app-role) or set FABRIQ_ALLOW_RLS_BYPASS=true for local development")
+		}
+	}
+	return nil
+}
+
+// Ready reports whether the extension can serve: the facade is open, Postgres
+// answers a ping and, when Redis is configured, Redis answers too. Unlike
+// Health there is no grace period, and it is safe to call before Start (it
+// returns "fabriq: not started"). The caller bounds it with ctx.
+func (e *Extension) Ready(ctx context.Context) error {
+	e.mu.Lock()
+	fab, stores := e.fab, e.stores
+	e.mu.Unlock()
+	if fab == nil || stores == nil {
+		return errors.New("fabriq: not started")
+	}
+	if stores.Postgres != nil {
+		if err := stores.Postgres.Ping(ctx); err != nil {
+			return fmt.Errorf("fabriq: postgres is not reachable: %w", err)
+		}
+	}
+	if stores.Redis != nil {
+		if err := stores.Redis.Ping(ctx); err != nil {
+			return fmt.Errorf("fabriq: redis is not reachable: %w", err)
+		}
+	}
+	return nil
 }
 
 // Fabriq returns the opened facade (nil before Start).

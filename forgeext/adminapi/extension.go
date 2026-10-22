@@ -18,6 +18,7 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -92,6 +93,13 @@ type config struct {
 	// attach authMiddleware(store, basePath) via WithRouteOptions to actually
 	// gate requests; WithAuth only wires the key-management surface.
 	KeyStore KeyStore
+	// TenantRegistry is the static-mode tenant registry behind POST/GET
+	// /tenants. When nil (and no catalog), those routes answer 400 "requires
+	// catalog mode". Register auto-provisions one from the fabric DB when
+	// TenantsAdmin is on and the parent has no catalog; set it explicitly with
+	// WithTenantRegistry. A registry makes POST /keys reject an unregistered
+	// tenantId.
+	TenantRegistry TenantRegistry
 	// AdminLoginUser and AdminLoginHash back the dashboard-login surface
 	// (POST {BasePath}/login + /logout), set together via WithAdminLogin.
 	// AdminLoginUser == "" (the default) means login is disabled and
@@ -102,6 +110,16 @@ type config struct {
 	// authDisabled turns OFF secure-by-default auth provisioning. Set via
 	// WithAuthDisabled. See resolveAuthDefaults for the full decision table.
 	authDisabled bool
+	// authRequired makes auth fail closed: no KeyStore is a Register error and
+	// the bootstrap requires a well-formed FABRIQ_ADMIN_KEY. Set via
+	// WithAuthRequired.
+	authRequired bool
+	// noDefaultLogin suppresses the admin/admin default login. Set via
+	// WithoutDefaultLogin.
+	noDefaultLogin bool
+	// operatorOnlyInstanceOps makes raw SQL and destructive schema ops need a
+	// key with CanManageKeys. Set via WithOperatorOnlyInstanceOps.
+	operatorOnlyInstanceOps bool
 	// Authorizer decides per-request whether a capability is permitted. When nil,
 	// NewAdminAPI installs a flagAuthorizer that reproduces the global-flag gates.
 	// Set a host authorizer (e.g. a warden adapter) via WithAuthorizer for per-user RBAC.
@@ -145,8 +163,9 @@ func WithSchemaAdmin() Option { return func(c *config) { c.SchemaAdmin = true } 
 
 // WithTenantsAdmin enables the tenant-management endpoints — list/get plus the
 // suspend/resume lifecycle (the HTTP twin of the `fabriq tenant` CLI). These
-// are instance-global, catalog-mode-only operations; leave OFF unless the host
-// guards the admin API and runs db-per-tenant.
+// are instance-global operations; leave OFF unless the host guards the admin
+// API. Without a catalog, Register also provisions the static tenant registry
+// (POST/GET /tenants), which makes POST /keys check tenantId against it.
 func WithTenantsAdmin() Option { return func(c *config) { c.TenantsAdmin = true } }
 
 // WithAnalyticsAdmin enables the cross-tenant analytics sink endpoints —
@@ -207,16 +226,65 @@ func WithAdminLogin(username, password string) Option {
 	}
 }
 
+// WithTenantRegistry sets the static-mode tenant registry that serves
+// POST/GET /tenants when the fabric runs without a catalog. With a registry
+// set, POST /keys also refuses a tenantId that is not registered (404).
+func WithTenantRegistry(r TenantRegistry) Option {
+	return func(c *config) { c.TenantRegistry = r }
+}
+
 // WithAuthDisabled turns OFF secure-by-default auth: no KeyStore is
 // auto-provisioned and the admin API is served without authentication. Use for
 // trusted internal deployments or tests that intentionally run keyless.
 func WithAuthDisabled() Option { return func(c *config) { c.authDisabled = true } }
+
+// WithAuthRequired makes auth fail closed for a hosted server. Register
+// returns an error when no KeyStore can be provisioned (no WithAuth and no
+// reachable Postgres DB) or when WithAuthDisabled is also set, instead of
+// serving the admin API unauthenticated. Start then requires FABRIQ_ADMIN_KEY
+// to hold a well-formed key (fq_ followed by at least 32 letters or digits)
+// and never generates and logs a bootstrap key.
+//
+// WithAuthRequired alone does not turn off the default admin/admin dashboard
+// login. A hosted server passes WithoutDefaultLogin as well.
+func WithAuthRequired() Option { return func(c *config) { c.authRequired = true } }
+
+// WithOperatorOnlyInstanceOps limits the admin routes that reach past one
+// tenant to operator keys, the ones with CanManageKeys. With it set, these
+// answer 403 for any other key:
+//
+//	POST   {BasePath}/query                        raw SQL (query.raw)
+//	DELETE {BasePath}/schema/:type                 drop a dynamic type
+//	DELETE {BasePath}/schema/:type/fields/:column  drop a field
+//	POST   {BasePath}/schema/:type/rename-field    rename a field
+//
+// Raw SQL runs as the serving role, which can read instance tables that RLS
+// does not fence (API keys, the tenant registry), and a dynamic type's table
+// is shared by every tenant, so dropping or renaming it touches them all.
+// Defining a type and adding fields stay open to any key. A request with no
+// resolved key (auth off) is refused too, so the gate fails closed. A hosted
+// server (fabriq serve) sets this; library defaults leave it off.
+func WithOperatorOnlyInstanceOps() Option {
+	return func(c *config) { c.operatorOnlyInstanceOps = true }
+}
+
+// WithoutDefaultLogin stops secure-by-default auth from enabling the admin/admin
+// dashboard login. Login stays off unless the host sets WithAdminLogin.
+func WithoutDefaultLogin() Option { return func(c *config) { c.noDefaultLogin = true } }
+
+// errAuthRequiredDisabled and errAuthRequiredNoDB are the resolveAuthDefaults
+// refusals under WithAuthRequired.
+var (
+	errAuthRequiredDisabled = errors.New("adminapi: WithAuthRequired conflicts with WithAuthDisabled")
+	errAuthRequiredNoDB     = errors.New("adminapi: auth is required but no Postgres DB is reachable")
+)
 
 // authDecision is the outcome of secure-by-default resolution. Start applies it.
 type authDecision struct {
 	ProvisionKeyStore bool   // build NewKeyStore(gdb) — only meaningful when a DB is available
 	DefaultLogin      bool   // set the admin/admin login surface
 	Warn              string // non-empty → log once at Start
+	Err               error  // non-nil → Register fails (WithAuthRequired cannot be met)
 }
 
 // resolveAuthDefaults decides secure-by-default behavior WITHOUT side effects.
@@ -226,14 +294,27 @@ type authDecision struct {
 //     AdminLoginUser was configured (explicit creds are preserved).
 //   - not disabled, no KeyStore, no DB → provision nothing + warn (auth wanted
 //     but cannot be enforced without a DB; keeps nil-parent tests auth-off).
+//
+// WithAuthRequired turns both escape hatches into errors: required together
+// with disabled is a conflict, and required with no KeyStore and no DB fails
+// instead of warning. WithoutDefaultLogin suppresses the default login.
 func resolveAuthDefaults(cfg config, hasDB bool) authDecision {
+	if cfg.authRequired && cfg.authDisabled {
+		return authDecision{Err: errAuthRequiredDisabled}
+	}
 	if cfg.authDisabled || cfg.KeyStore != nil {
 		return authDecision{}
 	}
 	if !hasDB {
+		if cfg.authRequired {
+			return authDecision{Err: errAuthRequiredNoDB}
+		}
 		return authDecision{Warn: "auth is on by default but no Postgres DB is reachable — admin API is UNAUTHENTICATED; provide WithAuth or a Postgres-backed fabric, or set WithAuthDisabled to silence this"}
 	}
-	return authDecision{ProvisionKeyStore: true, DefaultLogin: cfg.AdminLoginUser == ""}
+	return authDecision{
+		ProvisionKeyStore: true,
+		DefaultLogin:      cfg.AdminLoginUser == "" && !cfg.noDefaultLogin,
+	}
 }
 
 // Extension exposes the fabriq data fabric as a read-only admin HTTP surface.
@@ -329,7 +410,35 @@ func (e *Extension) Register(app forge.App) error {
 	if err := e.applyAuthDefaults(); err != nil {
 		return err
 	}
+	e.applyTenantRegistryDefault()
 	return app.RegisterController(newAdminController(e))
+}
+
+// applyTenantRegistryDefault auto-provisions the static-mode tenant registry
+// from the fabric DB when shouldProvisionTenantRegistry says so.
+func (e *Extension) applyTenantRegistryDefault() {
+	gdb := groveFromParent(e)
+	hasCatalog := false
+	if e.parent != nil {
+		if stores := e.parent.Stores(); stores != nil && stores.Catalog != nil {
+			hasCatalog = true
+		}
+	}
+	if !shouldProvisionTenantRegistry(e.cfg, gdb != nil, hasCatalog) {
+		return
+	}
+	e.cfg.TenantRegistry = NewTenantRegistry(gdb)
+}
+
+// shouldProvisionTenantRegistry decides whether Register builds the static
+// tenant registry itself. It only does so for a host that turned the tenant
+// endpoints on (WithTenantsAdmin), has a reachable DB, runs without a catalog
+// (db-per-tenant keeps its own directory) and set no registry of its own. A
+// registry also makes POST /keys check that tenantId is registered, so every
+// other static user keeps the old behaviour unless they pass
+// WithTenantRegistry.
+func shouldProvisionTenantRegistry(cfg config, hasDB, hasCatalog bool) bool {
+	return cfg.TenantsAdmin && cfg.TenantRegistry == nil && hasDB && !hasCatalog
 }
 
 // applyAuthDefaults resolves and applies secure-by-default auth: auto-provision a
@@ -339,6 +448,9 @@ func (e *Extension) Register(app forge.App) error {
 // Register) observes the resulting config.
 func (e *Extension) applyAuthDefaults() error {
 	d := resolveAuthDefaults(e.cfg, groveFromParent(e) != nil)
+	if d.Err != nil {
+		return d.Err
+	}
 	if d.Warn != "" {
 		log.Printf("adminapi: %s", d.Warn)
 	}
@@ -380,6 +492,11 @@ func (e *Extension) Start(ctx context.Context) error {
 	if e.cfg.AdminLoginUser != "" && e.cfg.KeyStore == nil {
 		return fmt.Errorf("adminapi: WithAdminLogin requires WithAuth")
 	}
+	// The same fail-closed rule Register enforces, for a Start that skipped
+	// Register: required auth with no KeyStore must not serve keyless.
+	if e.cfg.authRequired && e.cfg.KeyStore == nil {
+		return errAuthRequiredNoDB
+	}
 
 	f := e.parent.Fabriq()
 	if f == nil {
@@ -418,13 +535,23 @@ func (e *Extension) Start(ctx context.Context) error {
 	// When auth is enabled, ensure a usable can-manage-keys admin key exists so
 	// an operator is never locked out of a fresh install (env-supplied via
 	// FABRIQ_ADMIN_KEY, otherwise one generated + logged once). Idempotent.
+	// Under WithAuthRequired only a well-formed FABRIQ_ADMIN_KEY is accepted.
 	if e.cfg.KeyStore != nil {
-		if err := bootstrapAdminKey(ctx, e.cfg.KeyStore); err != nil {
+		if err := bootstrapAdminKey(ctx, e.cfg.KeyStore, e.cfg.authRequired); err != nil {
 			return fmt.Errorf("fabriq-admin-api: bootstrap admin key: %w", err)
 		}
 	}
 
 	e.MarkStarted()
+	return nil
+}
+
+// Ready reports whether Start has completed. The admin API is ready to serve
+// once it has resolved the fabriq facade and bootstrapped its admin key.
+func (e *Extension) Ready(_ context.Context) error {
+	if !e.IsStarted() {
+		return errors.New("fabriq-admin-api: not started")
+	}
 	return nil
 }
 

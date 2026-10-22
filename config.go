@@ -53,6 +53,8 @@ type Config struct {
 	Subscriptions SubscriptionsConfig `yaml:"subscriptions" json:"subscriptions"`
 	Cache         CacheConfig         `yaml:"cache" json:"cache"`
 	Encryption    EncryptionConfig    `yaml:"encryption" json:"encryption"`
+	// Dynamic configures persistence of runtime-defined entity types.
+	Dynamic DynamicConfig `yaml:"dynamic" json:"dynamic"`
 	// CustomAppliers are consumer-supplied projection appliers, unioned after
 	// the built-in declarative applier for their Target. They MUST be pure (see
 	// projection.CustomApplier). The same set feeds both the live engines and
@@ -317,6 +319,18 @@ type DocumentsConfig struct {
 	ArchiveHistory bool `yaml:"archiveHistory" json:"archiveHistory"`
 }
 
+// DynamicConfig configures persistence of runtime-defined ("dynamic") entity
+// types. With Persist on, DefineDynamic and friends save each descriptor to
+// fabriq_dynamic_entity, Open reloads them, and SyncPersistedDynamic picks up
+// changes other instances made. Static mode only.
+type DynamicConfig struct {
+	// Persist turns descriptor persistence on.
+	Persist bool `yaml:"persist" json:"persist"`
+	// SyncInterval is how often the worker re-syncs persisted descriptors
+	// (0 = 15s).
+	SyncInterval time.Duration `yaml:"syncInterval" json:"syncInterval"`
+}
+
 // Validate checks cross-field consistency. It does not dial anything.
 func (c Config) Validate() error {
 	if len(c.Shards) > 0 {
@@ -352,6 +366,9 @@ func (c Config) Validate() error {
 				return fmt.Errorf("fabriq: config: shardPins: tenant %q pinned to unknown shard %q", tid, sid)
 			}
 		}
+	}
+	if c.Dynamic.Persist && c.Catalog.Enabled() {
+		return fmt.Errorf("fabriq: dynamic.persist is static-mode only")
 	}
 	if c.Catalog.Enabled() {
 		if len(c.Shards) > 0 || len(c.ShardPins) > 0 {

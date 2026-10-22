@@ -29,6 +29,59 @@ func TestResolveAuthDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveAuthDefaults_RequiredWithoutDB_Errors(t *testing.T) {
+	var cfg config
+	WithAuthRequired()(&cfg)
+	d := resolveAuthDefaults(cfg, false)
+	if d.Err == nil {
+		t.Fatalf("required without DB: got %+v, want an error", d)
+	}
+	if got, want := d.Err.Error(), "adminapi: auth is required but no Postgres DB is reachable"; got != want {
+		t.Errorf("err = %q, want %q", got, want)
+	}
+	if d.Warn != "" || d.ProvisionKeyStore || d.DefaultLogin {
+		t.Errorf("required without DB: got %+v, want only the error", d)
+	}
+
+	// An explicit KeyStore satisfies the requirement without a DB.
+	cfg.KeyStore = stubStore{}
+	if d := resolveAuthDefaults(cfg, false); d.Err != nil {
+		t.Errorf("required with explicit store: err = %v, want nil", d.Err)
+	}
+}
+
+func TestResolveAuthDefaults_RequiredAndDisabled_Errors(t *testing.T) {
+	var cfg config
+	WithAuthRequired()(&cfg)
+	WithAuthDisabled()(&cfg)
+	for _, hasDB := range []bool{true, false} {
+		d := resolveAuthDefaults(cfg, hasDB)
+		if d.Err == nil {
+			t.Fatalf("hasDB=%v: got %+v, want an error", hasDB, d)
+		}
+		if got, want := d.Err.Error(), "adminapi: WithAuthRequired conflicts with WithAuthDisabled"; got != want {
+			t.Errorf("hasDB=%v: err = %q, want %q", hasDB, got, want)
+		}
+	}
+}
+
+func TestResolveAuthDefaults_WithoutDefaultLogin(t *testing.T) {
+	var cfg config
+	WithoutDefaultLogin()(&cfg)
+	d := resolveAuthDefaults(cfg, true)
+	if !d.ProvisionKeyStore {
+		t.Errorf("got %+v, want the KeyStore still provisioned", d)
+	}
+	if d.DefaultLogin {
+		t.Errorf("got %+v, want no default login", d)
+	}
+
+	WithAuthRequired()(&cfg)
+	if d := resolveAuthDefaults(cfg, true); d.Err != nil || !d.ProvisionKeyStore || d.DefaultLogin {
+		t.Errorf("required + no default login: got %+v, want provision, no login, no error", d)
+	}
+}
+
 // stubStore is a no-op KeyStore for the "explicit store" case.
 type stubStore struct{}
 

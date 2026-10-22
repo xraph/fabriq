@@ -6,9 +6,9 @@ description: >-
   plus an advisory-locked schema-migration hook. Datastores are external
   by default.
 type: application
-version: 0.1.0
+version: 1.9.0
 # Tracks the fabriq module version; image tag defaults to this.
-appVersion: "0.1.0"
+appVersion: "1.9.0"
 keywords:
   - fabriq
   - data-fabric

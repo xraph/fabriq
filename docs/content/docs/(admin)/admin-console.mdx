@@ -103,6 +103,49 @@ By default the demo runs **unauthenticated** — the console loads straight in. 
 credentials, enable [authentication](/docs/authentication) and, optionally, a
 [dashboard login](/docs/authentication#dashboard-login).
 
+## Running the container image
+
+The console also ships as an image, `ghcr.io/xraph/fabriq-admin` (version `0.1.0`, also tagged `0.1`, for `linux/amd64` and `linux/arm64`). It serves the built console on port `8080` and can proxy the admin API of a [hosted server](/docs/deployment#hosted-server), so the browser only ever talks to one origin.
+
+```yaml
+services:
+  fabriq:
+    image: ghcr.io/xraph/fabriq:1.9.0
+    environment:
+      FABRIQ_POSTGRES_DSN: postgres://fabriq_app:...@pg:5432/fabriq?sslmode=require
+      FABRIQ_REDIS_ADDR: redis:6379
+      FABRIQ_ADMIN_API: "true"
+      FABRIQ_ADMIN_KEY: ${FABRIQ_ADMIN_KEY}
+      FABRIQ_DOMAIN_PACK: none
+
+  fabriq-admin:
+    image: ghcr.io/xraph/fabriq-admin:0.1.0
+    ports: ["8080:8080"]
+    read_only: true
+    tmpfs: ["/tmp"]
+    environment:
+      FABRIQ_ADMIN_UPSTREAM: http://fabriq:8081
+      FABRIQ_ADMIN_UPSTREAM_KEY: ${CONSOLE_KEY}
+      FABRIQ_ADMIN_DEFAULT_TENANT: acme
+```
+
+The published port in the example is for local use. In a real deployment, leave it off and reach the container only through your authenticated proxy.
+
+`GET /healthz` returns 200 `ok`, which is what your orchestrator should probe. The container runs as uid 101 and only needs `/tmp` to be writable, so a read-only root filesystem works with an `emptyDir` or a tmpfs mounted there. If an environment value is invalid, the container exits 1 at start.
+
+| Variable | Meaning |
+| --- | --- |
+| `FABRIQ_ADMIN_UPSTREAM` | The fabriq server's origin, for example `http://fabriq:8081`. The container proxies `/admin/` there, and server-sent events pass through. |
+| `FABRIQ_ADMIN_UPSTREAM_KEY` | A key that can manage keys. The proxy adds it as `Authorization: Bearer` and overrides anything the browser sends. |
+| `FABRIQ_ADMIN_BASE_PATH` | The external prefix a prefix-stripping proxy serves the console under. Defaults to `/`, and must start and end with `/`. |
+| `FABRIQ_ADMIN_DEFAULT_TENANT` | The tenant preselected when the browser hasn't chosen one. |
+| `FABRIQ_ADMIN_API_URL` | The admin API URL, for when you aren't proxying. |
+| `FABRIQ_ADMIN_MAP_STYLE_URL` | An optional map style for the spatial surface. |
+
+For the upstream key, issue a dedicated multi-tenant key with `canManageKeys` on, labelled something like `fabriq-admin-console`, so you can revoke it without touching anything else. The bootstrap `FABRIQ_ADMIN_KEY` works too. With a key injected, the console needs no login.
+
+That also means the container is a way into your server for anyone who can reach it. Put it behind your own authenticated proxy and never route it to the public internet.
+
 ## Mounting into a host app
 
 The console is a library. Import `<FabriqAdmin>` from `@fabriq/admin-sdk` and give it a

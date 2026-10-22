@@ -1,6 +1,7 @@
 package forgeext
 
 import (
+	"os"
 	"strings"
 	"time"
 
@@ -61,6 +62,12 @@ type Config struct {
 	// (unnamed) grove.DB. Mirrors xraph/authsome's GroveDatabase knob. Read
 	// from extensions.fabriq.groveDatabase when unset programmatically.
 	GroveDatabase string
+	// RequireRLS makes Start refuse a Postgres role that bypasses row-level
+	// security (a superuser or a BYPASSRLS role). In the shared-database modes
+	// RLS is the only tenant fence, so a hosted server sets this unless an
+	// operator opts out for local development. It has no effect in catalog
+	// mode, where isolation is per database or schema.
+	RequireRLS bool
 }
 
 // Option is a functional option for Config.
@@ -73,6 +80,11 @@ func WithConfig(c fabriq.Config) Option { return func(o *Config) { o.Fabriq = c 
 // when no Postgres DSN/shards are configured (empty = the default unnamed
 // grove.DB). Mirrors xraph/authsome's grove-database selection.
 func WithGroveDatabase(name string) Option { return func(o *Config) { o.GroveDatabase = name } }
+
+// WithRequireRLS makes Start refuse to serve when the Postgres role bypasses
+// row-level security (a superuser or a BYPASSRLS role). Pass false to allow it,
+// for local development against a superuser DSN.
+func WithRequireRLS(on bool) Option { return func(o *Config) { o.RequireRLS = on } }
 
 // WithWorker enables or disables the background reconcile worker.
 func WithWorker(on bool) Option { return func(o *Config) { o.RunWorker = on } }
@@ -145,6 +157,10 @@ func WithCustomAppliers(a ...projection.CustomApplier) Option {
 // cmd/fabriq's loadFabriqConfig; the elasticsearch.addrs GetStringSlice
 // handling is preserved (confy does not split a comma env string into a Go
 // slice).
+//
+// With prefix "" the store credentials are also read from the bare FABRIQ_*
+// variables (see overlayStoreCredentialsFromEnv). A host app's
+// extensions.fabriq.* config never picks those up.
 func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 	var cfg fabriq.Config
 	if cm == nil {
@@ -175,10 +191,35 @@ func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 	bind("projections", &cfg.Projections)
 	bind("subscriptions", &cfg.Subscriptions)
 	bind("storage", &cfg.Storage)
+	bind("dynamic", &cfg.Dynamic)
 	if cm.IsSet(prefix + "elasticsearch.addrs") {
 		cfg.Elasticsearch.Addrs = cm.GetStringSlice(prefix + "elasticsearch.addrs")
 	}
+	if prefix == "" {
+		overlayStoreCredentialsFromEnv(&cfg, os.Getenv)
+	}
 	return cfg
+}
+
+// overlayStoreCredentialsFromEnv sets the Redis, FalkorDB and Elasticsearch
+// usernames and passwords from FABRIQ_REDIS_USERNAME, FABRIQ_REDIS_PASSWORD,
+// FABRIQ_FALKORDB_USERNAME, FABRIQ_FALKORDB_PASSWORD,
+// FABRIQ_ELASTICSEARCH_USERNAME and FABRIQ_ELASTICSEARCH_PASSWORD. A non-empty
+// value wins over config.yaml, like the rest of FABRIQ_*; an empty one leaves
+// the file's value alone. The config manager's own env overlay usually binds
+// these already. This makes it hold whatever it does with underscores.
+func overlayStoreCredentialsFromEnv(cfg *fabriq.Config, getenv func(string) string) {
+	set := func(target *string, key string) {
+		if v := getenv(key); v != "" {
+			*target = v
+		}
+	}
+	set(&cfg.Redis.Username, "FABRIQ_REDIS_USERNAME")
+	set(&cfg.Redis.Password, "FABRIQ_REDIS_PASSWORD")
+	set(&cfg.FalkorDB.Username, "FABRIQ_FALKORDB_USERNAME")
+	set(&cfg.FalkorDB.Password, "FABRIQ_FALKORDB_PASSWORD")
+	set(&cfg.Elasticsearch.Username, "FABRIQ_ELASTICSEARCH_USERNAME")
+	set(&cfg.Elasticsearch.Password, "FABRIQ_ELASTICSEARCH_PASSWORD")
 }
 
 // WithLifecycleHooks installs transaction hooks on the command executor.

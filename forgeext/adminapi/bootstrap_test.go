@@ -2,9 +2,11 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,10 +97,12 @@ func (s *bootstrapKeyStore) Revoke(_ context.Context, id string) error {
 	defer s.mu.Unlock()
 	rec, ok := s.byID[id]
 	if !ok {
-		return fmt.Errorf("bootstrapKeyStore: unknown key id %q", id)
+		return ErrKeyNotFound
 	}
-	now := time.Now().UTC()
-	rec.RevokedAt = &now
+	if rec.RevokedAt == nil {
+		now := time.Now().UTC()
+		rec.RevokedAt = &now
+	}
 	return nil
 }
 
@@ -152,7 +156,7 @@ func TestBootstrapAdminKey_EnvKey(t *testing.T) {
 	t.Setenv("FABRIQ_ADMIN_KEY", envKey)
 
 	store := newBootstrapKeyStore()
-	if err := bootstrapAdminKey(context.Background(), store); err != nil {
+	if err := bootstrapAdminKey(context.Background(), store, false); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
@@ -178,10 +182,10 @@ func TestBootstrapAdminKey_EnvKey_Idempotent(t *testing.T) {
 	t.Setenv("FABRIQ_ADMIN_KEY", envKey)
 
 	store := newBootstrapKeyStore()
-	if err := bootstrapAdminKey(context.Background(), store); err != nil {
+	if err := bootstrapAdminKey(context.Background(), store, false); err != nil {
 		t.Fatalf("bootstrap #1: %v", err)
 	}
-	if err := bootstrapAdminKey(context.Background(), store); err != nil {
+	if err := bootstrapAdminKey(context.Background(), store, false); err != nil {
 		t.Fatalf("bootstrap #2: %v", err)
 	}
 
@@ -197,7 +201,7 @@ func TestBootstrapAdminKey_Generated(t *testing.T) {
 	t.Setenv("FABRIQ_ADMIN_KEY", "") // ensure unset for this test
 
 	store := newBootstrapKeyStore()
-	if err := bootstrapAdminKey(context.Background(), store); err != nil {
+	if err := bootstrapAdminKey(context.Background(), store, false); err != nil {
 		t.Fatalf("bootstrap #1: %v", err)
 	}
 	if got := countManageKeys(t, store); got != 1 {
@@ -205,7 +209,7 @@ func TestBootstrapAdminKey_Generated(t *testing.T) {
 	}
 
 	// Idempotent: a manage key already exists → no second key issued.
-	if err := bootstrapAdminKey(context.Background(), store); err != nil {
+	if err := bootstrapAdminKey(context.Background(), store, false); err != nil {
 		t.Fatalf("bootstrap #2: %v", err)
 	}
 	if got := countManageKeys(t, store); got != 1 {
@@ -221,11 +225,115 @@ func TestBootstrapAdminKey_Generated_ExistingManageKey(t *testing.T) {
 	store := newBootstrapKeyStore()
 	store.seed("fq_preexisting", KeyRecord{ID: "pre", TenantID: "", CanManageKeys: true})
 
-	if err := bootstrapAdminKey(context.Background(), store); err != nil {
+	if err := bootstrapAdminKey(context.Background(), store, false); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	if got := countManageKeys(t, store); got != 1 {
 		t.Fatalf("manage keys = %d, want 1 (existing manage key must suppress issue)", got)
+	}
+}
+
+// TestBootstrapAdminKey_Required_MissingEnv_Errors verifies a required
+// bootstrap refuses to run without FABRIQ_ADMIN_KEY and never falls back to
+// generating and logging a key.
+func TestBootstrapAdminKey_Required_MissingEnv_Errors(t *testing.T) {
+	t.Setenv("FABRIQ_ADMIN_KEY", "")
+
+	store := newBootstrapKeyStore()
+	err := bootstrapAdminKey(context.Background(), store, true)
+	if err == nil {
+		t.Fatal("bootstrap: err = nil, want an error for a missing FABRIQ_ADMIN_KEY")
+	}
+	if got, want := err.Error(), "adminapi: FABRIQ_ADMIN_KEY must be set to fq_ followed by at least 32 letters or digits"; got != want {
+		t.Errorf("err = %q, want %q", got, want)
+	}
+	if got := countManageKeys(t, store); got != 0 {
+		t.Fatalf("manage keys = %d, want 0 (the generate path must not run when required)", got)
+	}
+}
+
+// TestBootstrapAdminKey_Required_MalformedEnv_Errors verifies a required
+// bootstrap rejects a key that is too short or carries a character outside
+// letters and digits, and stores nothing.
+func TestBootstrapAdminKey_Required_MalformedEnv_Errors(t *testing.T) {
+	for _, bad := range []string{
+		"fq_short",
+		"fq_" + strings.Repeat("a", 16) + ";" + strings.Repeat("b", 15),
+	} {
+		t.Run(bad, func(t *testing.T) {
+			t.Setenv("FABRIQ_ADMIN_KEY", bad)
+
+			store := newBootstrapKeyStore()
+			err := bootstrapAdminKey(context.Background(), store, true)
+			if err == nil {
+				t.Fatalf("bootstrap(%q): err = nil, want an error", bad)
+			}
+			if got, want := err.Error(), "adminapi: FABRIQ_ADMIN_KEY must be set to fq_ followed by at least 32 letters or digits"; got != want {
+				t.Errorf("err = %q, want %q", got, want)
+			}
+			if got := countManageKeys(t, store); got != 0 {
+				t.Fatalf("manage keys = %d, want 0", got)
+			}
+		})
+	}
+}
+
+// TestBootstrapAdminKey_Required_ValidEnv_Ensures verifies a well-formed key is
+// registered as a multi-tenant manage key, and a second run is a no-op.
+func TestBootstrapAdminKey_Required_ValidEnv_Ensures(t *testing.T) {
+	envKey, _, _, err := generateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	t.Setenv("FABRIQ_ADMIN_KEY", envKey)
+
+	store := newBootstrapKeyStore()
+	for i := range 2 {
+		if err := bootstrapAdminKey(context.Background(), store, true); err != nil {
+			t.Fatalf("bootstrap #%d: %v", i+1, err)
+		}
+	}
+	rec, found, err := store.Lookup(context.Background(), hashKey(envKey))
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if !found {
+		t.Fatal("env key not present after required bootstrap")
+	}
+	if !rec.CanManageKeys || rec.TenantID != "" {
+		t.Errorf("env key = %+v, want a multi-tenant manage key", rec)
+	}
+	if got := countManageKeys(t, store); got != 1 {
+		t.Fatalf("manage keys = %d, want 1", got)
+	}
+}
+
+// TestBootstrapAdminKey_Required_StoreWithoutEnsure_Errors verifies a required
+// bootstrap fails closed when the store cannot register a preset key, even
+// with a well-formed FABRIQ_ADMIN_KEY, and generates nothing.
+func TestBootstrapAdminKey_Required_StoreWithoutEnsure_Errors(t *testing.T) {
+	envKey, _, _, err := generateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	t.Setenv("FABRIQ_ADMIN_KEY", envKey)
+
+	store := newLiveKeyStore() // no Ensure method
+	if err := bootstrapAdminKey(context.Background(), store, true); err == nil {
+		t.Fatal("bootstrap: err = nil, want an error for a store without Ensure")
+	}
+	if got := countManageKeys(t, store); got != 0 {
+		t.Fatalf("manage keys = %d, want 0", got)
+	}
+}
+
+// TestStart_AuthRequiredWithoutKeyStore_Refuses verifies Start fails closed for
+// a caller that skipped Register: required auth with no KeyStore never serves.
+func TestStart_AuthRequiredWithoutKeyStore_Refuses(t *testing.T) {
+	e := NewAdminAPI(nil, WithAuthRequired())
+	err := e.Start(context.Background())
+	if !errors.Is(err, errAuthRequiredNoDB) {
+		t.Fatalf("Start = %v, want %v", err, errAuthRequiredNoDB)
 	}
 }
 

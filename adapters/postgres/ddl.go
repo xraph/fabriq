@@ -84,6 +84,9 @@ func (a *Adapter) execDDL(ctx context.Context, stmt string) error {
 // EnsureDynamic for a non-dynamic entity (Spec.Schema == nil) is an error.
 //
 // Run as the schema owner (superuser DSN), not the RLS-constrained app role.
+// It is safe to run from several processes at once and on every boot: the
+// whole ensure runs in one transaction under a per-table advisory lock, and
+// the RLS step only adds what is missing (see ensureDynamicTx).
 //
 // The entity must be registered in the registry BEFORE the adapter is
 // constructed (fabriq.Open), so the pool-path tenant backstop includes the
@@ -155,20 +158,100 @@ func (a *Adapter) EnsureDynamic(ctx context.Context, ent *registry.Entity) error
 		))
 	}
 
-	// Tenant-isolation RLS — mirrors migrations/0004_rls_policies.go exactly.
-	stmts = append(stmts,
-		fmt.Sprintf(`ALTER TABLE %s ENABLE ROW LEVEL SECURITY`, s.Table),
-		fmt.Sprintf(`ALTER TABLE %s FORCE ROW LEVEL SECURITY`, s.Table),
-		fmt.Sprintf(`DROP POLICY IF EXISTS tenant_isolation ON %s`, s.Table),
-		fmt.Sprintf(`CREATE POLICY tenant_isolation ON %s USING (tenant_id = current_setting('app.tenant_id', true)) WITH CHECK (tenant_id = current_setting('app.tenant_id', true))`, s.Table),
-	)
+	return a.ensureDynamicTx(ctx, s.Table, stmts)
+}
 
-	for _, stmt := range stmts {
-		if err := a.execDDL(ctx, stmt); err != nil {
-			return fmt.Errorf("fabriq: ensure dynamic table %s: %w", s.Table, err)
+// dynamicDDLLockSeed seeds hashtextextended for the per-table advisory lock
+// EnsureDynamic holds. The hashed text carries a "fabriq_dynamic_ddl:" prefix
+// too, so the key cannot meet the document plane's per-doc locks.
+const dynamicDDLLockSeed = 11
+
+// tenantPolicySQL is the tenant-isolation policy every dynamic table gets,
+// mirroring migrations/0004_rls_policies.go exactly.
+const tenantPolicySQL = `CREATE POLICY tenant_isolation ON %s USING (tenant_id = current_setting('app.tenant_id', true)) WITH CHECK (tenant_id = current_setting('app.tenant_id', true))`
+
+// ensureDynamicTx runs the table, column and index statements for one dynamic
+// table, then its RLS step, in a single transaction that holds a
+// transaction-scoped advisory lock keyed on the table name. Every boot, sync
+// pass and reconcile re-runs this, often from several processes at once, so:
+//
+//   - on an existing table it takes ACCESS EXCLUSIVE first, so it never
+//     upgrades a weaker lock mid-transaction and cannot deadlock with a
+//     command transaction's FOR UPDATE then write;
+//   - the advisory lock serialises concurrent ensures of the same table (two
+//     CREATE TABLE IF NOT EXISTS or CREATE POLICY racing each other fail with
+//     a duplicate error otherwise);
+//   - ENABLE and FORCE ROW LEVEL SECURITY run only when pg_class says they
+//     are off;
+//   - the policy is created only when pg_policy has none by that name on the
+//     table. It is never dropped and re-created, so an RLS-bound reader never
+//     meets a forced table with no policy (which reads as zero rows).
+//
+// Name presence is enough for the policy: its definition has not changed
+// since the dynamic lane shipped. If it ever does, compare pg_policies.qual
+// and with_check here and replace the policy inside this same transaction.
+func (a *Adapter) ensureDynamicTx(ctx context.Context, table string, stmts []string) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("fabriq: ensure dynamic table %s: %w", table, translatePg("ddl", "", "", err))
+		}
+	}()
+	tx, err := a.pg.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, $2))`,
+		"fabriq_dynamic_ddl:"+table, dynamicDDLLockSeed); err != nil {
+		return err
+	}
+	// On an existing table, take ACCESS EXCLUSIVE before anything else.
+	// CREATE INDEX IF NOT EXISTS takes SHARE even when the index exists, and
+	// ADD COLUMN IF NOT EXISTS later upgrades that to ACCESS EXCLUSIVE. A
+	// command transaction holding ROW SHARE (SELECT ... FOR UPDATE) that then
+	// wants ROW EXCLUSIVE for its write would deadlock against that upgrade.
+	// Taking the strongest lock first means this transaction never upgrades.
+	var exists bool
+	if qerr := tx.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); qerr != nil {
+		return qerr
+	}
+	if exists {
+		// The name is left unquoted on purpose, like the CREATE TABLE above
+		// and the to_regclass lookup, so all three fold case the same way.
+		// EnsureDynamic has already checked it with ddlValid.
+		if _, err = tx.Exec(ctx, fmt.Sprintf(`LOCK TABLE %s IN ACCESS EXCLUSIVE MODE`, table)); err != nil {
+			return err
 		}
 	}
-	return nil
+	for _, stmt := range stmts {
+		if _, err = tx.Exec(ctx, stmt); err != nil {
+			return err
+		}
+	}
+
+	var enabled, forced, hasPolicy bool
+	if qerr := tx.QueryRow(ctx, `SELECT c.relrowsecurity, c.relforcerowsecurity,
+		EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid AND p.polname = 'tenant_isolation')
+		FROM pg_class c WHERE c.oid = to_regclass($1)`, table).Scan(&enabled, &forced, &hasPolicy); qerr != nil {
+		return qerr
+	}
+	var rls []string
+	if !enabled {
+		rls = append(rls, fmt.Sprintf(`ALTER TABLE %s ENABLE ROW LEVEL SECURITY`, table))
+	}
+	if !forced {
+		rls = append(rls, fmt.Sprintf(`ALTER TABLE %s FORCE ROW LEVEL SECURITY`, table))
+	}
+	if !hasPolicy {
+		rls = append(rls, fmt.Sprintf(tenantPolicySQL, table))
+	}
+	for _, stmt := range rls {
+		if _, err = tx.Exec(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // assertMutableColumn rejects structural columns (id, tenant_id, version) and

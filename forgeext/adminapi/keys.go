@@ -2,9 +2,12 @@ package adminapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/xraph/forge"
+
+	"github.com/xraph/fabriq/core/tenant"
 )
 
 // issueKeyRequest is the request body for POST {BasePath}/keys.
@@ -33,6 +36,12 @@ type keyItem struct {
 	CanManageKeys bool    `json:"canManageKeys"`
 	CreatedAt     string  `json:"createdAt"`
 	RevokedAt     *string `json:"revokedAt,omitempty"`
+	// ExpiresAt is set for expiring keys (dashboard sessions) and omitted for
+	// keys that never expire.
+	ExpiresAt *string `json:"expiresAt,omitempty"`
+	// LastUsedAt is when the key last authenticated a request, accurate to
+	// about a minute. Omitted for a key not used since the upgrade.
+	LastUsedAt *string `json:"lastUsedAt,omitempty"`
 }
 
 // keyListResponse is the payload for GET {BasePath}/keys.
@@ -91,6 +100,11 @@ func (c *adminController) registerKeyRoutes(r forge.Router) error {
 // against any tenant via the X-Tenant-ID selector); a non-empty tenantId
 // scopes the key to that single tenant. On success it returns 201 with
 // {id, prefix, key} — key is the plaintext bearer token, returned once.
+//
+// A non-empty tenantId must be a well-formed tenant id (400 "invalid tenant
+// id"). When a tenant registry is configured, it must also name a registered
+// tenant (404 "unknown tenant"), so a key is never minted for a tenant that
+// does not exist.
 func (c *adminController) handleIssueKey(ctx forge.Context) error {
 	store := c.ext.cfg.KeyStore
 	if store == nil {
@@ -103,6 +117,20 @@ func (c *adminController) handleIssueKey(ctx forge.Context) error {
 	}
 	if req.Label == "" {
 		return forge.BadRequest("field 'label' is required")
+	}
+	if req.TenantID != "" {
+		if !tenant.Valid(req.TenantID) {
+			return ctx.JSON(http.StatusBadRequest, map[string]string{"error": "invalid tenant id"})
+		}
+		if reg := c.ext.cfg.TenantRegistry; reg != nil {
+			_, found, err := reg.Get(ctx.Request().Context(), req.TenantID)
+			if err != nil {
+				return renderError(ctx, err)
+			}
+			if !found {
+				return ctx.JSON(http.StatusNotFound, map[string]string{"error": "unknown tenant"})
+			}
+		}
 	}
 
 	issued, err := store.Issue(ctx.Request().Context(), KeySpec(req))
@@ -141,6 +169,14 @@ func (c *adminController) handleListKeys(ctx forge.Context) error {
 			s := rec.RevokedAt.Format(rfc3339Milli)
 			item.RevokedAt = &s
 		}
+		if rec.ExpiresAt != nil {
+			s := rec.ExpiresAt.Format(rfc3339Milli)
+			item.ExpiresAt = &s
+		}
+		if rec.LastUsedAt != nil {
+			s := rec.LastUsedAt.Format(rfc3339Milli)
+			item.LastUsedAt = &s
+		}
 		items = append(items, item)
 	}
 
@@ -152,7 +188,9 @@ const rfc3339Milli = "2006-01-02T15:04:05.000Z07:00"
 
 // handleRevokeKey serves DELETE {BasePath}/keys/:id.
 //
-// Returns 200 with {revoked: true} on success. A missing id yields 400.
+// Returns 200 with {revoked: true} on success, including a repeat revoke of
+// an already revoked key (the first revokedAt is kept). An unknown id yields
+// 404 "no such key"; a missing id yields 400.
 func (c *adminController) handleRevokeKey(ctx forge.Context) error {
 	store := c.ext.cfg.KeyStore
 	if store == nil {
@@ -165,6 +203,9 @@ func (c *adminController) handleRevokeKey(ctx forge.Context) error {
 	}
 
 	if err := store.Revoke(ctx.Request().Context(), id); err != nil {
+		if errors.Is(err, ErrKeyNotFound) {
+			return ctx.JSON(http.StatusNotFound, map[string]string{"error": "no such key"})
+		}
 		return renderError(ctx, err)
 	}
 

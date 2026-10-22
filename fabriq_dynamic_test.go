@@ -14,7 +14,11 @@ type fakeDDL struct {
 	renamed     []string
 	droppedCols []string
 	failEnsure  bool
+	failDrop    bool
 	guarded     map[string]bool
+	// ops, when set, receives "drop:<table>" entries so tests can assert the
+	// order of DDL against fakeSpecStore calls in one shared log.
+	ops *[]string
 }
 
 func newFakeDDL() *fakeDDL { return &fakeDDL{guarded: map[string]bool{}} }
@@ -35,6 +39,12 @@ func (f *fakeDDL) RenameDynamicColumn(_ context.Context, table, oldName, newName
 	return nil
 }
 func (f *fakeDDL) DropDynamic(_ context.Context, table string) error {
+	if f.failDrop {
+		return errors.New("drop boom")
+	}
+	if f.ops != nil {
+		*f.ops = append(*f.ops, "drop:"+table)
+	}
 	f.dropped = append(f.dropped, table)
 	return nil
 }
@@ -53,7 +63,7 @@ func spec() registry.EntitySpec {
 func TestDefineDynamicRegistersEnsuresGuards(t *testing.T) {
 	reg := registry.New()
 	ddl := newFakeDDL()
-	if err := defineDynamic(context.Background(), reg, ddl, spec()); err != nil {
+	if err := defineDynamic(context.Background(), reg, ddl, nil, nil, spec()); err != nil {
 		t.Fatalf("define: %v", err)
 	}
 	if _, ok := reg.Get("widget"); !ok {
@@ -68,7 +78,7 @@ func TestDefineDynamicRollsBackOnDDLFailure(t *testing.T) {
 	reg := registry.New()
 	ddl := newFakeDDL()
 	ddl.failEnsure = true
-	if err := defineDynamic(context.Background(), reg, ddl, spec()); err == nil {
+	if err := defineDynamic(context.Background(), reg, ddl, nil, nil, spec()); err == nil {
 		t.Fatal("expected error from failing EnsureDynamic")
 	}
 	if _, ok := reg.Get("widget"); ok {
@@ -80,7 +90,7 @@ func TestDefineDynamicRejectsModelled(t *testing.T) {
 	reg := registry.New()
 	ddl := newFakeDDL()
 	bad := registry.EntitySpec{Name: "x", Kind: registry.KindAggregate} // no Schema => not dynamic
-	if err := defineDynamic(context.Background(), reg, ddl, bad); err == nil {
+	if err := defineDynamic(context.Background(), reg, ddl, nil, nil, bad); err == nil {
 		t.Fatal("expected rejection of non-dynamic spec")
 	}
 }
@@ -88,8 +98,8 @@ func TestDefineDynamicRejectsModelled(t *testing.T) {
 func TestDropDynamicUnregistersAndDrops(t *testing.T) {
 	reg := registry.New()
 	ddl := newFakeDDL()
-	_ = defineDynamic(context.Background(), reg, ddl, spec())
-	if err := dropDynamic(context.Background(), reg, ddl, "widget"); err != nil {
+	_ = defineDynamic(context.Background(), reg, ddl, nil, nil, spec())
+	if err := dropDynamic(context.Background(), reg, ddl, nil, nil, "widget"); err != nil {
 		t.Fatalf("drop: %v", err)
 	}
 	if _, ok := reg.Get("widget"); ok {
@@ -103,12 +113,12 @@ func TestDropDynamicUnregistersAndDrops(t *testing.T) {
 func TestAlterDynamicAddsColumnAndEnsures(t *testing.T) {
 	reg := registry.New()
 	ddl := newFakeDDL()
-	if err := defineDynamic(context.Background(), reg, ddl, spec()); err != nil {
+	if err := defineDynamic(context.Background(), reg, ddl, nil, nil, spec()); err != nil {
 		t.Fatalf("define: %v", err)
 	}
 	altered := spec()
 	altered.Schema.Columns = append(altered.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColText})
-	if err := alterDynamic(context.Background(), reg, ddl, altered); err != nil {
+	if err := alterDynamic(context.Background(), reg, ddl, nil, nil, altered); err != nil {
 		t.Fatalf("alter: %v", err)
 	}
 	ent, ok := reg.Get("widget")
@@ -126,10 +136,10 @@ func TestAlterDynamicAddsColumnAndEnsures(t *testing.T) {
 func TestRenameDynamicFieldRenamesColumnAndReRegisters(t *testing.T) {
 	reg := registry.New()
 	ddl := newFakeDDL()
-	if err := defineDynamic(context.Background(), reg, ddl, spec()); err != nil {
+	if err := defineDynamic(context.Background(), reg, ddl, nil, nil, spec()); err != nil {
 		t.Fatalf("define: %v", err)
 	}
-	if err := renameDynamicField(context.Background(), reg, ddl, "widget", "colour", "color"); err != nil {
+	if err := renameDynamicField(context.Background(), reg, ddl, nil, nil, "widget", "colour", "color"); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
 	if len(ddl.renamed) != 1 {
@@ -152,10 +162,10 @@ func TestDropDynamicFieldDropsColumnAndReRegisters(t *testing.T) {
 	ddl := newFakeDDL()
 	s := spec()
 	s.Schema.Columns = append(s.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColText})
-	if err := defineDynamic(context.Background(), reg, ddl, s); err != nil {
+	if err := defineDynamic(context.Background(), reg, ddl, nil, nil, s); err != nil {
 		t.Fatalf("define: %v", err)
 	}
-	if err := dropDynamicField(context.Background(), reg, ddl, "widget", "size"); err != nil {
+	if err := dropDynamicField(context.Background(), reg, ddl, nil, nil, "widget", "size"); err != nil {
 		t.Fatalf("drop field: %v", err)
 	}
 	if len(ddl.droppedCols) != 1 {

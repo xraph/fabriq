@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: The full fabriq command surface — serve the worker, run migrations, inspect state, and rebuild or reconcile projections.
+description: The full fabriq command surface. Serve the worker, run migrations and preflight checks, create the app role, inspect state, and rebuild or reconcile projections.
 ---
 
 `fabriq` is one binary wrapping a forge app in forge/cli `RunApp`. The serve
@@ -23,8 +23,9 @@ subcommand level.
 <Callout type="info">
 Operator commands take a single `--dsn` and are not shard-aware. In a
 [sharded](/docs/sharding) deployment, point `--dsn` at one shard's database and
-run the command once per shard — including `rebuild --all-tenants`, which then
-iterates only that shard's tenants.
+run the command once per shard, including `rebuild --all-tenants`. In static
+mode that covers the registered tenants plus any tenant with projection state on
+the shard you point at.
 </Callout>
 
 The serve path reads everything from the environment:
@@ -33,12 +34,22 @@ The serve path reads everything from the environment:
 | --- | --- | --- |
 | `FABRIQ_POSTGRES_DSN` | yes (to serve) | Source-of-truth Postgres DSN. |
 | `FABRIQ_REDIS_ADDR` | yes (to serve) | Redis address for the event stream and subscriptions. |
+| `FABRIQ_REDIS_USERNAME`, `FABRIQ_REDIS_PASSWORD` | no | Redis ACL user and password. |
 | `FABRIQ_FALKORDB_ADDR` | no | Enables the graph projection consumer. |
+| `FABRIQ_FALKORDB_USERNAME`, `FABRIQ_FALKORDB_PASSWORD` | no | FalkorDB credentials. |
 | `FABRIQ_ELASTICSEARCH_ADDRS` | no | Comma-separated; enables the search projection consumer. |
-| `FABRIQ_HTTP_ADDR` | no | Health + `/metrics` bind address (default `:8081`). |
+| `FABRIQ_ELASTICSEARCH_USERNAME`, `FABRIQ_ELASTICSEARCH_PASSWORD` | no | Elasticsearch basic-auth credentials. |
+| `FABRIQ_HTTP_ADDR` | no | Probes, `/metrics` and admin API bind address (default `:8081`). |
 | `FABRIQ_RECONCILE_INTERVAL` | no | Scheduled reconciler cadence (Go duration; `0` disables; default 5m). |
+| `FABRIQ_DOMAIN_PACK` | no | `example` (default) registers the demo entities, `none` registers none. |
+| `FABRIQ_DYNAMIC_PERSIST` | no | Persist and reload runtime-defined entity types (default `true`). |
+| `FABRIQ_DYNAMIC_SYNC_INTERVAL` | no | How often a process picks up entity types defined by another process (default `15s`). |
 
-## serve — run the worker
+The admin API variables (`FABRIQ_ADMIN_API`, `FABRIQ_ADMIN_KEY`, the dashboard login pair and `FABRIQ_ALLOW_RLS_BYPASS`) are in the [hosted server](/docs/deployment#hosted-server) table.
+
+The operator commands read the credential variables, `FABRIQ_DOMAIN_PACK` and `FABRIQ_DYNAMIC_PERSIST` as well, so a Job that rebuilds a projection needs the same engine password the server uses. `rebuild`, `rebuild finalize` and `reconcile` dial every engine whose address is set in the environment. The address flags still win over the variables.
+
+## serve: run the worker
 
 ```bash
 fabriq serve        # explicit
@@ -52,20 +63,31 @@ relay, the CRDT document materializer, the scheduled reconciler, and the graph
 and search projection consumers. It requires `FABRIQ_POSTGRES_DSN` and
 `FABRIQ_REDIS_ADDR`; FalkorDB and Elasticsearch consumers start only when their
 addresses are set. Singletons are leader-elected, so any number of replicas is
-safe — see [Deployment](/docs/deployment).
+safe (see [Deployment](/docs/deployment)).
 
-## migrate — schema migrations
+With `FABRIQ_ADMIN_API=true` the same process also serves the key-authenticated
+admin API, and `serve` exits 1 if it can't start: an unmigrated database, a
+missing or malformed `FABRIQ_ADMIN_KEY`, a role that bypasses row-level
+security, or a bad environment value. The hosted-server setup is written up in
+[Deployment](/docs/deployment#hosted-server).
+
+## migrate: schema migrations
 
 Migrations are a discrete deploy step, never run at app startup, and connect as
-the schema **owner**. Full detail in [Migrations](/docs/migrations).
+the schema **owner**. Full detail in [Migrations](/docs/migrations). `preflight`
+and `app-role` belong to the same privileged step. See
+[Deployment](/docs/deployment#two-roles-four-steps) for where they sit in the run order.
 
-<Tabs items={['up', 'status', 'down']}>
+<Tabs items={['up', 'status', 'down', 'preflight', 'app-role']}>
 <Tab value="up">
 ```bash
 fabriq migrate up
 ```
 Apply all pending migrations under grove's advisory migration lock. Prints each
 applied migration; says `database is up to date` when there is nothing to do.
+It exits 0 when it applied something or the database was already current, and 1
+on any error (no DSN, a connection or lock failure, a failed statement). Because
+of the lock, it's safe to run concurrently and on every release.
 </Tab>
 <Tab value="status">
 ```bash
@@ -79,9 +101,42 @@ fabriq migrate down
 ```
 Roll back the most recent migration.
 </Tab>
+<Tab value="preflight">
+```bash
+fabriq migrate preflight [--json] [--require timescaledb,vector,postgis]
+```
+Check that the database has the extensions fabriq needs, using a privileged DSN.
+The default required set is `timescaledb`, `vector` and `postgis`, and
+`timescaledb` must be in `shared_preload_libraries`. Without `--json` it prints
+one line per extension and a `problem:` line for each failure. With `--json` it
+prints a report on stdout:
+
+```json
+{"ok":false,"extensions":[{"name":"vector","available":false,"installed":"","preloaded":true,"ok":false}],"problems":["vector: not available"]}
+```
+
+Exit 0 means every required extension is usable, 4 means one is missing or
+`timescaledb` isn't preloaded, and 1 means the check couldn't connect or query.
+Run it before `migrate up`, which skips the pgvector and PostGIS tables without
+a word when those extensions are absent.
+</Tab>
+<Tab value="app-role">
+```bash
+FABRIQ_APP_ROLE_PASSWORD=... fabriq migrate app-role --role fabriq_app
+```
+Create the role `fabriq serve` connects as, or reset it if it exists, with
+`LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION` and the
+schema and table grants it needs. Running it again rotates the password. The
+password is read only from `FABRIQ_APP_ROLE_PASSWORD`, so it never lands in argv.
+Postgres may write it to its log when `log_statement` is `ddl` or `all`.
+
+Exit 0 on success, 2 for a usage problem (no `--role`, no password, an invalid
+role name, or a `--role` equal to the role the DSN connects as), and 1 for a
+database error.
+</Tab>
 </Tabs>
 
-## inspect — registry and projection state
+## inspect: registry and projection state
 
 ```bash
 fabriq inspect registry          # dump registered entity specs (no DB needed)
@@ -101,7 +156,7 @@ graph   model_v3   status=live      target=tenant_acme_v3            stream=...
 search  model_v1   status=live      target=v1                        stream=...
 ```
 
-## rebuild — blue-green projection rebuild
+## rebuild: blue-green projection rebuild
 
 ```bash
 fabriq rebuild --tenant acme --projection graph   --falkordb falkordb:6379
@@ -113,11 +168,11 @@ new target, then flipping the pointer. Flags:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--tenant`, `-t` | — | Tenant to rebuild (required unless `--all-tenants`). |
+| `--tenant`, `-t` | none | Tenant to rebuild (required unless `--all-tenants`). |
 | `--projection`, `-p` | `graph` | `graph` or `search`. |
 | `--falkordb` | `FABRIQ_FALKORDB_ADDR` | Required for graph rebuilds. |
 | `--elasticsearch` | `FABRIQ_ELASTICSEARCH_ADDRS` | Required for search rebuilds. |
-| `--all-tenants` | `false` | Rebuild every tenant in projection state. |
+| `--all-tenants` | `false` | Rebuild every tenant. In static mode that is every tenant in `fabriq_tenant` plus any tenant with projection state. In catalog mode it is the active catalog entries. |
 | `--drop-old` | `false` | Drop the old target immediately instead of soaking. |
 
 Without `--drop-old`, the new target is left `soaking` and the command prints
@@ -131,7 +186,31 @@ fabriq rebuild finalize --tenant acme --old tenant_acme_v2 --falkordb falkordb:6
 `--falkordb` (or `FABRIQ_FALKORDB_ADDR`). Full procedure and semantics in
 [Rebuild & Reconcile](/docs/rebuild-and-reconcile).
 
-## reconcile — drift reconciliation
+To rebuild every tenant of a hosted server from a one-off container, set the
+privileged `FABRIQ_POSTGRES_DSN`, the engine address and credentials, and
+`FABRIQ_DOMAIN_PACK` and `FABRIQ_DYNAMIC_PERSIST` to match the server, then run:
+
+```bash
+fabriq rebuild --projection graph --all-tenants --drop-old
+```
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Every selected tenant was rebuilt. That includes the case where there was nothing to rebuild. |
+| 1 | A runtime error, no DSN, a persisted entity type the command could not load (see below), or a bad `FABRIQ_DOMAIN_PACK` or `FABRIQ_DYNAMIC_PERSIST` value. The binary checks those two settings before any command runs, so they fail the way every other bad setting does. The command stops at the first tenant that fails. The tenants before it stay rebuilt, and rerunning is safe. |
+| 2 | A usage error: a `--projection` other than `graph` or `search`, no tenant selector, or no engine address. |
+
+`rebuild`, `rebuild finalize` and `reconcile` refuse to run when a persisted entity type
+can't be loaded, for example a row in `fabriq_dynamic_entity` written in a newer format or a
+table that couldn't be ensured. That type would be missing from the registry, so a rebuild
+would build a target without it and `--drop-old` would throw its projection data away. The
+command prints each type as `entity: reason` to stderr and exits 1 before it touches any
+projection. Fix or drop the row first. A persisted type whose name is also registered in code
+doesn't count, because the code's definition is the one in use.
+
+## reconcile: drift reconciliation
 
 ```bash
 fabriq reconcile --tenant acme --falkordb falkordb:6379                  # dry run
@@ -144,16 +223,17 @@ projection. Flags:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--tenant`, `-t` | — | Tenant to reconcile (required). |
+| `--tenant`, `-t` | none | Tenant to reconcile (required). |
 | `--falkordb` | `FABRIQ_FALKORDB_ADDR` | Reconcile the graph projection. |
 | `--elasticsearch` | `FABRIQ_ELASTICSEARCH_ADDRS` | Reconcile the search projection. |
 | `--repair` | `false` | Re-emit drifted aggregates through the outbox. |
 
-You must pass at least one of `--falkordb` / `--elasticsearch`. Without
+Like `rebuild`, it exits 1 when a persisted entity type can't be loaded. You
+must pass at least one of `--falkordb` / `--elasticsearch`. Without
 `--repair` it is a dry run that lists drift. With `--repair` it re-emits each
 drifted aggregate through the outbox; it never writes an engine directly. The
-worker also runs this on a schedule — see
-[Rebuild & Reconcile](/docs/rebuild-and-reconcile).
+worker also runs this on a schedule (see
+[Rebuild & Reconcile](/docs/rebuild-and-reconcile)).
 
 ## Forge built-ins
 

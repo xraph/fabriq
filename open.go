@@ -295,6 +295,13 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 	if ds, ok := ports.Documents.(*syncingDocStore); ok {
 		ds.authz = f.settings.docAuthz
 	}
+	if cfg.Dynamic.Persist && stores.Postgres != nil {
+		f.persistDynamic = true
+		if _, err := f.SyncPersistedDynamic(ctx); err != nil {
+			_ = f.Close()
+			return nil, nil, fmt.Errorf("fabriq: load persisted dynamic entities (has \"fabriq migrate up\" run?): %w", err)
+		}
+	}
 	return f, stores, nil
 }
 

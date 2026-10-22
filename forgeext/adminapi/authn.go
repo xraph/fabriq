@@ -6,9 +6,12 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/xraph/grove"
@@ -82,6 +85,11 @@ type KeyRecord struct {
 	// IssueSession) always set it; the authn middleware denies a resolved key
 	// once ExpiresAt is in the past, mirroring how RevokedAt is enforced.
 	ExpiresAt *time.Time
+	// LastUsedAt is when the key last authenticated a request, accurate to
+	// about a minute (the middleware throttles the write). Nil for a key that
+	// has not been used since last_used_at was added. Only List fills it:
+	// Lookup leaves it nil so the auth path never depends on the column.
+	LastUsedAt *time.Time
 }
 
 // KeyStore is the persistence port for hosted-fabriq API keys. It operates on
@@ -103,7 +111,19 @@ type KeyStore interface {
 	// List returns every key as a redacted KeyRecord (no hash/plaintext).
 	List(ctx context.Context) ([]KeyRecord, error)
 	// Revoke stamps revoked_at on the key. The row stays visible to Lookup.
+	// Revoking an already revoked key succeeds and keeps the first revoked_at;
+	// an unknown id returns ErrKeyNotFound.
 	Revoke(ctx context.Context, id string) error
+}
+
+// KeyToucher is an optional KeyStore capability: a store that implements it
+// gets the id of every key that authenticates a request, so it can record the
+// last use. It is type-asserted by the authn middleware rather than added to
+// KeyStore, so existing KeyStore implementations keep compiling and a store
+// without it simply never reports a last use.
+type KeyToucher interface {
+	// Touch records at as the key's last use. An unknown id is not an error.
+	Touch(ctx context.Context, id string, at time.Time) error
 }
 
 // relationalKeyStore is the grove-backed KeyStore. fabriq's relational facade
@@ -225,6 +245,18 @@ func (s *relationalKeyStore) Ensure(ctx context.Context, key string, spec KeySpe
 	return false, nil
 }
 
+// ErrKeyNotFound is returned by KeyStore.Revoke when no key has the given id.
+var ErrKeyNotFound = errors.New("adminapi: api key not found")
+
+// adminKeyPattern is the shape a required FABRIQ_ADMIN_KEY must have: the fq_
+// scheme generateKey uses, then at least 32 letters or digits. Anything else
+// (a short value, whitespace, a quote or a semicolon) is refused at boot.
+var adminKeyPattern = regexp.MustCompile(`^fq_[0-9A-Za-z]{32,}$`)
+
+// errAdminKeyMalformed is the required-bootstrap refusal for a missing or
+// malformed FABRIQ_ADMIN_KEY. It never echoes the value.
+var errAdminKeyMalformed = errors.New("adminapi: FABRIQ_ADMIN_KEY must be set to fq_ followed by at least 32 letters or digits")
+
 // bootstrapAdminKey ensures the instance has a usable can-manage-keys admin key
 // once auth is enabled, so an operator is never locked out of a fresh install.
 //
@@ -235,14 +267,25 @@ func (s *relationalKeyStore) Ensure(ctx context.Context, key string, spec KeySpe
 //   - Otherwise, if the store has no CanManageKeys key yet, Issue one and log the
 //     plaintext ONCE to stderr. If one already exists, do nothing.
 //
+// With required set (WithAuthRequired), FABRIQ_ADMIN_KEY must match
+// adminKeyPattern and the store must support Ensure, otherwise bootstrap
+// returns an error. The generate-and-log path never runs when required.
+//
 // The function is idempotent: the env path relies on ON CONFLICT DO NOTHING, and
 // the generated path only issues when List shows no manage key.
-func bootstrapAdminKey(ctx context.Context, store KeyStore) error {
-	if envKey := os.Getenv("FABRIQ_ADMIN_KEY"); envKey != "" {
+func bootstrapAdminKey(ctx context.Context, store KeyStore, required bool) error {
+	envKey := os.Getenv("FABRIQ_ADMIN_KEY")
+	if required && !adminKeyPattern.MatchString(envKey) {
+		return errAdminKeyMalformed
+	}
+	if envKey != "" {
 		es, ok := store.(interface {
 			Ensure(context.Context, string, KeySpec) (bool, error)
 		})
 		if !ok {
+			if required {
+				return errors.New("adminapi: FABRIQ_ADMIN_KEY is required but this KeyStore cannot register a preset key")
+			}
 			log.Printf("adminapi: FABRIQ_ADMIN_KEY is set but this KeyStore cannot honour a preset key; ignoring")
 			return nil
 		}
@@ -278,6 +321,10 @@ func bootstrapAdminKey(ctx context.Context, store KeyStore) error {
 
 // Lookup resolves a key by hash. No tenant scoping — the table is
 // instance-global. Returns (zero, false, nil) when no row matches.
+//
+// It does not read last_used_at: nothing on the auth path needs it, and
+// leaving it out keeps every authenticated request working on a database that
+// has not run migration 0035 yet.
 func (s *relationalKeyStore) Lookup(ctx context.Context, keyHash string) (KeyRecord, bool, error) {
 	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at
 		FROM fabriq_api_key
@@ -295,18 +342,48 @@ func (s *relationalKeyStore) Lookup(ctx context.Context, keyHash string) (KeyRec
 		return KeyRecord{}, false, nil
 	}
 
-	rec, err := scanKeyRecord(rows)
+	rec, err := scanKeyRecord(rows, false)
 	if err != nil {
 		return KeyRecord{}, false, err
 	}
 	return rec, true, nil
 }
 
+// sqlStateUndefinedColumn is PostgreSQL's undefined_column.
+const sqlStateUndefinedColumn = "42703"
+
+// isUndefinedColumn reports whether err is PostgreSQL's undefined_column. The
+// driver error carries the SQLSTATE through a SQLState method; the text match
+// is a fallback for a driver that only wraps the message.
+func isUndefinedColumn(err error) bool {
+	var st interface{ SQLState() string }
+	if errors.As(err, &st) {
+		return st.SQLState() == sqlStateUndefinedColumn
+	}
+	return err != nil && strings.Contains(err.Error(), "SQLSTATE "+sqlStateUndefinedColumn)
+}
+
 // List returns every stored key as a redacted KeyRecord, newest first.
+//
+// It reports last_used_at when the column exists. On a database that has not
+// run migration 0035 yet the first query fails with undefined_column, and List
+// retries without the column: the keys then simply carry no LastUsedAt until
+// `fabriq migrate up` runs.
 func (s *relationalKeyStore) List(ctx context.Context) ([]KeyRecord, error) {
-	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at
-		FROM fabriq_api_key
-		ORDER BY id DESC`
+	out, err := s.listKeys(ctx, true)
+	if err != nil && isUndefinedColumn(err) {
+		return s.listKeys(ctx, false)
+	}
+	return out, err
+}
+
+// listKeys runs the List query, with or without the last_used_at column.
+func (s *relationalKeyStore) listKeys(ctx context.Context, withLastUsed bool) ([]KeyRecord, error) {
+	q := `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at`
+	if withLastUsed {
+		q += `, last_used_at`
+	}
+	q += ` FROM fabriq_api_key ORDER BY id DESC`
 	rows, err := s.pg.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("adminapi: list api keys: %w", err)
@@ -315,7 +392,7 @@ func (s *relationalKeyStore) List(ctx context.Context) ([]KeyRecord, error) {
 
 	var out []KeyRecord
 	for rows.Next() {
-		rec, err := scanKeyRecord(rows)
+		rec, err := scanKeyRecord(rows, withLastUsed)
 		if err != nil {
 			return nil, err
 		}
@@ -328,25 +405,54 @@ func (s *relationalKeyStore) List(ctx context.Context) ([]KeyRecord, error) {
 }
 
 // Revoke stamps revoked_at (Go time, UTC) on the key. The row stays visible to
-// Lookup — revocation is enforced by the middleware, not by hiding the row.
+// Lookup: revocation is enforced by the middleware, not by hiding the row.
+// COALESCE keeps the first revoked_at, so a retried revoke succeeds without
+// moving the timestamp. An id with no row returns ErrKeyNotFound.
 func (s *relationalKeyStore) Revoke(ctx context.Context, id string) error {
-	const q = `UPDATE fabriq_api_key SET revoked_at = $2 WHERE id = $1`
-	if _, err := s.pg.NewRaw(q, id, time.Now().UTC()).Exec(ctx); err != nil {
+	const q = `UPDATE fabriq_api_key SET revoked_at = COALESCE(revoked_at, $2) WHERE id = $1`
+	res, err := s.pg.NewRaw(q, id, time.Now().UTC()).Exec(ctx)
+	if err != nil {
 		return fmt.Errorf("adminapi: revoke api key: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("adminapi: revoke api key rows: %w", err)
+	}
+	if n == 0 {
+		return ErrKeyNotFound
+	}
+	return nil
+}
+
+// Touch stamps last_used_at on the key. It is the KeyToucher implementation;
+// an id with no row updates nothing and returns nil. The value only moves
+// forward, so a late goroutine or another replica cannot move it back. On a
+// database without migration 0035 it fails with undefined_column, which the
+// middleware drops.
+func (s *relationalKeyStore) Touch(ctx context.Context, id string, at time.Time) error {
+	const q = `UPDATE fabriq_api_key SET last_used_at = GREATEST(COALESCE(last_used_at, $2), $2) WHERE id = $1`
+	if _, err := s.pg.NewRaw(q, id, at.UTC()).Exec(ctx); err != nil {
+		return fmt.Errorf("adminapi: touch api key: %w", err)
 	}
 	return nil
 }
 
 // scanKeyRecord scans one row of the SELECT column list used by Lookup/List
 // into a KeyRecord, mapping the nullable tenant_id/revoked_at columns.
-func scanKeyRecord(rows interface{ Scan(...any) error }) (KeyRecord, error) {
+// withLastUsed says the row also carries the trailing last_used_at column.
+func scanKeyRecord(rows interface{ Scan(...any) error }, withLastUsed bool) (KeyRecord, error) {
 	var (
 		rec     KeyRecord
 		tenant  sql.NullString
 		revoked sql.NullTime
 		expires sql.NullTime
+		lastUse sql.NullTime
 	)
-	if err := rows.Scan(&rec.ID, &rec.Prefix, &tenant, &rec.Label, &rec.CanManageKeys, &rec.CreatedAt, &revoked, &expires); err != nil {
+	dest := []any{&rec.ID, &rec.Prefix, &tenant, &rec.Label, &rec.CanManageKeys, &rec.CreatedAt, &revoked, &expires}
+	if withLastUsed {
+		dest = append(dest, &lastUse)
+	}
+	if err := rows.Scan(dest...); err != nil {
 		return KeyRecord{}, fmt.Errorf("adminapi: scan api key: %w", err)
 	}
 	if tenant.Valid {
@@ -359,6 +465,10 @@ func scanKeyRecord(rows interface{ Scan(...any) error }) (KeyRecord, error) {
 	if expires.Valid {
 		t := expires.Time
 		rec.ExpiresAt = &t
+	}
+	if lastUse.Valid {
+		t := lastUse.Time
+		rec.LastUsedAt = &t
 	}
 	return rec, nil
 }
