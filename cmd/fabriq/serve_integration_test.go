@@ -195,6 +195,13 @@ func TestServe_HostedLifecycle(t *testing.T) {
 	}
 	a.expect(t, http.StatusOK, http.MethodGet, "/_/readyz", "", nil)
 
+	// With no login pair set there is no password login at all, never the
+	// admin/admin default.
+	if code, out := a.do(t, http.MethodPost, "/admin/login", "",
+		map[string]any{"username": "admin", "password": "admin"}); code < 400 {
+		t.Fatalf("POST /admin/login admin/admin = %d, want a refusal; body = %s", code, out)
+	}
+
 	// 4. The bootstrap key registers a tenant without X-Tenant-ID; a retry is 200.
 	a.expect(t, http.StatusCreated, http.MethodPost, "/admin/tenants", bootstrap, map[string]any{"tenantId": "acme"})
 	a.expect(t, http.StatusOK, http.MethodPost, "/admin/tenants", bootstrap, map[string]any{"tenantId": "acme"})

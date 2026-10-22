@@ -33,13 +33,15 @@
 //	FABRIQ_ADMIN_API             (default false: mount the admin API with key auth)
 //	FABRIQ_ADMIN_KEY             (required when FABRIQ_ADMIN_API=true: bootstrap key, fq_ + 32 or more letters or digits)
 //	FABRIQ_ADMIN_LOGIN_USER      (optional, with FABRIQ_ADMIN_LOGIN_PASSWORD: enable POST /admin/login)
-//	FABRIQ_ADMIN_LOGIN_PASSWORD  (optional, with FABRIQ_ADMIN_LOGIN_USER)
+//	FABRIQ_ADMIN_LOGIN_PASSWORD  (optional, with FABRIQ_ADMIN_LOGIN_USER; at most 72 bytes)
 //	FABRIQ_ALLOW_RLS_BYPASS      (default false; development only: let the admin API serve as a superuser or BYPASSRLS role)
 //
-// A malformed serve setting (a bad bool or duration, an unknown pack, half a
-// login pair) fails every command, not just serve, because the config is
-// wrong. FABRIQ_ADMIN_KEY is checked only when the admin API starts, so migrate and
-// the other operator commands never need it.
+// A bad value in FABRIQ_HTTP_ADDR down to FABRIQ_DYNAMIC_SYNC_INTERVAL (a bad
+// duration or bool, an unknown pack) fails every command, because the config
+// is wrong. The admin-only variables (FABRIQ_ADMIN_*, FABRIQ_ALLOW_RLS_BYPASS)
+// are checked only when the server starts, so a bad value there, half a login
+// pair, a login password over 72 bytes or a missing FABRIQ_ADMIN_KEY makes
+// serve exit 1 while migrate and the other operator commands ignore them.
 package main
 
 import (
@@ -84,7 +86,8 @@ func runAppOptions() []cli.RunAppOption {
 // operator commands open their own stores and never serve. Store
 // validation and connection, and the admin API's key check, happen in the
 // extensions' Register and Start, which only app.Start (the serve path)
-// triggers. A malformed serve setting does fail here, for every command.
+// triggers. A bad non-admin serve setting does fail here, for every command;
+// a bad admin-only one fails app.Start instead.
 func setup(_ cli.CommandContext) (forge.App, error) {
 	s, err := loadServeSettings(os.Getenv)
 	if err != nil {

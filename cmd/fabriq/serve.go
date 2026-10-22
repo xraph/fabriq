@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -24,11 +26,23 @@ type serveSettings struct {
 	AdminLoginUser      string        // FABRIQ_ADMIN_LOGIN_USER
 	AdminLoginPassword  string        // FABRIQ_ADMIN_LOGIN_PASSWORD
 	AllowRLSBypass      bool          // FABRIQ_ALLOW_RLS_BYPASS, default false
+
+	// adminErr holds what is wrong with the admin-only variables
+	// (FABRIQ_ADMIN_API, the login pair, FABRIQ_ALLOW_RLS_BYPASS). It fails
+	// the server when it starts, not every command: migrate and the other
+	// operator commands ignore the admin variables.
+	adminErr error
 }
 
-// loadServeSettings reads the serve settings through getenv. Every error names
-// the variable at fault. It does not look at FABRIQ_ADMIN_KEY: the admin API
-// checks that when it starts, so commands that never serve do not need it.
+// maxLoginPasswordBytes is bcrypt's input limit. A longer password cannot be
+// hashed, which would leave the dashboard login answering 401 forever.
+const maxLoginPasswordBytes = 72
+
+// loadServeSettings reads the serve settings through getenv. A bad value in a
+// variable every command depends on is returned as an error. A bad admin-only
+// value is kept in adminErr instead, for registerServe to report at Start.
+// Every error names the variable at fault. FABRIQ_ADMIN_KEY is not read here:
+// the admin API checks it when it starts.
 func loadServeSettings(getenv func(string) string) (serveSettings, error) {
 	s := serveSettings{
 		HTTPAddr:           getenv("FABRIQ_HTTP_ADDR"),
@@ -45,9 +59,6 @@ func loadServeSettings(getenv func(string) string) (serveSettings, error) {
 	if s.DomainPack != "example" && s.DomainPack != "none" {
 		return serveSettings{}, fmt.Errorf("unknown FABRIQ_DOMAIN_PACK %q (want example or none)", s.DomainPack)
 	}
-	if (s.AdminLoginUser == "") != (s.AdminLoginPassword == "") {
-		return serveSettings{}, fmt.Errorf("FABRIQ_ADMIN_LOGIN_USER and FABRIQ_ADMIN_LOGIN_PASSWORD must be set together")
-	}
 
 	var err error
 	if s.ReconcileInterval, err = envDuration(getenv, "FABRIQ_RECONCILE_INTERVAL", 5*time.Minute); err != nil {
@@ -59,12 +70,21 @@ func loadServeSettings(getenv func(string) string) (serveSettings, error) {
 	if s.DynamicSyncInterval, err = envDuration(getenv, "FABRIQ_DYNAMIC_SYNC_INTERVAL", 15*time.Second); err != nil {
 		return serveSettings{}, err
 	}
+
+	var adminErrs []error
 	if s.AdminAPI, err = envBool(getenv, "FABRIQ_ADMIN_API", false); err != nil {
-		return serveSettings{}, err
+		adminErrs = append(adminErrs, err)
 	}
 	if s.AllowRLSBypass, err = envBool(getenv, "FABRIQ_ALLOW_RLS_BYPASS", false); err != nil {
-		return serveSettings{}, err
+		adminErrs = append(adminErrs, err)
 	}
+	if (s.AdminLoginUser == "") != (s.AdminLoginPassword == "") {
+		adminErrs = append(adminErrs, errors.New("FABRIQ_ADMIN_LOGIN_USER and FABRIQ_ADMIN_LOGIN_PASSWORD must be set together"))
+	}
+	if len(s.AdminLoginPassword) > maxLoginPasswordBytes {
+		adminErrs = append(adminErrs, fmt.Errorf("FABRIQ_ADMIN_LOGIN_PASSWORD is %d bytes; bcrypt takes at most %d", len(s.AdminLoginPassword), maxLoginPasswordBytes))
+	}
+	s.adminErr = errors.Join(adminErrs...)
 	return s, nil
 }
 
@@ -101,12 +121,26 @@ func buildServeApp(s serveSettings, cfg fabriq.Config) (forge.App, error) {
 }
 
 // registerServe registers the worker extension, the admin API when
-// s.AdminAPI is on, and the probes on app. It sets cfg.Dynamic from s.
+// s.AdminAPI is on, and the probes on app. It sets cfg.Dynamic from s. When
+// s.adminErr is set it also registers a before-start hook that returns it, so
+// app.Start fails with that error.
 //
 // Catalog mode refuses dynamic.persist, so persistence stays off there whatever
 // FABRIQ_DYNAMIC_PERSIST says; otherwise its default of true would stop every
 // catalog-mode deployment from starting.
 func registerServe(app forge.App, s serveSettings, cfg fabriq.Config) error {
+	if s.adminErr != nil {
+		// Before-start hooks run ahead of every extension's Register and
+		// Start, so a bad admin setting stops the server before it dials
+		// anything, while setup (and so every other command) still succeeds.
+		adminErr := s.adminErr
+		if err := app.RegisterHookFn(forge.PhaseBeforeStart, "fabriq-serve-settings", func(context.Context, forge.App) error {
+			return adminErr
+		}); err != nil {
+			return err
+		}
+	}
+
 	reg := registry.New()
 	if err := registerDomainPack(reg, s.DomainPack); err != nil {
 		return err

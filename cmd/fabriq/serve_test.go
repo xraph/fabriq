@@ -70,32 +70,54 @@ func TestLoadServeSettings_Overrides(t *testing.T) {
 	}
 }
 
+// startError builds the serve app for s over an empty config and returns what
+// app.Start says. A bad admin setting fails in a before-start hook, ahead of
+// any extension, so this does no I/O.
+func startError(t *testing.T, s serveSettings) error {
+	t.Helper()
+	app, err := buildServeApp(s, fabriq.Config{})
+	if err != nil {
+		t.Fatalf("buildServeApp: %v", err)
+	}
+	err = app.Start(context.Background())
+	if err == nil {
+		_ = app.Stop(context.Background())
+		t.Fatal("app.Start succeeded")
+	}
+	return err
+}
+
+// Admin-only problems do not fail loadServeSettings (migrate must not care),
+// they fail app.Start with an error naming the variables.
 func TestLoadServeSettings_LoginPairIncomplete_Errors(t *testing.T) {
 	for name, env := range map[string]map[string]string{
 		"only user":     {"FABRIQ_ADMIN_LOGIN_USER": "ops"},
 		"only password": {"FABRIQ_ADMIN_LOGIN_PASSWORD": "secret"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := loadServeSettings(envFrom(env))
-			if err == nil {
-				t.Fatal("loadServeSettings accepted half a login pair")
+			s, err := loadServeSettings(envFrom(env))
+			if err != nil {
+				t.Fatalf("loadServeSettings: %v, want the problem deferred to Start", err)
 			}
+			if s.adminErr == nil {
+				t.Fatal("half a login pair recorded no admin error")
+			}
+			err = startError(t, s)
 			for _, v := range []string{"FABRIQ_ADMIN_LOGIN_USER", "FABRIQ_ADMIN_LOGIN_PASSWORD"} {
 				if !strings.Contains(err.Error(), v) {
-					t.Errorf("err = %v, want it to name %s", err, v)
+					t.Errorf("Start err = %v, want it to name %s", err, v)
 				}
 			}
 		})
 	}
 }
 
+// Variables every command depends on fail loadServeSettings (and so setup).
 func TestLoadServeSettings_BadValues_Errors(t *testing.T) {
 	for _, tc := range []struct{ key, val string }{
-		{"FABRIQ_ADMIN_API", "maybe"},
 		{"FABRIQ_DYNAMIC_SYNC_INTERVAL", "soon"},
 		{"FABRIQ_DOMAIN_PACK", "x"},
 		{"FABRIQ_DYNAMIC_PERSIST", "perhaps"},
-		{"FABRIQ_ALLOW_RLS_BYPASS", "sometimes"},
 		{"FABRIQ_RECONCILE_INTERVAL", "hourly"},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
@@ -107,6 +129,41 @@ func TestLoadServeSettings_BadValues_Errors(t *testing.T) {
 				t.Fatalf("err = %v, want it to name %s", err, tc.key)
 			}
 		})
+	}
+}
+
+// Bad admin-only values load, then fail app.Start naming the variable.
+func TestLoadServeSettings_BadAdminValues_FailStart(t *testing.T) {
+	for _, tc := range []struct{ key, val string }{
+		{"FABRIQ_ADMIN_API", "maybe"},
+		{"FABRIQ_ALLOW_RLS_BYPASS", "sometimes"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			s, err := loadServeSettings(envFrom(map[string]string{tc.key: tc.val}))
+			if err != nil {
+				t.Fatalf("loadServeSettings: %v, want the problem deferred to Start", err)
+			}
+			if err := startError(t, s); !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("Start err = %v, want it to name %s", err, tc.key)
+			}
+		})
+	}
+}
+
+// bcrypt cannot hash more than 72 bytes, which would leave login always 401.
+func TestLoadServeSettings_LoginPasswordTooLong_FailsStart(t *testing.T) {
+	env := map[string]string{
+		"FABRIQ_ADMIN_LOGIN_USER":     "ops",
+		"FABRIQ_ADMIN_LOGIN_PASSWORD": strings.Repeat("p", 72),
+	}
+	if s := testServeSettings(t, env); s.adminErr != nil {
+		t.Fatalf("a 72-byte password was refused: %v", s.adminErr)
+	}
+
+	env["FABRIQ_ADMIN_LOGIN_PASSWORD"] = strings.Repeat("p", 73)
+	s := testServeSettings(t, env)
+	if err := startError(t, s); !strings.Contains(err.Error(), "FABRIQ_ADMIN_LOGIN_PASSWORD") {
+		t.Fatalf("Start err = %v, want it to name FABRIQ_ADMIN_LOGIN_PASSWORD", err)
 	}
 }
 
@@ -277,35 +334,65 @@ func TestSetup_AdminOn_NoDSN_DoesNoIO(t *testing.T) {
 
 func TestSetup_BadEnv_Errors(t *testing.T) {
 	clearServeEnv(t)
-	t.Setenv("FABRIQ_ADMIN_API", "maybe")
-	if _, err := setup(nil); err == nil || !strings.Contains(err.Error(), "FABRIQ_ADMIN_API") {
-		t.Fatalf("setup err = %v, want an error naming FABRIQ_ADMIN_API", err)
+	t.Setenv("FABRIQ_DYNAMIC_PERSIST", "maybe")
+	if _, err := setup(nil); err == nil || !strings.Contains(err.Error(), "FABRIQ_DYNAMIC_PERSIST") {
+		t.Fatalf("setup err = %v, want an error naming FABRIQ_DYNAMIC_PERSIST", err)
 	}
 }
 
-// `fabriq migrate up` goes through setup too. With the admin API on and no
-// FABRIQ_ADMIN_KEY it must fail only on the missing DSN: nothing may start the
-// admin API or ask for its key.
-func TestMigrateUp_AdminOn_NeverStartsAdminAPI(t *testing.T) {
+// A bad admin-only value builds the app fine and fails only when it starts.
+func TestSetup_BadAdminEnv_FailsAtStart(t *testing.T) {
 	clearServeEnv(t)
-	t.Setenv("FABRIQ_ADMIN_API", "true")
-
-	origArgs := os.Args
-	os.Args = []string{"fabriq", "migrate", "up"}
-	t.Cleanup(func() { os.Args = origArgs })
-
-	r := cli.NewAppRunner(setup)
-	for _, opt := range runAppOptions() {
-		opt(r)
+	t.Setenv("FABRIQ_ADMIN_API", "maybe")
+	app, err := setup(nil)
+	if err != nil {
+		t.Fatalf("setup: %v, want the problem deferred to Start", err)
 	}
-	err := r.Execute()
+	err = app.Start(context.Background())
 	if err == nil {
-		t.Fatal("migrate up without a DSN succeeded")
+		_ = app.Stop(context.Background())
+		t.Fatal("app.Start with FABRIQ_ADMIN_API=maybe succeeded")
 	}
-	if !strings.Contains(err.Error(), string(errMissingDSN)) {
-		t.Fatalf("migrate up err = %v, want the missing-DSN error", err)
+	if !strings.Contains(err.Error(), "FABRIQ_ADMIN_API") {
+		t.Fatalf("Start err = %v, want it to name FABRIQ_ADMIN_API", err)
 	}
-	if strings.Contains(err.Error(), "FABRIQ_ADMIN_KEY") {
-		t.Fatalf("migrate up asked for FABRIQ_ADMIN_KEY: %v", err)
+}
+
+// `fabriq migrate up` goes through setup too. Whatever the admin variables
+// hold, it must fail only on the missing DSN: migrate ignores FABRIQ_ADMIN_*,
+// and nothing may start the admin API or ask for its key.
+func TestMigrateUp_IgnoresAdminSettings(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"admin api on, no key":   {"FABRIQ_ADMIN_API": "true"},
+		"admin api malformed":    {"FABRIQ_ADMIN_API": "maybe"},
+		"only login user":        {"FABRIQ_ADMIN_LOGIN_USER": "ops"},
+		"login password too big": {"FABRIQ_ADMIN_LOGIN_USER": "ops", "FABRIQ_ADMIN_LOGIN_PASSWORD": strings.Repeat("p", 73)},
+		"rls bypass malformed":   {"FABRIQ_ALLOW_RLS_BYPASS": "sometimes"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearServeEnv(t)
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+
+			origArgs := os.Args
+			os.Args = []string{"fabriq", "migrate", "up"}
+			t.Cleanup(func() { os.Args = origArgs })
+
+			r := cli.NewAppRunner(setup)
+			for _, opt := range runAppOptions() {
+				opt(r)
+			}
+			err := r.Execute()
+			if err == nil {
+				t.Fatal("migrate up without a DSN succeeded")
+			}
+			if !strings.Contains(err.Error(), string(errMissingDSN)) {
+				t.Fatalf("migrate up err = %v, want only the missing-DSN error", err)
+			}
+			if strings.Contains(err.Error(), "FABRIQ_ADMIN") || strings.Contains(err.Error(), "FABRIQ_ALLOW_RLS_BYPASS") {
+				t.Fatalf("migrate up complained about an admin variable: %v", err)
+			}
+		})
 	}
 }
