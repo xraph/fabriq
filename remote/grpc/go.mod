@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/xraph/fabriq v1.8.3
-	github.com/xraph/grove v1.9.0
+	github.com/xraph/grove v1.9.1
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0
 	google.golang.org/grpc v1.83.2
 )
