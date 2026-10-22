@@ -39,6 +39,9 @@ type keyItem struct {
 	// ExpiresAt is set for expiring keys (dashboard sessions) and omitted for
 	// keys that never expire.
 	ExpiresAt *string `json:"expiresAt,omitempty"`
+	// LastUsedAt is when the key last authenticated a request, accurate to
+	// about a minute. Omitted for a key not used since the upgrade.
+	LastUsedAt *string `json:"lastUsedAt,omitempty"`
 }
 
 // keyListResponse is the payload for GET {BasePath}/keys.
@@ -169,6 +172,10 @@ func (c *adminController) handleListKeys(ctx forge.Context) error {
 		if rec.ExpiresAt != nil {
 			s := rec.ExpiresAt.Format(rfc3339Milli)
 			item.ExpiresAt = &s
+		}
+		if rec.LastUsedAt != nil {
+			s := rec.LastUsedAt.Format(rfc3339Milli)
+			item.LastUsedAt = &s
 		}
 		items = append(items, item)
 	}

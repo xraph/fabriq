@@ -84,6 +84,10 @@ type KeyRecord struct {
 	// IssueSession) always set it; the authn middleware denies a resolved key
 	// once ExpiresAt is in the past, mirroring how RevokedAt is enforced.
 	ExpiresAt *time.Time
+	// LastUsedAt is when the key last authenticated a request, accurate to
+	// about a minute (the middleware throttles the write). Nil for a key that
+	// has not been used since last_used_at was added.
+	LastUsedAt *time.Time
 }
 
 // KeyStore is the persistence port for hosted-fabriq API keys. It operates on
@@ -108,6 +112,16 @@ type KeyStore interface {
 	// Revoking an already revoked key succeeds and keeps the first revoked_at;
 	// an unknown id returns ErrKeyNotFound.
 	Revoke(ctx context.Context, id string) error
+}
+
+// KeyToucher is an optional KeyStore capability: a store that implements it
+// gets the id of every key that authenticates a request, so it can record the
+// last use. It is type-asserted by the authn middleware rather than added to
+// KeyStore, so existing KeyStore implementations keep compiling and a store
+// without it simply never reports a last use.
+type KeyToucher interface {
+	// Touch records at as the key's last use. An unknown id is not an error.
+	Touch(ctx context.Context, id string, at time.Time) error
 }
 
 // relationalKeyStore is the grove-backed KeyStore. fabriq's relational facade
@@ -306,7 +320,7 @@ func bootstrapAdminKey(ctx context.Context, store KeyStore, required bool) error
 // Lookup resolves a key by hash. No tenant scoping — the table is
 // instance-global. Returns (zero, false, nil) when no row matches.
 func (s *relationalKeyStore) Lookup(ctx context.Context, keyHash string) (KeyRecord, bool, error) {
-	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at
+	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at, last_used_at
 		FROM fabriq_api_key
 		WHERE key_hash = $1`
 	rows, err := s.pg.Query(ctx, q, keyHash)
@@ -331,7 +345,7 @@ func (s *relationalKeyStore) Lookup(ctx context.Context, keyHash string) (KeyRec
 
 // List returns every stored key as a redacted KeyRecord, newest first.
 func (s *relationalKeyStore) List(ctx context.Context) ([]KeyRecord, error) {
-	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at
+	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at, last_used_at
 		FROM fabriq_api_key
 		ORDER BY id DESC`
 	rows, err := s.pg.Query(ctx, q)
@@ -374,6 +388,16 @@ func (s *relationalKeyStore) Revoke(ctx context.Context, id string) error {
 	return nil
 }
 
+// Touch stamps last_used_at on the key. It is the KeyToucher implementation;
+// an id with no row updates nothing and returns nil.
+func (s *relationalKeyStore) Touch(ctx context.Context, id string, at time.Time) error {
+	const q = `UPDATE fabriq_api_key SET last_used_at = $2 WHERE id = $1`
+	if _, err := s.pg.NewRaw(q, id, at.UTC()).Exec(ctx); err != nil {
+		return fmt.Errorf("adminapi: touch api key: %w", err)
+	}
+	return nil
+}
+
 // scanKeyRecord scans one row of the SELECT column list used by Lookup/List
 // into a KeyRecord, mapping the nullable tenant_id/revoked_at columns.
 func scanKeyRecord(rows interface{ Scan(...any) error }) (KeyRecord, error) {
@@ -382,8 +406,9 @@ func scanKeyRecord(rows interface{ Scan(...any) error }) (KeyRecord, error) {
 		tenant  sql.NullString
 		revoked sql.NullTime
 		expires sql.NullTime
+		lastUse sql.NullTime
 	)
-	if err := rows.Scan(&rec.ID, &rec.Prefix, &tenant, &rec.Label, &rec.CanManageKeys, &rec.CreatedAt, &revoked, &expires); err != nil {
+	if err := rows.Scan(&rec.ID, &rec.Prefix, &tenant, &rec.Label, &rec.CanManageKeys, &rec.CreatedAt, &revoked, &expires, &lastUse); err != nil {
 		return KeyRecord{}, fmt.Errorf("adminapi: scan api key: %w", err)
 	}
 	if tenant.Valid {
@@ -396,6 +421,10 @@ func scanKeyRecord(rows interface{ Scan(...any) error }) (KeyRecord, error) {
 	if expires.Valid {
 		t := expires.Time
 		rec.ExpiresAt = &t
+	}
+	if lastUse.Valid {
+		t := lastUse.Time
+		rec.LastUsedAt = &t
 	}
 	return rec, nil
 }

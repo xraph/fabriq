@@ -558,6 +558,42 @@ func TestListKeys_IncludesExpiresAt(t *testing.T) {
 	}
 }
 
+func TestListKeys_IncludesLastUsedAt(t *testing.T) {
+	e, adminKey, store := buildKeysExtWith(t)
+	used := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	store.seed("fq_used_seed", KeyRecord{ID: "used-1", Label: "used", LastUsedAt: &used})
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := keysReq(t, http.MethodGet, srv.URL, "/admin/keys", adminKey, nil)
+	defer resp.Body.Close()
+	var list keyListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	seen := 0
+	for _, item := range list.Keys {
+		switch item.ID {
+		case "used-1":
+			seen++
+			if item.LastUsedAt == nil {
+				t.Fatal("lastUsedAt missing for a key that has been used")
+			}
+			if want := used.Format(rfc3339Milli); *item.LastUsedAt != want {
+				t.Errorf("lastUsedAt = %q, want %q", *item.LastUsedAt, want)
+			}
+		case "seed-admin":
+			seen++
+			if item.LastUsedAt != nil {
+				t.Errorf("lastUsedAt = %q for a never-used key, want omitted", *item.LastUsedAt)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("saw %d of the 2 seeded keys in %+v", seen, list.Keys)
+	}
+}
+
 // TestKeyRoutes_SlashVariants_NonManageKey_403 is C1 end to end on the real
 // controller routes: a non-manage key can neither list nor mint keys by
 // doubling a slash.

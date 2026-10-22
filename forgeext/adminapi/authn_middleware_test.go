@@ -3,10 +3,12 @@ package adminapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -770,5 +772,284 @@ func TestRoutePath(t *testing.T) {
 		if got := routePath(in); got != want {
 			t.Errorf("routePath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// touchCall is one recorded KeyToucher.Touch invocation.
+type touchCall struct {
+	id string
+	at time.Time
+}
+
+// touchingKeyStore is a fakeKeyStore that also implements KeyToucher, so the
+// middleware's optional-capability assertion finds it. Touch records the call
+// and returns err (nil by default).
+type touchingKeyStore struct {
+	*fakeKeyStore
+	mu    sync.Mutex
+	calls []touchCall
+	err   error
+}
+
+func newTouchingKeyStore(err error) *touchingKeyStore {
+	return &touchingKeyStore{fakeKeyStore: newFakeKeyStore(), err: err}
+}
+
+func (s *touchingKeyStore) Touch(_ context.Context, id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, touchCall{id: id, at: at})
+	return s.err
+}
+
+func (s *touchingKeyStore) recorded() []touchCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]touchCall(nil), s.calls...)
+}
+
+// testClock is a settable clock for the touch throttle.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) set(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = t
+}
+
+// buildTouchProbeServer serves GET /admin/meta-probe behind authMiddleware
+// with a throttle on the injected clock whose touches run synchronously, so a
+// test can assert the recorded calls the moment the response returns.
+func buildTouchProbeServer(t *testing.T, store *touchingKeyStore, clock *testClock) *httptest.Server {
+	t.Helper()
+	th := newTouchThrottle(store)
+	th.now = clock.now
+	th.spawn = func(fn func()) { fn() }
+	app := forge.NewApp(forge.AppConfig{Name: "auth-touch-probe", HTTPAddress: ":0"})
+	handler := func(ctx forge.Context) error { return ctx.JSON(http.StatusOK, map[string]any{"ok": true}) }
+	if err := app.Router().GET("/admin/keys", handler,
+		forge.WithMiddleware(authMiddlewareWithTouch(store, "/admin", th))); err != nil {
+		t.Fatalf("register touch probe route: %v", err)
+	}
+	return httptest.NewServer(app.Router().Handler())
+}
+
+func TestAuthMiddleware_TouchesKeyOncePerMinute(t *testing.T) {
+	store := newTouchingKeyStore(nil)
+	store.add("fq_admin", KeyRecord{ID: "k1", CanManageKeys: true})
+	store.add("fq_other", KeyRecord{ID: "k2", CanManageKeys: true})
+	t0 := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	clock := &testClock{t: t0}
+	srv := buildTouchProbeServer(t, store, clock)
+	defer srv.Close()
+
+	hit := func(key string) {
+		t.Helper()
+		resp := authReq(t, srv.URL, "/admin/keys", map[string]string{"Authorization": "Bearer " + key})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+	}
+
+	hit("fq_admin") // t0: touched
+	clock.set(t0.Add(10 * time.Second))
+	hit("fq_admin") // inside the minute: skipped
+	clock.set(t0.Add(11 * time.Second))
+	hit("fq_other") // another key has its own window: touched
+	clock.set(t0.Add(70 * time.Second))
+	hit("fq_admin") // past the minute: touched
+
+	got := store.recorded()
+	want := []touchCall{
+		{id: "k1", at: t0},
+		{id: "k2", at: t0.Add(11 * time.Second)},
+		{id: "k1", at: t0.Add(70 * time.Second)},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Touch calls = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Touch call %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestAuthMiddleware_DeniedRequest_DoesNotTouch(t *testing.T) {
+	store := newTouchingKeyStore(nil)
+	store.add("fq_plain", KeyRecord{ID: "k1", TenantID: testTenantID, CanManageKeys: false})
+	clock := &testClock{t: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)}
+	srv := buildTouchProbeServer(t, store, clock)
+	defer srv.Close()
+
+	resp := authReq(t, srv.URL, "/admin/keys", map[string]string{"Authorization": "Bearer fq_plain"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := store.recorded(); len(got) != 0 {
+		t.Fatalf("Touch calls = %+v, want none for a denied request", got)
+	}
+}
+
+func TestAuthMiddleware_TouchFailureDoesNotFailRequest(t *testing.T) {
+	store := newTouchingKeyStore(errors.New("db down"))
+	store.add("fq_admin", KeyRecord{ID: "k1", CanManageKeys: true})
+	clock := &testClock{t: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)}
+	srv := buildTouchProbeServer(t, store, clock)
+	defer srv.Close()
+
+	resp := authReq(t, srv.URL, "/admin/keys", map[string]string{"Authorization": "Bearer fq_admin"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 even though Touch fails", resp.StatusCode)
+	}
+	if got := store.recorded(); len(got) != 1 {
+		t.Fatalf("Touch calls = %+v, want the one failing attempt", got)
+	}
+}
+
+// TestTouchThrottle_RunsDetachedWithTimeout drives the real goroutine path:
+// the touch context must not be the request's, and must carry a deadline.
+func TestTouchThrottle_RunsDetachedWithTimeout(t *testing.T) {
+	type seen struct {
+		hasDeadline bool
+		remaining   time.Duration
+	}
+	done := make(chan seen, 1)
+	th := newTouchThrottle(touchFunc(func(ctx context.Context, _ string, _ time.Time) error {
+		dl, ok := ctx.Deadline()
+		done <- seen{hasDeadline: ok, remaining: time.Until(dl)}
+		return nil
+	}))
+	th.touch("k1")
+	select {
+	case got := <-done:
+		if !got.hasDeadline || got.remaining > touchTimeout {
+			t.Fatalf("touch ctx deadline = %+v, want one within %s", got, touchTimeout)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("touch never ran")
+	}
+}
+
+// touchFunc adapts a function to the KeyStore + KeyToucher pair the throttle
+// asserts on. Only Touch is used.
+type touchFunc func(ctx context.Context, id string, at time.Time) error
+
+func (f touchFunc) Touch(ctx context.Context, id string, at time.Time) error { return f(ctx, id, at) }
+func (touchFunc) Issue(context.Context, KeySpec) (IssuedKey, error)          { return IssuedKey{}, nil }
+func (touchFunc) IssueSession(context.Context, time.Duration) (IssuedKey, error) {
+	return IssuedKey{}, nil
+}
+func (touchFunc) Lookup(context.Context, string) (KeyRecord, bool, error) {
+	return KeyRecord{}, false, nil
+}
+func (touchFunc) List(context.Context) ([]KeyRecord, error) { return nil, nil }
+func (touchFunc) Revoke(context.Context, string) error      { return nil }
+
+// buildMigrationsProbeServer registers probes for the migration routes behind
+// the auth middleware: GET status, GET a job, and the POST up route.
+func buildMigrationsProbeServer(t *testing.T, store KeyStore) *httptest.Server {
+	t.Helper()
+	app := forge.NewApp(forge.AppConfig{Name: "auth-migrations-probe", HTTPAddress: ":0"})
+	handler := func(ctx forge.Context) error {
+		_, terr := tenant.FromContext(ctx.Request().Context())
+		return ctx.JSON(http.StatusOK, map[string]any{"hasTenant": terr == nil})
+	}
+	mw := forge.WithMiddleware(authMiddleware(store, "/admin"))
+	if err := app.Router().GET("/admin/migrations", handler, mw); err != nil {
+		t.Fatalf("register GET migrations: %v", err)
+	}
+	if err := app.Router().GET("/admin/migrations/jobs/:id", handler, mw); err != nil {
+		t.Fatalf("register GET migrations job: %v", err)
+	}
+	if err := app.Router().POST("/admin/migrations/up", handler, mw); err != nil {
+		t.Fatalf("register POST migrations up: %v", err)
+	}
+	return httptest.NewServer(app.Router().Handler())
+}
+
+func TestAuthMiddleware_MigrationsStatus_ManageKeyNoSelector_200(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_multi_admin", KeyRecord{ID: "k-multi-admin", CanManageKeys: true})
+	srv := buildMigrationsProbeServer(t, store)
+	defer srv.Close()
+
+	for _, path := range []string{"/admin/migrations", "/admin/migrations/", "//admin//migrations"} {
+		resp := rawReq(t, http.MethodGet, srv.URL, path, "fq_multi_admin")
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s: status = %d, want 200, body = %s", path, resp.StatusCode, body)
+		}
+		if strings.Contains(string(body), `"hasTenant":true`) {
+			t.Errorf("GET %s: tenant stamped, want none on an instance route", path)
+		}
+	}
+}
+
+func TestAuthMiddleware_MigrationsStatus_NonManageKey_403(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_plain", KeyRecord{ID: "k1", TenantID: testTenantID, CanManageKeys: false})
+	store.add("fq_plain_multi", KeyRecord{ID: "k2", CanManageKeys: false})
+	srv := buildMigrationsProbeServer(t, store)
+	defer srv.Close()
+
+	for _, key := range []string{"fq_plain", "fq_plain_multi"} {
+		for _, path := range []string{"/admin/migrations", "/admin//migrations", "//admin/migrations/", "/admin%2Fmigrations"} {
+			resp := rawReq(t, http.MethodGet, srv.URL, path, key)
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("%s GET %s: status = %d, want 403, body = %s", key, path, resp.StatusCode, body)
+			}
+		}
+	}
+}
+
+func TestAuthMiddleware_MigrationsUp_StillDataRoute(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_multi_admin", KeyRecord{ID: "k-multi-admin", CanManageKeys: true})
+	srv := buildMigrationsProbeServer(t, store)
+	defer srv.Close()
+
+	// The POST route and the sub-path GET are data routes: a multi-tenant key
+	// with no selector still gets the 400.
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/admin/migrations/up"},
+		{http.MethodGet, "/admin/migrations/jobs/abc"},
+	} {
+		resp := rawReq(t, tc.method, srv.URL, tc.path, "fq_multi_admin")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s %s: status = %d, want 400", tc.method, tc.path, resp.StatusCode)
+		}
+	}
+
+	// With a selector the same route is reachable.
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/admin/migrations/up", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer fq_multi_admin")
+	req.Header.Set("X-Tenant-ID", testTenantID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("POST /admin/migrations/up with selector: status = %d, want 200", resp.StatusCode)
 	}
 }

@@ -225,6 +225,64 @@ func TestKeyStore_IssueSession_Expires(t *testing.T) {
 	}
 }
 
+// TestKeyStore_TouchSetsLastUsedAt checks the optional KeyToucher capability
+// on the real store: a fresh key has no last use, Touch stamps it, a second
+// Touch moves it, List reports it, and an unknown id is not an error.
+func TestKeyStore_TouchSetsLastUsedAt(t *testing.T) {
+	ctx := context.Background()
+	ks := newKeyStoreDB(t)
+	toucher, ok := ks.(KeyToucher)
+	if !ok {
+		t.Fatalf("%T does not implement KeyToucher", ks)
+	}
+
+	issued, err := ks.Issue(ctx, KeySpec{Label: "touch-me"})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	rec, found, err := ks.Lookup(ctx, hashKey(issued.Key))
+	if err != nil || !found {
+		t.Fatalf("Lookup: found=%v err=%v", found, err)
+	}
+	if rec.LastUsedAt != nil {
+		t.Fatalf("LastUsedAt = %v on a never-used key, want nil", rec.LastUsedAt)
+	}
+
+	first := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	if err := toucher.Touch(ctx, issued.ID, first); err != nil {
+		t.Fatalf("Touch: %v", err)
+	}
+	rec, _, err = ks.Lookup(ctx, hashKey(issued.Key))
+	if err != nil {
+		t.Fatalf("Lookup after touch: %v", err)
+	}
+	if rec.LastUsedAt == nil || !rec.LastUsedAt.Equal(first) {
+		t.Fatalf("LastUsedAt = %v, want %v", rec.LastUsedAt, first)
+	}
+
+	second := first.Add(2 * time.Minute)
+	if err := toucher.Touch(ctx, issued.ID, second); err != nil {
+		t.Fatalf("second Touch: %v", err)
+	}
+	recs, err := ks.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var listed *KeyRecord
+	for i := range recs {
+		if recs[i].ID == issued.ID {
+			listed = &recs[i]
+		}
+	}
+	if listed == nil || listed.LastUsedAt == nil || !listed.LastUsedAt.Equal(second) {
+		t.Fatalf("listed LastUsedAt = %+v, want %v", listed, second)
+	}
+
+	if err := toucher.Touch(ctx, "no-such-key", second); err != nil {
+		t.Fatalf("Touch of an unknown id = %v, want nil", err)
+	}
+}
+
 func TestKeyStore_RevokeKeepsRowVisible(t *testing.T) {
 	ctx := context.Background()
 	ks := newKeyStoreDB(t)
