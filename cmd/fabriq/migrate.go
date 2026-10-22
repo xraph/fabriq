@@ -26,7 +26,9 @@ const (
 
 // appRolePasswordEnv carries the app role password. It is read from the
 // environment only, so it never lands in argv or a process listing.
-const appRolePasswordEnv = "FABRIQ_APP_ROLE_PASSWORD" //nolint:gosec // an environment variable name, not a credential
+//
+// #nosec G101 -- an environment variable name, not a credential.
+const appRolePasswordEnv = "FABRIQ_APP_ROLE_PASSWORD"
 
 func migrateCommand() cli.Command {
 	cmd := cli.NewCommand("migrate", "Run fabriq's grove migrations", func(ctx cli.CommandContext) error {
