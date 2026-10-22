@@ -108,11 +108,11 @@ require (
 	github.com/xraph/confy v1.1.0 // indirect
 	github.com/xraph/fabriq/core v1.8.3 // indirect
 	github.com/xraph/go-utils v1.5.0 // indirect
-	github.com/xraph/grove v1.9.0 // indirect
-	github.com/xraph/grove/drivers/pgdriver v1.9.0 // indirect
-	github.com/xraph/grove/kv v1.9.0 // indirect
-	github.com/xraph/grove/kv/drivers/redisdriver v1.9.0 // indirect
-	github.com/xraph/trove v1.7.0 // indirect
+	github.com/xraph/grove v1.9.1 // indirect
+	github.com/xraph/grove/drivers/pgdriver v1.9.1 // indirect
+	github.com/xraph/grove/kv v1.9.1 // indirect
+	github.com/xraph/grove/kv/drivers/redisdriver v1.9.1 // indirect
+	github.com/xraph/trove v1.8.1 // indirect
 	github.com/xraph/vessel v1.0.4 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
@@ -169,7 +169,7 @@ require (
 require (
 	github.com/xraph/fabriq v1.8.3
 	github.com/xraph/forge v1.13.0
-	github.com/xraph/warden v1.8.0
+	github.com/xraph/warden v1.8.1
 )
 
 replace github.com/xraph/fabriq => ../..

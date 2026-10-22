@@ -19,12 +19,12 @@ require (
 	github.com/xraph/fabriq/core v1.8.3
 	github.com/xraph/forge v1.13.0
 	github.com/xraph/go-utils v1.5.0
-	github.com/xraph/grove v1.9.0
-	github.com/xraph/grove/drivers/pgdriver v1.9.0
-	github.com/xraph/grove/kv v1.9.0
-	github.com/xraph/grove/kv/drivers/redisdriver v1.9.0
-	github.com/xraph/shield v1.8.0
-	github.com/xraph/trove v1.7.0
+	github.com/xraph/grove v1.9.1
+	github.com/xraph/grove/drivers/pgdriver v1.9.1
+	github.com/xraph/grove/kv v1.9.1
+	github.com/xraph/grove/kv/drivers/redisdriver v1.9.1
+	github.com/xraph/shield v1.8.1
+	github.com/xraph/trove v1.8.1
 	github.com/xraph/vessel v1.0.4
 	golang.org/x/crypto v0.57.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
