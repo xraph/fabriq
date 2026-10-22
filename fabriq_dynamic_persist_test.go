@@ -1,0 +1,615 @@
+package fabriq
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/xraph/fabriq/adapters/postgres"
+	"github.com/xraph/fabriq/core/registry"
+)
+
+// fakeSpecStore is an in-memory DynamicSpecStore. Save bumps the revision
+// only when the bytes change, like the Postgres adapter's JSONB comparison.
+type fakeSpecStore struct {
+	rows     map[string]postgres.DynamicSpecRecord
+	ops      *[]string
+	failSave bool
+	saves    int
+}
+
+func newFakeSpecStore(ops *[]string) *fakeSpecStore {
+	return &fakeSpecStore{rows: map[string]postgres.DynamicSpecRecord{}, ops: ops}
+}
+
+func (s *fakeSpecStore) log(op string) {
+	if s.ops != nil {
+		*s.ops = append(*s.ops, op)
+	}
+}
+
+func (s *fakeSpecStore) SaveDynamicSpec(_ context.Context, name string, spec []byte) (int64, error) {
+	s.log("save:" + name)
+	if s.failSave {
+		return 0, errors.New("save boom")
+	}
+	s.saves++
+	cur, ok := s.rows[name]
+	switch {
+	case !ok:
+		cur = postgres.DynamicSpecRecord{Name: name, Spec: append([]byte(nil), spec...), Revision: 1}
+	case string(cur.Spec) != string(spec):
+		cur.Spec = append([]byte(nil), spec...)
+		cur.Revision++
+	}
+	s.rows[name] = cur
+	return cur.Revision, nil
+}
+
+func (s *fakeSpecStore) DeleteDynamicSpec(_ context.Context, name string) error {
+	s.log("delete:" + name)
+	delete(s.rows, name)
+	return nil
+}
+
+func (s *fakeSpecStore) LoadDynamicSpecs(context.Context) ([]postgres.DynamicSpecRecord, error) {
+	out := make([]postgres.DynamicSpecRecord, 0, len(s.rows))
+	for _, r := range s.rows {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// put writes a row directly, as another instance would.
+func (s *fakeSpecStore) put(t *testing.T, sp registry.EntitySpec, rev int64) {
+	t.Helper()
+	b, err := encodeDynamicSpec(sp)
+	if err != nil {
+		t.Fatalf("encode %s: %v", sp.Name, err)
+	}
+	s.rows[sp.Name] = postgres.DynamicSpecRecord{Name: sp.Name, Spec: b, Revision: rev}
+}
+
+func namedSpec(name string) registry.EntitySpec {
+	return registry.EntitySpec{
+		Name: name, Kind: registry.KindAggregate,
+		Schema: &registry.DynamicSchema{Table: "ds_" + name,
+			Columns: []registry.DynamicColumn{{Name: "colour", Type: registry.ColText}}},
+	}
+}
+
+func (s *fakeSpecStore) lastSaved(t *testing.T, name string) registry.EntitySpec {
+	t.Helper()
+	r, ok := s.rows[name]
+	if !ok {
+		t.Fatalf("no saved row for %q", name)
+	}
+	sp, err := decodeDynamicSpec(r.Spec)
+	if err != nil {
+		t.Fatalf("decode saved %q: %v", name, err)
+	}
+	return sp
+}
+
+func TestDefineDynamicPersistsSpec(t *testing.T) {
+	var ops []string
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(&ops), map[string]int64{}
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, spec()); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	if !reflect.DeepEqual(ops, []string{"save:widget"}) {
+		t.Fatalf("ops = %v, want [save:widget]", ops)
+	}
+	got := store.lastSaved(t, "widget")
+	want := spec()
+	if got.Name != want.Name || got.Schema.Table != want.Schema.Table ||
+		!reflect.DeepEqual(got.Schema.Columns, want.Schema.Columns) {
+		t.Fatalf("saved spec = %+v / %+v, want %+v / %+v", got, got.Schema, want, want.Schema)
+	}
+	if loaded["widget"] != 1 {
+		t.Fatalf("loaded = %v, want widget:1", loaded)
+	}
+	if !ddl.guarded["ds_widget"] {
+		t.Fatal("table not guarded")
+	}
+}
+
+func TestDefineDynamicIdempotentWhenPersistedEqual(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, spec()); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, spec()); err != nil {
+		t.Fatalf("second define: %v", err)
+	}
+	if store.saves != 1 {
+		t.Fatalf("saves = %d, want 1", store.saves)
+	}
+	if len(ddl.ensured) != 1 {
+		t.Fatalf("ensured = %v, want one EnsureDynamic", ddl.ensured)
+	}
+}
+
+func TestDefineDynamicIdempotentAttachesInProcessFields(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	store.put(t, spec(), 1)
+	if _, err := syncPersistedDynamic(context.Background(), reg, ddl, store, loaded); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if ent, _ := reg.Get("widget"); ent == nil || ent.Spec.Validate != nil {
+		t.Fatal("expected widget loaded without Validate")
+	}
+	withValidate := spec()
+	withValidate.Validate = func(map[string]any) error { return nil }
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, withValidate); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	if store.saves != 0 {
+		t.Fatalf("saves = %d, want 0", store.saves)
+	}
+	if len(ddl.ensured) != 1 {
+		t.Fatalf("ensured = %v, want only the sync's EnsureDynamic", ddl.ensured)
+	}
+	ent, ok := reg.Get("widget")
+	if !ok || ent.Spec.Validate == nil {
+		t.Fatal("Validate not attached to the loaded type")
+	}
+}
+
+func TestDefineDynamicConflictWhenDifferent(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, spec()); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	other := spec()
+	other.Schema.Columns = append(other.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	err := defineDynamic(context.Background(), reg, ddl, store, loaded, other)
+	if err == nil || !strings.Contains(err.Error(), "registered twice") {
+		t.Fatalf("err = %v, want registered twice", err)
+	}
+	if store.saves != 1 {
+		t.Fatalf("saves = %d, want 1", store.saves)
+	}
+}
+
+func TestDefineDynamicRollsBackOnPersistFailure(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	store.failSave = true
+	err := defineDynamic(context.Background(), reg, ddl, store, loaded, spec())
+	if err == nil || !strings.Contains(err.Error(), "persist dynamic entity") {
+		t.Fatalf("err = %v, want persist dynamic entity", err)
+	}
+	if _, ok := reg.Get("widget"); ok {
+		t.Fatal("registry not rolled back after persist failure")
+	}
+	if ddl.guarded["ds_widget"] {
+		t.Fatal("table guarded after persist failure")
+	}
+	if _, ok := loaded["widget"]; ok {
+		t.Fatal("loaded recorded after persist failure")
+	}
+}
+
+func TestDefineDynamicNilStoreUnchanged(t *testing.T) {
+	reg, ddl := registry.New(), newFakeDDL()
+	if err := defineDynamic(context.Background(), reg, ddl, nil, nil, spec()); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	// Without a store there is no idempotent path: a second define is the
+	// registry's duplicate error, exactly as before persistence existed.
+	err := defineDynamic(context.Background(), reg, ddl, nil, nil, spec())
+	if err == nil || !strings.Contains(err.Error(), "registered twice") {
+		t.Fatalf("err = %v, want registered twice", err)
+	}
+	if err := dropDynamic(context.Background(), reg, ddl, nil, nil, "widget"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+}
+
+func TestDropDynamicDeletesPersistedBeforeTable(t *testing.T) {
+	var ops []string
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(&ops), map[string]int64{}
+	ddl.ops = &ops
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, spec()); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	ops = ops[:0]
+	if err := dropDynamic(context.Background(), reg, ddl, store, loaded, "widget"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	if !reflect.DeepEqual(ops, []string{"delete:widget", "drop:ds_widget"}) {
+		t.Fatalf("ops = %v, want [delete:widget drop:ds_widget]", ops)
+	}
+	if _, ok := loaded["widget"]; ok {
+		t.Fatal("loaded still holds widget after drop")
+	}
+	if _, ok := store.rows["widget"]; ok {
+		t.Fatal("row still persisted after drop")
+	}
+}
+
+func TestDropDynamicResavesWhenTableDropFails(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, spec()); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	ddl.failDrop = true
+	if err := dropDynamic(context.Background(), reg, ddl, store, loaded, "widget"); err == nil {
+		t.Fatal("expected the DDL error")
+	}
+	if _, ok := store.rows["widget"]; !ok {
+		t.Fatal("previous spec not re-saved after the DDL drop failed")
+	}
+	if _, ok := reg.Get("widget"); !ok {
+		t.Fatal("widget unregistered although its table survived")
+	}
+	if _, ok := loaded["widget"]; !ok {
+		t.Fatal("loaded lost widget although it was re-saved")
+	}
+}
+
+func TestAlterDynamicPersistsAlteredSpec(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, spec()); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	altered := spec()
+	altered.Schema.Columns = append(altered.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	if err := alterDynamic(context.Background(), reg, ddl, store, loaded, altered); err != nil {
+		t.Fatalf("alter: %v", err)
+	}
+	got := store.lastSaved(t, "widget")
+	if len(got.Schema.Columns) != 2 || got.Schema.Columns[1].Name != "size" {
+		t.Fatalf("saved columns = %+v, want colour and size", got.Schema.Columns)
+	}
+	if loaded["widget"] != 2 {
+		t.Fatalf("loaded = %v, want widget:2", loaded)
+	}
+}
+
+func TestAlterDynamicSaveFailureKeepsNewSpec(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, spec()); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	store.failSave = true
+	altered := spec()
+	altered.Schema.Columns = append(altered.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	err := alterDynamic(context.Background(), reg, ddl, store, loaded, altered)
+	if err == nil || !strings.Contains(err.Error(), "persist dynamic entity") {
+		t.Fatalf("err = %v, want persist dynamic entity", err)
+	}
+	ent, _ := reg.Get("widget")
+	if ent == nil || !ent.Binding.HasColumn("size") {
+		t.Fatal("altered spec not kept in the registry after a save failure")
+	}
+}
+
+func TestRenameDynamicFieldPersistsRenamedSpec(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, spec()); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	if err := renameDynamicField(context.Background(), reg, ddl, store, loaded, "widget", "colour", "hue"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	got := store.lastSaved(t, "widget")
+	if len(got.Schema.Columns) != 1 || got.Schema.Columns[0].Name != "hue" {
+		t.Fatalf("saved columns = %+v, want hue only", got.Schema.Columns)
+	}
+}
+
+func TestDropDynamicFieldPersistsSpec(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	s := spec()
+	s.Schema.Columns = append(s.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	if err := defineDynamic(context.Background(), reg, ddl, store, loaded, s); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	if err := dropDynamicField(context.Background(), reg, ddl, store, loaded, "widget", "size"); err != nil {
+		t.Fatalf("drop field: %v", err)
+	}
+	got := store.lastSaved(t, "widget")
+	if len(got.Schema.Columns) != 1 || got.Schema.Columns[0].Name != "colour" {
+		t.Fatalf("saved columns = %+v, want colour only", got.Schema.Columns)
+	}
+}
+
+func fullSpec() registry.EntitySpec {
+	return registry.EntitySpec{
+		Name: "orders", Kind: registry.KindAggregate,
+		Schema: &registry.DynamicSchema{
+			Table: "ds_orders",
+			Columns: []registry.DynamicColumn{
+				{Name: "sku", Type: registry.ColText, NotNull: true, Default: "''"},
+				{Name: "qty", Type: registry.ColInt},
+				{Name: "price", Type: registry.ColFloat},
+				{Name: "paid", Type: registry.ColBool},
+				{Name: "at", Type: registry.ColTime, Default: "now()"},
+				{Name: "meta", Type: registry.ColJSON},
+				{Name: "site_id", Type: registry.ColText},
+			},
+			Indexes:     []registry.DynamicIndex{{Name: "ds_orders_sku_idx", Columns: []string{"sku", "qty"}, Unique: true}},
+			NoTypeCheck: true,
+		},
+		GraphNode: "Order",
+		Edges:     []registry.EdgeSpec{{Field: "site_id", Rel: "AT", Target: "site"}},
+		Search:    registry.SearchSpec{Index: "orders", Fields: []string{"sku", "meta"}},
+		Subscribe: []registry.Scope{registry.ByID, registry.ByField("site", "site_id")},
+		Live:      &registry.LiveSpec{Filterable: []string{"sku"}, Sortable: []string{"at"}, MaxWindow: 50},
+		Cache:     &registry.CacheSpec{TTL: 90 * time.Second, Scoped: true},
+	}
+}
+
+func TestEncodeDecodeDynamicSpecRoundTrip(t *testing.T) {
+	for _, in := range []registry.EntitySpec{fullSpec(), func() registry.EntitySpec {
+		// GraphEdge is exclusive with GraphNode/Edges, so it gets its own case.
+		s := fullSpec()
+		s.GraphNode, s.Edges = "", nil
+		s.GraphEdge = &registry.GraphEdgeSpec{
+			TypeField: "sku", SourceField: "site_id", TargetField: "meta",
+			SourceLabel: "Site", TargetLabel: "Thing", PropFields: []string{"qty", "price"},
+		}
+		return s
+	}()} {
+		b, err := encodeDynamicSpec(in)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		out, err := decodeDynamicSpec(b)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if !reflect.DeepEqual(out, in) {
+			t.Fatalf("round trip mismatch:\n got  %+v\n want %+v", out, in)
+		}
+		// The registry must accept what comes back.
+		if err := registry.New().Register(out); err != nil {
+			t.Fatalf("register decoded: %v", err)
+		}
+	}
+}
+
+func TestEncodeDynamicSpecExactKeys(t *testing.T) {
+	b, err := encodeDynamicSpec(spec())
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	want := []string{"cache", "columns", "edges", "format", "graphEdge", "graphNode", "indexes",
+		"live", "name", "noTypeCheck", "search", "subscribe", "table"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("keys = %v, want %v", keys, want)
+	}
+	if string(m["format"]) != "1" || string(m["edges"]) != "[]" || string(m["live"]) != "null" {
+		t.Fatalf("format/edges/live = %s/%s/%s", m["format"], m["edges"], m["live"])
+	}
+	if string(m["columns"]) != `[{"name":"colour","type":"text","notNull":false,"default":""}]` {
+		t.Fatalf("columns = %s", m["columns"])
+	}
+}
+
+func TestDecodeDynamicSpecRejectsUnknownFormat(t *testing.T) {
+	_, err := decodeDynamicSpec([]byte(`{"format":2,"name":"widget","table":"ds_widget","columns":[]}`))
+	if err == nil || !strings.Contains(err.Error(), "unsupported dynamic spec format 2") {
+		t.Fatalf("err = %v, want unsupported dynamic spec format 2", err)
+	}
+}
+
+func TestDecodeDynamicSpecRejectsUnknownColumnType(t *testing.T) {
+	_, err := decodeDynamicSpec([]byte(`{"format":1,"name":"widget","table":"ds_widget","columns":[{"name":"c","type":"blob"}]}`))
+	if err == nil || !strings.Contains(err.Error(), "blob") {
+		t.Fatalf("err = %v, want unknown column type blob", err)
+	}
+}
+
+func TestEncodeDynamicSpecDropsFuncFields(t *testing.T) {
+	in := spec()
+	in.Validate = func(map[string]any) error { return nil }
+	in.Embed = &registry.EmbedSpec{Fields: []string{"colour"}}
+	b, err := encodeDynamicSpec(in)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	out, err := decodeDynamicSpec(b)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Validate != nil || out.Embed != nil {
+		t.Fatal("in-process fields survived the encoding")
+	}
+}
+
+func TestSyncPersistedDynamic_AddsUpdatesRemoves(t *testing.T) {
+	ctx := context.Background()
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	store.put(t, namedSpec("a"), 1)
+	store.put(t, namedSpec("b"), 1)
+
+	res, err := syncPersistedDynamic(ctx, reg, ddl, store, loaded)
+	if err != nil {
+		t.Fatalf("sync 1: %v", err)
+	}
+	if !reflect.DeepEqual(res.Added, []string{"a", "b"}) || len(res.Updated)+len(res.Removed)+len(res.Skipped) != 0 {
+		t.Fatalf("sync 1 = %+v, want Added [a b]", res)
+	}
+	if !ddl.guarded["ds_a"] || !ddl.guarded["ds_b"] {
+		t.Fatalf("guarded = %v", ddl.guarded)
+	}
+
+	// Nothing changed: a second pass is a no-op.
+	res, err = syncPersistedDynamic(ctx, reg, ddl, store, loaded)
+	if err != nil || len(res.Added)+len(res.Updated)+len(res.Removed)+len(res.Skipped) != 0 {
+		t.Fatalf("idle sync = %+v, %v, want empty", res, err)
+	}
+
+	b2 := namedSpec("b")
+	b2.Schema.Columns = append(b2.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	store.put(t, b2, 2)
+	res, err = syncPersistedDynamic(ctx, reg, ddl, store, loaded)
+	if err != nil {
+		t.Fatalf("sync 2: %v", err)
+	}
+	if !reflect.DeepEqual(res.Updated, []string{"b"}) || len(res.Added)+len(res.Removed) != 0 {
+		t.Fatalf("sync 2 = %+v, want Updated [b]", res)
+	}
+	if ent, _ := reg.Get("b"); ent == nil || !ent.Binding.HasColumn("size") {
+		t.Fatal("b not replaced with the new revision")
+	}
+
+	delete(store.rows, "a")
+	res, err = syncPersistedDynamic(ctx, reg, ddl, store, loaded)
+	if err != nil {
+		t.Fatalf("sync 3: %v", err)
+	}
+	if !reflect.DeepEqual(res.Removed, []string{"a"}) || len(res.Added)+len(res.Updated) != 0 {
+		t.Fatalf("sync 3 = %+v, want Removed [a]", res)
+	}
+	if _, ok := reg.Get("a"); ok {
+		t.Fatal("a still registered")
+	}
+	if ddl.guarded["ds_a"] {
+		t.Fatal("ds_a still guarded")
+	}
+	if len(ddl.dropped) != 0 {
+		t.Fatalf("sync dropped tables: %v", ddl.dropped)
+	}
+	if _, ok := loaded["a"]; ok {
+		t.Fatal("loaded still holds a")
+	}
+}
+
+func TestSyncPersistedDynamic_SkipsNameRegisteredInCode(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	site := namedSpec("site")
+	reg.MustRegister(site)
+	persisted := namedSpec("site")
+	persisted.Schema.Columns = append(persisted.Schema.Columns, registry.DynamicColumn{Name: "x", Type: registry.ColInt})
+	store.put(t, persisted, 1)
+
+	res, err := syncPersistedDynamic(context.Background(), reg, ddl, store, loaded)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if res.Skipped["site"] != "registered in code" {
+		t.Fatalf("Skipped = %v, want site: registered in code", res.Skipped)
+	}
+	if ent, _ := reg.Get("site"); ent == nil || ent.Binding.HasColumn("x") {
+		t.Fatal("the code-registered site was replaced")
+	}
+	if len(ddl.ensured) != 0 {
+		t.Fatalf("ensured = %v, want none", ddl.ensured)
+	}
+	if _, ok := loaded["site"]; ok {
+		t.Fatal("site recorded as loaded")
+	}
+}
+
+func TestSyncPersistedDynamic_SkipsInvalidSpec(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	store.put(t, namedSpec("good"), 1)
+	store.rows["bad"] = postgres.DynamicSpecRecord{Name: "bad", Spec: []byte("{not json"), Revision: 1}
+
+	res, err := syncPersistedDynamic(context.Background(), reg, ddl, store, loaded)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if !reflect.DeepEqual(res.Added, []string{"good"}) {
+		t.Fatalf("Added = %v, want [good]", res.Added)
+	}
+	if !strings.HasPrefix(res.Skipped["bad"], "invalid spec:") {
+		t.Fatalf("Skipped[bad] = %q, want invalid spec: ...", res.Skipped["bad"])
+	}
+	if _, ok := reg.Get("bad"); ok {
+		t.Fatal("bad registered")
+	}
+}
+
+func TestSyncPersistedDynamic_SkipsFutureFormat(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	store.rows["next"] = postgres.DynamicSpecRecord{Name: "next",
+		Spec: []byte(`{"format":2,"name":"next","table":"ds_next","columns":[]}`), Revision: 1}
+	res, err := syncPersistedDynamic(context.Background(), reg, ddl, store, loaded)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if !strings.Contains(res.Skipped["next"], "unsupported dynamic spec format 2") {
+		t.Fatalf("Skipped = %v", res.Skipped)
+	}
+}
+
+func TestSyncPersistedDynamic_SkipsWhenEnsureFails(t *testing.T) {
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	store.put(t, namedSpec("a"), 1)
+	ddl.failEnsure = true
+	res, err := syncPersistedDynamic(context.Background(), reg, ddl, store, loaded)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if !strings.HasPrefix(res.Skipped["a"], "ensure table:") {
+		t.Fatalf("Skipped = %v, want a: ensure table: ...", res.Skipped)
+	}
+	if _, ok := reg.Get("a"); ok {
+		t.Fatal("a registered without a table")
+	}
+	// The next pass retries once the DDL works.
+	ddl.failEnsure = false
+	res, err = syncPersistedDynamic(context.Background(), reg, ddl, store, loaded)
+	if err != nil || !reflect.DeepEqual(res.Added, []string{"a"}) {
+		t.Fatalf("retry = %+v, %v, want Added [a]", res, err)
+	}
+}
+
+func TestSyncPersistedDynamic_UpdateKeepsInProcessFields(t *testing.T) {
+	ctx := context.Background()
+	reg, ddl, store, loaded := registry.New(), newFakeDDL(), newFakeSpecStore(nil), map[string]int64{}
+	withValidate := spec()
+	withValidate.Validate = func(map[string]any) error { return nil }
+	if err := defineDynamic(ctx, reg, ddl, store, loaded, withValidate); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+	// Another instance adds a column.
+	next := spec()
+	next.Schema.Columns = append(next.Schema.Columns, registry.DynamicColumn{Name: "size", Type: registry.ColInt})
+	store.put(t, next, 2)
+	if _, err := syncPersistedDynamic(ctx, reg, ddl, store, loaded); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	ent, _ := reg.Get("widget")
+	if ent == nil || !ent.Binding.HasColumn("size") || ent.Spec.Validate == nil {
+		t.Fatal("update lost the new column or the in-process Validate")
+	}
+}
+
+func TestConfigValidate_DynamicPersistRejectsCatalogMode(t *testing.T) {
+	cfg := Config{
+		Catalog: CatalogConfig{DSN: "postgres://control", ClusterDSNs: map[string]string{"c1": "postgres://c1"}},
+		Dynamic: DynamicConfig{Persist: true},
+	}
+	err := cfg.Validate()
+	if err == nil || err.Error() != "fabriq: dynamic.persist is static-mode only" {
+		t.Fatalf("err = %v, want static-mode only", err)
+	}
+	cfg.Dynamic.Persist = false
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("catalog without persist: %v", err)
+	}
+	static := Config{Postgres: PostgresConfig{DSN: "postgres://x"}, Dynamic: DynamicConfig{Persist: true}}
+	if err := static.Validate(); err != nil {
+		t.Fatalf("static with persist: %v", err)
+	}
+}

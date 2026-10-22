@@ -3,6 +3,7 @@ package fabriq
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/xraph/fabriq/cachequery"
@@ -75,6 +76,14 @@ type Fabriq struct {
 
 	liveEngine *livequery.Engine   // nil when live queries are not configured
 	liveAuthz  livequery.AuthzFunc // optional authz hook for live queries
+
+	// Dynamic entity persistence (Config.Dynamic.Persist). dynMu serializes
+	// the lifecycle methods and SyncPersistedDynamic; dynLoaded maps each
+	// name this facade persisted or loaded to its last known revision.
+	dynMu          sync.Mutex
+	dynLoaded      map[string]int64
+	dynLast        DynamicSyncResult
+	persistDynamic bool
 }
 
 var _ query.Fabric = (*Fabriq)(nil)
