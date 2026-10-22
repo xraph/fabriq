@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/fabriq/core/tenant"
 	"github.com/xraph/fabriq/fabriqtest"
 )
 
@@ -49,7 +51,17 @@ func (f *fakeKeyStore) Lookup(_ context.Context, keyHash string) (KeyRecord, boo
 
 func (f *fakeKeyStore) List(context.Context) ([]KeyRecord, error) { return nil, nil }
 
-func (f *fakeKeyStore) Revoke(context.Context, string) error { return nil }
+// Revoke reports ErrKeyNotFound for an id no stored record carries, matching
+// the relational store. It does not mutate anything: the middleware tests
+// never revoke.
+func (f *fakeKeyStore) Revoke(_ context.Context, id string) error {
+	for _, rec := range f.byHash {
+		if rec.ID == id {
+			return nil
+		}
+	}
+	return ErrKeyNotFound
+}
 
 // authTestExt builds an Extension backed by a fresh test world with the auth
 // middleware (over the fake store) wired via WithRouteOptions. Unlike the shared
@@ -465,4 +477,139 @@ func TestAuthMiddleware_VersionAbsent_200(t *testing.T) {
 		t.Fatalf("status = %d, want 200, body = %s", resp.StatusCode, body)
 	}
 	assertVersionHeader(t, resp)
+}
+
+// buildInstanceProbeServer registers a GET probe at each path, guarded by the
+// auth middleware. The handler echoes the stashed key id and whether a tenant
+// was stamped, so the instance-route behaviour can be asserted from outside.
+func buildInstanceProbeServer(t *testing.T, store KeyStore, paths ...string) *httptest.Server {
+	t.Helper()
+	app := forge.NewApp(forge.AppConfig{Name: "auth-instance-probe", HTTPAddress: ":0"})
+	handler := func(ctx forge.Context) error {
+		id, _ := resolvedKeyID(ctx.Request().Context())
+		tid, terr := tenant.FromContext(ctx.Request().Context())
+		return ctx.JSON(http.StatusOK, map[string]any{"keyID": id, "tenant": tid, "hasTenant": terr == nil})
+	}
+	for _, p := range paths {
+		if err := app.Router().GET(p, handler,
+			forge.WithMiddleware(authMiddleware(store, "/admin"))); err != nil {
+			t.Fatalf("register probe route %s: %v", p, err)
+		}
+	}
+	return httptest.NewServer(app.Router().Handler())
+}
+
+// instanceProbe is the decoded body of buildInstanceProbeServer's handler.
+type instanceProbe struct {
+	KeyID     string `json:"keyID"`
+	Tenant    string `json:"tenant"`
+	HasTenant bool   `json:"hasTenant"`
+}
+
+func decodeInstanceProbe(t *testing.T, resp *http.Response) instanceProbe {
+	t.Helper()
+	var got instanceProbe
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode probe: %v", err)
+	}
+	return got
+}
+
+func TestAuthMiddleware_MultiTenantManageKey_NoSelector_KeysRoute_200(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_multi_admin", KeyRecord{ID: "k-multi-admin", CanManageKeys: true})
+	srv := buildInstanceProbeServer(t, store, "/admin/keys", "/admin/keys/:id")
+	defer srv.Close()
+
+	for _, path := range []string{"/admin/keys", "/admin/keys/abc"} {
+		resp := authReq(t, srv.URL, path, map[string]string{"Authorization": "Bearer fq_multi_admin"})
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("%s: status = %d, want 200, body = %s", path, resp.StatusCode, body)
+		}
+		assertVersionHeader(t, resp)
+		got := decodeInstanceProbe(t, resp)
+		resp.Body.Close()
+		if got.HasTenant {
+			t.Errorf("%s: tenant %q stamped, want none on an instance route", path, got.Tenant)
+		}
+		if got.KeyID != "k-multi-admin" {
+			t.Errorf("%s: keyID = %q, want k-multi-admin", path, got.KeyID)
+		}
+	}
+}
+
+func TestAuthMiddleware_MultiTenantManageKey_NoSelector_TenantsRoute_200(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_multi_admin", KeyRecord{ID: "k-multi-admin", CanManageKeys: true})
+	srv := buildInstanceProbeServer(t, store, "/admin/tenants", "/admin/tenants/:id")
+	defer srv.Close()
+
+	for _, path := range []string{"/admin/tenants", "/admin/tenants/acme"} {
+		resp := authReq(t, srv.URL, path, map[string]string{"Authorization": "Bearer fq_multi_admin"})
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("%s: status = %d, want 200, body = %s", path, resp.StatusCode, body)
+		}
+		got := decodeInstanceProbe(t, resp)
+		resp.Body.Close()
+		if got.HasTenant {
+			t.Errorf("%s: tenant %q stamped, want none on an instance route", path, got.Tenant)
+		}
+		if got.KeyID != "k-multi-admin" {
+			t.Errorf("%s: keyID = %q, want k-multi-admin", path, got.KeyID)
+		}
+	}
+}
+
+func TestAuthMiddleware_MultiTenantKey_NoSelector_EntitiesRoute_400(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_multi_admin", KeyRecord{ID: "k1", CanManageKeys: true})
+	srv := buildServer(t, authTestExt(t, store))
+	defer srv.Close()
+
+	resp := authReq(t, srv.URL, "/admin/entities?type=product", map[string]string{"Authorization": "Bearer fq_multi_admin"})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400 (data routes still need X-Tenant-ID), body = %s", resp.StatusCode, body)
+	}
+	assertVersionHeader(t, resp)
+}
+
+func TestAuthMiddleware_TenantBoundKey_TenantsRoute_403(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_bound", KeyRecord{ID: "k1", TenantID: testTenantID, CanManageKeys: false})
+	srv := buildInstanceProbeServer(t, store, "/admin/tenants", "/admin/tenants/:id")
+	defer srv.Close()
+
+	for _, path := range []string{"/admin/tenants", "/admin/tenants/" + testTenantID} {
+		resp := authReq(t, srv.URL, path, map[string]string{"Authorization": "Bearer fq_bound"})
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s: status = %d, want 403, body = %s", path, resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "this API key may not manage tenants") {
+			t.Errorf("%s: body = %s, want the manage-tenants message", path, body)
+		}
+	}
+}
+
+func TestAuthMiddleware_KeyspaceSibling_NotInstanceRoute(t *testing.T) {
+	store := newFakeKeyStore()
+	store.add("fq_multi_admin", KeyRecord{ID: "k1", CanManageKeys: true})
+	srv := buildInstanceProbeServer(t, store, "/admin/keyspace", "/admin/tenantsx")
+	defer srv.Close()
+
+	for _, path := range []string{"/admin/keyspace", "/admin/tenantsx"} {
+		resp := authReq(t, srv.URL, path, map[string]string{"Authorization": "Bearer fq_multi_admin"})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400 (a sibling is not an instance route)", path, resp.StatusCode)
+		}
+	}
 }

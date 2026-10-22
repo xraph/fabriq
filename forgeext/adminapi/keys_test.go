@@ -96,10 +96,14 @@ func (s *liveKeyStore) Revoke(_ context.Context, id string) error {
 	defer s.mu.Unlock()
 	rec, ok := s.byID[id]
 	if !ok {
-		return fmt.Errorf("liveKeyStore: unknown key id %q", id)
+		return ErrKeyNotFound
 	}
-	now := time.Now().UTC()
-	rec.RevokedAt = &now
+	// Mirror the relational store's COALESCE: a repeat revoke keeps the first
+	// revokedAt.
+	if rec.RevokedAt == nil {
+		now := time.Now().UTC()
+		rec.RevokedAt = &now
+	}
 	return nil
 }
 
@@ -135,18 +139,27 @@ func keysReq(t *testing.T, method, srv, path, bearer string, body io.Reader) *ht
 // can exercise the CRUD routes; it is tenant-bound to testTenantID.
 func buildKeysExt(t *testing.T) (*Extension, string) {
 	t.Helper()
+	e, adminKey, _ := buildKeysExtWith(t)
+	return e, adminKey
+}
+
+// buildKeysExtWith is buildKeysExt with extra options (for example a tenant
+// registry), and it also returns the store so a test can seed records.
+func buildKeysExtWith(t *testing.T, opts ...Option) (*Extension, string, *liveKeyStore) {
+	t.Helper()
 	world := buildTestWorld(t)
 	store := newLiveKeyStore()
 	const adminKey = "fq_admin_seed"
 	store.seed(adminKey, KeyRecord{ID: "seed-admin", TenantID: testTenantID, CanManageKeys: true})
 
-	e := NewAdminAPI(nil,
+	all := append([]Option{
 		WithAuth(store),
 		WithRouteOptions(forge.WithMiddleware(authMiddleware(store, "/admin"))),
-	)
+	}, opts...)
+	e := NewAdminAPI(nil, all...)
 	e.fabric = fabriqtest.NewFabric(world)
 	e.reg = world.Registry
-	return e, adminKey
+	return e, adminKey, store
 }
 
 func TestIssueKey_CreatesAndAuthenticates(t *testing.T) {
@@ -353,5 +366,194 @@ func TestKeyRoutes_NotRegistered_WhenNoAuth(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (route must not be registered without WithAuth)", resp.StatusCode)
+	}
+}
+
+// readJSONError decodes a {"error": "..."} body.
+func readJSONError(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var got struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode error body %s: %v", raw, err)
+	}
+	return got.Error
+}
+
+func TestIssueKey_InvalidTenant_400(t *testing.T) {
+	e, adminKey := buildKeysExt(t)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	for _, bad := range []string{"bad tenant", "a:b", strings.Repeat("x", 65)} {
+		body := strings.NewReader(`{"label":"k","tenantId":"` + bad + `"}`)
+		resp := keysReq(t, http.MethodPost, srv.URL, "/admin/keys", adminKey, body)
+		if resp.StatusCode != http.StatusBadRequest {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("tenantId %q: status = %d, want 400, body = %s", bad, resp.StatusCode, b)
+		}
+		if got := readJSONError(t, resp); got != "invalid tenant id" {
+			t.Errorf("tenantId %q: error = %q, want %q", bad, got, "invalid tenant id")
+		}
+		resp.Body.Close()
+	}
+}
+
+func TestIssueKey_UnregisteredTenant_404(t *testing.T) {
+	reg := newFakeTenantRegistry()
+	if _, _, err := reg.Create(context.Background(), testTenantID, ""); err != nil {
+		t.Fatal(err)
+	}
+	e, adminKey, store := buildKeysExtWith(t, WithTenantRegistry(reg))
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	before := len(store.byID)
+	body := strings.NewReader(`{"label":"k","tenantId":"acme"}`)
+	resp := keysReq(t, http.MethodPost, srv.URL, "/admin/keys", adminKey, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 404, body = %s", resp.StatusCode, b)
+	}
+	if got := readJSONError(t, resp); got != "unknown tenant" {
+		t.Errorf("error = %q, want %q", got, "unknown tenant")
+	}
+	if after := len(store.byID); after != before {
+		t.Errorf("store grew from %d to %d keys, want no key issued", before, after)
+	}
+}
+
+func TestIssueKey_RegisteredTenant_201(t *testing.T) {
+	reg := newFakeTenantRegistry()
+	if _, _, err := reg.Create(context.Background(), "acme", "Acme"); err != nil {
+		t.Fatal(err)
+	}
+	e, adminKey, _ := buildKeysExtWith(t, WithTenantRegistry(reg))
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	for _, body := range []string{`{"label":"k","tenantId":"acme"}`, `{"label":"multi"}`} {
+		resp := keysReq(t, http.MethodPost, srv.URL, "/admin/keys", adminKey, strings.NewReader(body))
+		if resp.StatusCode != http.StatusCreated {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("body %s: status = %d, want 201, body = %s", body, resp.StatusCode, b)
+		}
+		resp.Body.Close()
+	}
+}
+
+func TestRevokeKey_Unknown_404(t *testing.T) {
+	e, adminKey := buildKeysExt(t)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := keysReq(t, http.MethodDelete, srv.URL, "/admin/keys/no-such-id", adminKey, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 404, body = %s", resp.StatusCode, b)
+	}
+	if got := readJSONError(t, resp); got != "no such key" {
+		t.Errorf("error = %q, want %q", got, "no such key")
+	}
+}
+
+// listedRevokedAt returns the revokedAt the list route reports for id.
+func listedRevokedAt(t *testing.T, srv, adminKey, id string) *string {
+	t.Helper()
+	resp := keysReq(t, http.MethodGet, srv, "/admin/keys", adminKey, nil)
+	defer resp.Body.Close()
+	var list keyListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	for _, item := range list.Keys {
+		if item.ID == id {
+			return item.RevokedAt
+		}
+	}
+	t.Fatalf("key %q not in list", id)
+	return nil
+}
+
+func TestRevokeKey_Twice_200(t *testing.T) {
+	e, adminKey := buildKeysExt(t)
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	issueResp := keysReq(t, http.MethodPost, srv.URL, "/admin/keys", adminKey,
+		strings.NewReader(`{"label":"twice","tenantId":"`+testTenantID+`"}`))
+	var issued issueKeyResponse
+	if err := json.NewDecoder(issueResp.Body).Decode(&issued); err != nil {
+		t.Fatalf("decode issue: %v", err)
+	}
+	issueResp.Body.Close()
+
+	var first *string
+	for i := range 2 {
+		resp := keysReq(t, http.MethodDelete, srv.URL, "/admin/keys/"+issued.ID, adminKey, nil)
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("revoke #%d: status = %d, want 200, body = %s", i+1, resp.StatusCode, b)
+		}
+		resp.Body.Close()
+
+		got := listedRevokedAt(t, srv.URL, adminKey, issued.ID)
+		if got == nil {
+			t.Fatalf("revoke #%d: revokedAt is nil", i+1)
+		}
+		if first == nil {
+			first = got
+			time.Sleep(5 * time.Millisecond) // a moved timestamp would differ
+			continue
+		}
+		if *got != *first {
+			t.Errorf("revokedAt moved from %s to %s on a repeat revoke", *first, *got)
+		}
+	}
+}
+
+func TestListKeys_IncludesExpiresAt(t *testing.T) {
+	e, adminKey, store := buildKeysExtWith(t)
+	expires := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	store.seed("fq_session_seed", KeyRecord{ID: "session-1", Label: "session", CanManageKeys: true, ExpiresAt: &expires})
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	resp := keysReq(t, http.MethodGet, srv.URL, "/admin/keys", adminKey, nil)
+	defer resp.Body.Close()
+	var list keyListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	seen := 0
+	for _, item := range list.Keys {
+		switch item.ID {
+		case "session-1":
+			seen++
+			if item.ExpiresAt == nil {
+				t.Fatal("expiresAt missing for an expiring key")
+			}
+			if want := expires.Format(rfc3339Milli); *item.ExpiresAt != want {
+				t.Errorf("expiresAt = %q, want %q", *item.ExpiresAt, want)
+			}
+		case "seed-admin":
+			seen++
+			if item.ExpiresAt != nil {
+				t.Errorf("expiresAt = %q for a key that never expires, want omitted", *item.ExpiresAt)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("saw %d of the 2 seeded keys in %+v", seen, list.Keys)
 	}
 }

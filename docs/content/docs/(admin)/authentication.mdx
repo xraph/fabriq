@@ -1,33 +1,37 @@
 ---
 title: Authentication
-description: Hosted-fabriq auth for the adminapi — per-tenant API keys for machine clients (verified by a Bearer middleware) and a username/password dashboard login that mints a short-lived session token validated by the same middleware. Both opt-in; off by default.
+description: Hosted-fabriq auth for the adminapi. Per-tenant API keys for machine clients, verified by a Bearer middleware, and a username/password dashboard login that mints a short-lived session token the same middleware validates. On by default when a Postgres DB is reachable, and fail-closed with WithAuthRequired.
 ---
 
-The [adminapi](/docs/remote-protocol) is **auth-agnostic and opt-in**. Out of the box it
-performs no authentication — the host attaches whatever it wants through route middleware.
-Fabriq ships an optional, self-contained auth layer with two modes that share one
-verification path:
+The [adminapi](/docs/remote-protocol) ships its own auth layer. It has two modes, and
+both go through one verification path:
 
-- **API keys** — for machine clients (the [connection string](/docs/connection-string),
-  remote SDKs, agents). A `Bearer` credential the server verifies.
-- **Dashboard login** — for humans. Username/password that exchanges for a short-lived
-  **session token** the *same* key-verify middleware validates.
+- **API keys** for machine clients (the [connection string](/docs/connection-string),
+  remote SDKs, agents). You send a `Bearer` credential and the server verifies it.
+- **Dashboard login** for humans. A username and password exchange for a short-lived
+  **session token**, which the same key-verify middleware validates.
 
-With neither enabled, the console loads directly and every route behaves exactly as before.
+Auth is on by default. When the parent fabriq extension has a Postgres DB, `Register`
+provisions a `KeyStore` over it and enables an `admin`/`admin` dashboard login, unless you
+configured auth yourself (`WithAuth`, `WithAdminLogin`) or switched it off with
+`WithAuthDisabled`. Without a reachable DB it can't enforce anything, so it logs a warning
+and serves the admin API unauthenticated. If that's not acceptable for your deployment
+(and for a hosted server it isn't), use `WithAuthRequired`, described under
+[Hosted servers](#hosted-servers).
 
 ## API keys
 
-Enable the key layer by giving the adminapi a `KeyStore`:
+To manage the key store yourself, pass it in:
 
 ```go
 store := adminapi.NewKeyStore(groveDB)          // backed by the fabriq_api_key table
 ext := adminapi.NewAdminAPI(fabricExt, adminapi.WithAuth(store))
 ```
 
-When `WithAuth` is set, a verify middleware is installed on **every** admin route. Each
-request must carry `Authorization: Bearer <key>`; the middleware looks the key up by hash,
-rejects unknown / revoked / expired keys with `401`, resolves the tenant, and stamps it
-onto the request context.
+With a `KeyStore` in place, a verify middleware runs on **every** admin route. Each request
+must carry `Authorization: Bearer <key>`. The middleware looks the key up by hash, answers
+`401` for an unknown, revoked or expired key, resolves the tenant and stamps it onto the
+request context.
 
 ### Tenant-bound vs multi-tenant keys
 
@@ -36,30 +40,91 @@ A key record carries a nullable `tenant_id`:
 | Kind | Behaviour |
 | --- | --- |
 | **Tenant-bound** (`tenant_id` set) | Presenting the key authenticates *and* selects that tenant. A conflicting `X-Tenant-ID` header is a `403`. |
-| **Multi-tenant** (`tenant_id` null) | Authenticates a principal that may act across tenants; the request must supply an `X-Tenant-ID` selector (`400` if absent). |
+| **Multi-tenant** (`tenant_id` null) | Authenticates a principal that may act across tenants. Data routes need an `X-Tenant-ID` selector (`400` if absent). Instance routes don't. |
 
-Keys are stored as a `sha256` hash plus a short display prefix — the plaintext is returned
-**once**, at issue time, and never persisted.
+Keys are stored as a `sha256` hash plus a short display prefix. You get the plaintext
+**once**, at issue time, and it's never persisted.
+
+### Instance routes
+
+Most admin routes read or write one tenant's data, so they need a tenant. Two subtrees act
+on the instance instead:
+
+```text
+{base}/keys      {base}/keys/*
+{base}/tenants   {base}/tenants/*
+```
+
+On those routes a multi-tenant key may leave out `X-Tenant-ID`. The request goes through with
+no tenant on the context, though the key id is still put there. If you do send a selector,
+it's validated and stamped as usual. The match is exact, so a
+sibling like `{base}/keyspace` is a data route and still answers `400` without a selector.
+
+Both subtrees also need a key with `can_manage_keys`. A key without it gets `403` with
+`this API key may not manage keys` on `{base}/keys*` and `this API key may not manage
+tenants` on `{base}/tenants*`.
 
 ### Managing keys
 
-When auth is enabled, a management surface is registered (gated on the `can_manage_keys`
-flag):
+When auth is enabled, the management surface is registered:
 
 ```text
 POST   {base}/keys            → issue  {label, tenantId?, canManageKeys?}  → 201 {id, prefix, key}
 GET    {base}/keys            → list (redacted: no hash, no plaintext)
-DELETE {base}/keys/{id}       → revoke
+DELETE {base}/keys/{id}       → revoke → 200 {revoked: true}
 ```
 
-**Bootstrap.** On start with auth enabled, if `FABRIQ_ADMIN_KEY` is set it is registered as
-a multi-tenant admin key; otherwise, if no admin key exists, one is generated and logged
-once so an operator can bootstrap.
+An empty `tenantId` issues a multi-tenant key. A non-empty one has to be a well-formed tenant
+id, or you get `400 {"error":"invalid tenant id"}`. In static (row-level security) mode the
+adminapi also keeps a tenant registry, and a key for a tenant that isn't registered there is
+refused with `404 {"error":"unknown tenant"}`. Create the tenant with `POST {base}/tenants`
+first.
+
+The list returns `createdAt`, plus `revokedAt` once a key is revoked and `expiresAt` for keys
+that expire (dashboard sessions). Both are left out when they don't apply.
+
+Revoke is safe to retry. Revoking a key that's already revoked returns `200` again and keeps
+the first `revokedAt`, so a client that lost the first response can just send it again. An
+id that matches no key returns `404 {"error":"no such key"}`.
+
+When auth is enabled, start-up also makes sure you have a way in. If
+`FABRIQ_ADMIN_KEY` is set, that exact key is registered as a multi-tenant admin key.
+Otherwise, if no admin key exists yet, one is generated and printed to stderr once. Under
+`WithAuthRequired` only the first path exists, see below.
 
 ### Wire version
 
-Every response carries `X-Fabriq-Api-Version`. A request whose major version disagrees with
-the server is rejected with `426 Upgrade Required`; an absent header is tolerated.
+Every response carries `X-Fabriq-Api-Version`. If a request's major version disagrees with
+the server's, you get `426 Upgrade Required`. An absent header is fine.
+
+## Hosted servers
+
+On a server that other services reach over the network, you want a missing key or a missing
+database to stop the boot. Two options do that:
+
+```go
+ext := adminapi.NewAdminAPI(
+  fabricExt,
+  adminapi.WithAuthRequired(),
+  adminapi.WithoutDefaultLogin(),
+)
+```
+
+`WithAuthRequired` makes auth fail closed. `Register` returns an error when no `KeyStore` can
+be provisioned (no `WithAuth` and no reachable Postgres DB), where the default would only
+warn. It also returns an error if you combine it with `WithAuthDisabled`. At start-up,
+`FABRIQ_ADMIN_KEY` must hold `fq_` followed by at least 32 letters or digits. A missing,
+short or otherwise malformed value stops the server with `adminapi: FABRIQ_ADMIN_KEY must be
+set to fq_ followed by at least 32 letters or digits`, and no key is ever generated or
+logged.
+
+`WithoutDefaultLogin` keeps the `admin`/`admin` dashboard login off. You can still turn a
+login on with `WithAdminLogin` and a real password.
+
+The usual setup is one operator key in `FABRIQ_ADMIN_KEY`. Your control plane uses it to
+create tenants on `{base}/tenants` and to issue a key per service on `{base}/keys`, and then
+revokes those keys when it's done with them. Any `fq_` value followed by 32 or more letters
+and digits will do, so a password generator limited to alphanumerics is enough.
 
 ## Dashboard login
 

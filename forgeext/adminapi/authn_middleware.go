@@ -36,8 +36,14 @@ func resolvedKeyID(ctx context.Context) (string, bool) {
 // authMiddleware verifies a per-tenant API key on every admin request and
 // resolves the tenant into the request context for downstream handlers.
 //
-// basePath is the admin API mount point (e.g. "/admin"); requests under
-// basePath+"/keys" additionally require a key with CanManageKeys.
+// basePath is the admin API mount point (e.g. "/admin"). Requests under
+// basePath+"/keys" or basePath+"/tenants" additionally require a key with
+// CanManageKeys.
+//
+// Those two subtrees are the instance routes: they act on the instance, not
+// on one tenant's data. On an instance route a multi-tenant key may omit
+// X-Tenant-ID; the request then proceeds with no tenant stamped (the key id is
+// still stashed). Every other route is a data route and keeps the 400.
 //
 // The X-Fabriq-Api-Version response header is set on EVERY response (success or
 // short-circuit), so clients can always read the server's contract version.
@@ -55,12 +61,15 @@ func resolvedKeyID(ctx context.Context) (string, bool) {
 //	ExpiresAt != nil and in the past       → 401
 //	Lookup error                           → 500
 //	tenant-bound key, X-Tenant-ID mismatch → 403
-//	multi-tenant key, X-Tenant-ID absent   → 400
+//	multi-tenant key, X-Tenant-ID absent,
+//	  on a data route                      → 400
 //	.../keys route, !CanManageKeys         → 403
+//	.../tenants route, !CanManageKeys      → 403
 //	X-Fabriq-Api-Version present, major ≠  → 426
 //	otherwise                              → next(ctx)
 func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 	keysPrefix := strings.TrimRight(basePath, "/") + "/keys"
+	tenantsPrefix := strings.TrimRight(basePath, "/") + "/tenants"
 
 	return func(next forge.Handler) forge.Handler {
 		return func(ctx forge.Context) error {
@@ -100,8 +109,11 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 			}
 
 			selector := req.Header.Get("X-Tenant-ID")
+			keysRoute := isKeysRoute(req.URL.Path, keysPrefix)
+			tenantsRoute := isKeysRoute(req.URL.Path, tenantsPrefix)
 
-			// 3/4. Resolve the effective tenant.
+			// 3/4. Resolve the effective tenant. tid stays "" only for a
+			// multi-tenant key on an instance route with no selector.
 			var tid string
 			if rec.TenantID != "" {
 				// Tenant-bound key: it dictates the tenant. A conflicting
@@ -111,16 +123,20 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 				}
 				tid = rec.TenantID
 			} else {
-				// Multi-tenant key: the selector is required.
-				if selector == "" {
+				// Multi-tenant key: the selector is required on data routes.
+				// Instance routes act on no single tenant, so it may be absent.
+				if selector == "" && !keysRoute && !tenantsRoute {
 					return deny(ctx, http.StatusBadRequest, "X-Tenant-ID header is required for a multi-tenant key")
 				}
 				tid = selector
 			}
 
-			// 5. Key-management routes require CanManageKeys.
-			if !rec.CanManageKeys && isKeysRoute(req.URL.Path, keysPrefix) {
+			// 5. Key- and tenant-management routes require CanManageKeys.
+			if !rec.CanManageKeys && keysRoute {
 				return deny(ctx, http.StatusForbidden, "this API key may not manage keys")
+			}
+			if !rec.CanManageKeys && tenantsRoute {
+				return deny(ctx, http.StatusForbidden, "this API key may not manage tenants")
 			}
 
 			// 6. Version negotiation: if the client advertises a version, its
@@ -138,9 +154,14 @@ func authMiddleware(store KeyStore, basePath string) forge.Middleware {
 			// logout handler reads this via resolvedKeyID to revoke the
 			// presented session). WithContext replaces the request's context
 			// in place, so both must land in the same call.
-			tctx, err := tenant.WithTenant(req.Context(), tid)
-			if err != nil {
-				return deny(ctx, http.StatusBadRequest, "invalid tenant id: "+err.Error())
+			// An instance-route request with no tenant skips the stamp, so
+			// anything below that needs a tenant still fails with ErrNoTenant.
+			tctx := req.Context()
+			if tid != "" {
+				tctx, err = tenant.WithTenant(tctx, tid)
+				if err != nil {
+					return deny(ctx, http.StatusBadRequest, "invalid tenant id: "+err.Error())
+				}
 			}
 			ctx.WithContext(context.WithValue(tctx, keyIDCtxKey{}, rec.ID))
 
@@ -165,9 +186,10 @@ func deny(ctx forge.Context, status int, message string) error {
 	return nil
 }
 
-// isKeysRoute reports whether path targets the key-management surface rooted at
-// keysPrefix. It matches keysPrefix exactly and any sub-path, but not sibling
-// paths that merely share the prefix string (e.g. "/admin/keyspace").
+// isKeysRoute reports whether path targets the management surface rooted at
+// keysPrefix (the keys or the tenants subtree). It matches keysPrefix exactly
+// and any sub-path, but not sibling paths that merely share the prefix string
+// (e.g. "/admin/keyspace").
 func isKeysRoute(path, keysPrefix string) bool {
 	return path == keysPrefix || strings.HasPrefix(path, keysPrefix+"/")
 }

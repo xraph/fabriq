@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/xraph/grove"
@@ -103,6 +105,8 @@ type KeyStore interface {
 	// List returns every key as a redacted KeyRecord (no hash/plaintext).
 	List(ctx context.Context) ([]KeyRecord, error)
 	// Revoke stamps revoked_at on the key. The row stays visible to Lookup.
+	// Revoking an already revoked key succeeds and keeps the first revoked_at;
+	// an unknown id returns ErrKeyNotFound.
 	Revoke(ctx context.Context, id string) error
 }
 
@@ -225,6 +229,18 @@ func (s *relationalKeyStore) Ensure(ctx context.Context, key string, spec KeySpe
 	return false, nil
 }
 
+// ErrKeyNotFound is returned by KeyStore.Revoke when no key has the given id.
+var ErrKeyNotFound = errors.New("adminapi: api key not found")
+
+// adminKeyPattern is the shape a required FABRIQ_ADMIN_KEY must have: the fq_
+// scheme generateKey uses, then at least 32 letters or digits. Anything else
+// (a short value, whitespace, a quote or a semicolon) is refused at boot.
+var adminKeyPattern = regexp.MustCompile(`^fq_[0-9A-Za-z]{32,}$`)
+
+// errAdminKeyMalformed is the required-bootstrap refusal for a missing or
+// malformed FABRIQ_ADMIN_KEY. It never echoes the value.
+var errAdminKeyMalformed = errors.New("adminapi: FABRIQ_ADMIN_KEY must be set to fq_ followed by at least 32 letters or digits")
+
 // bootstrapAdminKey ensures the instance has a usable can-manage-keys admin key
 // once auth is enabled, so an operator is never locked out of a fresh install.
 //
@@ -235,14 +251,25 @@ func (s *relationalKeyStore) Ensure(ctx context.Context, key string, spec KeySpe
 //   - Otherwise, if the store has no CanManageKeys key yet, Issue one and log the
 //     plaintext ONCE to stderr. If one already exists, do nothing.
 //
+// With required set (WithAuthRequired), FABRIQ_ADMIN_KEY must match
+// adminKeyPattern and the store must support Ensure, otherwise bootstrap
+// returns an error. The generate-and-log path never runs when required.
+//
 // The function is idempotent: the env path relies on ON CONFLICT DO NOTHING, and
 // the generated path only issues when List shows no manage key.
-func bootstrapAdminKey(ctx context.Context, store KeyStore) error {
-	if envKey := os.Getenv("FABRIQ_ADMIN_KEY"); envKey != "" {
+func bootstrapAdminKey(ctx context.Context, store KeyStore, required bool) error {
+	envKey := os.Getenv("FABRIQ_ADMIN_KEY")
+	if required && !adminKeyPattern.MatchString(envKey) {
+		return errAdminKeyMalformed
+	}
+	if envKey != "" {
 		es, ok := store.(interface {
 			Ensure(context.Context, string, KeySpec) (bool, error)
 		})
 		if !ok {
+			if required {
+				return errors.New("adminapi: FABRIQ_ADMIN_KEY is required but this KeyStore cannot register a preset key")
+			}
 			log.Printf("adminapi: FABRIQ_ADMIN_KEY is set but this KeyStore cannot honour a preset key; ignoring")
 			return nil
 		}
@@ -328,11 +355,21 @@ func (s *relationalKeyStore) List(ctx context.Context) ([]KeyRecord, error) {
 }
 
 // Revoke stamps revoked_at (Go time, UTC) on the key. The row stays visible to
-// Lookup — revocation is enforced by the middleware, not by hiding the row.
+// Lookup: revocation is enforced by the middleware, not by hiding the row.
+// COALESCE keeps the first revoked_at, so a retried revoke succeeds without
+// moving the timestamp. An id with no row returns ErrKeyNotFound.
 func (s *relationalKeyStore) Revoke(ctx context.Context, id string) error {
-	const q = `UPDATE fabriq_api_key SET revoked_at = $2 WHERE id = $1`
-	if _, err := s.pg.NewRaw(q, id, time.Now().UTC()).Exec(ctx); err != nil {
+	const q = `UPDATE fabriq_api_key SET revoked_at = COALESCE(revoked_at, $2) WHERE id = $1`
+	res, err := s.pg.NewRaw(q, id, time.Now().UTC()).Exec(ctx)
+	if err != nil {
 		return fmt.Errorf("adminapi: revoke api key: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("adminapi: revoke api key rows: %w", err)
+	}
+	if n == 0 {
+		return ErrKeyNotFound
 	}
 	return nil
 }

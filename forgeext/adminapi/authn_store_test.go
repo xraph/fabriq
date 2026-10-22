@@ -4,6 +4,7 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -251,5 +252,47 @@ func TestKeyStore_RevokeKeepsRowVisible(t *testing.T) {
 	}
 	if rec.RevokedAt.IsZero() {
 		t.Fatal("RevokedAt is zero after Revoke")
+	}
+}
+
+func TestKeyStore_RevokeKeepsFirstRevokedAt(t *testing.T) {
+	ctx := context.Background()
+	ks := newKeyStoreDB(t)
+
+	issued, err := ks.Issue(ctx, KeySpec{Label: "revoke-twice", TenantID: "t1"})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if err := ks.Revoke(ctx, issued.ID); err != nil {
+		t.Fatalf("Revoke #1: %v", err)
+	}
+	first, _, err := ks.Lookup(ctx, hashKey(issued.Key))
+	if err != nil {
+		t.Fatalf("Lookup #1: %v", err)
+	}
+	if first.RevokedAt == nil {
+		t.Fatal("RevokedAt is nil after the first Revoke")
+	}
+
+	time.Sleep(10 * time.Millisecond) // a rewritten timestamp would differ
+	if err := ks.Revoke(ctx, issued.ID); err != nil {
+		t.Fatalf("Revoke #2: %v (a repeat revoke must succeed)", err)
+	}
+	second, _, err := ks.Lookup(ctx, hashKey(issued.Key))
+	if err != nil {
+		t.Fatalf("Lookup #2: %v", err)
+	}
+	if second.RevokedAt == nil || !second.RevokedAt.Equal(*first.RevokedAt) {
+		t.Fatalf("RevokedAt moved from %v to %v on a repeat revoke", first.RevokedAt, second.RevokedAt)
+	}
+}
+
+func TestKeyStore_RevokeUnknown_ErrKeyNotFound(t *testing.T) {
+	ctx := context.Background()
+	ks := newKeyStoreDB(t)
+
+	err := ks.Revoke(ctx, "no-such-key-id")
+	if !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("Revoke(unknown) = %v, want ErrKeyNotFound", err)
 	}
 }
