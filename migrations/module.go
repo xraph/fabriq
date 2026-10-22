@@ -66,6 +66,7 @@ func Group() *migrate.Group {
 			migration0030NamespaceRename,
 			migration0031Insights,
 			migration0032InsightsRollupState,
+			migration0033DynamicEntity,
 		)
 	})
 	return group

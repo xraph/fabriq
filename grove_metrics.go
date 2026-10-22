@@ -28,7 +28,7 @@ var systemTables = []string{
 	"fabriq_analytics_applied", "fabriq_analytics_events", "fabriq_analytics_events_default", "fabriq_analytics_facts",
 	"fabriq_api_key",
 	"fabriq_crdt_docs", "fabriq_crdt_segments", "fabriq_crdt_snapshots", "fabriq_crdt_updates",
-	"fabriq_embeddings", "fabriq_geometries",
+	"fabriq_dynamic_entity", "fabriq_embeddings", "fabriq_geometries",
 	"fabriq_insights_events", "fabriq_insights_facts", "fabriq_insights_rollup_state",
 	"fabriq_live_subscriptions", "fabriq_outbox", "fabriq_projection_applied", "fabriq_projection_state",
 	"fabriq_tenant_catalog",
