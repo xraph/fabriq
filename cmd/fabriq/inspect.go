@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/xraph/forge/cli"
@@ -118,11 +120,14 @@ func rebuildCommand() cli.Command {
 			return err
 		}
 
-		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+		f, stores, err := fabriq.Open(ctx.Context(), r, cfg)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = stores.Close() }()
+		if serr := refuseSkippedDynamic(os.Stderr, "rebuild", f.LastDynamicSync()); serr != nil {
+			return serr
+		}
 
 		var rebuilder *projection.Rebuilder
 		if proj == "graph" {
@@ -175,11 +180,14 @@ func rebuildCommand() cli.Command {
 		if err != nil {
 			return err
 		}
-		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+		f, stores, err := fabriq.Open(ctx.Context(), r, cfg)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = stores.Close() }()
+		if serr := refuseSkippedDynamic(os.Stderr, "rebuild finalize", f.LastDynamicSync()); serr != nil {
+			return serr
+		}
 		rebuilder, err := stores.GraphRebuilder(r)
 		if err != nil {
 			return err
@@ -216,11 +224,14 @@ func reconcileCommand() cli.Command {
 		if err != nil {
 			return err
 		}
-		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+		f, stores, err := fabriq.Open(ctx.Context(), r, cfg)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = stores.Close() }()
+		if serr := refuseSkippedDynamic(os.Stderr, "reconcile", f.LastDynamicSync()); serr != nil {
+			return serr
+		}
 
 		repair := ctx.Bool("repair")
 		run := func(name string, rec *projection.Reconciler) error {
@@ -339,4 +350,29 @@ func operatorRegistry(getenv func(string) string, cfg *fabriq.Config) (*registry
 		return nil, err
 	}
 	return r, nil
+}
+
+// refuseSkippedDynamic stops an operator command when the Open-time dynamic
+// sync left out a persisted type for any reason other than its name being
+// registered in code (an unreadable or newer-format row, a table that could
+// not be ensured). Such a type is missing from the registry, so a rebuild
+// would build a target without it and --drop-old would drop its projection
+// data. It prints each "entity: reason" to w and returns a runtime error
+// (exit 1) before any projection is touched.
+func refuseSkippedDynamic(w io.Writer, command string, res fabriq.DynamicSyncResult) error {
+	names := make([]string, 0, len(res.Skipped))
+	for name, reason := range res.Skipped {
+		if reason != "registered in code" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		_, _ = fmt.Fprintf(w, "%s: %s\n", name, res.Skipped[name])
+	}
+	return fmt.Errorf("%s: %d persisted entity type(s) could not be loaded (%s); fix or drop them first",
+		command, len(names), strings.Join(names, ", "))
 }

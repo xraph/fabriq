@@ -125,3 +125,99 @@ func TestRebuild_AllTenantsNone(t *testing.T) {
 		t.Fatalf("output lacks %q:\n%s", "no tenants to rebuild", out)
 	}
 }
+
+// TestRebuild_RefusesUnloadablePersistedType: a persisted type this process
+// cannot load would be missing from the registry, so a rebuild would build a
+// graph without it and --drop-old would throw its nodes away. The rebuild must
+// exit 1 instead and leave the live graph alone.
+func TestRebuild_RefusesUnloadablePersistedType(t *testing.T) {
+	ctx := context.Background()
+	redisAddr := fabriqtest.StartRedis(t)
+	superDSN := fabriqtest.StartPostgres(t)
+	falkorAddr := fabriqtest.StartFalkorDB(t)
+	migrateUp(t, superDSN)
+	fabriqtest.ApplyDDL(t, superDSN, []string{`INSERT INTO fabriq_tenant (id) VALUES ('acme')`})
+
+	cfg := fabriq.Config{
+		Postgres: fabriq.PostgresConfig{DSN: superDSN},
+		Redis:    fabriq.RedisConfig{Addr: redisAddr},
+		Dynamic:  fabriq.DynamicConfig{Persist: true},
+	}
+	f, _, err := fabriq.Open(ctx, registry.New(), cfg)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.DefineDynamic(ctx, registry.EntitySpec{
+		Name:      "orders",
+		Kind:      registry.KindAggregate,
+		GraphNode: "Order",
+		Schema: &registry.DynamicSchema{
+			Table:   "ds_orders",
+			Columns: []registry.DynamicColumn{{Name: "sku", Type: registry.ColText}},
+		},
+	}); err != nil {
+		_ = f.Close()
+		t.Fatalf("DefineDynamic: %v", err)
+	}
+	actx, err := tenant.WithTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Exec(actx, command.Command{
+		Entity: "orders", Op: command.OpCreate, Payload: map[string]any{"sku": "A1"},
+	}); err != nil {
+		_ = f.Close()
+		t.Fatalf("Exec(orders): %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	clearStoreEnv(t)
+	t.Setenv("FABRIQ_REDIS_ADDR", redisAddr)
+	t.Setenv("FABRIQ_FALKORDB_ADDR", falkorAddr)
+	t.Setenv("FABRIQ_DOMAIN_PACK", "none")
+
+	// A good rebuild first, so the live graph holds acme's order.
+	code, out, err := runRebuild(t, "--dsn", superDSN, "--projection", "graph", "--all-tenants", "--drop-old")
+	if code != 0 {
+		t.Fatalf("first rebuild: exit code = %d (err %v), want 0; output:\n%s", code, err, out)
+	}
+	countOrders := func() int {
+		t.Helper()
+		gcfg := cfg
+		gcfg.Dynamic.Persist = false
+		gcfg.FalkorDB = fabriq.FalkorDBConfig{Addr: falkorAddr}
+		g, _, gerr := fabriq.Open(ctx, registry.New(), gcfg)
+		if gerr != nil {
+			t.Fatalf("open for graph read: %v", gerr)
+		}
+		defer func() { _ = g.Close() }()
+		var nodes []map[string]any
+		if qerr := g.Graph().Query(actx, `MATCH (n:Order) RETURN n.id AS id`, nil, &nodes); qerr != nil {
+			t.Fatalf("graph query: %v", qerr)
+		}
+		return len(nodes)
+	}
+	if n := countOrders(); n != 1 {
+		t.Fatalf("Order nodes after the first rebuild = %d, want 1", n)
+	}
+
+	// Now the persisted row is in a format this binary does not know.
+	fabriqtest.ApplyDDL(t, superDSN, []string{
+		`UPDATE fabriq_dynamic_entity SET spec = jsonb_set(spec, '{format}', '99') WHERE name = 'orders'`,
+	})
+	code, out, err = runRebuild(t, "--dsn", superDSN, "--projection", "graph", "--all-tenants", "--drop-old")
+	if code != 1 {
+		t.Fatalf("rebuild over an unloadable type: exit code = %d (err %v), want 1; output:\n%s", code, err, out)
+	}
+	if !strings.Contains(err.Error(), "could not be loaded") {
+		t.Fatalf("err = %v, want it to say a persisted type could not be loaded", err)
+	}
+	if strings.Contains(out, "dropped") {
+		t.Fatalf("rebuild touched a target:\n%s", out)
+	}
+	if n := countOrders(); n != 1 {
+		t.Fatalf("Order nodes after the refused rebuild = %d, want 1 (graph untouched)", n)
+	}
+}

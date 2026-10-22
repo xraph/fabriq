@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/xraph/forge/cli"
+
+	"github.com/xraph/fabriq"
 )
 
 // runRebuild executes `fabriq rebuild <args...>` through a real forge CLI, so
@@ -90,5 +92,38 @@ func TestRebuild_UsageExitCodes(t *testing.T) {
 				t.Fatalf("err = %v, want it to mention %q", err, tc.wantMsg)
 			}
 		})
+	}
+}
+
+// TestRefuseSkippedDynamic pins the operator commands' guard: a persisted type
+// this process could not load stops the command (exit 1) and is printed as
+// "entity: reason"; a name merely registered in code is fine.
+func TestRefuseSkippedDynamic(t *testing.T) {
+	var buf bytes.Buffer
+	if err := refuseSkippedDynamic(&buf, "rebuild", fabriq.DynamicSyncResult{
+		Skipped: map[string]string{"site": "registered in code"},
+	}); err != nil {
+		t.Fatalf("registered-in-code skip: err = %v, want nil", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("registered-in-code skip printed %q, want nothing", buf.String())
+	}
+
+	err := refuseSkippedDynamic(&buf, "rebuild", fabriq.DynamicSyncResult{
+		Skipped: map[string]string{
+			"site":   "registered in code",
+			"orders": "unsupported dynamic spec format 99",
+			"bins":   "ensure table: boom",
+		},
+	})
+	if err == nil {
+		t.Fatal("err = nil, want a refusal")
+	}
+	if code := cli.GetExitCode(err); code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	want := "bins: ensure table: boom\norders: unsupported dynamic spec format 99\n"
+	if buf.String() != want {
+		t.Fatalf("printed %q, want %q", buf.String(), want)
 	}
 }
