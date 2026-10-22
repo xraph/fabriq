@@ -210,7 +210,7 @@ func (c *adminController) handleStaticTenantCreate(ctx forge.Context, reg Tenant
 
 	rec, created, err := reg.Create(ctx.Request().Context(), body.TenantID, body.Label)
 	if err != nil {
-		return ctx.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return renderError(ctx, err)
 	}
 	status := http.StatusOK
 	if created {
@@ -226,7 +226,7 @@ func (c *adminController) handleStaticTenantList(ctx forge.Context, reg TenantRe
 	}
 	recs, err := reg.List(ctx.Request().Context())
 	if err != nil {
-		return ctx.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return renderError(ctx, err)
 	}
 	out := make([]staticTenantView, 0, len(recs)) // non-nil: an empty list is [], never null
 	for _, r := range recs {
@@ -242,11 +242,13 @@ func (c *adminController) handleStaticTenantGet(ctx forge.Context, reg TenantReg
 	}
 	id := ctx.Param("id")
 	if !tenant.Valid(id) {
-		return ctx.JSON(http.StatusBadRequest, map[string]string{"error": "invalid tenant id"})
+		// A malformed id can never be registered, so the contract is the same
+		// as for any unknown tenant: a view or a 404.
+		return ctx.JSON(http.StatusNotFound, map[string]string{"error": "no such tenant"})
 	}
 	rec, found, err := reg.Get(ctx.Request().Context(), id)
 	if err != nil {
-		return ctx.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return renderError(ctx, err)
 	}
 	if !found {
 		return ctx.JSON(http.StatusNotFound, map[string]string{"error": "no such tenant"})

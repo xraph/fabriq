@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -231,5 +232,57 @@ func TestStaticTenants_GatedByTenantsAdmin(t *testing.T) {
 	status, body := getBody(t, srv, "/admin/tenants")
 	if status != http.StatusForbidden {
 		t.Fatalf("status = %d (%s), want 403 without WithTenantsAdmin", status, body)
+	}
+}
+
+// failingTenantRegistry returns an error carrying driver-looking text.
+type failingTenantRegistry struct{}
+
+const leakyRegistryErr = "ERROR: relation \"fabriq_tenant\" does not exist (SQLSTATE 42P01)"
+
+func (failingTenantRegistry) Create(context.Context, string, string) (TenantRecord, bool, error) {
+	return TenantRecord{}, false, errors.New(leakyRegistryErr)
+}
+
+func (failingTenantRegistry) Get(context.Context, string) (TenantRecord, bool, error) {
+	return TenantRecord{}, false, errors.New(leakyRegistryErr)
+}
+
+func (failingTenantRegistry) List(context.Context) ([]TenantRecord, error) {
+	return nil, errors.New(leakyRegistryErr)
+}
+
+func TestStaticTenants_RegistryErrorDoesNotLeak(t *testing.T) {
+	e := NewAdminAPI(nil, WithTenantsAdmin(), WithTenantRegistry(failingTenantRegistry{}))
+	srv := buildServer(t, e)
+	defer srv.Close()
+
+	check := func(name string, status int, body string) {
+		t.Helper()
+		if status != http.StatusInternalServerError {
+			t.Errorf("%s: status = %d (%s), want 500", name, status, body)
+		}
+		for _, leak := range []string{"fabriq_tenant", "SQLSTATE", "relation"} {
+			if strings.Contains(body, leak) {
+				t.Errorf("%s: body %q leaks %q", name, body, leak)
+			}
+		}
+	}
+	s, b := postTenant(t, srv, `{"tenantId":"acme"}`)
+	check("create", s, b)
+	s, b = getBody(t, srv, "/admin/tenants")
+	check("list", s, b)
+	s, b = getBody(t, srv, "/admin/tenants/acme")
+	check("get", s, b)
+}
+
+func TestStaticTenants_GetMalformedID404(t *testing.T) {
+	srv := staticTenantServer(t)
+	status, body := getBody(t, srv, "/admin/tenants/bad%20id!")
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d (%s), want 404", status, body)
+	}
+	if body != `{"error":"no such tenant"}` {
+		t.Errorf("body = %s", body)
 	}
 }

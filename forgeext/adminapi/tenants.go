@@ -29,7 +29,7 @@ func (c *adminController) registerTenantRoutes(r forge.Router) error {
 
 	listOpts := append([]forge.RouteOption{
 		forge.WithName("fabriq.admin.tenants.list"),
-		forge.WithSummary("List catalog tenants (catalog mode)"),
+		forge.WithSummary("List tenants (catalog entries in catalog mode, registry records in static mode)"),
 		forge.WithTags("Fabriq", "Admin", "Tenants"),
 	}, opts...)
 	if err := r.GET(base+"/tenants", c.handleTenantList, listOpts...); err != nil {
@@ -38,7 +38,7 @@ func (c *adminController) registerTenantRoutes(r forge.Router) error {
 
 	provisionOpts := append([]forge.RouteOption{
 		forge.WithName("fabriq.admin.tenants.provision"),
-		forge.WithSummary("Provision a tenant database async (catalog mode)"),
+		forge.WithSummary("Create a tenant: async provision in catalog mode, registry insert in static mode"),
 		forge.WithTags("Fabriq", "Admin", "Tenants"),
 	}, opts...)
 	if err := r.POST(base+"/tenants", c.handleTenantProvision, provisionOpts...); err != nil {
@@ -76,7 +76,7 @@ func (c *adminController) registerTenantRoutes(r forge.Router) error {
 
 	getOpts := append([]forge.RouteOption{
 		forge.WithName("fabriq.admin.tenants.get"),
-		forge.WithSummary("Get a tenant's catalog entry (catalog mode)"),
+		forge.WithSummary("Get a tenant (catalog entry in catalog mode, registry record in static mode)"),
 		forge.WithTags("Fabriq", "Admin", "Tenants"),
 	}, opts...)
 	if err := r.GET(base+"/tenants/:id", c.handleTenantGet, getOpts...); err != nil {
