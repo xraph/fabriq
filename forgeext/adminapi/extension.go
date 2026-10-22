@@ -511,6 +511,15 @@ func (e *Extension) Start(ctx context.Context) error {
 	return nil
 }
 
+// Ready reports whether Start has completed. The admin API is ready to serve
+// once it has resolved the fabriq facade and bootstrapped its admin key.
+func (e *Extension) Ready(_ context.Context) error {
+	if !e.IsStarted() {
+		return errors.New("fabriq-admin-api: not started")
+	}
+	return nil
+}
+
 // Stop stops the extension.
 func (e *Extension) Stop(_ context.Context) error { e.MarkStopped(); return nil }
 

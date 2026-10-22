@@ -61,6 +61,12 @@ type Config struct {
 	// (unnamed) grove.DB. Mirrors xraph/authsome's GroveDatabase knob. Read
 	// from extensions.fabriq.groveDatabase when unset programmatically.
 	GroveDatabase string
+	// RequireRLS makes Start refuse a Postgres role that bypasses row-level
+	// security (a superuser or a BYPASSRLS role). In the shared-database modes
+	// RLS is the only tenant fence, so a hosted server sets this unless an
+	// operator opts out for local development. It has no effect in catalog
+	// mode, where isolation is per database or schema.
+	RequireRLS bool
 }
 
 // Option is a functional option for Config.
@@ -73,6 +79,11 @@ func WithConfig(c fabriq.Config) Option { return func(o *Config) { o.Fabriq = c 
 // when no Postgres DSN/shards are configured (empty = the default unnamed
 // grove.DB). Mirrors xraph/authsome's grove-database selection.
 func WithGroveDatabase(name string) Option { return func(o *Config) { o.GroveDatabase = name } }
+
+// WithRequireRLS makes Start refuse to serve when the Postgres role bypasses
+// row-level security (a superuser or a BYPASSRLS role). Pass false to allow it,
+// for local development against a superuser DSN.
+func WithRequireRLS(on bool) Option { return func(o *Config) { o.RequireRLS = on } }
 
 // WithWorker enables or disables the background reconcile worker.
 func WithWorker(on bool) Option { return func(o *Config) { o.RunWorker = on } }
