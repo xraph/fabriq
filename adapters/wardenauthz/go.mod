@@ -107,7 +107,7 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xraph/confy v1.1.0 // indirect
 	github.com/xraph/fabriq/core v1.8.3 // indirect
-	github.com/xraph/go-utils v1.4.1 // indirect
+	github.com/xraph/go-utils v1.5.0 // indirect
 	github.com/xraph/grove v1.9.0 // indirect
 	github.com/xraph/grove/drivers/pgdriver v1.9.0 // indirect
 	github.com/xraph/grove/kv v1.9.0 // indirect
@@ -120,11 +120,14 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0 // indirect
 	go.opentelemetry.io/otel v1.45.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.21.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.45.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.45.0 // indirect
+	go.opentelemetry.io/otel/log v0.21.0 // indirect
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
+	go.opentelemetry.io/otel/sdk/log v0.21.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
@@ -165,7 +168,7 @@ require (
 
 require (
 	github.com/xraph/fabriq v1.8.3
-	github.com/xraph/forge v1.12.10
+	github.com/xraph/forge v1.13.0
 	github.com/xraph/warden v1.8.0
 )
 
