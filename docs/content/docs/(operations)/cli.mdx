@@ -199,8 +199,16 @@ Exit codes:
 | Code | Meaning |
 | --- | --- |
 | 0 | Every selected tenant was rebuilt. That includes the case where there was nothing to rebuild. |
-| 1 | A runtime error, or no DSN. The command stops at the first tenant that fails. The tenants before it stay rebuilt, and rerunning is safe. |
-| 2 | A usage error: a `--projection` other than `graph` or `search`, no tenant selector, no engine address, or a bad `FABRIQ_DOMAIN_PACK` or `FABRIQ_DYNAMIC_PERSIST` value. |
+| 1 | A runtime error, no DSN, a persisted entity type the command could not load (see below), or a bad `FABRIQ_DOMAIN_PACK` or `FABRIQ_DYNAMIC_PERSIST` value. The binary checks those two settings before any command runs, so they fail the way every other bad setting does. The command stops at the first tenant that fails. The tenants before it stay rebuilt, and rerunning is safe. |
+| 2 | A usage error: a `--projection` other than `graph` or `search`, no tenant selector, or no engine address. |
+
+`rebuild`, `rebuild finalize` and `reconcile` refuse to run when a persisted entity type
+can't be loaded, for example a row in `fabriq_dynamic_entity` written in a newer format or a
+table that couldn't be ensured. That type would be missing from the registry, so a rebuild
+would build a target without it and `--drop-old` would throw its projection data away. The
+command prints each type as `entity: reason` to stderr and exits 1 before it touches any
+projection. Fix or drop the row first. A persisted type whose name is also registered in code
+doesn't count, because the code's definition is the one in use.
 
 ## reconcile: drift reconciliation
 
@@ -220,7 +228,8 @@ projection. Flags:
 | `--elasticsearch` | `FABRIQ_ELASTICSEARCH_ADDRS` | Reconcile the search projection. |
 | `--repair` | `false` | Re-emit drifted aggregates through the outbox. |
 
-You must pass at least one of `--falkordb` / `--elasticsearch`. Without
+Like `rebuild`, it exits 1 when a persisted entity type can't be loaded. You
+must pass at least one of `--falkordb` / `--elasticsearch`. Without
 `--repair` it is a dry run that lists drift. With `--repair` it re-emits each
 drifted aggregate through the outbox; it never writes an engine directly. The
 worker also runs this on a schedule (see
