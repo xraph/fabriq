@@ -265,6 +265,14 @@ func (t *touchThrottle) touch(id string) {
 		t.mu.Unlock()
 		return
 	}
+	// Entries older than the interval can never throttle anything again, so
+	// drop them on every insert: the map then holds only the keys seen in the
+	// last interval, not one id per login for the life of the process.
+	for k, prev := range t.last {
+		if at.Sub(prev) >= t.interval {
+			delete(t.last, k)
+		}
+	}
 	t.last[id] = at
 	t.mu.Unlock()
 

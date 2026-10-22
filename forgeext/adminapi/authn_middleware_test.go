@@ -919,6 +919,47 @@ func TestAuthMiddleware_TouchFailureDoesNotFailRequest(t *testing.T) {
 	}
 }
 
+// TestTouchThrottle_PrunesExpiredEntries checks the throttle map does not
+// keep an entry for every id it ever saw: entries older than the interval go
+// on the next insert.
+func TestTouchThrottle_PrunesExpiredEntries(t *testing.T) {
+	store := newTouchingKeyStore(nil)
+	t0 := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	clock := &testClock{t: t0}
+	th := newTouchThrottle(store)
+	th.now = clock.now
+	th.spawn = func(fn func()) { fn() }
+
+	for _, id := range []string{"a", "b", "c"} {
+		th.touch(id)
+	}
+	size := func() int {
+		th.mu.Lock()
+		defer th.mu.Unlock()
+		return len(th.last)
+	}
+	if got := size(); got != 3 {
+		t.Fatalf("map size = %d, want 3 within the interval", got)
+	}
+
+	clock.set(t0.Add(touchInterval - time.Second))
+	th.touch("d")
+	if got := size(); got != 4 {
+		t.Fatalf("map size = %d, want 4 (nothing is old enough to prune yet)", got)
+	}
+
+	clock.set(t0.Add(touchInterval + time.Second))
+	th.touch("e")
+	if got := size(); got != 2 {
+		t.Fatalf("map size = %d, want 2 (d and e) after the first three expired", got)
+	}
+	// An expired id is touched again, not throttled.
+	th.touch("a")
+	if got := len(store.recorded()); got != 6 {
+		t.Fatalf("Touch calls = %d, want 6 (a, b, c, d, e, then a again)", got)
+	}
+}
+
 // TestTouchThrottle_RunsDetachedWithTimeout drives the real goroutine path:
 // the touch context must not be the request's, and must carry a deadline.
 func TestTouchThrottle_RunsDetachedWithTimeout(t *testing.T) {

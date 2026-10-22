@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/xraph/grove"
@@ -86,7 +87,8 @@ type KeyRecord struct {
 	ExpiresAt *time.Time
 	// LastUsedAt is when the key last authenticated a request, accurate to
 	// about a minute (the middleware throttles the write). Nil for a key that
-	// has not been used since last_used_at was added.
+	// has not been used since last_used_at was added. Only List fills it:
+	// Lookup leaves it nil so the auth path never depends on the column.
 	LastUsedAt *time.Time
 }
 
@@ -319,8 +321,12 @@ func bootstrapAdminKey(ctx context.Context, store KeyStore, required bool) error
 
 // Lookup resolves a key by hash. No tenant scoping — the table is
 // instance-global. Returns (zero, false, nil) when no row matches.
+//
+// It does not read last_used_at: nothing on the auth path needs it, and
+// leaving it out keeps every authenticated request working on a database that
+// has not run migration 0035 yet.
 func (s *relationalKeyStore) Lookup(ctx context.Context, keyHash string) (KeyRecord, bool, error) {
-	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at, last_used_at
+	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at
 		FROM fabriq_api_key
 		WHERE key_hash = $1`
 	rows, err := s.pg.Query(ctx, q, keyHash)
@@ -336,18 +342,48 @@ func (s *relationalKeyStore) Lookup(ctx context.Context, keyHash string) (KeyRec
 		return KeyRecord{}, false, nil
 	}
 
-	rec, err := scanKeyRecord(rows)
+	rec, err := scanKeyRecord(rows, false)
 	if err != nil {
 		return KeyRecord{}, false, err
 	}
 	return rec, true, nil
 }
 
+// sqlStateUndefinedColumn is PostgreSQL's undefined_column.
+const sqlStateUndefinedColumn = "42703"
+
+// isUndefinedColumn reports whether err is PostgreSQL's undefined_column. The
+// driver error carries the SQLSTATE through a SQLState method; the text match
+// is a fallback for a driver that only wraps the message.
+func isUndefinedColumn(err error) bool {
+	var st interface{ SQLState() string }
+	if errors.As(err, &st) {
+		return st.SQLState() == sqlStateUndefinedColumn
+	}
+	return err != nil && strings.Contains(err.Error(), "SQLSTATE "+sqlStateUndefinedColumn)
+}
+
 // List returns every stored key as a redacted KeyRecord, newest first.
+//
+// It reports last_used_at when the column exists. On a database that has not
+// run migration 0035 yet the first query fails with undefined_column, and List
+// retries without the column: the keys then simply carry no LastUsedAt until
+// `fabriq migrate up` runs.
 func (s *relationalKeyStore) List(ctx context.Context) ([]KeyRecord, error) {
-	const q = `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at, last_used_at
-		FROM fabriq_api_key
-		ORDER BY id DESC`
+	out, err := s.listKeys(ctx, true)
+	if err != nil && isUndefinedColumn(err) {
+		return s.listKeys(ctx, false)
+	}
+	return out, err
+}
+
+// listKeys runs the List query, with or without the last_used_at column.
+func (s *relationalKeyStore) listKeys(ctx context.Context, withLastUsed bool) ([]KeyRecord, error) {
+	q := `SELECT id, prefix, tenant_id, label, can_manage_keys, created_at, revoked_at, expires_at`
+	if withLastUsed {
+		q += `, last_used_at`
+	}
+	q += ` FROM fabriq_api_key ORDER BY id DESC`
 	rows, err := s.pg.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("adminapi: list api keys: %w", err)
@@ -356,7 +392,7 @@ func (s *relationalKeyStore) List(ctx context.Context) ([]KeyRecord, error) {
 
 	var out []KeyRecord
 	for rows.Next() {
-		rec, err := scanKeyRecord(rows)
+		rec, err := scanKeyRecord(rows, withLastUsed)
 		if err != nil {
 			return nil, err
 		}
@@ -389,9 +425,12 @@ func (s *relationalKeyStore) Revoke(ctx context.Context, id string) error {
 }
 
 // Touch stamps last_used_at on the key. It is the KeyToucher implementation;
-// an id with no row updates nothing and returns nil.
+// an id with no row updates nothing and returns nil. The value only moves
+// forward, so a late goroutine or another replica cannot move it back. On a
+// database without migration 0035 it fails with undefined_column, which the
+// middleware drops.
 func (s *relationalKeyStore) Touch(ctx context.Context, id string, at time.Time) error {
-	const q = `UPDATE fabriq_api_key SET last_used_at = $2 WHERE id = $1`
+	const q = `UPDATE fabriq_api_key SET last_used_at = GREATEST(COALESCE(last_used_at, $2), $2) WHERE id = $1`
 	if _, err := s.pg.NewRaw(q, id, at.UTC()).Exec(ctx); err != nil {
 		return fmt.Errorf("adminapi: touch api key: %w", err)
 	}
@@ -400,7 +439,8 @@ func (s *relationalKeyStore) Touch(ctx context.Context, id string, at time.Time)
 
 // scanKeyRecord scans one row of the SELECT column list used by Lookup/List
 // into a KeyRecord, mapping the nullable tenant_id/revoked_at columns.
-func scanKeyRecord(rows interface{ Scan(...any) error }) (KeyRecord, error) {
+// withLastUsed says the row also carries the trailing last_used_at column.
+func scanKeyRecord(rows interface{ Scan(...any) error }, withLastUsed bool) (KeyRecord, error) {
 	var (
 		rec     KeyRecord
 		tenant  sql.NullString
@@ -408,7 +448,11 @@ func scanKeyRecord(rows interface{ Scan(...any) error }) (KeyRecord, error) {
 		expires sql.NullTime
 		lastUse sql.NullTime
 	)
-	if err := rows.Scan(&rec.ID, &rec.Prefix, &tenant, &rec.Label, &rec.CanManageKeys, &rec.CreatedAt, &revoked, &expires, &lastUse); err != nil {
+	dest := []any{&rec.ID, &rec.Prefix, &tenant, &rec.Label, &rec.CanManageKeys, &rec.CreatedAt, &revoked, &expires}
+	if withLastUsed {
+		dest = append(dest, &lastUse)
+	}
+	if err := rows.Scan(dest...); err != nil {
 		return KeyRecord{}, fmt.Errorf("adminapi: scan api key: %w", err)
 	}
 	if tenant.Valid {
