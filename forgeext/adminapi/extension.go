@@ -95,8 +95,10 @@ type config struct {
 	KeyStore KeyStore
 	// TenantRegistry is the static-mode tenant registry behind POST/GET
 	// /tenants. When nil (and no catalog), those routes answer 400 "requires
-	// catalog mode". Register auto-provisions one from the fabric DB when the
-	// parent has no catalog; set it explicitly with WithTenantRegistry.
+	// catalog mode". Register auto-provisions one from the fabric DB when
+	// TenantsAdmin is on and the parent has no catalog; set it explicitly with
+	// WithTenantRegistry. A registry makes POST /keys reject an unregistered
+	// tenantId.
 	TenantRegistry TenantRegistry
 	// AdminLoginUser and AdminLoginHash back the dashboard-login surface
 	// (POST {BasePath}/login + /logout), set together via WithAdminLogin.
@@ -158,8 +160,9 @@ func WithSchemaAdmin() Option { return func(c *config) { c.SchemaAdmin = true } 
 
 // WithTenantsAdmin enables the tenant-management endpoints — list/get plus the
 // suspend/resume lifecycle (the HTTP twin of the `fabriq tenant` CLI). These
-// are instance-global, catalog-mode-only operations; leave OFF unless the host
-// guards the admin API and runs db-per-tenant.
+// are instance-global operations; leave OFF unless the host guards the admin
+// API. Without a catalog, Register also provisions the static tenant registry
+// (POST/GET /tenants), which makes POST /keys check tenantId against it.
 func WithTenantsAdmin() Option { return func(c *config) { c.TenantsAdmin = true } }
 
 // WithAnalyticsAdmin enables the cross-tenant analytics sink endpoints —
@@ -221,7 +224,8 @@ func WithAdminLogin(username, password string) Option {
 }
 
 // WithTenantRegistry sets the static-mode tenant registry that serves
-// POST/GET /tenants when the fabric runs without a catalog.
+// POST/GET /tenants when the fabric runs without a catalog. With a registry
+// set, POST /keys also refuses a tenantId that is not registered (404).
 func WithTenantRegistry(r TenantRegistry) Option {
 	return func(c *config) { c.TenantRegistry = r }
 }
@@ -389,21 +393,30 @@ func (e *Extension) Register(app forge.App) error {
 }
 
 // applyTenantRegistryDefault auto-provisions the static-mode tenant registry
-// from the fabric DB. It does nothing when the host set one, when the DB is
-// not reachable, or when the parent runs a catalog (db-per-tenant keeps its
-// own directory).
+// from the fabric DB when shouldProvisionTenantRegistry says so.
 func (e *Extension) applyTenantRegistryDefault() {
-	if e.cfg.TenantRegistry != nil {
-		return
-	}
 	gdb := groveFromParent(e)
-	if gdb == nil {
-		return
+	hasCatalog := false
+	if e.parent != nil {
+		if stores := e.parent.Stores(); stores != nil && stores.Catalog != nil {
+			hasCatalog = true
+		}
 	}
-	if stores := e.parent.Stores(); stores != nil && stores.Catalog != nil {
+	if !shouldProvisionTenantRegistry(e.cfg, gdb != nil, hasCatalog) {
 		return
 	}
 	e.cfg.TenantRegistry = NewTenantRegistry(gdb)
+}
+
+// shouldProvisionTenantRegistry decides whether Register builds the static
+// tenant registry itself. It only does so for a host that turned the tenant
+// endpoints on (WithTenantsAdmin), has a reachable DB, runs without a catalog
+// (db-per-tenant keeps its own directory) and set no registry of its own. A
+// registry also makes POST /keys check that tenantId is registered, so every
+// other static user keeps the old behaviour unless they pass
+// WithTenantRegistry.
+func shouldProvisionTenantRegistry(cfg config, hasDB, hasCatalog bool) bool {
+	return cfg.TenantsAdmin && cfg.TenantRegistry == nil && hasDB && !hasCatalog
 }
 
 // applyAuthDefaults resolves and applies secure-by-default auth: auto-provision a

@@ -79,10 +79,12 @@ DELETE {base}/keys/{id}       → revoke → 200 {revoked: true}
 ```
 
 An empty `tenantId` issues a multi-tenant key. A non-empty one has to be a well-formed tenant
-id, or you get `400 {"error":"invalid tenant id"}`. In static (row-level security) mode the
-adminapi also keeps a tenant registry, and a key for a tenant that isn't registered there is
-refused with `404 {"error":"unknown tenant"}`. Create the tenant with `POST {base}/tenants`
-first.
+id, or you get `400 {"error":"invalid tenant id"}`. In static (row-level security) mode with
+`WithTenantsAdmin` on, the adminapi also keeps a tenant registry, and a key for a tenant that
+isn't registered there is refused with `404 {"error":"unknown tenant"}`. Create the tenant with
+`POST {base}/tenants` first. `fabriq serve` turns this on. A library host without
+`WithTenantsAdmin` gets no registry and no check, unless it passes its own with
+`WithTenantRegistry`.
 
 The list returns `createdAt`, plus `revokedAt` once a key is revoked and `expiresAt` for keys
 that expire (dashboard sessions). Both are left out when they don't apply.

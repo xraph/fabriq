@@ -286,3 +286,33 @@ func TestStaticTenants_GetMalformedID404(t *testing.T) {
 		t.Errorf("body = %s", body)
 	}
 }
+
+// TestProvisionTenantRegistry_Decision pins when Register auto-provisions the
+// static tenant registry. Only a host that turned the tenant endpoints on gets
+// one, so POST /admin/keys keeps its old behaviour for every other static user
+// (the console sends its current tenant as tenantId and must not get a 404).
+func TestProvisionTenantRegistry_Decision(t *testing.T) {
+	var on config
+	WithTenantsAdmin()(&on)
+	explicit := on
+	explicit.TenantRegistry = newFakeTenantRegistry()
+
+	cases := []struct {
+		name       string
+		cfg        config
+		hasDB      bool
+		hasCatalog bool
+		want       bool
+	}{
+		{"tenants admin, static, db", on, true, false, true},
+		{"tenants admin off", config{}, true, false, false},
+		{"catalog mode", on, true, true, false},
+		{"no db", on, false, false, false},
+		{"explicit registry", explicit, true, false, false},
+	}
+	for _, tc := range cases {
+		if got := shouldProvisionTenantRegistry(tc.cfg, tc.hasDB, tc.hasCatalog); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
