@@ -143,11 +143,8 @@ func alterDynamic(ctx context.Context, reg *registry.Registry, ddl DynamicDDL, s
 	}
 	ent, _ := reg.Get(spec.Name)
 	if err := ddl.EnsureDynamic(ctx, ent); err != nil {
-		// Rollback restores the descriptor only. EnsureDynamic applies additive
-		// DDL statement-by-statement (non-transactional, Task 3), so a partial
-		// failure may leave already-added columns physically present; this is
-		// bounded (additive-only, no data loss) and matches EnsureDynamic's
-		// documented additive-evolution contract.
+		// Rollback restores the descriptor. EnsureDynamic runs its DDL in one
+		// transaction, so a failed ensure leaves the table as it was.
 		_ = reg.Replace(prev.Spec)
 		return err
 	}

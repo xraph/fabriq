@@ -175,7 +175,10 @@ const tenantPolicySQL = `CREATE POLICY tenant_isolation ON %s USING (tenant_id =
 // transaction-scoped advisory lock keyed on the table name. Every boot, sync
 // pass and reconcile re-runs this, often from several processes at once, so:
 //
-//   - the lock serialises concurrent ensures of the same table (two
+//   - on an existing table it takes ACCESS EXCLUSIVE first, so it never
+//     upgrades a weaker lock mid-transaction and cannot deadlock with a
+//     command transaction's FOR UPDATE then write;
+//   - the advisory lock serialises concurrent ensures of the same table (two
 //     CREATE TABLE IF NOT EXISTS or CREATE POLICY racing each other fail with
 //     a duplicate error otherwise);
 //   - ENABLE and FORCE ROW LEVEL SECURITY run only when pg_class says they
@@ -202,6 +205,24 @@ func (a *Adapter) ensureDynamicTx(ctx context.Context, table string, stmts []str
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, $2))`,
 		"fabriq_dynamic_ddl:"+table, dynamicDDLLockSeed); err != nil {
 		return err
+	}
+	// On an existing table, take ACCESS EXCLUSIVE before anything else.
+	// CREATE INDEX IF NOT EXISTS takes SHARE even when the index exists, and
+	// ADD COLUMN IF NOT EXISTS later upgrades that to ACCESS EXCLUSIVE. A
+	// command transaction holding ROW SHARE (SELECT ... FOR UPDATE) that then
+	// wants ROW EXCLUSIVE for its write would deadlock against that upgrade.
+	// Taking the strongest lock first means this transaction never upgrades.
+	var exists bool
+	if qerr := tx.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); qerr != nil {
+		return qerr
+	}
+	if exists {
+		// The name is left unquoted on purpose, like the CREATE TABLE above
+		// and the to_regclass lookup, so all three fold case the same way.
+		// EnsureDynamic has already checked it with ddlValid.
+		if _, err = tx.Exec(ctx, fmt.Sprintf(`LOCK TABLE %s IN ACCESS EXCLUSIVE MODE`, table)); err != nil {
+			return err
+		}
 	}
 	for _, stmt := range stmts {
 		if _, err = tx.Exec(ctx, stmt); err != nil {

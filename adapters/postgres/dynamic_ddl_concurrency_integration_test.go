@@ -166,3 +166,65 @@ func TestDynamicDDL_ReensureKeepsPolicyForReaders(t *testing.T) {
 	}
 	t.Logf("%d reads clean across %d re-ensures", reads.Load(), ensures)
 }
+
+// TestDynamicDDL_ReensureDoesNotDeadlockWriters runs command-plane writes
+// (SELECT ... FOR UPDATE, then INSERT or UPDATE, in one transaction) while
+// the owner re-ensures the table in a loop. The ensure must take its
+// strongest lock first: a SHARE lock from CREATE INDEX IF NOT EXISTS that
+// later upgrades to ACCESS EXCLUSIVE for ADD COLUMN deadlocks with a writer
+// that holds ROW SHARE and wants ROW EXCLUSIVE (40P01).
+func TestDynamicDDL_ReensureDoesNotDeadlockWriters(t *testing.T) {
+	h := newDynWriteHarness(t)
+	ctx := tctx(t, "acme")
+	ent, ok := h.Reg.Get("orders")
+	if !ok {
+		t.Fatal("orders not registered")
+	}
+
+	var stop atomic.Bool
+	var writes, failures atomic.Int64
+	var firstErr atomic.Value
+	var wg sync.WaitGroup
+	for w := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; !stop.Load(); i++ {
+				_, err := h.X.Exec(ctx, command.Command{
+					Entity:  "orders",
+					Op:      command.OpUpsert,
+					AggID:   fmt.Sprintf("w%d-%d", w, i%8),
+					Payload: map[string]any{"sku": "S", "qty": int64(i)},
+				})
+				writes.Add(1)
+				if err != nil {
+					failures.Add(1)
+					firstErr.CompareAndSwap(nil, err.Error())
+				}
+			}
+		}()
+	}
+
+	deadline := time.Now().Add(4 * time.Second)
+	ensures := 0
+	var ensureErr error
+	for time.Now().Before(deadline) {
+		if ensureErr = h.superPG.EnsureDynamic(context.Background(), ent); ensureErr != nil {
+			break
+		}
+		ensures++
+	}
+	stop.Store(true)
+	wg.Wait()
+
+	if ensureErr != nil {
+		t.Fatalf("re-ensure %d: %v", ensures, ensureErr)
+	}
+	if n := failures.Load(); n > 0 {
+		t.Fatalf("%d of %d writes failed during %d re-ensures; first: %v", n, writes.Load(), ensures, firstErr.Load())
+	}
+	if writes.Load() == 0 {
+		t.Fatal("writers never ran")
+	}
+	t.Logf("%d writes clean across %d re-ensures", writes.Load(), ensures)
+}
