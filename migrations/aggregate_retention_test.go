@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func TestAggregateRetentionRefusesRollback(t *testing.T) {
+func TestAggregateRetentionRefusesRollbackWithoutStorage(t *testing.T) {
 	if err := migration0036AggregateRetention.Down(context.Background(), nil); err == nil {
-		t.Fatal("retention migration allowed permanent fences to be removed")
+		t.Fatal("retention migration allowed rollback without checking storage")
 	}
 }

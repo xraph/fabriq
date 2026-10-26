@@ -8,7 +8,7 @@ import (
 )
 
 var migration0036AggregateRetention = &migrate.Migration{
-	Name: "aggregate_retention", Version: "202610260036", Comment: "irreversible aggregate tombstones and local outbox redaction",
+	Name: "aggregate_retention", Version: "202610260036", Comment: "permanent aggregate tombstones and local outbox redaction",
 	Up: func(ctx context.Context, exec migrate.Executor) error {
 		return execAll(ctx, exec, []string{
 			`ALTER TABLE fabriq_outbox ADD COLUMN IF NOT EXISTS erased_at TIMESTAMPTZ`,
@@ -29,7 +29,28 @@ var migration0036AggregateRetention = &migrate.Migration{
 			FOR EACH ROW EXECUTE FUNCTION fabriq_reject_tombstone_change()`,
 		})
 	},
-	Down: func(context.Context, migrate.Executor) error {
-		return fmt.Errorf("fabriq: aggregate retention cannot be rolled back without discarding permanent identity fences")
+	Down: func(ctx context.Context, exec migrate.Executor) error {
+		if exec == nil {
+			return fmt.Errorf("fabriq: aggregate retention rollback requires storage")
+		}
+		// One statement keeps the emptiness check and DDL under the same locks,
+		// even when the executor does not wrap migrations in a transaction.
+		// Read committed refreshes visibility after the locks are acquired.
+		// row_security=off fails rather than hiding another tenant's fences.
+		return execAll(ctx, exec, []string{`DO $$
+        BEGIN
+            IF current_setting('transaction_isolation') <> 'read committed' THEN
+                RAISE EXCEPTION 'fabriq: aggregate retention rollback requires read committed isolation';
+            END IF;
+            SET LOCAL row_security = off;
+            LOCK TABLE fabriq_aggregate_tombstones, fabriq_outbox IN ACCESS EXCLUSIVE MODE;
+            IF EXISTS (SELECT 1 FROM fabriq_aggregate_tombstones)
+                OR EXISTS (SELECT 1 FROM fabriq_outbox WHERE erased_at IS NOT NULL) THEN
+                RAISE EXCEPTION 'fabriq: aggregate retention cannot be rolled back after erasure';
+            END IF;
+            DROP TABLE fabriq_aggregate_tombstones;
+            DROP FUNCTION fabriq_reject_tombstone_change();
+            ALTER TABLE fabriq_outbox DROP COLUMN erased_at;
+        END $$`})
 	},
 }

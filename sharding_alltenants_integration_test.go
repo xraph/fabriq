@@ -81,24 +81,6 @@ func TestAllTenants_StaticWithoutTenantTable(t *testing.T) {
 	if _, err := orch.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Roll back, bounded, until fabriq_tenant is gone, without hard-coding
-	// how many migrations sit above it.
-	for i := 0; ; i++ {
-		if n := fabriqtest.QueryStrings(t, superDSN,
-			`SELECT table_name FROM information_schema.tables WHERE table_name = 'fabriq_tenant'`); len(n) == 0 {
-			break
-		}
-		if i == 20 {
-			t.Fatal("fabriq_tenant still present after 20 rollbacks")
-		}
-		rb, err := orch.Rollback(ctx)
-		if err != nil {
-			t.Fatalf("rollback: %v", err)
-		}
-		if len(rb.Rollback) == 0 {
-			t.Fatal("ran out of migrations before fabriq_tenant was dropped")
-		}
-	}
 	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
 
@@ -119,6 +101,26 @@ func TestAllTenants_StaticWithoutTenantTable(t *testing.T) {
 	if _, err := f.Exec(bctx, command.Command{Entity: "site", Op: command.OpCreate,
 		Payload: &domain.Site{Name: "Plant b"}}); err != nil {
 		t.Fatalf("Exec(site) for b: %v", err)
+	}
+
+	// Retain an ordinary event before removing the unused newer schemas.
+	// This tests historical tenant discovery, not writes without the retention
+	// identity fence required by the current binary. Rollback is bounded.
+	for i := 0; ; i++ {
+		if n := fabriqtest.QueryStrings(t, superDSN,
+			`SELECT table_name FROM information_schema.tables WHERE table_name = 'fabriq_tenant'`); len(n) == 0 {
+			break
+		}
+		if i == 20 {
+			t.Fatal("fabriq_tenant still present after 20 rollbacks")
+		}
+		rb, err := orch.Rollback(ctx)
+		if err != nil {
+			t.Fatalf("rollback: %v", err)
+		}
+		if len(rb.Rollback) == 0 {
+			t.Fatal("ran out of migrations before fabriq_tenant was dropped")
+		}
 	}
 
 	got, err := stores.AllTenants(ctx)
