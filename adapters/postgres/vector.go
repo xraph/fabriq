@@ -139,6 +139,9 @@ func (a *Adapter) Upsert(ctx context.Context, entity, id string, embedding []flo
 		metaJSON = []byte(`{}`)
 	}
 	return a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		if err := fenceAggregate(ctx, tx, entity, id); err != nil {
+			return err
+		}
 		tid, _ := tenant.FromContext(ctx)
 		const sql = `INSERT INTO fabriq_embeddings (tenant_id, entity, id, embedding, meta, scope_id)
 			VALUES ($1, $2, $3, $4::vector, $5, NULLIF($6, ''))

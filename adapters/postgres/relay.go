@@ -192,7 +192,7 @@ func (r *Relay) drainOnce(ctx context.Context) (int, error) {
 	const sel = `SELECT id, tenant_id, aggregate, agg_id, version, type, at::text AS at,
 			payload_schema_version, payload::text AS payload, traceparent
 		FROM fabriq_outbox
-		WHERE published_at IS NULL
+		WHERE published_at IS NULL AND erased_at IS NULL
 		ORDER BY id
 		LIMIT $1
 		FOR UPDATE SKIP LOCKED`
@@ -275,7 +275,7 @@ func (r *Relay) publishBatch(ctx context.Context, tx *pgdriver.PgTx, rows []outb
 
 // Backlog reports the unpublished outbox depth (metrics).
 func (r *Relay) Backlog(ctx context.Context) (int64, error) {
-	row := r.pg.QueryRow(ctx, `SELECT count(*) FROM fabriq_outbox WHERE published_at IS NULL`)
+	row := r.pg.QueryRow(ctx, `SELECT count(*) FROM fabriq_outbox WHERE published_at IS NULL AND erased_at IS NULL`)
 	var n int64
 	if err := row.Scan(&n); err != nil {
 		return 0, err

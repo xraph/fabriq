@@ -43,6 +43,9 @@ func (s *SpatialAdapter) Upsert(ctx context.Context, entity, id string, geom que
 		metaJSON = []byte(`{}`)
 	}
 	return s.a.inTenantTx(ctx, func(tx *pgdriver.PgTx) error {
+		if err := fenceAggregate(ctx, tx, entity, id); err != nil {
+			return err
+		}
 		tid, _ := tenant.FromContext(ctx)
 		const sql = `INSERT INTO fabriq_geometries (tenant_id, entity, id, geom, srid, meta, scope_id)
 			VALUES ($1, $2, $3, ST_GeomFromText($4, $5), $5, $6, NULLIF($7, ''))

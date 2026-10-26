@@ -69,6 +69,7 @@ func Group() *migrate.Group {
 			migration0033DynamicEntity,
 			migration0034Tenant,
 			migration0035APIKeyLastUsed,
+			migration0036AggregateRetention,
 		)
 	})
 	return group

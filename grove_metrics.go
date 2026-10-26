@@ -25,6 +25,7 @@ const collectionOther = "other"
 var systemTables = []string{
 	"blob_cas", "blob_objects", "blob_sources", "digest_nodes", "links",
 	"fs_bookmarks", "fs_nodes", "fs_permissions", "fs_shares",
+	"fabriq_aggregate_tombstones",
 	"fabriq_analytics_applied", "fabriq_analytics_events", "fabriq_analytics_events_default", "fabriq_analytics_facts",
 	"fabriq_api_key",
 	"fabriq_crdt_docs", "fabriq_crdt_segments", "fabriq_crdt_snapshots", "fabriq_crdt_updates",

@@ -15,13 +15,14 @@ import (
 
 // Executor implements Exec/ExecBatch over a Store.
 type Executor struct {
-	reg         *registry.Registry
-	store       Store
-	now         func() time.Time
-	traceparent func(context.Context) string
-	hooks       []LifecycleHook
-	postCommit  []PostCommitHook
-	observer    telemetry.CommandObserver
+	reg               *registry.Registry
+	store             Store
+	now               func() time.Time
+	traceparent       func(context.Context) string
+	hooks             []LifecycleHook
+	postCommit        []PostCommitHook
+	observer          telemetry.CommandObserver
+	erasureAuthorizer ErasureAuthorizer
 }
 
 // ExecutorOption customizes an Executor.
@@ -216,6 +217,11 @@ func resolveOp(op Op, current int64) (eff Op, verb string) {
 // row write, exactly one outbox envelope. It returns the Change so the caller
 // can collect changes for post-commit hooks.
 func (x *Executor) apply(ctx context.Context, tx Tx, p *preparedCommand) (Result, Change, error) {
+	if retention, ok := tx.(ErasureTx); ok {
+		if fenceErr := retention.FenceAggregate(ctx, p.entity, p.aggID); fenceErr != nil {
+			return Result{}, Change{}, fenceErr
+		}
+	}
 	current, err := tx.CurrentVersion(ctx, p.entity, p.aggID)
 	if err != nil {
 		return Result{}, Change{}, err
