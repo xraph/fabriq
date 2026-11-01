@@ -9,6 +9,7 @@ require (
 )
 
 require (
+	github.com/opensearch-project/opensearch-go/v4 v4.8.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 )
@@ -58,7 +59,7 @@ require (
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-	github.com/xraph/fabriq/core v1.9.0
+	github.com/xraph/fabriq/core v1.10.0
 	github.com/xraph/go-utils v1.5.0 // indirect
 	github.com/xraph/grove v1.9.1 // indirect
 	github.com/xraph/grove/drivers/pgdriver v1.9.1 // indirect
