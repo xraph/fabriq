@@ -157,3 +157,11 @@ func TestStoreConfigFromEnv(t *testing.T) {
 		}
 	})
 }
+
+func TestOpenSearchStoreConfigFromEnv(t *testing.T) {
+	values := map[string]string{"FABRIQ_OPENSEARCH_ADDRS": " https://one:9200, https://two:9200 ", "FABRIQ_OPENSEARCH_USERNAME": "admin", "FABRIQ_OPENSEARCH_PASSWORD": "secret", "FABRIQ_OPENSEARCH_CA_FILE": "/certs/root.pem"}
+	cfg := storeConfigFromEnv(func(k string) string { return values[k] })
+	if len(cfg.OpenSearch.Addrs) != 2 || cfg.OpenSearch.Addrs[0] != "https://one:9200" || cfg.OpenSearch.Username != "admin" || cfg.OpenSearch.Password != "secret" || cfg.OpenSearch.CAFile != "/certs/root.pem" {
+		t.Fatalf("OpenSearch settings: %+v", cfg.OpenSearch)
+	}
+}

@@ -47,6 +47,7 @@ type Config struct {
 	Redis         RedisConfig         `yaml:"redis" json:"redis"`
 	FalkorDB      FalkorDBConfig      `yaml:"falkordb" json:"falkordb"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
+	OpenSearch    OpenSearchConfig    `yaml:"opensearch" json:"opensearch"`
 	Storage       StorageConfig       `yaml:"storage" json:"storage"`
 	Documents     DocumentsConfig     `yaml:"documents" json:"documents"`
 	Projections   ProjectionsConfig   `yaml:"projections" json:"projections"`
@@ -261,6 +262,15 @@ type ElasticsearchConfig struct {
 	Password string   `yaml:"password" json:"password"`
 }
 
+// OpenSearchConfig locates a native OpenSearch projection engine. CAFile
+// contains PEM trust roots for verified TLS connections.
+type OpenSearchConfig struct {
+	Addrs    []string `yaml:"addrs" json:"addrs"`
+	Username string   `yaml:"username" json:"username"`
+	Password string   `yaml:"password" json:"password"`
+	CAFile   string   `yaml:"caFile" json:"caFile"`
+}
+
 // ProjectionsConfig switches projection planes on.
 type ProjectionsConfig struct {
 	Graph  bool `yaml:"graph" json:"graph"`
@@ -333,6 +343,9 @@ type DynamicConfig struct {
 
 // Validate checks cross-field consistency. It does not dial anything.
 func (c Config) Validate() error {
+	if len(c.Elasticsearch.Addrs) > 0 && len(c.OpenSearch.Addrs) > 0 {
+		return fmt.Errorf("fabriq: config: elasticsearch and opensearch are mutually exclusive")
+	}
 	if len(c.Shards) > 0 {
 		seen := map[string]struct{}{}
 		for i, s := range c.Shards {
@@ -419,8 +432,8 @@ func (c Config) Validate() error {
 	if c.Projections.Graph && c.FalkorDB.Addr == "" {
 		return fmt.Errorf("fabriq: config: projections.graph enabled but falkordb.addr is empty")
 	}
-	if c.Projections.Search && len(c.Elasticsearch.Addrs) == 0 {
-		return fmt.Errorf("fabriq: config: projections.search enabled but elasticsearch.addrs is empty")
+	if c.Projections.Search && len(c.Elasticsearch.Addrs) == 0 && len(c.OpenSearch.Addrs) == 0 {
+		return fmt.Errorf("fabriq: config: projections.search enabled but elasticsearch.addrs and opensearch.addrs are empty")
 	}
 	if (c.Projections.Graph || c.Projections.Search) && c.Redis.Addr == "" {
 		return fmt.Errorf("fabriq: config: projections need redis.addr for the event stream")

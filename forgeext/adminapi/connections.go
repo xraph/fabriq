@@ -229,6 +229,18 @@ func buildConnections(cfg fabriq.Config) []connectionView {
 		out = append(out, v)
 	}
 
+	if len(cfg.OpenSearch.Addrs) > 0 {
+		addrs := make([]string, 0, len(cfg.OpenSearch.Addrs))
+		for _, addr := range cfg.OpenSearch.Addrs {
+			addrs = append(addrs, redactURL(addr))
+		}
+		v := connectionView{Name: "opensearch", Kind: "opensearch", Addrs: addrs, Username: cfg.OpenSearch.Username}
+		if cfg.OpenSearch.Password != "" {
+			v.Password = maskedSecret
+		}
+		out = append(out, v)
+	}
+
 	// Blob (object store), configured only when a driver is set.
 	if cfg.Storage.StorageDriver != "" {
 		out = append(out, connectionView{
@@ -397,9 +409,9 @@ func (c *adminController) probeConnections(ctx context.Context, views []connecti
 			if stores != nil && stores.Falkor != nil {
 				v.Health = timedPing(ctx, stores.Falkor.Ping)
 			}
-		case "elasticsearch":
-			if stores != nil && stores.Elastic != nil {
-				v.Health = timedPing(ctx, stores.Elastic.Ping)
+		case "elasticsearch", "opensearch":
+			if stores != nil && stores.SearchConfigured() {
+				v.Health = timedPing(ctx, stores.PingSearch)
 			}
 		case "blob":
 			if stores != nil && stores.Blob != nil {

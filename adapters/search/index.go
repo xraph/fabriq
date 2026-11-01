@@ -1,9 +1,10 @@
-package elastic
+package search
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,9 +27,9 @@ func targetVersion(target string) (int, error) {
 	return n, nil
 }
 
-// SearchTargetName is the Rebuilder naming function for the search
+// TargetName is the Rebuilder naming function for the search
 // projection: targets are version tags interpreted by this sink.
-func SearchTargetName(_ string, modelVersion int) string {
+func TargetName(_ string, modelVersion int) string {
 	return fmt.Sprintf("v%d", modelVersion)
 }
 
@@ -40,13 +41,22 @@ func (a *Adapter) ensureIndex(ctx context.Context, index string) error {
 	if ok {
 		return nil
 	}
-	res, err := a.es.Indices.Create(index, a.es.Indices.Create.WithContext(ctx))
+	res, err := a.request(ctx, "PUT", "/"+index, "", nil)
 	if err != nil {
-		return translateES("create index "+index, err)
+		return a.transportError("create index "+index, err)
 	}
-	defer drainAndClose(res.Body)
-	if res.IsError() && res.StatusCode != 400 { // 400 = already exists
-		return translateESResponse("create index "+index, res.StatusCode, res.String())
+	defer func() { _, _ = io.Copy(io.Discard, res.Body); _ = res.Body.Close() }()
+	if res.StatusCode >= 300 {
+		body := responseBody(res)
+		var parsed struct {
+			Error struct {
+				Type string `json:"type"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal([]byte(body), &parsed)
+		if res.StatusCode != 400 || parsed.Error.Type != "resource_already_exists_exception" {
+			return a.responseError("create index "+index, res.StatusCode, body)
+		}
 	}
 	a.mu.Lock()
 	a.ensured[index] = struct{}{}
@@ -62,13 +72,13 @@ func (a *Adapter) ensureAlias(ctx context.Context, alias, index string) error {
 	if ok {
 		return nil
 	}
-	res, err := a.es.Indices.PutAlias([]string{index}, alias, a.es.Indices.PutAlias.WithContext(ctx))
+	res, err := a.request(ctx, "PUT", "/"+index+"/_alias/"+alias, "", nil)
 	if err != nil {
-		return translateES(fmt.Sprintf("put alias %s -> %s", alias, index), err)
+		return a.transportError(fmt.Sprintf("put alias %s -> %s", alias, index), err)
 	}
-	defer drainAndClose(res.Body)
-	if res.IsError() {
-		return translateESResponse(fmt.Sprintf("put alias %s -> %s", alias, index), res.StatusCode, res.String())
+	defer func() { _, _ = io.Copy(io.Discard, res.Body); _ = res.Body.Close() }()
+	if res.StatusCode >= 300 {
+		return a.responseError(fmt.Sprintf("put alias %s -> %s", alias, index), res.StatusCode, responseBody(res))
 	}
 	a.mu.Lock()
 	a.aliased[alias] = struct{}{}
@@ -77,7 +87,7 @@ func (a *Adapter) ensureAlias(ctx context.Context, alias, index string) error {
 }
 
 // FlipAliases atomically repoints every searchable entity's tenant alias
-// at the new model version's indexes — the search projection's blue-green
+// at the new model version's indexes, the search projection's blue-green
 // cutover, one _aliases call. Removals are derived from what ACTUALLY
 // holds each alias (entities that never indexed a document have no old
 // index, and a remove for a nonexistent pair would fail the whole atomic
@@ -109,13 +119,13 @@ func (a *Adapter) FlipAliases(ctx context.Context, tenantID string, _, newVersio
 		return nil
 	}
 	body := fmt.Sprintf(`{"actions":[%s]}`, strings.Join(actions, ","))
-	res, err := a.es.Indices.UpdateAliases(strings.NewReader(body), a.es.Indices.UpdateAliases.WithContext(ctx))
+	res, err := a.request(ctx, "POST", "/_aliases", "", strings.NewReader(body))
 	if err != nil {
-		return translateES("swap aliases for "+tenantID, err)
+		return a.transportError("swap aliases for "+tenantID, err)
 	}
-	defer drainAndClose(res.Body)
-	if res.IsError() {
-		return translateESResponse("swap aliases for "+tenantID, res.StatusCode, res.String())
+	defer func() { _, _ = io.Copy(io.Discard, res.Body); _ = res.Body.Close() }()
+	if res.StatusCode >= 300 {
+		return a.responseError("swap aliases for "+tenantID, res.StatusCode, responseBody(res))
 	}
 	// Aliases moved: drop the memoization so live writes re-resolve.
 	a.mu.Lock()
@@ -127,23 +137,20 @@ func (a *Adapter) FlipAliases(ctx context.Context, tenantID string, _, newVersio
 // aliasHolders lists the indexes currently holding an alias (empty when
 // the alias does not exist yet).
 func (a *Adapter) aliasHolders(ctx context.Context, alias string) ([]string, error) {
-	res, err := a.es.Indices.GetAlias(
-		a.es.Indices.GetAlias.WithContext(ctx),
-		a.es.Indices.GetAlias.WithName(alias),
-	)
+	res, err := a.request(ctx, "GET", "/_alias/"+alias, "", nil)
 	if err != nil {
-		return nil, translateES("get alias "+alias, err)
+		return nil, a.transportError("get alias "+alias, err)
 	}
-	defer drainAndClose(res.Body)
+	defer func() { _, _ = io.Copy(io.Discard, res.Body); _ = res.Body.Close() }()
 	if res.StatusCode == 404 {
 		return nil, nil
 	}
-	if res.IsError() {
-		return nil, translateESResponse("get alias "+alias, res.StatusCode, res.String())
+	if res.StatusCode >= 300 {
+		return nil, a.responseError("get alias "+alias, res.StatusCode, responseBody(res))
 	}
 	var parsed map[string]any // index name -> {aliases: {...}}
 	if err := json.NewDecoder(res.Body).Decode(&parsed); err != nil {
-		return nil, translateES("get alias "+alias+" decode", err)
+		return nil, a.transportError("get alias "+alias+" decode", err)
 	}
 	holders := make([]string, 0, len(parsed))
 	for idx := range parsed {
@@ -172,12 +179,18 @@ func (a *Adapter) DropTarget(ctx context.Context, target string) error {
 			continue
 		}
 		index := registry.SearchIndexVersioned(tenantID, base, version)
-		res, err := a.es.Indices.Delete([]string{index},
-			a.es.Indices.Delete.WithContext(ctx), a.es.Indices.Delete.WithIgnoreUnavailable(true))
+		res, err := a.request(ctx, "DELETE", "/"+index, "ignore_unavailable=true", nil)
 		if err != nil {
-			return translateES("delete index "+index, err)
+			return a.transportError("delete index "+index, err)
 		}
-		drainAndClose(res.Body)
+		if res.StatusCode >= 300 {
+			responseErr := a.responseError("delete index "+index, res.StatusCode, responseBody(res))
+			_, _ = io.Copy(io.Discard, res.Body)
+			_ = res.Body.Close()
+			return responseErr
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
 		a.mu.Lock()
 		delete(a.ensured, index)
 		a.mu.Unlock()

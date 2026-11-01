@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xraph/fabriq/adapters/elastic"
 	"github.com/xraph/fabriq/adapters/falkordb"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
@@ -248,16 +247,9 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		stores.Falkor = fk
 		ports.Graph = fk
 	}
-	if len(cfg.Elasticsearch.Addrs) > 0 {
-		es, eerr := elastic.Open(ctx, elastic.Config{
-			Addrs: cfg.Elasticsearch.Addrs, Username: cfg.Elasticsearch.Username, Password: cfg.Elasticsearch.Password,
-		}, reg, elastic.WithModelVersionResolver(liveSearchModelVersion(stores.state)))
-		if eerr != nil {
-			_ = stores.Close()
-			return nil, nil, eerr
-		}
-		stores.Elastic = es
-		ports.Search = es
+	if err := openSearch(ctx, cfg, reg, stores, &ports); err != nil {
+		_ = stores.Close()
+		return nil, nil, err
 	}
 
 	if aerr := openAnalytics(ctx, cfg, reg, stores); aerr != nil {

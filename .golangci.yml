@@ -55,6 +55,8 @@ linters:
               desc: go-redis may only be imported under fabriq/adapters
             - pkg: github.com/elastic/go-elasticsearch
               desc: the elasticsearch client may only be imported under fabriq/adapters
+            - pkg: github.com/opensearch-project/opensearch-go
+              desc: the opensearch client may only be imported under fabriq/adapters
             - pkg: github.com/FalkorDB/falkordb-go
               desc: the FalkorDB client may only be imported under fabriq/adapters
             - pkg: github.com/jackc/pgx

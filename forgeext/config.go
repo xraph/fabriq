@@ -188,6 +188,7 @@ func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 	bind("redis", &cfg.Redis)
 	bind("falkordb", &cfg.FalkorDB)
 	bind("elasticsearch", &cfg.Elasticsearch)
+	bind("opensearch", &cfg.OpenSearch)
 	bind("projections", &cfg.Projections)
 	bind("subscriptions", &cfg.Subscriptions)
 	bind("storage", &cfg.Storage)
@@ -195,16 +196,21 @@ func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 	if cm.IsSet(prefix + "elasticsearch.addrs") {
 		cfg.Elasticsearch.Addrs = cm.GetStringSlice(prefix + "elasticsearch.addrs")
 	}
+	if cm.IsSet(prefix + "opensearch.addrs") {
+		cfg.OpenSearch.Addrs = cm.GetStringSlice(prefix + "opensearch.addrs")
+	}
 	if prefix == "" {
 		overlayStoreCredentialsFromEnv(&cfg, os.Getenv)
 	}
 	return cfg
 }
 
-// overlayStoreCredentialsFromEnv sets the Redis, FalkorDB and Elasticsearch
+// overlayStoreCredentialsFromEnv sets the Redis, FalkorDB and native search
 // usernames and passwords from FABRIQ_REDIS_USERNAME, FABRIQ_REDIS_PASSWORD,
 // FABRIQ_FALKORDB_USERNAME, FABRIQ_FALKORDB_PASSWORD,
-// FABRIQ_ELASTICSEARCH_USERNAME and FABRIQ_ELASTICSEARCH_PASSWORD. A non-empty
+// FABRIQ_ELASTICSEARCH_USERNAME and FABRIQ_ELASTICSEARCH_PASSWORD. OpenSearch
+// also reads FABRIQ_OPENSEARCH_ADDRS, FABRIQ_OPENSEARCH_USERNAME,
+// FABRIQ_OPENSEARCH_PASSWORD and FABRIQ_OPENSEARCH_CA_FILE. A non-empty
 // value wins over config.yaml, like the rest of FABRIQ_*; an empty one leaves
 // the file's value alone. The config manager's own env overlay usually binds
 // these already. This makes it hold whatever it does with underscores.
@@ -218,6 +224,17 @@ func overlayStoreCredentialsFromEnv(cfg *fabriq.Config, getenv func(string) stri
 	set(&cfg.Redis.Password, "FABRIQ_REDIS_PASSWORD")
 	set(&cfg.FalkorDB.Username, "FABRIQ_FALKORDB_USERNAME")
 	set(&cfg.FalkorDB.Password, "FABRIQ_FALKORDB_PASSWORD")
+	if v := getenv("FABRIQ_OPENSEARCH_ADDRS"); v != "" {
+		cfg.OpenSearch.Addrs = nil
+		for _, addr := range strings.Split(v, ",") {
+			if addr = strings.TrimSpace(addr); addr != "" {
+				cfg.OpenSearch.Addrs = append(cfg.OpenSearch.Addrs, addr)
+			}
+		}
+	}
+	set(&cfg.OpenSearch.Username, "FABRIQ_OPENSEARCH_USERNAME")
+	set(&cfg.OpenSearch.Password, "FABRIQ_OPENSEARCH_PASSWORD")
+	set(&cfg.OpenSearch.CAFile, "FABRIQ_OPENSEARCH_CA_FILE")
 	set(&cfg.Elasticsearch.Username, "FABRIQ_ELASTICSEARCH_USERNAME")
 	set(&cfg.Elasticsearch.Password, "FABRIQ_ELASTICSEARCH_PASSWORD")
 }

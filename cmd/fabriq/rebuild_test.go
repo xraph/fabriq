@@ -64,7 +64,7 @@ func TestRebuild_UsageExitCodes(t *testing.T) {
 			"--falkordb (or FABRIQ_FALKORDB_ADDR) is required"},
 		{"search without elasticsearch", nil,
 			[]string{"--dsn", dsn, "--projection", "search", "--all-tenants"},
-			"--elasticsearch (or FABRIQ_ELASTICSEARCH_ADDRS) is required"},
+			"configure FABRIQ_OPENSEARCH_ADDRS or --elasticsearch"},
 		{"unknown domain pack", map[string]string{"FABRIQ_DOMAIN_PACK": "x"},
 			[]string{"--dsn", dsn, "--projection", "graph", "--tenant", "acme", "--falkordb", "f:6379"},
 			"unknown FABRIQ_DOMAIN_PACK"},

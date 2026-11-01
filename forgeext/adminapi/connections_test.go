@@ -268,3 +268,18 @@ func TestConnectionsCapability(t *testing.T) {
 		t.Fatal("connections.read must be advertised when ConnectionsRead is on")
 	}
 }
+
+func TestOpenSearchConnectionRedaction(t *testing.T) {
+	cfg := fabriq.Config{OpenSearch: fabriq.OpenSearchConfig{Addrs: []string{"https://user:url-secret@search.internal:9200"}, Username: "admin", Password: "auth-secret", CAFile: "/certs/ca.pem"}}
+	views := buildConnections(cfg)
+	if len(views) != 1 || views[0].Kind != "opensearch" || views[0].Password != maskedSecret {
+		t.Fatalf("native connection not exposed safely: %+v", views)
+	}
+	encoded, err := json.Marshal(views)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "url-secret") || strings.Contains(string(encoded), "auth-secret") {
+		t.Fatal("connection exposes credentials")
+	}
+}

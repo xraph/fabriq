@@ -1,8 +1,9 @@
-package elastic
+package search
 
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 
 	"github.com/xraph/fabriq/core/registry"
@@ -10,7 +11,7 @@ import (
 )
 
 // AggregateVersions reads id -> version for one entity's documents from
-// the tenant's alias — the reconciler's projection side. Capped at 10k
+// the tenant's alias, the reconciler's projection side. Capped at 10k
 // documents per entity for v1 (the match_all page limit); larger tenants
 // reconcile via counts first and need a scroll, which is noted in
 // OPERATIONS.md.
@@ -26,20 +27,16 @@ func (a *Adapter) AggregateVersions(ctx context.Context, tenantID string, ent *r
 
 	alias := registry.SearchIndexAlias(tenantID, ent.Spec.Search.Index)
 	body := `{"size":10000,"_source":["id","version"],"query":{"match_all":{}}}`
-	res, err := a.es.Search(
-		a.es.Search.WithContext(ctx),
-		a.es.Search.WithIndex(alias),
-		a.es.Search.WithBody(strings.NewReader(body)),
-	)
+	res, err := a.request(ctx, "POST", "/"+alias+"/_search", "", strings.NewReader(body))
 	if err != nil {
-		return nil, translateES("scan "+alias, err)
+		return nil, a.transportError("scan "+alias, err)
 	}
-	defer drainAndClose(res.Body)
+	defer func() { _, _ = io.Copy(io.Discard, res.Body); _ = res.Body.Close() }()
 	if res.StatusCode == 404 {
 		return map[string]int64{}, nil // tenant never indexed this entity
 	}
-	if res.IsError() {
-		return nil, translateESResponse("scan "+alias, res.StatusCode, res.String())
+	if res.StatusCode >= 300 {
+		return nil, a.responseError("scan "+alias, res.StatusCode, responseBody(res))
 	}
 
 	var parsed struct {

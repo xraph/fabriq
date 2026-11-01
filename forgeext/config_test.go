@@ -247,3 +247,30 @@ func TestLoadConfig_StoreCredentialsOverlay(t *testing.T) {
 		t.Errorf("prefixed redis.password = %q, want empty", prefixed.Redis.Password)
 	}
 }
+
+func TestOpenSearchEnvironmentOverlay(t *testing.T) {
+	for key, value := range map[string]string{"FABRIQ_OPENSEARCH_ADDRS": " https://one:9200, ,https://two:9200 ", "FABRIQ_OPENSEARCH_USERNAME": "reader", "FABRIQ_OPENSEARCH_PASSWORD": "secret", "FABRIQ_OPENSEARCH_CA_FILE": "/certs/ca.pem"} {
+		t.Setenv(key, value)
+	}
+	cm := newEnvConfigApp(t, "")
+	cfg := forgeext.LoadConfig(cm, "")
+	if len(cfg.OpenSearch.Addrs) != 2 || cfg.OpenSearch.Username != "reader" || cfg.OpenSearch.Password != "secret" || cfg.OpenSearch.CAFile != "/certs/ca.pem" {
+		t.Fatalf("OpenSearch settings did not bind")
+	}
+	scoped := forgeext.LoadConfig(cm, "extensions.fabriq.")
+	if len(scoped.OpenSearch.Addrs) != 0 || scoped.OpenSearch.Username != "" || scoped.OpenSearch.CAFile != "" {
+		t.Fatal("standalone env leaked into host extension")
+	}
+}
+
+func TestLoadOpenSearchFileConfig(t *testing.T) {
+	cm := newEnvConfigApp(t, "opensearch:\n  addrs: [https://native:9200]\n  username: worker\n  password: secret\n  caFile: /tls/root.pem\nextensions:\n  fabriq:\n    opensearch:\n      addrs: [https://host-native:9200]\n      username: host-worker\n      password: host-secret\n      caFile: /tls/host.pem\n")
+	got := forgeext.LoadConfig(cm, "").OpenSearch
+	if len(got.Addrs) != 1 || got.Username != "worker" || got.Password != "secret" || got.CAFile != "/tls/root.pem" {
+		t.Fatal("standalone file settings did not bind")
+	}
+	got = forgeext.LoadConfig(cm, "extensions.fabriq.").OpenSearch
+	if len(got.Addrs) != 1 || got.Username != "host-worker" || got.Password != "host-secret" || got.CAFile != "/tls/host.pem" {
+		t.Fatal("host file settings did not bind")
+	}
+}

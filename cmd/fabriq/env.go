@@ -63,7 +63,9 @@ func registerDomainPack(reg *registry.Registry, pack string) error {
 // than through forgeext.LoadConfig: FABRIQ_REDIS_ADDR, FABRIQ_REDIS_USERNAME,
 // FABRIQ_REDIS_PASSWORD, FABRIQ_FALKORDB_ADDR, FABRIQ_FALKORDB_USERNAME,
 // FABRIQ_FALKORDB_PASSWORD, FABRIQ_ELASTICSEARCH_ADDRS (comma-separated),
-// FABRIQ_ELASTICSEARCH_USERNAME and FABRIQ_ELASTICSEARCH_PASSWORD. Unset
+// FABRIQ_ELASTICSEARCH_USERNAME, FABRIQ_ELASTICSEARCH_PASSWORD,
+// FABRIQ_OPENSEARCH_ADDRS, FABRIQ_OPENSEARCH_USERNAME,
+// FABRIQ_OPENSEARCH_PASSWORD and FABRIQ_OPENSEARCH_CA_FILE. Unset
 // variables leave their fields zero. The commands' address flags still win.
 func storeConfigFromEnv(getenv func(string) string) fabriq.Config {
 	return fabriq.Config{
@@ -77,6 +79,7 @@ func storeConfigFromEnv(getenv func(string) string) fabriq.Config {
 			Username: getenv("FABRIQ_FALKORDB_USERNAME"),
 			Password: getenv("FABRIQ_FALKORDB_PASSWORD"),
 		},
+		OpenSearch: fabriq.OpenSearchConfig{Addrs: splitAddrs(getenv("FABRIQ_OPENSEARCH_ADDRS")), Username: getenv("FABRIQ_OPENSEARCH_USERNAME"), Password: getenv("FABRIQ_OPENSEARCH_PASSWORD"), CAFile: getenv("FABRIQ_OPENSEARCH_CA_FILE")},
 		Elasticsearch: fabriq.ElasticsearchConfig{
 			Addrs:    splitAddrs(getenv("FABRIQ_ELASTICSEARCH_ADDRS")),
 			Username: getenv("FABRIQ_ELASTICSEARCH_USERNAME"),

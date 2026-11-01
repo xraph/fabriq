@@ -111,8 +111,8 @@ func rebuildCommand() cli.Command {
 				return usageError("--falkordb (or FABRIQ_FALKORDB_ADDR) is required for graph rebuilds")
 			}
 		case "search":
-			if len(cfg.Elasticsearch.Addrs) == 0 {
-				return usageError("--elasticsearch (or FABRIQ_ELASTICSEARCH_ADDRS) is required for search rebuilds")
+			if len(cfg.Elasticsearch.Addrs) == 0 && len(cfg.OpenSearch.Addrs) == 0 {
+				return usageError("configure FABRIQ_OPENSEARCH_ADDRS or --elasticsearch for search rebuilds")
 			}
 		}
 		r, err := operatorRegistry(os.Getenv, &cfg)
@@ -217,7 +217,7 @@ func reconcileCommand() cli.Command {
 			return cliError("--tenant is required")
 		}
 		cfg := operatorStoreConfig(ctx, dsn)
-		if cfg.FalkorDB.Addr == "" && len(cfg.Elasticsearch.Addrs) == 0 {
+		if cfg.FalkorDB.Addr == "" && len(cfg.Elasticsearch.Addrs) == 0 && len(cfg.OpenSearch.Addrs) == 0 {
 			return cliError("nothing to reconcile: pass --falkordb and/or --elasticsearch")
 		}
 		r, err := operatorRegistry(os.Getenv, &cfg)
@@ -264,7 +264,7 @@ func reconcileCommand() cli.Command {
 				return err
 			}
 		}
-		if stores.Elastic != nil {
+		if stores.SearchConfigured() {
 			rec, err := stores.SearchReconciler(r)
 			if err != nil {
 				return err

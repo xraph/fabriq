@@ -16,9 +16,11 @@ import (
 	"github.com/xraph/fabriq/adapters/chanalytics"
 	"github.com/xraph/fabriq/adapters/elastic"
 	"github.com/xraph/fabriq/adapters/falkordb"
+	"github.com/xraph/fabriq/adapters/opensearch"
 	"github.com/xraph/fabriq/adapters/pganalytics"
 	"github.com/xraph/fabriq/adapters/postgres"
 	"github.com/xraph/fabriq/adapters/redis"
+	"github.com/xraph/fabriq/adapters/search"
 	"github.com/xraph/fabriq/adapters/shard"
 	trovestore "github.com/xraph/fabriq/adapters/trove"
 	"github.com/xraph/fabriq/cachequery"
@@ -30,6 +32,7 @@ import (
 	"github.com/xraph/fabriq/core/event"
 	"github.com/xraph/fabriq/core/insights"
 	"github.com/xraph/fabriq/core/projection"
+	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/subscribe"
 	"github.com/xraph/fabriq/core/sweep"
@@ -250,16 +253,9 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		ports.Graph = fk
 	}
 
-	if len(cfg.Elasticsearch.Addrs) > 0 {
-		es, eerr := elastic.Open(ctx, elastic.Config{
-			Addrs: cfg.Elasticsearch.Addrs, Username: cfg.Elasticsearch.Username, Password: cfg.Elasticsearch.Password,
-		}, reg, elastic.WithModelVersionResolver(liveSearchModelVersion(stores.state)))
-		if eerr != nil {
-			_ = stores.Close()
-			return nil, nil, eerr
-		}
-		stores.Elastic = es
-		ports.Search = es
+	if err := openSearch(ctx, cfg, reg, stores, &ports); err != nil {
+		_ = stores.Close()
+		return nil, nil, err
 	}
 
 	if err := openAnalytics(ctx, cfg, reg, stores); err != nil {
@@ -434,6 +430,7 @@ type Stores struct {
 	Redis   *redis.Adapter
 	Falkor  *falkordb.Adapter
 	Elastic *elastic.Adapter
+	search  searchBackend
 	// Analytics is the opt-in cross-tenant analytics sink (nil unless
 	// Config.Analytics is configured).
 	Analytics     analytics.Sink
@@ -579,6 +576,11 @@ func (s *Stores) Close() error {
 		cancel()
 	}
 	var firstErr error
+	if backend := s.searchAdapter(); backend != nil {
+		if err := backend.Close(); err != nil {
+			firstErr = err
+		}
+	}
 	if s.Blob != nil {
 		if err := s.Blob.Close(context.Background()); err != nil {
 			firstErr = err
@@ -809,8 +811,8 @@ func (s *Stores) GraphRebuilder(reg *registry.Registry) (*projection.Rebuilder, 
 // group -> registry-derived applier -> Elasticsearch sink with external
 // version gating. Run one per worker replica.
 func (s *Stores) SearchEngine(reg *registry.Registry, upcasters *event.UpcasterChain) (*projection.Engine, error) {
-	if s.Redis == nil || s.Elastic == nil || (s.Postgres == nil && s.router == nil) {
-		return nil, fmt.Errorf("fabriq: search engine needs postgres (or a tenant catalog), redis and elasticsearch configured")
+	if s.Redis == nil || s.searchAdapter() == nil || (s.Postgres == nil && s.router == nil) {
+		return nil, fmt.Errorf("fabriq: search engine needs postgres (or a tenant catalog), redis and a search backend configured")
 	}
 	repo := s.state
 	stateFor := cachedState(repo, "search")
@@ -818,7 +820,7 @@ func (s *Stores) SearchEngine(reg *registry.Registry, upcasters *event.UpcasterC
 		Projection: "search",
 		Group:      "proj:search",
 		Source:     s.Redis,
-		Sink:       s.Elastic,
+		Sink:       s.searchAdapter(),
 		Applier:    projection.SearchApplier(reg),
 		Upcasters:  upcasters,
 		State:      repo,
@@ -829,7 +831,7 @@ func (s *Stores) SearchEngine(reg *registry.Registry, upcasters *event.UpcasterC
 				return nil, err
 			}
 			if st.Status == "building" {
-				return []string{"", elastic.SearchTargetName(tenantID, st.ModelVersion+1)}, nil
+				return []string{"", search.TargetName(tenantID, st.ModelVersion+1)}, nil
 			}
 			return []string{""}, nil
 		},
@@ -839,17 +841,17 @@ func (s *Stores) SearchEngine(reg *registry.Registry, upcasters *event.UpcasterC
 // SearchRebuilder assembles the blue-green rebuilder for the search
 // projection; the alias swap rides the flip (OnFlip).
 func (s *Stores) SearchRebuilder(reg *registry.Registry) (*projection.Rebuilder, error) {
-	if s.Elastic == nil || (s.Postgres == nil && s.router == nil) {
-		return nil, fmt.Errorf("fabriq: search rebuilder needs postgres (or a tenant catalog) and elasticsearch configured")
+	if s.searchAdapter() == nil || (s.Postgres == nil && s.router == nil) {
+		return nil, fmt.Errorf("fabriq: search rebuilder needs postgres (or a tenant catalog) and a search backend configured")
 	}
 	return &projection.Rebuilder{
 		Projection: "search",
 		State:      s.state,
-		Sink:       s.Elastic,
+		Sink:       s.searchAdapter(),
 		Applier:    projection.SearchApplier(reg),
 		Snapshot:   routingSnapshot{stores: s},
-		TargetName: elastic.SearchTargetName,
-		OnFlip:     s.Elastic.FlipAliases,
+		TargetName: search.TargetName,
+		OnFlip:     s.searchAdapter().FlipAliases,
 		Custom:     s.customAppliers,
 	}, nil
 }
@@ -873,15 +875,15 @@ func (s *Stores) GraphReconciler(reg *registry.Registry) (*projection.Reconciler
 // SearchReconciler assembles drift detection + repair for the search
 // projection.
 func (s *Stores) SearchReconciler(reg *registry.Registry) (*projection.Reconciler, error) {
-	if s.Elastic == nil || (s.Postgres == nil && s.router == nil) {
-		return nil, fmt.Errorf("fabriq: search reconciler needs postgres (or a tenant catalog) and elasticsearch configured")
+	if s.searchAdapter() == nil || (s.Postgres == nil && s.router == nil) {
+		return nil, fmt.Errorf("fabriq: search reconciler needs postgres (or a tenant catalog) and a search backend configured")
 	}
 	return &projection.Reconciler{
 		Projection: "search",
 		Registry:   reg,
 		Include:    func(ent *registry.Entity) bool { return ent.Spec.Search.Index != "" },
 		Truth:      s.truthVersions, // tenant-routed to the owning shard
-		Projected:  s.Elastic.AggregateVersions,
+		Projected:  s.searchAdapter().AggregateVersions,
 		Repair:     s.repair, // synthetic event lands on the tenant's shard outbox
 	}, nil
 }
@@ -899,7 +901,7 @@ func (s *Stores) BlobReconciler(grace time.Duration) (*trovestore.BlobReconciler
 // liveSearchModelVersion resolves the live search model version through
 // projection_state, with a small TTL cache (same pattern as the graph
 // resolver).
-func liveSearchModelVersion(repo projection.StateRepo) elastic.ModelVersionResolver {
+func liveSearchModelVersion(repo projection.StateRepo) search.ModelVersionResolver {
 	type entry struct {
 		version int
 		exp     time.Time
@@ -976,4 +978,58 @@ func (c Config) guardedTables() []string {
 // public Option surface; transports are chosen by Open).
 func withTailer(t subscribe.Tailer) Option {
 	return func(s *settings) { s.tailer = t }
+}
+
+// searchBackend keeps native engine selection private while preserving Elastic.
+type searchBackend interface {
+	query.SearchQuerier
+	projection.TargetSink
+	Close() error
+	Ping(context.Context) error
+	FlipAliases(context.Context, string, int, int) error
+	AggregateVersions(context.Context, string, *registry.Entity) (map[string]int64, error)
+}
+
+func openSearch(ctx context.Context, cfg Config, reg *registry.Registry, stores *Stores, ports *Ports) error {
+	resolver := liveSearchModelVersion(stores.state)
+	switch {
+	case len(cfg.OpenSearch.Addrs) > 0:
+		a, err := opensearch.Open(ctx, opensearch.Config{Addrs: cfg.OpenSearch.Addrs, Username: cfg.OpenSearch.Username, Password: cfg.OpenSearch.Password, CAFile: cfg.OpenSearch.CAFile}, reg, opensearch.WithModelVersionResolver(resolver))
+		if err != nil {
+			return err
+		}
+		stores.search = a
+	case len(cfg.Elasticsearch.Addrs) > 0:
+		a, err := elastic.Open(ctx, elastic.Config{Addrs: cfg.Elasticsearch.Addrs, Username: cfg.Elasticsearch.Username, Password: cfg.Elasticsearch.Password}, reg, elastic.WithModelVersionResolver(resolver))
+		if err != nil {
+			return err
+		}
+		stores.Elastic = a
+		stores.search = a
+	}
+	if stores.search != nil {
+		ports.Search = stores.search
+	}
+	return nil
+}
+
+func (s *Stores) searchAdapter() searchBackend {
+	if s.search != nil {
+		return s.search
+	}
+	if s.Elastic != nil {
+		return s.Elastic
+	}
+	return nil
+}
+
+// SearchConfigured reports whether either native search backend is available.
+func (s *Stores) SearchConfigured() bool { return s.searchAdapter() != nil }
+
+// PingSearch probes the configured search backend with the caller's deadline.
+func (s *Stores) PingSearch(ctx context.Context) error {
+	if a := s.searchAdapter(); a != nil {
+		return a.Ping(ctx)
+	}
+	return ErrStoreNotConfigured
 }

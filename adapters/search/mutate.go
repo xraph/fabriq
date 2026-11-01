@@ -1,10 +1,11 @@
-package elastic
+package search
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/xraph/fabriq/core/projection"
 	"github.com/xraph/fabriq/core/registry"
@@ -16,7 +17,7 @@ func tenantFrom(ctx context.Context) (string, error) { return tenant.Require(ctx
 // ApplyMutations implements the search projection write path: one _bulk
 // request per batch, every op carrying the aggregate version with
 // version_type=external_gte. Stale replays come back as version conflicts
-// and count as success — that IS the idempotency gate working.
+// and count as success, that IS the idempotency gate working.
 //
 // target "" routes to the tenant's live versioned indexes (alias kept
 // pointing at them); target "vN" routes to a rebuild's building indexes.
@@ -75,14 +76,13 @@ func (a *Adapter) ApplyMutations(ctx context.Context, target string, muts []proj
 		}
 	}
 
-	res, err := a.es.Bulk(bytes.NewReader(body.Bytes()),
-		a.es.Bulk.WithContext(ctx), a.es.Bulk.WithRefresh("true"))
+	res, err := a.request(ctx, "POST", "/_bulk", "refresh=true", bytes.NewReader(body.Bytes()))
 	if err != nil {
-		return translateES("bulk", err)
+		return a.transportError("bulk", err)
 	}
-	defer drainAndClose(res.Body)
-	if res.IsError() {
-		return translateESResponse("bulk", res.StatusCode, res.String())
+	defer func() { _, _ = io.Copy(io.Discard, res.Body); _ = res.Body.Close() }()
+	if res.StatusCode >= 300 {
+		return a.responseError("bulk", res.StatusCode, responseBody(res))
 	}
 
 	var parsed struct {
@@ -90,7 +90,7 @@ func (a *Adapter) ApplyMutations(ctx context.Context, target string, muts []proj
 		Items  []map[string]map[string]any `json:"items"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&parsed); err != nil {
-		return translateES("bulk decode", err)
+		return a.transportError("bulk decode", err)
 	}
 	if !parsed.Errors {
 		return nil
@@ -100,7 +100,7 @@ func (a *Adapter) ApplyMutations(ctx context.Context, target string, muts []proj
 			status, _ := op["status"].(float64)
 			if status >= 400 && !isVersionConflict(op) && status != 404 {
 				itemBody, _ := json.Marshal(op)
-				return translateESResponse("bulk item", int(status), string(itemBody))
+				return a.responseError("bulk item", int(status), string(itemBody))
 			}
 		}
 	}

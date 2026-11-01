@@ -1,9 +1,10 @@
-package elastic
+package search
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/xraph/fabriq/core/query"
@@ -91,20 +92,16 @@ func (a *Adapter) Search(ctx context.Context, q query.SearchQuery, into any) err
 	}
 
 	alias := registry.SearchIndexAlias(tenantID, ent.Spec.Search.Index)
-	res, err := a.es.Search(
-		a.es.Search.WithContext(ctx),
-		a.es.Search.WithIndex(alias),
-		a.es.Search.WithBody(strings.NewReader(string(body))),
-	)
+	res, err := a.request(ctx, "POST", "/"+alias+"/_search", "", strings.NewReader(string(body)))
 	if err != nil {
-		return translateES("search "+alias, err)
+		return a.transportError("search "+alias, err)
 	}
-	defer drainAndClose(res.Body)
+	defer func() { _, _ = io.Copy(io.Discard, res.Body); _ = res.Body.Close() }()
 	if res.StatusCode == 404 {
 		return nil // tenant has no index yet: nothing matches
 	}
-	if res.IsError() {
-		return translateESResponse("search "+alias, res.StatusCode, res.String())
+	if res.StatusCode >= 300 {
+		return a.responseError("search "+alias, res.StatusCode, responseBody(res))
 	}
 
 	var parsed struct {
@@ -115,7 +112,7 @@ func (a *Adapter) Search(ctx context.Context, q query.SearchQuery, into any) err
 		} `json:"hits"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&parsed); err != nil {
-		return translateES("search decode", err)
+		return a.transportError("search decode", err)
 	}
 	for _, h := range parsed.Hits.Hits {
 		*dest = append(*dest, h.Source)

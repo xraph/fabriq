@@ -4,6 +4,8 @@ package fabriq_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,14 +21,30 @@ import (
 )
 
 // TestE2E_SearchProjection: command -> outbox -> relay -> stream -> search
-// engine -> Elasticsearch -> Search() finds it; then a blue-green search
+// engine -> native search -> Search() finds it; then a blue-green search
 // rebuild swaps aliases and serving continues.
 func TestE2E_SearchProjection(t *testing.T) {
+	for _, backend := range []string{"opensearch", "elasticsearch"} {
+		t.Run(backend, func(t *testing.T) { runSearchProjection(t, backend) })
+	}
+}
+
+func runSearchProjection(t *testing.T, backend string) {
 	ctx := context.Background()
 
 	superDSN := fabriqtest.StartPostgres(t)
 	redisAddr := fabriqtest.StartRedis(t)
-	esURL := fabriqtest.StartElasticsearch(t)
+	cfg := fabriq.Config{Postgres: fabriq.PostgresConfig{}, Redis: fabriq.RedisConfig{Addr: redisAddr}, Projections: fabriq.ProjectionsConfig{Search: true}}
+	if backend == "opensearch" {
+		server := fabriqtest.StartOpenSearch(t)
+		caFile := filepath.Join(t.TempDir(), "opensearch-ca.pem")
+		if err := os.WriteFile(caFile, server.CACert, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg.OpenSearch = fabriq.OpenSearchConfig{Addrs: []string{server.URL}, Username: server.Username, Password: server.Password, CAFile: caFile}
+	} else {
+		cfg.Elasticsearch = fabriq.ElasticsearchConfig{Addrs: []string{fabriqtest.StartElasticsearch(t)}}
+	}
 
 	reg := registry.New()
 	if err := domain.RegisterAll(reg); err != nil {
@@ -43,16 +61,24 @@ func TestE2E_SearchProjection(t *testing.T) {
 
 	fabriqtest.ApplyDDL(t, superDSN, domain.DemoDDL())
 	appDSN := fabriqtest.CreateAppRole(t, superDSN)
-	f, stores, err := fabriq.Open(ctx, reg, fabriq.Config{
-		Postgres:      fabriq.PostgresConfig{DSN: appDSN},
-		Redis:         fabriq.RedisConfig{Addr: redisAddr},
-		Elasticsearch: fabriq.ElasticsearchConfig{Addrs: []string{esURL}},
-		Projections:   fabriq.ProjectionsConfig{Search: true},
-	})
+	cfg.Postgres.DSN = appDSN
+	f, stores, err := fabriq.Open(ctx, reg, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = f.Close() })
+	if !stores.SearchConfigured() {
+		t.Fatal("selected search backend unavailable")
+	}
+	if (stores.Elastic != nil) != (backend == "elasticsearch") {
+		t.Fatal("Elastic compatibility handle has wrong engine")
+	}
+	if err := stores.PingSearch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores.SearchReconciler(reg); err != nil {
+		t.Fatal(err)
+	}
 
 	runCtx, stop := context.WithCancel(ctx)
 	t.Cleanup(stop)

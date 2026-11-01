@@ -117,7 +117,7 @@ func (e *Extension) Run(ctx context.Context) error {
 
 	// Scheduled reconciler: leader-elected, one scanner across replicas.
 	reconcileInterval := e.cfg.ReconcileInterval
-	if reconcileInterval > 0 && (stores.Falkor != nil || stores.Elastic != nil) {
+	if reconcileInterval > 0 && (stores.Falkor != nil || stores.SearchConfigured()) {
 		reconElector := postgres.NewElector(stores.Postgres, lockKeyReconciler)
 		wg.Add(1)
 		go func() {
@@ -206,7 +206,7 @@ func (e *Extension) Run(ctx context.Context) error {
 			supervise(runCtx, logger, m, "proj:graph", func(c context.Context) error { return engine.Run(c, consumer) })
 		}()
 	}
-	if stores.Elastic != nil {
+	if stores.SearchConfigured() {
 		engine, err := stores.SearchEngine(e.reg, fab.Upcasters())
 		if err != nil {
 			cancel()
@@ -630,7 +630,7 @@ func (e *Extension) reconcileAll(ctx context.Context) {
 				reconcileTraced(ctx, rec, "graph", tenantID)
 			}
 		}
-		if stores.Elastic != nil {
+		if stores.SearchConfigured() {
 			if rec, err := stores.SearchReconciler(e.reg); err == nil {
 				reconcileTraced(ctx, rec, "search", tenantID)
 			}

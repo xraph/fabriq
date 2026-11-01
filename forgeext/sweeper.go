@@ -103,7 +103,7 @@ func (e *Extension) runCatalogSweeper() error {
 			supervise(runCtx, logger, m, "proj:graph", func(c context.Context) error { return gengine.Run(c, consumer) })
 		}()
 	}
-	if stores.Elastic != nil {
+	if stores.SearchConfigured() {
 		sengine, err := stores.SearchEngine(e.reg, fab.Upcasters())
 		if err != nil {
 			cancel()
@@ -211,7 +211,7 @@ func (e *Extension) runCatalogSweeper() error {
 	// iterates AllTenants and reconciles each tenant's projections against
 	// the shared sinks. Same lock key as the static worker's reconciler.
 	reconcileInterval := e.cfg.ReconcileInterval
-	if reconcileInterval > 0 && (stores.Falkor != nil || stores.Elastic != nil) {
+	if reconcileInterval > 0 && (stores.Falkor != nil || stores.SearchConfigured()) {
 		reconElector := stores.Catalog.Elector(postgres.LockKeyReconciler)
 		wg.Add(1)
 		go func() {

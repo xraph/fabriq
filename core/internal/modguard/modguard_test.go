@@ -12,6 +12,7 @@ import (
 var forbidden = []string{
 	"github.com/ClickHouse/",
 	"github.com/elastic/",
+	"github.com/opensearch-project/",
 	"github.com/jackc/pgx",
 	"github.com/redis/go-redis",
 	"github.com/xraph/trove",
