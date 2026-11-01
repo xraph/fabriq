@@ -2,8 +2,11 @@
 package opensearch
 
 import (
+	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
@@ -26,6 +29,60 @@ type Config struct {
 	Password string
 	CACert   []byte
 	CAFile   string
+}
+
+// Validate checks addresses and inline trust without reading files or dialing.
+func (c Config) Validate() error {
+	if len(c.CACert) > 0 && (c.CAFile != "" || len(c.Addrs) == 0) {
+		return safeError("opensearch CA config", fabriqerr.CodeInvalidInput)
+	}
+	for _, addr := range c.Addrs {
+		u, err := url.Parse(addr)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return safeError("opensearch config", fabriqerr.CodeInvalidInput)
+		}
+		if len(c.CACert) > 0 && u.Scheme != "https" {
+			return safeError("opensearch CA requires HTTPS", fabriqerr.CodeInvalidInput)
+		}
+	}
+	if len(c.CACert) > 0 && !validInlineCA(c.CACert) {
+		return safeError("opensearch CA certificate", fabriqerr.CodeInvalidInput)
+	}
+	return nil
+}
+
+func validInlineCA(data []byte) bool {
+	if len(data) > 64<<10 {
+		return false
+	}
+	const begin = "-----BEGIN CERTIFICATE-----"
+	const end = "-----END CERTIFICATE-----"
+	count := 0
+	for data = bytes.TrimSpace(data); len(data) > 0; data = bytes.TrimSpace(data) {
+		if !bytes.HasPrefix(data, []byte(begin)) {
+			return false
+		}
+		endIndex := bytes.Index(data, []byte(end))
+		if endIndex < 0 {
+			return false
+		}
+		endIndex += len(end)
+		// pem.Decode skips malformed prefixes, so isolate one block and reject
+		// another header before decoding it.
+		if bytes.Contains(data[len(begin):endIndex], []byte("-----BEGIN")) {
+			return false
+		}
+		block, rest := pem.Decode(data[:endIndex])
+		if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 || len(bytes.TrimSpace(rest)) != 0 {
+			return false
+		}
+		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+			return false
+		}
+		count++
+		data = data[endIndex:]
+	}
+	return count > 0
 }
 
 // ModelVersionResolver reports the live search model version for a tenant.
@@ -57,13 +114,13 @@ func Open(ctx context.Context, cfg Config, reg *registry.Registry, opts ...Optio
 	if len(cfg.Addrs) == 0 {
 		return nil, safeError("opensearch addresses", fabriqerr.CodeInvalidInput)
 	}
-	for _, addr := range cfg.Addrs {
-		u, err := url.Parse(addr)
-		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return nil, safeError("opensearch config", fabriqerr.CodeInvalidInput)
-		}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 	ca := cfg.CACert
+	if len(ca) == 0 {
+		ca = nil
+	}
 	if cfg.CAFile != "" {
 		var err error
 		ca, err = os.ReadFile(cfg.CAFile)

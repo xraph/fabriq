@@ -28,7 +28,7 @@ type Config struct {
 }
 ```
 
-The YAML loader (`forgeext.LoadConfig`, used by the Forge extension for `extensions.fabriq` and by the `fabriq` binary for top-level keys) reads `postgres`, `shards`, `shardPins`, `redis`, `falkordb`, `elasticsearch`, `projections`, `subscriptions` and `storage`. `catalog`, `analytics`, `insights`, `documents`, `cache` and `encryption` have tags but the loader skips them, so set those in code (with `forgeext.WithConfig` under Forge).
+The YAML loader (`forgeext.LoadConfig`, used by the Forge extension for `extensions.fabriq` and by the `fabriq` binary for top-level keys) reads `postgres`, `shards`, `shardPins`, `redis`, `falkordb`, `elasticsearch`, `opensearch`, `projections`, `subscriptions` and `storage`. `catalog`, `analytics`, `insights`, `documents`, `cache` and `encryption` have tags but the loader skips them, so set those in code (with `forgeext.WithConfig` under Forge).
 
 ## PostgresConfig
 
@@ -108,13 +108,38 @@ Locates the graph projection engine. YAML/JSON key: `falkordb`. Required when `p
 
 ## ElasticsearchConfig
 
-Locates the search projection engine. YAML/JSON key: `elasticsearch`. Required when `projections.search` is enabled.
+Locates the search projection engine. YAML/JSON key: `elasticsearch`. Required when `projections.search` is enabled and you have no OpenSearch configuration.
 
 | Field | Type | yaml/json key | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `Addrs` | `[]string` | `addrs` | `nil` | Elasticsearch node addresses. Empty leaves `Search()` returning `ErrStoreNotConfigured`. |
 | `Username` | `string` | `username` | `""` | Elasticsearch username. |
 | `Password` | `string` | `password` | `""` | Elasticsearch password. |
+
+## OpenSearchConfig
+
+Use native OpenSearch with the `opensearch` YAML/JSON key. You can configure
+OpenSearch or Elasticsearch, but not both.
+
+| Field | Type | yaml/json key | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `Addrs` | `[]string` | `addrs` | `nil` | OpenSearch node URLs. |
+| `Username` | `string` | `username` | `""` | Basic-auth username. |
+| `Password` | `string` | `password` | `""` | Basic-auth password. |
+| `CAFile` | `string` | `caFile` | `""` | Path to a PEM trust file. |
+| `CACert` | `string` | `caCert` | `""` | Inline public certificate PEM, up to 64 KiB. Requires HTTPS on every node. |
+
+For hosted `fabriq serve`, workers and operator jobs, set
+`FABRIQ_OPENSEARCH_ADDRS`, `FABRIQ_OPENSEARCH_USERNAME`,
+`FABRIQ_OPENSEARCH_PASSWORD` and either `FABRIQ_OPENSEARCH_CA_CERT` or
+`FABRIQ_OPENSEARCH_CA_FILE`. Keep real line breaks in the inline PEM. You can
+also use `opensearch.caCert` in a config file, or
+`extensions.fabriq.opensearch.caCert` in a Forge app.
+
+Choose one trust source. Inline PEM must contain only valid certificate blocks;
+private keys, other PEM blocks and extra text are rejected before any connection
+opens. With neither trust setting, the client uses its default trust roots.
+Certificate chain and hostname checks stay enabled in every case.
 
 ## ProjectionsConfig
 
@@ -123,7 +148,7 @@ Switches projection planes on. YAML/JSON key: `projections`.
 | Field | Type | yaml/json key | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `Graph` | `bool` | `graph` | `false` | Enable the graph projection. Requires `falkordb.addr` and `redis.addr`. |
-| `Search` | `bool` | `search` | `false` | Enable the search projection. Requires `elasticsearch.addrs` and `redis.addr`. |
+| `Search` | `bool` | `search` | `false` | Enable the search projection. Requires `elasticsearch.addrs` or `opensearch.addrs`, and `redis.addr`. |
 
 ## SubscriptionsConfig
 

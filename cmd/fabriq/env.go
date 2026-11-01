@@ -65,7 +65,7 @@ func registerDomainPack(reg *registry.Registry, pack string) error {
 // FABRIQ_FALKORDB_PASSWORD, FABRIQ_ELASTICSEARCH_ADDRS (comma-separated),
 // FABRIQ_ELASTICSEARCH_USERNAME, FABRIQ_ELASTICSEARCH_PASSWORD,
 // FABRIQ_OPENSEARCH_ADDRS, FABRIQ_OPENSEARCH_USERNAME,
-// FABRIQ_OPENSEARCH_PASSWORD, FABRIQ_OPENSEARCH_CA_FILE,
+// FABRIQ_OPENSEARCH_PASSWORD, FABRIQ_OPENSEARCH_CA_FILE, FABRIQ_OPENSEARCH_CA_CERT,
 // FABRIQ_ANALYTICS_DSN and FABRIQ_ANALYTICS_HASH_SALT. Unset
 // variables leave their fields zero. The commands' address flags still win.
 func storeConfigFromEnv(getenv func(string) string) fabriq.Config {
@@ -81,7 +81,7 @@ func storeConfigFromEnv(getenv func(string) string) fabriq.Config {
 			Username: getenv("FABRIQ_FALKORDB_USERNAME"),
 			Password: getenv("FABRIQ_FALKORDB_PASSWORD"),
 		},
-		OpenSearch: fabriq.OpenSearchConfig{Addrs: splitAddrs(getenv("FABRIQ_OPENSEARCH_ADDRS")), Username: getenv("FABRIQ_OPENSEARCH_USERNAME"), Password: getenv("FABRIQ_OPENSEARCH_PASSWORD"), CAFile: getenv("FABRIQ_OPENSEARCH_CA_FILE")},
+		OpenSearch: fabriq.OpenSearchConfig{Addrs: splitAddrs(getenv("FABRIQ_OPENSEARCH_ADDRS")), Username: getenv("FABRIQ_OPENSEARCH_USERNAME"), Password: getenv("FABRIQ_OPENSEARCH_PASSWORD"), CAFile: getenv("FABRIQ_OPENSEARCH_CA_FILE"), CACert: getenv("FABRIQ_OPENSEARCH_CA_CERT")},
 		Elasticsearch: fabriq.ElasticsearchConfig{
 			Addrs:    splitAddrs(getenv("FABRIQ_ELASTICSEARCH_ADDRS")),
 			Username: getenv("FABRIQ_ELASTICSEARCH_USERNAME"),

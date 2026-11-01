@@ -993,7 +993,7 @@ func openSearch(ctx context.Context, cfg Config, reg *registry.Registry, stores 
 	resolver := liveSearchModelVersion(stores.state)
 	switch {
 	case len(cfg.OpenSearch.Addrs) > 0:
-		a, err := opensearch.Open(ctx, opensearch.Config{Addrs: cfg.OpenSearch.Addrs, Username: cfg.OpenSearch.Username, Password: cfg.OpenSearch.Password, CAFile: cfg.OpenSearch.CAFile}, reg, opensearch.WithModelVersionResolver(resolver))
+		a, err := opensearch.Open(ctx, opensearch.Config{Addrs: cfg.OpenSearch.Addrs, Username: cfg.OpenSearch.Username, Password: cfg.OpenSearch.Password, CAFile: cfg.OpenSearch.CAFile, CACert: []byte(cfg.OpenSearch.CACert)}, reg, opensearch.WithModelVersionResolver(resolver))
 		if err != nil {
 			return err
 		}

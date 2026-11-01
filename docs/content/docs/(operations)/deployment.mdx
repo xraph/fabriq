@@ -365,6 +365,10 @@ If it can't start, it exits 1 with a message naming the cause: an unmigrated dat
 | `FABRIQ_FALKORDB_USERNAME`, `FABRIQ_FALKORDB_PASSWORD` | no | | FalkorDB credentials. |
 | `FABRIQ_ELASTICSEARCH_ADDRS` | no | | Comma-separated URLs. Turns search on. |
 | `FABRIQ_ELASTICSEARCH_USERNAME`, `FABRIQ_ELASTICSEARCH_PASSWORD` | no | | Elasticsearch basic-auth credentials. |
+| `FABRIQ_OPENSEARCH_ADDRS` | no | | Comma-separated native OpenSearch URLs. Mutually exclusive with Elasticsearch. |
+| `FABRIQ_OPENSEARCH_USERNAME`, `FABRIQ_OPENSEARCH_PASSWORD` | no | | OpenSearch basic-auth credentials. |
+| `FABRIQ_OPENSEARCH_CA_CERT` | no | | Inline public certificate PEM, up to 64 KiB. Keep its line breaks. Requires HTTPS on every node. |
+| `FABRIQ_OPENSEARCH_CA_FILE` | no | | PEM trust file path. Set this or `FABRIQ_OPENSEARCH_CA_CERT`, never both. |
 | `FABRIQ_HTTP_ADDR` | no | `:8081` | Listen address for everything. |
 | `FABRIQ_RECONCILE_INTERVAL` | no | `5m` | A Go duration. `0` turns the scheduled reconciler off. |
 | `FABRIQ_ADMIN_API` | no | `false` | `true` mounts the admin API under `/admin` with key auth. |

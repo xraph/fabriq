@@ -174,3 +174,11 @@ func TestAnalyticsStoreConfigFromEnv(t *testing.T) {
 		t.Fatal("analytics env contract missing")
 	}
 }
+
+func TestOpenSearchInlineCAStoreConfigFromEnv(t *testing.T) {
+	ca := "-----BEGIN CERTIFICATE-----\nline-one\nline-two\n-----END CERTIFICATE-----\n"
+	cfg := storeConfigFromEnv(envFrom(map[string]string{"FABRIQ_OPENSEARCH_CA_CERT": ca}))
+	if cfg.OpenSearch.CACert != ca {
+		t.Fatal("operator config lost multiline inline CA")
+	}
+}

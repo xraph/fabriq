@@ -8,6 +8,7 @@ import (
 
 	"github.com/xraph/grove"
 
+	"github.com/xraph/fabriq/adapters/opensearch"
 	"github.com/xraph/fabriq/core/projection"
 )
 
@@ -265,13 +266,14 @@ type ElasticsearchConfig struct {
 	Password string   `yaml:"password" json:"password"`
 }
 
-// OpenSearchConfig locates a native OpenSearch projection engine. CAFile
-// contains PEM trust roots for verified TLS connections.
+// OpenSearchConfig locates a native OpenSearch projection engine. Use CACert
+// for inline PEM trust roots or CAFile for a PEM file. TLS verification stays enabled.
 type OpenSearchConfig struct {
 	Addrs    []string `yaml:"addrs" json:"addrs"`
 	Username string   `yaml:"username" json:"username"`
 	Password string   `yaml:"password" json:"password"`
 	CAFile   string   `yaml:"caFile" json:"caFile"`
+	CACert   string   `yaml:"caCert" json:"caCert"`
 }
 
 // ProjectionsConfig switches projection planes on.
@@ -346,6 +348,9 @@ type DynamicConfig struct {
 
 // Validate checks cross-field consistency. It does not dial anything.
 func (c Config) Validate() error {
+	if err := (opensearch.Config{Addrs: c.OpenSearch.Addrs, CACert: []byte(c.OpenSearch.CACert), CAFile: c.OpenSearch.CAFile}).Validate(); err != nil {
+		return err
+	}
 	if err := ValidateAnalyticsConfig(c); err != nil {
 		return err
 	}

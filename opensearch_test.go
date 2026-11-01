@@ -2,11 +2,14 @@ package fabriq
 
 import (
 	"context"
+	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/registry"
 )
 
@@ -73,6 +76,45 @@ func TestSearchBackendRuntimeSelection(t *testing.T) {
 			}
 			if err := stores.PingSearch(context.Background()); err == nil {
 				t.Fatal("search transport survived Stores.Close")
+			}
+		})
+	}
+}
+
+func TestOpenSearchInlineCAConfigAndTransport(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if username, password, ok := r.BasicAuth(); !ok || username != "admin" || password != "secret" {
+			t.Error("missing authentication")
+		}
+		_, _ = w.Write([]byte(`{"version":{"distribution":"opensearch"}}`))
+	}))
+	defer srv.Close()
+	ca := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}))
+	cfg := Config{OpenSearch: OpenSearchConfig{Addrs: []string{srv.URL}, Username: "admin", Password: "secret", CACert: ca}}
+	stores := &Stores{}
+	ports := Ports{}
+	if err := openSearch(context.Background(), cfg, registry.New(), stores, &ports); err != nil {
+		t.Fatal(err)
+	}
+	defer stores.Close()
+	if err := stores.PingSearch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, ca, file, addr string }{
+		{"conflicting", ca, "/must-not-read", srv.URL},
+		{"invalid", "credential-do-not-log", "", srv.URL},
+		{"HTTP", ca, "", "http://unused:9200"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := Config{OpenSearch: OpenSearchConfig{Addrs: []string{tc.addr}, CACert: tc.ca, CAFile: tc.file}}
+			// Open validates before attempting to open the absent primary database.
+			_, _, err := Open(context.Background(), registry.New(), bad)
+			var fe *fabriqerr.Error
+			if !errors.As(err, &fe) || !strings.HasPrefix(fe.Op, "opensearch") {
+				t.Fatalf("trust was not validated before opening stores: %v", err)
+			}
+			if strings.Contains(err.Error(), "credential-do-not-log") || strings.Contains(err.Error(), "BEGIN") {
+				t.Fatal("trust input leaked")
 			}
 		})
 	}

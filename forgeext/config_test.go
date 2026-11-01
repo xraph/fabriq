@@ -3,6 +3,7 @@ package forgeext_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -286,5 +287,28 @@ func TestHostedAnalyticsConfig(t *testing.T) {
 	got = forgeext.LoadConfig(cm, "extensions.fabriq.").Analytics
 	if got.DSN != "duckdb://local.db" || got.HashSalt != "host-salt" {
 		t.Fatalf("prefixed analytics settings missing or bare env leaked")
+	}
+}
+
+func TestOpenSearchInlineCAConfigLoading(t *testing.T) {
+	ca := "-----BEGIN CERTIFICATE-----\nline-one\nline-two\n-----END CERTIFICATE-----"
+	cm := newEnvConfigApp(t, "opensearch:\n  caCert: |\n    -----BEGIN CERTIFICATE-----\n    line-one\n    line-two\n    -----END CERTIFICATE-----\nextensions:\n  fabriq:\n    opensearch:\n      caCert: |\n        -----BEGIN CERTIFICATE-----\n        line-one\n        line-two\n        -----END CERTIFICATE-----\n")
+	if got := forgeext.LoadConfig(cm, "").OpenSearch.CACert; got != ca {
+		t.Fatalf("worker file config lost inline CA: %q", got)
+	}
+	if got := forgeext.LoadConfig(cm, "extensions.fabriq.").OpenSearch.CACert; got != ca {
+		t.Fatalf("Forge config lost inline CA: %q", got)
+	}
+	envCA := strings.ReplaceAll(ca, "line-one", "env-line")
+	t.Setenv("FABRIQ_OPENSEARCH_CA_CERT", envCA)
+	if got := forgeext.LoadConfig(cm, "").OpenSearch.CACert; got != envCA {
+		t.Fatal("hosted environment lost inline CA")
+	}
+	if got := forgeext.LoadConfig(cm, "extensions.fabriq.").OpenSearch.CACert; got != ca {
+		t.Fatal("standalone environment overrode Forge scope")
+	}
+	t.Setenv("FABRIQ_OPENSEARCH_CA_CERT", "")
+	if got := forgeext.LoadConfig(cm, "").OpenSearch.CACert; got != ca {
+		t.Fatal("empty environment removed file CA")
 	}
 }
