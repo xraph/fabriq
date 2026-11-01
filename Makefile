@@ -172,7 +172,7 @@ test-verbose:
 ## test-integration: Run integration tests (testcontainers; needs Docker)
 test-integration:
 	@echo "$(BLUE)Running integration tests (testcontainers)...$(NC)"
-	$(GO) test -race -count=1 -tags=integration -p 1 -timeout 30m ./...
+	$(GO) test -race -count=1 -tags=integration -p 1 -timeout 30m -exec 'sh "$(CURDIR)/scripts/integration-exec.sh"' ./...
 	@echo "$(GREEN)✓ Integration tests complete$(NC)"
 
 ## test-all: Run unit + integration tests
