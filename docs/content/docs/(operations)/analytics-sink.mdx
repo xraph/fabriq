@@ -47,9 +47,9 @@ per-tenant-database wiring.
 
 ## Enabling it
 
-The sink is off unless `Config.Analytics.DSN` is set, and the
-`proj:analytics` consumer only starts when a DSN is configured AND at
-least one entity opts in:
+Set `Config.Analytics.DSN` to enable the sink. With Redis configured, the
+worker starts `proj:analytics` even when your registry is empty, so definitions
+registered later can project their events. Unmarked entities still send nothing:
 
 ```yaml
 analytics:
@@ -104,12 +104,24 @@ Analytics: &registry.AnalyticsSpec{
 },
 ```
 
-The hash uses `Config.Analytics.HashSalt` — a stable, secret,
-deployment-wide salt (a leaked salt makes the hashes brute-forceable).
-It is **required** when any entity uses `Hash`; `Open` fails fast
-otherwise. Because the salt is stable, live apply, backfill, and
-reproject all produce the same hash for the same value. A hashed field is
-implicitly included — it need not also appear in `Include`.
+Set `Config.Analytics.HashSalt` to a stable secret shared by every instance and
+operator job. Live apply, source backfill and reconciliation then produce the
+same hash for the same source value. `Open` rejects a known hash policy without
+a salt, and redaction also refuses a missing salt for definitions registered
+later. A hashed field is implicitly included.
+
+For a hosted binary, set `FABRIQ_ANALYTICS_DSN` and
+`FABRIQ_ANALYTICS_HASH_SALT`. Library hosts can configure
+`extensions.fabriq.analytics.dsn` and `extensions.fabriq.analytics.hashSalt`;
+the bare hosted environment variables do not override that prefixed block.
+Keep the salt in your secret store and reuse it across restarts.
+
+Use `Exclude: []string{"profile.ssn"}` to remove a nested path. Exclusion runs
+after inclusion and hashing, so it wins over `Include`, `IncludeAll` and `Hash`.
+With dynamic persistence enabled, the declarative `Include`, `IncludeAll`,
+`Exclude` and `Hash` policy survives a restart. These fields are additive in
+format 1. Older binaries can read the descriptor but drop its analytics policy
+if they rewrite it, so keep descriptor writers on a version that preserves it.
 
 ## Choosing a backend
 
@@ -126,6 +138,12 @@ An unknown scheme fails fast at boot: `fabriq: unknown analytics DSN scheme
 "…"`. All three adapters satisfy the same `core/analytics.Sink` port and run
 through the identical conformance suite, so they are drop-in interchangeable
 at that level — the differences below are operational, not behavioral.
+
+Remote `quack://` analytics is refused in every build. The upstream remote
+DuckDB driver cannot execute the parameterized UPDATE/DELETE and CONNECT
+prepared statements this sink needs. Use a dedicated PostgreSQL analytics
+database for hosted instances. Embedded `duckdb://` remains available in a
+CGO build; Fabriq does not substitute another backend for your DSN.
 
 ### Postgres (default)
 
@@ -253,11 +271,20 @@ to recover a dropped/rebuilt analytics database.
 CLI, one tenant or the whole fleet:
 
 ```bash
+export FABRIQ_POSTGRES_DSN=postgres://fabriq_app@source-db:5432/fabriq
 export FABRIQ_ANALYTICS_DSN=postgres://fabriq_analytics@analytics-db:5432/fabriq_analytics
+export FABRIQ_ANALYTICS_HASH_SALT='<your stable deployment secret>'
+export FABRIQ_DOMAIN_PACK=none
 
 fabriq analytics backfill --tenant acme
 fabriq analytics backfill --all-tenants --concurrency 8
 ```
+
+Every analytics command uses the same source DSN, sink selection and salt.
+Commands load persisted dynamic definitions by default; set
+`FABRIQ_DYNAMIC_PERSIST=false` only when your server also disables persistence.
+Choose the same `FABRIQ_DOMAIN_PACK` as your server. Purge and event pruning also
+need the source DSN, supplied through `--dsn` or `FABRIQ_POSTGRES_DSN`.
 
 With the admin extension mounted and `WithAnalyticsAdmin()` enabled, the
 `analytics.admin`/`analytics.read` capabilities expose the same operation
@@ -335,6 +362,15 @@ the row again so live apply re-ingests it. It is idempotent: a second run
 rewrites nothing.
 </Callout>
 
+If any registered analytics policy uses `Hash`, reprojection refuses the whole
+operation before it writes. Stored payloads do not record their previous hash
+policy, so rehashing them would change existing pseudonyms. You can rebuild
+current facts from source snapshots with the same stable salt, after a deliberate
+reset of the affected analytics data. Ordinary backfill is version-gated and
+cannot replace same-version facts. A reset erases history, and current-state
+backfill cannot reconstruct historical events. Export or retain the history you
+need before choosing that recovery path.
+
 ## Event-log retention
 
 `fabriq_analytics_facts` holds one latest-state row per aggregate and stays
@@ -408,6 +444,10 @@ it doubles as a **drift audit**: a non-zero `drifted` count is a signal that the
 consumer skipped events (check `fabriq_analytics_failures_total` and the logs).
 
 ## Freshness, lag, and metrics
+
+Health and readiness probe a configured analytics sink. The admin status
+endpoint returns an error if tenant discovery or the lag query fails; an outage
+does not appear as zero lag.
 
 The sink is near-real-time: lag is relay latency plus apply time,
 sub-second in a healthy deployment, because it rides the same stream

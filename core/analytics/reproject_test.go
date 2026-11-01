@@ -61,3 +61,26 @@ func TestReprojector_SkipsUnmarkedEntities(t *testing.T) {
 		t.Fatalf("unmarked reproject: n=%d err=%v, want 0/nil", n, err)
 	}
 }
+
+type countingReprojectSink struct {
+	*fabriqtest.FakeAnalyticsSink
+	writes int
+}
+
+func (s *countingReprojectSink) ReprojectTenant(ctx context.Context, tenant, aggregate string, transform func(json.RawMessage) (json.RawMessage, error)) (int64, error) {
+	s.writes++
+	return s.FakeAnalyticsSink.ReprojectTenant(ctx, tenant, aggregate, transform)
+}
+
+func TestReprojectorRefusesHashPoliciesBeforeAnyWrite(t *testing.T) {
+	r := regWith(&registry.AnalyticsSpec{Include: []string{"name"}})
+	if err := r.Register(registry.EntitySpec{Name: "private_widget", Kind: registry.KindAggregate, Schema: &registry.DynamicSchema{Table: "ds_private_widgets", Columns: []registry.DynamicColumn{{Name: "ssn", Type: registry.ColText}}}, Analytics: &registry.AnalyticsSpec{Hash: []string{"ssn"}}}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &countingReprojectSink{FakeAnalyticsSink: fabriqtest.NewFakeAnalyticsSink()}
+	rp := &analytics.Reprojector{Reg: r, Sink: sink, Salt: "stable-secret"}
+	n, err := rp.Tenant(context.Background(), "acme")
+	if err == nil || n != 0 || sink.writes != 0 {
+		t.Fatalf("hash reprojection must fail before any writes: n=%d calls=%d err=%v", n, sink.writes, err)
+	}
+}

@@ -65,6 +65,9 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Sink, error) {
 	return s, nil
 }
 
+// Ping probes the analytics database with the caller's deadline.
+func (s *Sink) Ping(ctx context.Context) error { return s.db.Ping(ctx) }
+
 // Close releases the analytics database connection.
 func (s *Sink) Close() error { return s.db.Close() }
 

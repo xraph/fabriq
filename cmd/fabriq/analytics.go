@@ -8,9 +8,7 @@ import (
 	"github.com/xraph/forge/cli"
 
 	"github.com/xraph/fabriq"
-	"github.com/xraph/fabriq/adapters/pganalytics"
 	"github.com/xraph/fabriq/core/registry"
-	"github.com/xraph/fabriq/domain"
 )
 
 // analyticsCommand is the cross-tenant analytics sink operator surface:
@@ -28,28 +26,7 @@ func analyticsCommand() cli.Command {
 	})
 
 	backfill := cli.NewCommand("backfill", "Replay tenant snapshots into the analytics sink", func(ctx cli.CommandContext) error {
-		dsn, ok := dsnFromContext(ctx)
-		if !ok {
-			return errMissingDSN
-		}
-		analyticsDSN := ctx.String("analytics-dsn")
-		if analyticsDSN == "" {
-			analyticsDSN = os.Getenv("FABRIQ_ANALYTICS_DSN")
-		}
-		if analyticsDSN == "" {
-			return cliError("--analytics-dsn (or FABRIQ_ANALYTICS_DSN) is required")
-		}
-
-		r := registry.New()
-		if err := domain.RegisterAll(r); err != nil {
-			return err
-		}
-
-		cfg := fabriq.Config{
-			Postgres:  fabriq.PostgresConfig{DSN: dsn},
-			Analytics: fabriq.AnalyticsConfig{DSN: analyticsDSN},
-		}
-		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+		r, stores, err := openAnalyticsJob(ctx)
 		if err != nil {
 			return err
 		}
@@ -105,18 +82,12 @@ func analyticsCommand() cli.Command {
 		if !ctx.Bool("yes") {
 			return cliError(fmt.Sprintf("refusing to erase tenant %q without --yes (this permanently deletes its facts, events, and watermarks)", tenantID))
 		}
-		analyticsDSN := ctx.String("analytics-dsn")
-		if analyticsDSN == "" {
-			analyticsDSN = os.Getenv("FABRIQ_ANALYTICS_DSN")
-		}
-		if analyticsDSN == "" {
-			return cliError("--analytics-dsn (or FABRIQ_ANALYTICS_DSN) is required")
-		}
-		as, err := pganalytics.Open(ctx.Context(), analyticsDSN)
+		_, stores, err := openAnalyticsJob(ctx)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = as.Close() }()
+		defer func() { _ = stores.Close() }()
+		as := stores.Analytics
 		n, err := as.PurgeTenant(ctx.Context(), tenantID)
 		if err != nil {
 			return err
@@ -124,32 +95,13 @@ func analyticsCommand() cli.Command {
 		ctx.Success(fmt.Sprintf("tenant %s: erased %d analytics rows", tenantID, n))
 		return nil
 	})
+	purge.AddFlag(cli.NewStringFlag("dsn", "", "Postgres DSN (or FABRIQ_POSTGRES_DSN)", ""))
 	purge.AddFlag(cli.NewStringFlag("analytics-dsn", "", "analytics sink DSN (or FABRIQ_ANALYTICS_DSN)", ""))
 	purge.AddFlag(cli.NewStringFlag("tenant", "t", "tenant id to erase", ""))
 	purge.AddFlag(cli.NewBoolFlag("yes", "", "confirm the destructive erase", false))
 
 	reproject := cli.NewCommand("reproject", "Re-apply the current redaction allow-list to already-stored rows", func(ctx cli.CommandContext) error {
-		dsn, ok := dsnFromContext(ctx)
-		if !ok {
-			return errMissingDSN
-		}
-		analyticsDSN := ctx.String("analytics-dsn")
-		if analyticsDSN == "" {
-			analyticsDSN = os.Getenv("FABRIQ_ANALYTICS_DSN")
-		}
-		if analyticsDSN == "" {
-			return cliError("--analytics-dsn (or FABRIQ_ANALYTICS_DSN) is required")
-		}
-
-		r := registry.New()
-		if err := domain.RegisterAll(r); err != nil {
-			return err
-		}
-		cfg := fabriq.Config{
-			Postgres:  fabriq.PostgresConfig{DSN: dsn},
-			Analytics: fabriq.AnalyticsConfig{DSN: analyticsDSN},
-		}
-		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+		r, stores, err := openAnalyticsJob(ctx)
 		if err != nil {
 			return err
 		}
@@ -196,27 +148,7 @@ func analyticsCommand() cli.Command {
 	reproject.AddFlag(cli.NewIntFlag("concurrency", "", "concurrent tenant reprojections (--all-tenants only)", 4))
 
 	reconcile := cli.NewCommand("reconcile", "Detect and heal analytics rows missing/stale vs the source of truth", func(ctx cli.CommandContext) error {
-		dsn, ok := dsnFromContext(ctx)
-		if !ok {
-			return errMissingDSN
-		}
-		analyticsDSN := ctx.String("analytics-dsn")
-		if analyticsDSN == "" {
-			analyticsDSN = os.Getenv("FABRIQ_ANALYTICS_DSN")
-		}
-		if analyticsDSN == "" {
-			return cliError("--analytics-dsn (or FABRIQ_ANALYTICS_DSN) is required")
-		}
-
-		r := registry.New()
-		if err := domain.RegisterAll(r); err != nil {
-			return err
-		}
-		cfg := fabriq.Config{
-			Postgres:  fabriq.PostgresConfig{DSN: dsn},
-			Analytics: fabriq.AnalyticsConfig{DSN: analyticsDSN},
-		}
-		_, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+		r, stores, err := openAnalyticsJob(ctx)
 		if err != nil {
 			return err
 		}
@@ -268,18 +200,12 @@ func analyticsCommand() cli.Command {
 		if perr != nil || dur <= 0 {
 			return cliError("--older-than must be a positive Go duration (e.g. 720h)")
 		}
-		analyticsDSN := ctx.String("analytics-dsn")
-		if analyticsDSN == "" {
-			analyticsDSN = os.Getenv("FABRIQ_ANALYTICS_DSN")
-		}
-		if analyticsDSN == "" {
-			return cliError("--analytics-dsn (or FABRIQ_ANALYTICS_DSN) is required")
-		}
-		as, err := pganalytics.Open(ctx.Context(), analyticsDSN)
+		_, stores, err := openAnalyticsJob(ctx)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = as.Close() }()
+		defer func() { _ = stores.Close() }()
+		as := stores.Analytics
 		n, err := as.PruneEvents(ctx.Context(), time.Now().Add(-dur))
 		if err != nil {
 			return err
@@ -287,6 +213,7 @@ func analyticsCommand() cli.Command {
 		ctx.Success(fmt.Sprintf("pruned %d events older than %s", n, dur))
 		return nil
 	})
+	pruneEvents.AddFlag(cli.NewStringFlag("dsn", "", "Postgres DSN (or FABRIQ_POSTGRES_DSN)", ""))
 	pruneEvents.AddFlag(cli.NewStringFlag("analytics-dsn", "", "analytics sink DSN (or FABRIQ_ANALYTICS_DSN)", ""))
 	pruneEvents.AddFlag(cli.NewStringFlag("older-than", "", "retention window as a Go duration (e.g. 720h)", ""))
 
@@ -296,4 +223,58 @@ func analyticsCommand() cli.Command {
 	_ = cmd.AddSubcommand(reconcile)
 	_ = cmd.AddSubcommand(pruneEvents)
 	return cmd
+}
+
+// analyticsJobConfig uses the hosted environment contract for operator jobs.
+// Persisted definitions are loaded by Open before the job reads the registry.
+func analyticsJobConfig(dsn, sinkDSN string, getenv func(string) string) (fabriq.Config, *registry.Registry, error) {
+	cfg := storeConfigFromEnv(getenv)
+	// Operator jobs need only the source and analytics stores.
+	cfg.Redis = fabriq.RedisConfig{}
+	cfg.FalkorDB = fabriq.FalkorDBConfig{}
+	cfg.Elasticsearch = fabriq.ElasticsearchConfig{}
+	cfg.OpenSearch = fabriq.OpenSearchConfig{}
+	cfg.Postgres.DSN = dsn
+	if sinkDSN != "" {
+		cfg.Analytics.DSN = sinkDSN
+	}
+	if !cfg.Analytics.Enabled() {
+		return cfg, nil, cliError("--analytics-dsn (or FABRIQ_ANALYTICS_DSN) is required")
+	}
+	persist, err := envBool(getenv, "FABRIQ_DYNAMIC_PERSIST", true)
+	if err != nil {
+		return cfg, nil, err
+	}
+	cfg.Dynamic.Persist = persist
+	r := registry.New()
+	if err := registerDomainPack(r, getenv("FABRIQ_DOMAIN_PACK")); err != nil {
+		return cfg, nil, err
+	}
+	return cfg, r, nil
+}
+
+func openAnalyticsJob(ctx cli.CommandContext) (*registry.Registry, *fabriq.Stores, error) {
+	dsn, ok := dsnFromContext(ctx)
+	if !ok {
+		return nil, nil, errMissingDSN
+	}
+	cfg, r, err := analyticsJobConfig(dsn, ctx.String("analytics-dsn"), os.Getenv)
+	if err != nil {
+		return nil, nil, err
+	}
+	f, stores, err := fabriq.Open(ctx.Context(), r, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	skipped := f.LastDynamicSync().Skipped
+	for name, reason := range skipped {
+		if reason == "registered in code" {
+			delete(skipped, name)
+		}
+	}
+	if len(skipped) > 0 {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("fabriq: analytics job cannot load persisted definitions: %v", skipped)
+	}
+	return r, stores, nil
 }

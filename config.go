@@ -186,6 +186,9 @@ func ValidateAnalyticsConfig(cfg Config) error {
 	if !cfg.Analytics.Enabled() {
 		return nil
 	}
+	if analyticsScheme(cfg.Analytics.DSN) == "quack" {
+		return fmt.Errorf("fabriq: remote quack analytics is incompatible: the upstream driver does not support required parameterized UPDATE/DELETE and CONNECT prepared statements; configure a dedicated PostgreSQL analytics database or use embedded duckdb:// with -tags duckdb")
+	}
 	adsn := cfg.Analytics.DSN
 	if adsn == cfg.Postgres.DSN || adsn == cfg.Catalog.DSN {
 		return fmt.Errorf("fabriq: analytics DSN must differ from the tenant and catalog control DSNs")
@@ -343,6 +346,9 @@ type DynamicConfig struct {
 
 // Validate checks cross-field consistency. It does not dial anything.
 func (c Config) Validate() error {
+	if err := ValidateAnalyticsConfig(c); err != nil {
+		return err
+	}
 	if len(c.Elasticsearch.Addrs) > 0 && len(c.OpenSearch.Addrs) > 0 {
 		return fmt.Errorf("fabriq: config: elasticsearch and opensearch are mutually exclusive")
 	}

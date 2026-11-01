@@ -165,3 +165,12 @@ func TestOpenSearchStoreConfigFromEnv(t *testing.T) {
 		t.Fatalf("OpenSearch settings: %+v", cfg.OpenSearch)
 	}
 }
+
+func TestAnalyticsStoreConfigFromEnv(t *testing.T) {
+	cfg := storeConfigFromEnv(func(key string) string {
+		return map[string]string{"FABRIQ_ANALYTICS_DSN": "postgres://analytics/db", "FABRIQ_ANALYTICS_HASH_SALT": "stable-secret"}[key]
+	})
+	if cfg.Analytics.DSN != "postgres://analytics/db" || cfg.Analytics.HashSalt != "stable-secret" {
+		t.Fatal("analytics env contract missing")
+	}
+}

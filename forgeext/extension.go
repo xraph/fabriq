@@ -248,15 +248,33 @@ func (e *Extension) Stop(_ context.Context) error {
 	return err
 }
 
-// Health implements forge.Extension. Pings the Postgres store.
+// Health implements forge.Extension. It probes the source and configured analytics.
 func (e *Extension) Health(ctx context.Context) error {
 	e.mu.Lock()
 	stores := e.stores
 	e.mu.Unlock()
-	if stores == nil || stores.Postgres == nil {
-		return fmt.Errorf("fabriq: stores not open")
+	if err := sourceHealth(ctx, stores); err != nil {
+		return err
 	}
-	return stores.Postgres.Grove().Ping(ctx)
+	return stores.PingAnalytics(ctx)
+}
+
+func sourceHealth(ctx context.Context, stores *fabriq.Stores) error {
+	switch {
+	case stores == nil:
+		return errors.New("fabriq: stores not open")
+	case stores.Postgres != nil:
+		if err := stores.Postgres.Ping(ctx); err != nil {
+			return fmt.Errorf("fabriq: postgres is not reachable: %w", err)
+		}
+	case stores.Catalog != nil:
+		if _, _, err := stores.Catalog.List(ctx, "", 1); err != nil {
+			return fmt.Errorf("fabriq: catalog is not reachable: %w", err)
+		}
+	default:
+		return errors.New("fabriq: stores not open")
+	}
+	return nil
 }
 
 // requireRLS refuses a Postgres role that bypasses row-level security. It
@@ -278,8 +296,8 @@ func requireRLS(ctx context.Context, stores *fabriq.Stores) error {
 	return nil
 }
 
-// Ready reports whether the extension can serve: the facade is open, Postgres
-// answers a ping and, when Redis is configured, Redis answers too. Unlike
+// Ready reports whether the extension can serve: the facade is open, the source
+// (Postgres or catalog) and configured Redis and analytics stores answer. Unlike
 // Health there is no grace period, and it is safe to call before Start (it
 // returns "fabriq: not started"). The caller bounds it with ctx.
 func (e *Extension) Ready(ctx context.Context) error {
@@ -289,17 +307,15 @@ func (e *Extension) Ready(ctx context.Context) error {
 	if fab == nil || stores == nil {
 		return errors.New("fabriq: not started")
 	}
-	if stores.Postgres != nil {
-		if err := stores.Postgres.Ping(ctx); err != nil {
-			return fmt.Errorf("fabriq: postgres is not reachable: %w", err)
-		}
+	if err := sourceHealth(ctx, stores); err != nil {
+		return err
 	}
 	if stores.Redis != nil {
 		if err := stores.Redis.Ping(ctx); err != nil {
 			return fmt.Errorf("fabriq: redis is not reachable: %w", err)
 		}
 	}
-	return nil
+	return stores.PingAnalytics(ctx)
 }
 
 // Fabriq returns the opened facade (nil before Start).

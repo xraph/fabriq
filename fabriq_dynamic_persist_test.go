@@ -878,3 +878,23 @@ func TestSchemaOpsOnCodeTypeWriteNoRow(t *testing.T) {
 		t.Fatalf("ddl renamed=%v droppedCols=%v, want one each", ddl.renamed, ddl.droppedCols)
 	}
 }
+
+func TestDynamicAnalyticsPolicySurvivesReload(t *testing.T) {
+	sp := spec()
+	sp.Analytics = &registry.AnalyticsSpec{Include: []string{"colour"}, Hash: []string{"secret"}, Exclude: []string{"private"}}
+	b, err := encodeDynamicSpec(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeDynamicSpec(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Analytics, sp.Analytics) {
+		t.Fatalf("policy lost: got %+v", got.Analytics)
+	}
+	next := withInProcessFields(got, spec())
+	if !reflect.DeepEqual(next.Analytics, sp.Analytics) {
+		t.Fatal("sync overwrote persisted policy")
+	}
+}

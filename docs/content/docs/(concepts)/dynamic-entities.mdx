@@ -195,9 +195,9 @@ The table comes from a migration, so run `fabriq migrate up` first. `fabriq_dyna
 
 ### What is saved
 
-Only the declarative part of the spec is. That covers the table, columns and indexes, the graph node and edge declarations, search, subscribe scopes, the live-query spec and the cache spec.
+Only the declarative part of the spec is. That covers the table, columns and indexes, the graph node and edge declarations, search, subscribe scopes, the live-query spec, the cache spec and declarative analytics redaction (`Include`, `IncludeAll`, `Exclude` and `Hash`).
 
-Everything that is a Go function or an in-process hook stays out: `Validate`, `Embed`, `Distill`, `Analytics`, `Insights`, `Metrics` and CRDT. A type that needs one of those has to be defined again in code at every boot. That works well, because defining a spec whose saved part equals the registered type succeeds without touching the database and just attaches the extra fields. Entities modelled as Go structs are never saved. They are compiled in, so they don't need to be.
+Everything that is a Go function or an in-process hook stays out: `Validate`, `Embed`, `Distill`, `Insights`, `Metrics` and CRDT. A type that needs one of those has to be defined again in code at every boot. That works well, because defining a spec whose saved part equals the registered type succeeds without touching the database and just attaches the extra fields. Entities modelled as Go structs are never saved. They are compiled in, so they don't need to be.
 
 ### Keeping processes in step
 

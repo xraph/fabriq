@@ -191,3 +191,31 @@ func TestApply_Deterministic(t *testing.T) {
 		t.Fatalf("non-deterministic payload: %s vs %s", f1.Payload, f2.Payload)
 	}
 }
+
+func TestLateHashPolicyRequiresSalt(t *testing.T) {
+	r := registry.New()
+	a := analytics.NewApplier(r)
+	if err := r.Register(registry.EntitySpec{Name: "widget", Kind: registry.KindAggregate, Model: widget{}, Analytics: &registry.AnalyticsSpec{Hash: []string{"ssn"}}}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, ok, err := a.Apply(env("widget.updated", 1, `{"ssn":"sensitive"}`))
+	if err == nil || ok {
+		t.Fatal("missing salt must refuse projection")
+	}
+	if _, err := analytics.Redact(json.RawMessage(`{"ssn":"sensitive"}`), &registry.AnalyticsSpec{Hash: []string{"ssn"}}, ""); err == nil {
+		t.Fatal("reproject must refuse missing salt")
+	}
+}
+
+func TestExclusionWinsOverIncludeAndHash(t *testing.T) {
+	for _, all := range []bool{false, true} {
+		spec := &registry.AnalyticsSpec{IncludeAll: all, Include: []string{"profile", "public"}, Hash: []string{"profile.ssn"}, Exclude: []string{"profile.ssn", "private"}}
+		got, err := analytics.Redact(json.RawMessage(`{"profile":{"ssn":"secret","name":"Ada"},"private":"hidden","public":"ok"}`), spec, "stable-secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != `{"profile":{"name":"Ada"},"public":"ok"}` {
+			t.Fatalf("excluded field leaked: %s", got)
+		}
+	}
+}

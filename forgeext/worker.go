@@ -221,7 +221,7 @@ func (e *Extension) Run(ctx context.Context) error {
 			supervise(runCtx, logger, m, "proj:search", func(c context.Context) error { return engine.Run(c, consumer) })
 		}()
 	}
-	if stores.Analytics != nil && stores.Redis != nil && hasAnalyticsEntity(e.reg) {
+	if stores.Analytics != nil && stores.Redis != nil {
 		cons, err := stores.AnalyticsConsumer(e.reg, fab.Upcasters())
 		if err != nil {
 			cancel()
@@ -244,10 +244,6 @@ func (e *Extension) Run(ctx context.Context) error {
 				defer wg.Done()
 				pollAnalyticsLag(runCtx, m, sink)
 			}()
-		}
-	} else if stores.Analytics != nil && stores.Redis != nil {
-		if logger != nil {
-			logger.Warn("fabriq: analytics is configured but no entity is marked for it; nothing will flow to the analytics sink")
 		}
 	}
 	if stores.Analytics != nil && (e.cfg.Fabriq.Analytics.EventRetention > 0 || e.cfg.Fabriq.Analytics.PartitionEvents) {

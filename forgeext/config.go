@@ -193,6 +193,7 @@ func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 	bind("subscriptions", &cfg.Subscriptions)
 	bind("storage", &cfg.Storage)
 	bind("dynamic", &cfg.Dynamic)
+	bind("analytics", &cfg.Analytics)
 	if cm.IsSet(prefix + "elasticsearch.addrs") {
 		cfg.Elasticsearch.Addrs = cm.GetStringSlice(prefix + "elasticsearch.addrs")
 	}
@@ -205,7 +206,8 @@ func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 	return cfg
 }
 
-// overlayStoreCredentialsFromEnv sets the Redis, FalkorDB and native search
+// overlayStoreCredentialsFromEnv sets analytics DSN and hash salt plus Redis,
+// FalkorDB and native search
 // usernames and passwords from FABRIQ_REDIS_USERNAME, FABRIQ_REDIS_PASSWORD,
 // FABRIQ_FALKORDB_USERNAME, FABRIQ_FALKORDB_PASSWORD,
 // FABRIQ_ELASTICSEARCH_USERNAME and FABRIQ_ELASTICSEARCH_PASSWORD. OpenSearch
@@ -220,6 +222,8 @@ func overlayStoreCredentialsFromEnv(cfg *fabriq.Config, getenv func(string) stri
 			*target = v
 		}
 	}
+	set(&cfg.Analytics.DSN, "FABRIQ_ANALYTICS_DSN")
+	set(&cfg.Analytics.HashSalt, "FABRIQ_ANALYTICS_HASH_SALT")
 	set(&cfg.Redis.Username, "FABRIQ_REDIS_USERNAME")
 	set(&cfg.Redis.Password, "FABRIQ_REDIS_PASSWORD")
 	set(&cfg.FalkorDB.Username, "FABRIQ_FALKORDB_USERNAME")

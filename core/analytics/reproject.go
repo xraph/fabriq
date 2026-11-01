@@ -23,16 +23,23 @@ import (
 type Reprojector struct {
 	Reg  *registry.Registry
 	Sink Sink
-	// Salt must match the deployment's Config.Analytics.HashSalt so re-projected
-	// Hash fields hash identically to how the live applier wrote them.
+	// Salt is retained for source compatibility. Reprojection refuses Hash
+	// policies because stored values do not retain their prior policy.
 	Salt string
 }
 
 // Tenant re-projects every analytics-marked aggregate's stored payloads for one
 // tenant through its current spec, returning the number of rows rewritten.
 func (r *Reprojector) Tenant(ctx context.Context, tenantID string) (int64, error) {
+	// Validate the whole registry before touching any stored payload.
+	entities := r.Reg.All()
+	for _, ent := range entities {
+		if spec := ent.Spec.Analytics; spec != nil && len(spec.Hash) > 0 {
+			return 0, fmt.Errorf("fabriq: analytics reproject refuses entity %q with Hash fields: stored values do not retain their prior hash policy; rebuild from source snapshots using the same stable HashSalt. Ordinary backfill is version-gated and current-state snapshots cannot reconstruct historical events", ent.Spec.Name)
+		}
+	}
 	var total int64
-	for _, ent := range r.Reg.All() {
+	for _, ent := range entities {
 		spec := ent.Spec.Analytics
 		if spec == nil {
 			continue

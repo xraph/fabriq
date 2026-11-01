@@ -65,10 +65,12 @@ func registerDomainPack(reg *registry.Registry, pack string) error {
 // FABRIQ_FALKORDB_PASSWORD, FABRIQ_ELASTICSEARCH_ADDRS (comma-separated),
 // FABRIQ_ELASTICSEARCH_USERNAME, FABRIQ_ELASTICSEARCH_PASSWORD,
 // FABRIQ_OPENSEARCH_ADDRS, FABRIQ_OPENSEARCH_USERNAME,
-// FABRIQ_OPENSEARCH_PASSWORD and FABRIQ_OPENSEARCH_CA_FILE. Unset
+// FABRIQ_OPENSEARCH_PASSWORD, FABRIQ_OPENSEARCH_CA_FILE,
+// FABRIQ_ANALYTICS_DSN and FABRIQ_ANALYTICS_HASH_SALT. Unset
 // variables leave their fields zero. The commands' address flags still win.
 func storeConfigFromEnv(getenv func(string) string) fabriq.Config {
 	return fabriq.Config{
+		Analytics: fabriq.AnalyticsConfig{DSN: getenv("FABRIQ_ANALYTICS_DSN"), HashSalt: getenv("FABRIQ_ANALYTICS_HASH_SALT")},
 		Redis: fabriq.RedisConfig{
 			Addr:     getenv("FABRIQ_REDIS_ADDR"),
 			Username: getenv("FABRIQ_REDIS_USERNAME"),

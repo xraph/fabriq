@@ -254,6 +254,9 @@ type AnalyticsSpec struct {
 	// IncludeAll ships the whole (unredacted) payload. Use with care — it
 	// widens the trust boundary to every column.
 	IncludeAll bool
+	// Exclude removes payload paths after inclusion and hashing. It takes
+	// precedence over Include, IncludeAll and Hash, including nested paths.
+	Exclude []string
 	// Hash names payload fields whose VALUE is replaced with a stable salted
 	// hash before it crosses the trust boundary — pseudonymization. The raw
 	// value never lands, but equal values hash equally, so operators can still

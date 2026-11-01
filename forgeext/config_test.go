@@ -274,3 +274,17 @@ func TestLoadOpenSearchFileConfig(t *testing.T) {
 		t.Fatal("host file settings did not bind")
 	}
 }
+
+func TestHostedAnalyticsConfig(t *testing.T) {
+	cm := newEnvConfigApp(t, "analytics:\n  dsn: postgres://file/analytics\n  hashSalt: file-salt\nextensions:\n  fabriq:\n    analytics:\n      dsn: duckdb://local.db\n      hashSalt: host-salt\n")
+	t.Setenv("FABRIQ_ANALYTICS_DSN", "postgres://hosted/analytics")
+	t.Setenv("FABRIQ_ANALYTICS_HASH_SALT", "stable-secret")
+	got := forgeext.LoadConfig(cm, "").Analytics
+	if got.DSN != "postgres://hosted/analytics" || got.HashSalt != "stable-secret" {
+		t.Fatalf("hosted analytics settings missing")
+	}
+	got = forgeext.LoadConfig(cm, "extensions.fabriq.").Analytics
+	if got.DSN != "duckdb://local.db" || got.HashSalt != "host-salt" {
+		t.Fatalf("prefixed analytics settings missing or bare env leaked")
+	}
+}

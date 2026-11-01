@@ -418,16 +418,20 @@ func (c *adminController) handleAnalyticsStatus(ctx forge.Context) error {
 	stores := c.ext.parent.Stores()
 
 	resp := analyticsStatusResponse{Enabled: stores.Analytics != nil}
-	if tenants, terr := stores.AllTenants(ctx.Request().Context()); terr == nil {
-		resp.TenantCount = len(tenants)
+	tenants, terr := stores.AllTenants(ctx.Request().Context())
+	if terr != nil {
+		return renderError(ctx, terr)
 	}
+	resp.TenantCount = len(tenants)
 
 	const lagThresholdSeconds = 60
 	if stores.Analytics != nil {
-		if lag, lerr := stores.Analytics.LagByTenant(ctx.Request().Context()); lerr == nil {
-			resp.PerTenantLag = lag
-			resp.WorstLagSeconds, resp.TenantsBehind = summarizeLag(lag, lagThresholdSeconds)
+		lag, lerr := stores.Analytics.LagByTenant(ctx.Request().Context())
+		if lerr != nil {
+			return renderError(ctx, lerr)
 		}
+		resp.PerTenantLag = lag
+		resp.WorstLagSeconds, resp.TenantsBehind = summarizeLag(lag, lagThresholdSeconds)
 	}
 
 	return ctx.JSON(http.StatusOK, resp)

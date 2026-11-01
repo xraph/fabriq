@@ -84,6 +84,9 @@ func Redact(raw json.RawMessage, spec *registry.AnalyticsSpec, salt string) (jso
 // output keys are sorted recursively, so identical inputs yield identical bytes
 // and Hash fields become a stable salted hash.
 func redact(raw json.RawMessage, spec *registry.AnalyticsSpec, salt string) (json.RawMessage, error) {
+	if len(spec.Hash) > 0 && salt == "" {
+		return nil, fmt.Errorf("fabriq: analytics Hash requires a stable non-empty HashSalt")
+	}
 	top, err := parseObject(raw)
 	if err != nil {
 		return nil, err
@@ -108,6 +111,9 @@ func redact(raw json.RawMessage, spec *registry.AnalyticsSpec, salt string) (jso
 		if v, ok := getPath(top, segs); ok {
 			setPath(out, segs, hashValue(salt, v))
 		}
+	}
+	for _, p := range spec.Exclude {
+		deletePath(out, splitPath(p))
 	}
 	return marshalCanonical(out), nil
 }
@@ -169,9 +175,38 @@ func setPath(out map[string]any, segs []string, value json.RawMessage) {
 		child, ok := cur[s].(map[string]any)
 		if !ok {
 			child = map[string]any{}
+			if raw, isRaw := cur[s].(json.RawMessage); isRaw && looksLikeObject(raw) {
+				if parsed, err := parseObject(raw); err == nil {
+					child = deepConvert(parsed)
+				}
+			}
 			cur[s] = child
 		}
 		cur = child
+	}
+}
+
+// deletePath removes a nested field, expanding an included object when needed.
+func deletePath(out map[string]any, segs []string) {
+	for i, seg := range segs {
+		if i == len(segs)-1 {
+			delete(out, seg)
+			return
+		}
+		child, ok := out[seg].(map[string]any)
+		if !ok {
+			raw, isRaw := out[seg].(json.RawMessage)
+			if !isRaw || !looksLikeObject(raw) {
+				return
+			}
+			parsed, err := parseObject(raw)
+			if err != nil {
+				return
+			}
+			child = deepConvert(parsed)
+			out[seg] = child
+		}
+		out = child
 	}
 }
 

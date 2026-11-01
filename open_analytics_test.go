@@ -1,6 +1,9 @@
 package fabriq
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestAnalyticsConfig_EnabledByDSN(t *testing.T) {
 	if (AnalyticsConfig{}).Enabled() {
@@ -68,5 +71,14 @@ func TestOpen_AnalyticsDSNCollisionRejected(t *testing.T) {
 	disabled.Analytics.DSN = ""
 	if err := ValidateAnalyticsConfig(disabled); err != nil {
 		t.Fatalf("expected no error when analytics is disabled, got %v", err)
+	}
+}
+
+func TestRemoteQuackAnalyticsRefused(t *testing.T) {
+	cfg := Config{Postgres: PostgresConfig{DSN: "postgres://source/db"}, Analytics: AnalyticsConfig{DSN: "quack://remote:9999/analytics"}}
+	for _, err := range []error{ValidateAnalyticsConfig(cfg), cfg.Validate()} {
+		if err == nil || !strings.Contains(err.Error(), "prepared") || !strings.Contains(err.Error(), "PostgreSQL") {
+			t.Fatalf("missing actionable remote compatibility refusal: %v", err)
+		}
 	}
 }

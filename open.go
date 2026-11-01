@@ -298,6 +298,10 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			return nil, nil, fmt.Errorf("fabriq: load persisted dynamic entities (has \"fabriq migrate up\" run?): %w", err)
 		}
 	}
+	if err := validateAnalyticsHashSalt(cfg.Analytics, reg); err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
 	return f, stores, nil
 }
 
@@ -320,13 +324,8 @@ func openAnalytics(ctx context.Context, cfg Config, reg *registry.Registry, stor
 	if err := ValidateAnalyticsConfig(cfg); err != nil {
 		return err
 	}
-	// A pseudonymizing Hash field needs a stable, secret salt.
-	if cfg.Analytics.HashSalt == "" {
-		for _, ent := range reg.All() {
-			if ent.Spec.Analytics != nil && len(ent.Spec.Analytics.Hash) > 0 {
-				return fmt.Errorf("fabriq: entity %q uses Analytics.Hash but Config.Analytics.HashSalt is empty", ent.Spec.Name)
-			}
-		}
+	if err := validateAnalyticsHashSalt(cfg.Analytics, reg); err != nil {
+		return err
 	}
 	scheme := analyticsScheme(cfg.Analytics.DSN)
 	if cfg.Analytics.PartitionEvents && scheme != "postgres" && scheme != "postgresql" && scheme != "" {
@@ -1032,4 +1031,34 @@ func (s *Stores) PingSearch(ctx context.Context) error {
 		return a.Ping(ctx)
 	}
 	return ErrStoreNotConfigured
+}
+
+// PingAnalytics probes the configured sink using the caller's deadline.
+// Custom sinks without a Ping method are probed through their lag query.
+// Disabled analytics does not affect application readiness.
+func (s *Stores) PingAnalytics(ctx context.Context) error {
+	if s.Analytics == nil {
+		return nil
+	}
+	var err error
+	if probe, ok := s.Analytics.(interface{ Ping(context.Context) error }); ok {
+		err = probe.Ping(ctx)
+	} else {
+		_, err = s.Analytics.LagByTenant(ctx)
+	}
+	if err != nil {
+		return fmt.Errorf("fabriq: analytics is not reachable: %w", err)
+	}
+	return nil
+}
+
+func validateAnalyticsHashSalt(cfg AnalyticsConfig, reg *registry.Registry) error {
+	if cfg.Enabled() && cfg.HashSalt == "" {
+		for _, ent := range reg.All() {
+			if ent.Spec.Analytics != nil && len(ent.Spec.Analytics.Hash) > 0 {
+				return fmt.Errorf("fabriq: entity %q uses Analytics.Hash but Config.Analytics.HashSalt is empty", ent.Spec.Name)
+			}
+		}
+	}
+	return nil
 }

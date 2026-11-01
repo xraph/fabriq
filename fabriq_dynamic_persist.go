@@ -43,21 +43,30 @@ const dynamicSpecFormat = 1
 
 // The persisted shapes below are the on-disk contract (format 1). Every
 // slice is emitted as [] rather than null so equal specs encode to equal
-// bytes whether the caller wrote nil or an empty slice.
+// bytes whether the caller wrote nil or an empty slice. Analytics policy is
+// additive: older format-1 writers drop it if they rewrite the descriptor.
 type persistedDynamicSpec struct {
-	Format      int                 `json:"format"`
-	Name        string              `json:"name"`
-	Table       string              `json:"table"`
-	Columns     []persistedColumn   `json:"columns"`
-	Indexes     []persistedIndex    `json:"indexes"`
-	NoTypeCheck bool                `json:"noTypeCheck"`
-	GraphNode   string              `json:"graphNode"`
-	GraphEdge   *persistedGraphEdge `json:"graphEdge"`
-	Edges       []persistedEdge     `json:"edges"`
-	Search      persistedSearch     `json:"search"`
-	Subscribe   []persistedScope    `json:"subscribe"`
-	Live        *persistedLiveSpec  `json:"live"`
-	Cache       *persistedCacheSpec `json:"cache"`
+	Format      int                     `json:"format"`
+	Name        string                  `json:"name"`
+	Table       string                  `json:"table"`
+	Columns     []persistedColumn       `json:"columns"`
+	Indexes     []persistedIndex        `json:"indexes"`
+	NoTypeCheck bool                    `json:"noTypeCheck"`
+	GraphNode   string                  `json:"graphNode"`
+	GraphEdge   *persistedGraphEdge     `json:"graphEdge"`
+	Edges       []persistedEdge         `json:"edges"`
+	Search      persistedSearch         `json:"search"`
+	Subscribe   []persistedScope        `json:"subscribe"`
+	Live        *persistedLiveSpec      `json:"live"`
+	Cache       *persistedCacheSpec     `json:"cache"`
+	Analytics   *persistedAnalyticsSpec `json:"analytics,omitempty"`
+}
+
+type persistedAnalyticsSpec struct {
+	Include    []string `json:"include"`
+	IncludeAll bool     `json:"includeAll"`
+	Hash       []string `json:"hash"`
+	Exclude    []string `json:"exclude"`
 }
 
 type persistedColumn struct {
@@ -144,7 +153,7 @@ func strsOrNil(s []string) []string {
 }
 
 // encodeDynamicSpec renders the declarative part of a dynamic spec as format 1
-// JSON. Validate, Embed, Distill, Analytics, Insights, Metrics and CRDT are
+// JSON. Validate, Embed, Distill, Insights, Metrics and CRDT are
 // left out: they hold functions or in-process wiring and never persist.
 func encodeDynamicSpec(spec registry.EntitySpec) ([]byte, error) {
 	if spec.Schema == nil {
@@ -189,6 +198,9 @@ func encodeDynamicSpec(spec registry.EntitySpec) ([]byte, error) {
 	}
 	if c := spec.Cache; c != nil {
 		p.Cache = &persistedCacheSpec{TTLSeconds: int64(c.TTL / time.Second), Scoped: c.Scoped}
+	}
+	if a := spec.Analytics; a != nil {
+		p.Analytics = &persistedAnalyticsSpec{Include: strs(a.Include), IncludeAll: a.IncludeAll, Hash: strs(a.Hash), Exclude: strs(a.Exclude)}
 	}
 	return json.Marshal(p)
 }
@@ -242,6 +254,9 @@ func decodeDynamicSpec(b []byte) (registry.EntitySpec, error) {
 	if c := p.Cache; c != nil {
 		spec.Cache = &registry.CacheSpec{TTL: time.Duration(c.TTLSeconds) * time.Second, Scoped: c.Scoped}
 	}
+	if a := p.Analytics; a != nil {
+		spec.Analytics = &registry.AnalyticsSpec{Include: strsOrNil(a.Include), IncludeAll: a.IncludeAll, Hash: strsOrNil(a.Hash), Exclude: strsOrNil(a.Exclude)}
+	}
 	return spec, nil
 }
 
@@ -265,7 +280,6 @@ func withInProcessFields(dst, src registry.EntitySpec) registry.EntitySpec {
 	dst.Validate = src.Validate
 	dst.Embed = src.Embed
 	dst.Distill = src.Distill
-	dst.Analytics = src.Analytics
 	dst.Insights = src.Insights
 	dst.Metrics = src.Metrics
 	dst.CRDT = src.CRDT

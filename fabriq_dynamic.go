@@ -324,7 +324,7 @@ func (f *Fabriq) dynamicDDL() (DynamicDDL, error) {
 //
 // When Config.Dynamic.Persist is on, the descriptor is also saved to
 // fabriq_dynamic_entity and reloaded the next time fabriq opens. Only the
-// declarative part persists: Validate, Embed, Distill, Analytics, Insights,
+// declarative part persists: Validate, Embed, Distill, Insights,
 // Metrics and CRDT stay in-process, so an app that needs them defines the type
 // again at boot. Defining a spec whose persisted part equals the registered
 // type then succeeds without DDL and attaches those fields. When the
