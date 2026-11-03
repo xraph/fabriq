@@ -27,6 +27,8 @@ jobs:
     with:
       go-versions: '["1.26"]'
       os: '["ubuntu-latest"]'
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   # ===========================================================================
   # DuckDB analytics sink (not in the required gate). Builds/tests the
