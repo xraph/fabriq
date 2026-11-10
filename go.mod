@@ -18,7 +18,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
 	github.com/xraph/confy v1.1.0
-	github.com/xraph/fabriq/core v1.10.1
+	github.com/xraph/fabriq/core v1.10.2
 	github.com/xraph/forge v1.13.6
 	github.com/xraph/go-utils v1.5.0
 	github.com/xraph/grove v1.10.2
