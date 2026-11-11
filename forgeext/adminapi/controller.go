@@ -72,8 +72,9 @@ func (c *adminController) Routes(r forge.Router) error {
 	// authInstalled guard makes the prepend idempotent in case Routes() is ever
 	// invoked more than once, so the middleware can never be double-installed.
 	if c.ext.cfg.KeyStore != nil && !c.ext.authInstalled {
+		auth := authMiddleware(c.ext.cfg.KeyStore, c.ext.cfg.BasePath, c.ext.cfg.operatorOnlyAnalytics)
 		c.ext.cfg.RouteOptions = append(
-			[]forge.RouteOption{forge.WithMiddleware(authMiddleware(c.ext.cfg.KeyStore, c.ext.cfg.BasePath))},
+			[]forge.RouteOption{forge.WithMiddleware(auth)},
 			c.ext.cfg.RouteOptions...,
 		)
 		c.ext.authInstalled = true

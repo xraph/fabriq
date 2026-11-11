@@ -49,6 +49,18 @@ func flagAuthorizer(cfg *config) Authorizer {
 	})
 }
 
+func operatorAnalyticsAuthorizer(next Authorizer) Authorizer {
+	return AuthorizerFunc(func(ctx context.Context, capability string) (bool, error) {
+		switch capability {
+		case "analytics.read", "analytics.admin":
+			if !resolvedKeyIsUnrestrictedOperator(ctx) {
+				return false, nil
+			}
+		}
+		return next.Authorize(ctx, capability)
+	})
+}
+
 // requireCap gates a handler on a capability via the configured Authorizer.
 // Denied → 403; an authorizer error → 500 (fail-closed: never allow on error).
 func (c *adminController) requireCap(ctx forge.Context, capability string) error {

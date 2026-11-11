@@ -73,11 +73,12 @@ type config struct {
 	// configured and a parent forgeext.Extension is present — see
 	// requireAnalyticsAdmin.
 	AnalyticsAdmin bool
-	// AnalyticsRead enables the READ-ONLY analytics endpoint (GET
-	// /analytics/status, incl. per-tenant freshness) without granting the
-	// mutating operations. Least-privilege companion to WithAnalyticsAdmin (which
-	// implies read). Default false. Mirrors ConnectionsRead.
+	// AnalyticsRead enables GET /analytics/status and POST /analytics/query.
+	// Default false. AnalyticsAdmin implies read access.
 	AnalyticsRead bool
+	// operatorOnlyAnalytics requires an authenticated unrestricted management
+	// key for analytics capabilities. Set via WithOperatorOnlyAnalytics.
+	operatorOnlyAnalytics bool
 	// ConnectionsRead enables the connection/topology info endpoints (GET
 	// /connections and GET /tenants/:id/connection). Default false: those
 	// endpoints 403 until the host opts in via WithConnectionsRead. It is a
@@ -87,11 +88,8 @@ type config struct {
 	// stays behind an explicit opt-in.
 	ConnectionsRead bool
 	// KeyStore is the instance-global API key store. When non-nil, per-tenant
-	// API-key auth is enabled: the /admin/keys issue/list/revoke routes are
-	// registered (see registerKeyRoutes). Set it via WithAuth. Note: this option
-	// alone does NOT install the verifying middleware — the host must still
-	// attach authMiddleware(store, basePath) via WithRouteOptions to actually
-	// gate requests; WithAuth only wires the key-management surface.
+	// API-key auth is enabled and the /admin/keys issue/list/revoke routes are
+	// registered. Set it via WithAuth.
 	KeyStore KeyStore
 	// TenantRegistry is the static-mode tenant registry behind POST/GET
 	// /tenants. When nil (and no catalog), those routes answer 400 "requires
@@ -175,10 +173,16 @@ func WithTenantsAdmin() Option { return func(c *config) { c.TenantsAdmin = true 
 // an instance-global operation.
 func WithAnalyticsAdmin() Option { return func(c *config) { c.AnalyticsAdmin = true } }
 
-// WithAnalyticsRead enables the read-only analytics status/freshness endpoint
-// (GET /analytics/status) without the mutating operations — a least-privilege
-// gate for a freshness dashboard. WithAnalyticsAdmin implies this.
+// WithAnalyticsRead enables GET /analytics/status and read-only SQL through
+// POST /analytics/query. WithAnalyticsAdmin also enables these endpoints.
 func WithAnalyticsRead() Option { return func(c *config) { c.AnalyticsRead = true } }
+
+// WithOperatorOnlyAnalytics requires an authenticated key with CanManageKeys
+// and no bound tenant for analytics.read and analytics.admin. The configured
+// Authorizer still decides which capabilities the key may use.
+func WithOperatorOnlyAnalytics() Option {
+	return func(c *config) { c.operatorOnlyAnalytics = true }
+}
 
 // WithConnectionsRead enables the connection/topology info endpoints — GET
 // /connections (the tier's stores + cluster topology) and GET
@@ -194,11 +198,9 @@ func WithConnectionsRead() Option { return func(c *config) { c.ConnectionsRead =
 // fabriq itself imports no authz system; the host wires the adapter.
 func WithAuthorizer(a Authorizer) Option { return func(c *config) { c.Authorizer = a } }
 
-// WithAuth sets the instance-global API key store, enabling the /admin/keys
-// issue/list/revoke management routes (registered only when the store is
-// non-nil). It does NOT install the request-verifying middleware — that is a
-// separate, explicit step: attach authMiddleware(store, basePath) via
-// WithRouteOptions to actually gate admin requests on a valid key.
+// WithAuth sets the instance-global API key store. With a store configured,
+// the controller installs API key authentication and registers the /admin/keys
+// issue, list and revoke routes.
 func WithAuth(store KeyStore) Option {
 	return func(c *config) { c.KeyStore = store }
 }
@@ -376,6 +378,9 @@ func NewAdminAPI(fab *forgeext.Extension, opts ...Option) *Extension {
 		// Default to the flag-based authorizer, closing over the EXTENSION's config
 		// (not the local cfg copy) so it reads the stored flags.
 		e.cfg.Authorizer = flagAuthorizer(&e.cfg)
+	}
+	if e.cfg.operatorOnlyAnalytics {
+		e.cfg.Authorizer = operatorAnalyticsAuthorizer(e.cfg.Authorizer)
 	}
 	return e
 }

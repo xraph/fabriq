@@ -45,6 +45,15 @@ func resolvedKeyCanManage(ctx context.Context) bool {
 	return ok
 }
 
+type keyUnrestrictedOperatorCtxKey struct{}
+
+// resolvedKeyIsUnrestrictedOperator checks the authenticated key's original
+// scope. Selecting an effective tenant does not change that scope.
+func resolvedKeyIsUnrestrictedOperator(ctx context.Context) bool {
+	ok, _ := ctx.Value(keyUnrestrictedOperatorCtxKey{}).(bool)
+	return ok
+}
+
 // authMiddleware verifies a per-tenant API key on every admin request and
 // resolves the tenant into the request context for downstream handlers.
 //
@@ -59,7 +68,9 @@ func resolvedKeyCanManage(ctx context.Context) bool {
 // the request then proceeds with no tenant stamped (the key id is still
 // stashed). The migration status needs CanManageKeys like /keys does. Every
 // other route, including POST basePath+"/migrations/up" and any deeper
-// migrations path, is a data route and keeps the 400.
+// migrations path, keeps the selector requirement. WithOperatorOnlyAnalytics
+// also treats the registered analytics routes as instance routes for
+// unrestricted management keys.
 //
 // A request that passes every check records the key's last use through the
 // store's optional KeyToucher (see touchThrottle): at most once a minute per
@@ -89,14 +100,14 @@ func resolvedKeyCanManage(ctx context.Context) bool {
 //	GET .../migrations, !CanManageKeys     → 403
 //	X-Fabriq-Api-Version present, major ≠  → 426
 //	otherwise                              → next(ctx)
-func authMiddleware(store KeyStore, basePath string) forge.Middleware {
-	return authMiddlewareWithTouch(store, basePath, newTouchThrottle(store))
+func authMiddleware(store KeyStore, basePath string, operatorOnlyAnalytics bool) forge.Middleware {
+	return authMiddlewareWithTouch(store, basePath, newTouchThrottle(store), operatorOnlyAnalytics)
 }
 
 // authMiddlewareWithTouch is authMiddleware with the last-use throttle
 // supplied by the caller, so tests can drive it with their own clock and a
 // synchronous runner. A nil throttle records no last use.
-func authMiddlewareWithTouch(store KeyStore, basePath string, touches *touchThrottle) forge.Middleware {
+func authMiddlewareWithTouch(store KeyStore, basePath string, touches *touchThrottle, operatorOnlyAnalytics bool) forge.Middleware {
 	// Every route decision below compares routePath forms, so a request the
 	// router resolves to a keys or tenants handler can never dodge the gates
 	// with extra slashes ("/admin//keys", "//admin/keys").
@@ -104,6 +115,7 @@ func authMiddlewareWithTouch(store KeyStore, basePath string, touches *touchThro
 	keysPrefix := routePath(basePath + "/keys")
 	tenantsPrefix := routePath(basePath + "/tenants")
 	migrationsStatusPath := routePath(basePath + "/migrations")
+	analyticsPrefix := routePath(basePath+"/analytics") + "/"
 
 	return func(next forge.Handler) forge.Handler {
 		return func(ctx forge.Context) error {
@@ -147,7 +159,9 @@ func authMiddlewareWithTouch(store KeyStore, basePath string, touches *touchThro
 			keysRoute := isUnderRoute(path, keysPrefix)
 			tenantsRoute := isUnderRoute(path, tenantsPrefix)
 			migrationsStatus := req.Method == http.MethodGet && path == migrationsStatusPath
-			instanceRoute := keysRoute || tenantsRoute || migrationsStatus
+			analyticsRoute := operatorOnlyAnalytics && isAnalyticsRoute(req.Method, path, analyticsPrefix)
+			instanceRoute := keysRoute || tenantsRoute || migrationsStatus || analyticsRoute
+			unrestrictedOperator := rec.CanManageKeys && rec.TenantID == ""
 
 			// 3/4. Resolve the effective tenant. tid stays "" only for a
 			// multi-tenant key on an instance route with no selector.
@@ -183,6 +197,10 @@ func authMiddlewareWithTouch(store KeyStore, basePath string, touches *touchThro
 				return deny(ctx, http.StatusForbidden, "this API key may not manage tenants")
 			}
 
+			if analyticsRoute && !unrestrictedOperator {
+				return deny(ctx, http.StatusForbidden, "analytics requires an unrestricted management key")
+			}
+
 			// 6. Version negotiation: if the client advertises a version, its
 			// major must match. Absent header is tolerated.
 			if v := req.Header.Get(apiVersionHeader); v != "" {
@@ -206,6 +224,9 @@ func authMiddlewareWithTouch(store KeyStore, basePath string, touches *touchThro
 				if err != nil {
 					return deny(ctx, http.StatusBadRequest, "invalid tenant id: "+err.Error())
 				}
+			}
+			if operatorOnlyAnalytics {
+				tctx = context.WithValue(tctx, keyUnrestrictedOperatorCtxKey{}, unrestrictedOperator)
 			}
 			tctx = context.WithValue(tctx, keyCanManageCtxKey{}, rec.CanManageKeys)
 			ctx.WithContext(context.WithValue(tctx, keyIDCtxKey{}, rec.ID))
@@ -317,6 +338,33 @@ func deny(ctx forge.Context, status int, message string) error {
 // "/admin/keyspace"). Both arguments must already be in routePath form.
 func isUnderRoute(path, prefix string) bool {
 	return path == prefix || strings.HasPrefix(path, prefix+"/")
+}
+
+// isAnalyticsRoute matches the methods and paths in registerAnalyticsRoutes.
+// path and prefix are normalized, and prefix ends in a slash.
+func isAnalyticsRoute(method, path, prefix string) bool {
+	route, ok := strings.CutPrefix(path, prefix)
+	if !ok {
+		return false
+	}
+	switch method {
+	case http.MethodGet:
+		if route == "status" {
+			return true
+		}
+		jobPath, isJob := strings.CutPrefix(route, "jobs/")
+		if !isJob {
+			return false
+		}
+		id, suffix, hasSuffix := strings.Cut(jobPath, "/")
+		return id != "" && (!hasSuffix || suffix == "stream")
+	case http.MethodPost:
+		switch route {
+		case "query", "backfill", "reconcile", "reproject", "purge":
+			return true
+		}
+	}
+	return false
 }
 
 // routePath returns p the way forge's default router (forgemux) resolves it:

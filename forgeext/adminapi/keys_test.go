@@ -154,7 +154,7 @@ func buildKeysExtWith(t *testing.T, opts ...Option) (*Extension, string, *liveKe
 
 	all := append([]Option{
 		WithAuth(store),
-		WithRouteOptions(forge.WithMiddleware(authMiddleware(store, "/admin"))),
+		WithRouteOptions(forge.WithMiddleware(authMiddleware(store, "/admin", false))),
 	}, opts...)
 	e := NewAdminAPI(nil, all...)
 	e.fabric = fabriqtest.NewFabric(world)

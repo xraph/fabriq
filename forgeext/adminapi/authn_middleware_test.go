@@ -74,7 +74,7 @@ func authTestExt(t *testing.T, store KeyStore) *Extension {
 	t.Helper()
 	world := buildTestWorld(t)
 	e := NewAdminAPI(nil, // nil parent — bypass forgeext.Extension
-		WithRouteOptions(forge.WithMiddleware(authMiddleware(store, "/admin"))),
+		WithRouteOptions(forge.WithMiddleware(authMiddleware(store, "/admin", false))),
 	)
 	e.fabric = fabriqtest.NewFabric(world)
 	e.reg = world.Registry
@@ -307,7 +307,7 @@ func buildKeysProbeServer(t *testing.T, store KeyStore) *httptest.Server {
 	app := forge.NewApp(forge.AppConfig{Name: "auth-keys-probe", HTTPAddress: ":0"})
 	handler := func(ctx forge.Context) error { return ctx.JSON(http.StatusOK, map[string]any{"ok": true}) }
 	if err := app.Router().GET("/admin/keys", handler,
-		forge.WithMiddleware(authMiddleware(store, "/admin"))); err != nil {
+		forge.WithMiddleware(authMiddleware(store, "/admin", false))); err != nil {
 		t.Fatalf("register keys probe route: %v", err)
 	}
 	return httptest.NewServer(app.Router().Handler())
@@ -391,7 +391,7 @@ func buildLoginProbeServer(t *testing.T, store KeyStore) *httptest.Server {
 	app := forge.NewApp(forge.AppConfig{Name: "auth-login-probe", HTTPAddress: ":0"})
 	handler := func(ctx forge.Context) error { return ctx.JSON(http.StatusOK, map[string]any{"ok": true}) }
 	if err := app.Router().POST("/admin/login", handler,
-		forge.WithMiddleware(authMiddleware(store, "/admin"))); err != nil {
+		forge.WithMiddleware(authMiddleware(store, "/admin", false))); err != nil {
 		t.Fatalf("register login probe route: %v", err)
 	}
 	return httptest.NewServer(app.Router().Handler())
@@ -430,7 +430,7 @@ func buildKeyIDProbeServer(t *testing.T, store KeyStore) *httptest.Server {
 		return ctx.JSON(http.StatusOK, map[string]any{"keyID": id, "ok": ok})
 	}
 	if err := app.Router().GET("/admin/whoami", handler,
-		forge.WithMiddleware(authMiddleware(store, "/admin"))); err != nil {
+		forge.WithMiddleware(authMiddleware(store, "/admin", false))); err != nil {
 		t.Fatalf("register whoami probe route: %v", err)
 	}
 	return httptest.NewServer(app.Router().Handler())
@@ -494,7 +494,7 @@ func buildInstanceProbeServer(t *testing.T, store KeyStore, paths ...string) *ht
 	}
 	for _, p := range paths {
 		if err := app.Router().GET(p, handler,
-			forge.WithMiddleware(authMiddleware(store, "/admin"))); err != nil {
+			forge.WithMiddleware(authMiddleware(store, "/admin", false))); err != nil {
 			t.Fatalf("register probe route %s: %v", p, err)
 		}
 	}
@@ -837,7 +837,7 @@ func buildTouchProbeServer(t *testing.T, store *touchingKeyStore, clock *testClo
 	app := forge.NewApp(forge.AppConfig{Name: "auth-touch-probe", HTTPAddress: ":0"})
 	handler := func(ctx forge.Context) error { return ctx.JSON(http.StatusOK, map[string]any{"ok": true}) }
 	if err := app.Router().GET("/admin/keys", handler,
-		forge.WithMiddleware(authMiddlewareWithTouch(store, "/admin", th))); err != nil {
+		forge.WithMiddleware(authMiddlewareWithTouch(store, "/admin", th, false))); err != nil {
 		t.Fatalf("register touch probe route: %v", err)
 	}
 	return httptest.NewServer(app.Router().Handler())
@@ -1008,7 +1008,7 @@ func buildMigrationsProbeServer(t *testing.T, store KeyStore) *httptest.Server {
 		_, terr := tenant.FromContext(ctx.Request().Context())
 		return ctx.JSON(http.StatusOK, map[string]any{"hasTenant": terr == nil})
 	}
-	mw := forge.WithMiddleware(authMiddleware(store, "/admin"))
+	mw := forge.WithMiddleware(authMiddleware(store, "/admin", false))
 	if err := app.Router().GET("/admin/migrations", handler, mw); err != nil {
 		t.Fatalf("register GET migrations: %v", err)
 	}

@@ -68,7 +68,7 @@ func buildLoginExt(t *testing.T) (*Extension, *sessionKeyStore) {
 	e := NewAdminAPI(nil,
 		WithAuth(store),
 		WithAdminLogin("admin", "s3cret"),
-		WithRouteOptions(forge.WithMiddleware(authMiddleware(store, "/admin"))),
+		WithRouteOptions(forge.WithMiddleware(authMiddleware(store, "/admin", false))),
 	)
 	e.fabric = fabriqtest.NewFabric(world)
 	e.reg = world.Registry
