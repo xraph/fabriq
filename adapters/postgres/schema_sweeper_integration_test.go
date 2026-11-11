@@ -4,7 +4,6 @@ package postgres_test
 
 import (
 	"context"
-	"net/url"
 	"testing"
 
 	"github.com/xraph/grove/drivers/pgdriver"
@@ -130,16 +129,13 @@ func TestSweeper_TwoSchemasOneDB_MaterializesPerSchema(t *testing.T) {
 // given schema (so bare CREATE TABLE lands there).
 func applyDDLUnderSchema(t testing.TB, superDSN, schema, shared string, stmts []string) {
 	t.Helper()
-	u, err := url.Parse(superDSN)
+	dsn, err := postgres.DSNWithSearchPathForTest(superDSN, schema, shared)
 	if err != nil {
 		t.Fatal(err)
 	}
-	q := u.Query()
-	q.Set("options", "-c search_path="+schema+","+shared)
-	u.RawQuery = q.Encode()
 
 	db := pgdriver.New()
-	if err := db.Open(context.Background(), u.String()); err != nil {
+	if err := db.Open(context.Background(), dsn); err != nil {
 		t.Fatalf("open under schema %s: %v", schema, err)
 	}
 	defer func() { _ = db.Close() }()

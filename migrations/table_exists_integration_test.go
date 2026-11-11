@@ -5,6 +5,7 @@ package migrations_test
 import (
 	"context"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/xraph/grove/drivers/pgdriver"
@@ -44,7 +45,7 @@ func TestTableExists_SchemaAwareScopeColumns(t *testing.T) {
 	}
 	q := u.Query()
 	q.Set("options", "-c search_path=tenant_x")
-	u.RawQuery = q.Encode()
+	u.RawQuery = strings.ReplaceAll(q.Encode(), "+", "%20")
 
 	db := pgdriver.New()
 	if err := db.Open(ctx, u.String()); err != nil {

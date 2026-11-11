@@ -275,17 +275,25 @@ func (c *ClusterOps) MigrateSchema(ctx context.Context, clusterID, database, sch
 	return migrations.HeadVersion(), nil
 }
 
-// dsnWithSearchPath appends a connection-level search_path (via the libpq
-// "options" runtime parameter) so every connection in the pool defaults to
-// "<schema>, <shared>". This is how migrations — which span many statements
-// and may use multiple connections — land in the tenant schema.
+// dsnWithSearchPath sets the libpq options parameter so every connection
+// in the pool resolves bare names in the tenant schema before the shared schema.
 func dsnWithSearchPath(dsn, schema, shared string) (string, error) {
 	u, err := url.Parse(dsn)
 	if err != nil || u.Scheme == "" {
 		return "", fabriqerr.New(fabriqerr.CodeInvalidInput, "cluster DSN must be a postgres:// URL.")
 	}
-	q := u.Query()
-	q.Set("options", "-c search_path="+schema+","+shared)
-	u.RawQuery = q.Encode()
-	return u.String(), nil
+	// Keep the original query pairs in order. libpq treats "+" as a literal plus.
+	base, rawQuery, _ := strings.Cut(dsn, "?")
+	params := make([]string, 0, strings.Count(rawQuery, "&")+2)
+	for param := range strings.SplitSeq(rawQuery, "&") {
+		key, _, _ := strings.Cut(param, "=")
+		key, _ = url.PathUnescape(strings.Trim(key, " "))
+		if param != "" && key != "options" {
+			params = append(params, param)
+		}
+	}
+
+	options := url.QueryEscape("-c search_path=" + schema + "," + shared)
+	params = append(params, "options="+strings.ReplaceAll(options, "+", "%20"))
+	return base + "?" + strings.Join(params, "&"), nil
 }
