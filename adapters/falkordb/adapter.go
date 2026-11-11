@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/redis/go-redis/v9"
 
@@ -39,6 +40,10 @@ type Adapter struct {
 	reg        *registry.Registry
 	rel        query.RelationalQuerier // hydration source for TraverseAndHydrate
 	liveTarget TargetResolver
+
+	readinessMu     sync.RWMutex
+	readinessCtx    context.Context
+	cancelReadiness context.CancelFunc
 }
 
 var _ query.GraphQuerier = (*Adapter)(nil)
@@ -63,10 +68,13 @@ func Open(ctx context.Context, cfg Config, reg *registry.Registry, rel query.Rel
 		_ = client.Close()
 		return nil, fmt.Errorf("fabriq: falkordb ping: %w", err)
 	}
+	readinessCtx, cancelReadiness := context.WithCancel(context.Background())
 	a := &Adapter{
-		client: client,
-		reg:    reg,
-		rel:    rel,
+		client:          client,
+		reg:             reg,
+		rel:             rel,
+		readinessCtx:    readinessCtx,
+		cancelReadiness: cancelReadiness,
 		liveTarget: func(_ context.Context, tenantID string) (string, error) {
 			return registry.GraphName(tenantID), nil
 		},
@@ -81,8 +89,14 @@ func Open(ctx context.Context, cfg Config, reg *registry.Registry, rel query.Rel
 // connection-info health probe.
 func (a *Adapter) Ping(ctx context.Context) error { return a.client.Ping(ctx).Err() }
 
-// Close releases the client.
-func (a *Adapter) Close() error { return a.client.Close() }
+// Close stops readiness probes and releases the client.
+func (a *Adapter) Close() error {
+	a.cancelReadiness()
+	// The write lock waits for the canceled probes to close their sockets.
+	a.readinessMu.Lock()
+	defer a.readinessMu.Unlock()
+	return a.client.Close()
+}
 
 // Query implements query.GraphQuerier: a read-only openCypher query
 // against the tenant's live graph. into may be *[]string (single-column

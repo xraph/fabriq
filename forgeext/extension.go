@@ -13,6 +13,7 @@ import (
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/adapters/postgres"
+	"github.com/xraph/fabriq/core/fabriqerr"
 	"github.com/xraph/fabriq/core/provision"
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
@@ -296,10 +297,9 @@ func requireRLS(ctx context.Context, stores *fabriq.Stores) error {
 	return nil
 }
 
-// Ready reports whether the extension can serve: the facade is open, the source
-// (Postgres or catalog) and configured Redis and analytics stores answer. Unlike
-// Health there is no grace period, and it is safe to call before Start (it
-// returns "fabriq: not started"). The caller bounds it with ctx.
+// Ready reports whether the extension can serve. It checks that the facade is
+// open and probes the source (Postgres or catalog) and any configured Redis,
+// analytics, FalkorDB or search stores. The caller bounds the checks with ctx.
 func (e *Extension) Ready(ctx context.Context) error {
 	e.mu.Lock()
 	fab, stores := e.fab, e.stores
@@ -315,7 +315,24 @@ func (e *Extension) Ready(ctx context.Context) error {
 			return fmt.Errorf("fabriq: redis is not reachable: %w", err)
 		}
 	}
-	return stores.PingAnalytics(ctx)
+	if err := stores.PingAnalytics(ctx); err != nil {
+		return err
+	}
+	if stores.Falkor != nil {
+		if err := stores.Falkor.PingReadiness(ctx); err != nil {
+			return errors.New("fabriq: falkordb is not reachable")
+		}
+	}
+	if stores.SearchConfigured() {
+		if err := stores.PingSearch(ctx); err != nil {
+			code := fabriqerr.CodeOf(err)
+			if code == "" {
+				code = fabriqerr.CodeUnavailable
+			}
+			return fmt.Errorf("fabriq: search is not reachable: %w", fabriqerr.New(code, fabriqerr.SafeMessage(code)))
+		}
+	}
+	return nil
 }
 
 // Fabriq returns the opened facade (nil before Start).
