@@ -10,6 +10,7 @@ import (
 
 	"github.com/xraph/fabriq/adapters/opensearch"
 	"github.com/xraph/fabriq/core/projection"
+	"github.com/xraph/fabriq/internal/enginetrust"
 )
 
 // catalogSharedSchemaPattern bounds the consolidation shared-schema name to a
@@ -252,18 +253,24 @@ type RedisConfig struct {
 	Password string `yaml:"password" json:"password"`
 }
 
-// FalkorDBConfig locates the graph projection engine.
+// FalkorDBConfig locates the graph projection engine. Set TLSMode to
+// verify-full to verify the server certificate and endpoint name. CACert
+// optionally supplies PEM trust roots. Empty mode and disable use plaintext.
 type FalkorDBConfig struct {
 	Addr     string `yaml:"addr" json:"addr"`
 	Username string `yaml:"username" json:"username"`
 	Password string `yaml:"password" json:"password"`
+	TLSMode  string `yaml:"tlsMode" json:"tlsMode"`
+	CACert   string `yaml:"caCert" json:"caCert"`
 }
 
-// ElasticsearchConfig locates the search projection engine.
+// ElasticsearchConfig locates the search projection engine. CACert
+// optionally supplies PEM trust roots for HTTPS endpoints.
 type ElasticsearchConfig struct {
 	Addrs    []string `yaml:"addrs" json:"addrs"`
 	Username string   `yaml:"username" json:"username"`
 	Password string   `yaml:"password" json:"password"`
+	CACert   string   `yaml:"caCert" json:"caCert"`
 }
 
 // OpenSearchConfig locates a native OpenSearch projection engine. Use CACert
@@ -348,6 +355,12 @@ type DynamicConfig struct {
 
 // Validate checks cross-field consistency. It does not dial anything.
 func (c Config) Validate() error {
+	if _, err := enginetrust.FalkorTLS(c.FalkorDB.Addr, c.FalkorDB.TLSMode, []byte(c.FalkorDB.CACert)); err != nil {
+		return err
+	}
+	if err := enginetrust.ValidateElasticsearch(c.Elasticsearch.Addrs, []byte(c.Elasticsearch.CACert)); err != nil {
+		return err
+	}
 	if err := (opensearch.Config{Addrs: c.OpenSearch.Addrs, CACert: []byte(c.OpenSearch.CACert), CAFile: c.OpenSearch.CAFile}).Validate(); err != nil {
 		return err
 	}

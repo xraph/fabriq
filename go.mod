@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.47.0
 	github.com/duckdb/duckdb-go/v2 v2.10504.0
+	github.com/elastic/elastic-transport-go/v8 v8.11.0
 	github.com/elastic/go-elasticsearch/v9 v9.4.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -72,7 +73,6 @@ require (
 	github.com/duckdb/duckdb-go-bindings/lib/windows-amd64 v0.10504.0 // indirect
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/ebitengine/purego v0.10.1 // indirect
-	github.com/elastic/elastic-transport-go/v8 v8.11.0 // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect

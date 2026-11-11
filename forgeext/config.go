@@ -206,17 +206,9 @@ func LoadConfig(cm forge.ConfigManager, prefix string) fabriq.Config {
 	return cfg
 }
 
-// overlayStoreCredentialsFromEnv sets analytics DSN and hash salt plus Redis,
-// FalkorDB and native search
-// usernames and passwords from FABRIQ_REDIS_USERNAME, FABRIQ_REDIS_PASSWORD,
-// FABRIQ_FALKORDB_USERNAME, FABRIQ_FALKORDB_PASSWORD,
-// FABRIQ_ELASTICSEARCH_USERNAME and FABRIQ_ELASTICSEARCH_PASSWORD. OpenSearch
-// also reads FABRIQ_OPENSEARCH_ADDRS, FABRIQ_OPENSEARCH_USERNAME,
-// FABRIQ_OPENSEARCH_PASSWORD, FABRIQ_OPENSEARCH_CA_FILE and
-// FABRIQ_OPENSEARCH_CA_CERT. A non-empty
-// value wins over config.yaml, like the rest of FABRIQ_*; an empty one leaves
-// the file's value alone. The config manager's own env overlay usually binds
-// these already. This makes it hold whatever it does with underscores.
+// overlayStoreCredentialsFromEnv binds standalone credentials and trust
+// settings whose environment keys need an explicit mapping. Nonempty values
+// override config.yaml. The overlay preserves multiline PEM bytes.
 func overlayStoreCredentialsFromEnv(cfg *fabriq.Config, getenv func(string) string) {
 	set := func(target *string, key string) {
 		if v := getenv(key); v != "" {
@@ -229,6 +221,8 @@ func overlayStoreCredentialsFromEnv(cfg *fabriq.Config, getenv func(string) stri
 	set(&cfg.Redis.Password, "FABRIQ_REDIS_PASSWORD")
 	set(&cfg.FalkorDB.Username, "FABRIQ_FALKORDB_USERNAME")
 	set(&cfg.FalkorDB.Password, "FABRIQ_FALKORDB_PASSWORD")
+	set(&cfg.FalkorDB.TLSMode, "FABRIQ_FALKORDB_TLS_MODE")
+	set(&cfg.FalkorDB.CACert, "FABRIQ_FALKORDB_CA_CERT")
 	if v := getenv("FABRIQ_OPENSEARCH_ADDRS"); v != "" {
 		cfg.OpenSearch.Addrs = nil
 		for _, addr := range strings.Split(v, ",") {
@@ -243,6 +237,7 @@ func overlayStoreCredentialsFromEnv(cfg *fabriq.Config, getenv func(string) stri
 	set(&cfg.OpenSearch.CACert, "FABRIQ_OPENSEARCH_CA_CERT")
 	set(&cfg.Elasticsearch.Username, "FABRIQ_ELASTICSEARCH_USERNAME")
 	set(&cfg.Elasticsearch.Password, "FABRIQ_ELASTICSEARCH_PASSWORD")
+	set(&cfg.Elasticsearch.CACert, "FABRIQ_ELASTICSEARCH_CA_CERT")
 }
 
 // WithLifecycleHooks installs transaction hooks on the command executor.

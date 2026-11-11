@@ -12,9 +12,12 @@ package falkordb
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -22,13 +25,17 @@ import (
 	"github.com/xraph/fabriq/core/query"
 	"github.com/xraph/fabriq/core/registry"
 	"github.com/xraph/fabriq/core/tenant"
+	"github.com/xraph/fabriq/internal/enginetrust"
 )
 
-// Config locates the FalkorDB instance.
+// Config locates the FalkorDB instance. TLSMode is empty, disable or
+// verify-full. CACert supplies optional PEM trust roots for verify-full.
 type Config struct {
 	Addr     string
 	Username string
 	Password string
+	TLSMode  string
+	CACert   []byte
 }
 
 // TargetResolver maps a tenant onto its live graph name.
@@ -63,10 +70,25 @@ func WithLiveTargetResolver(fn TargetResolver) Option {
 
 // Open dials FalkorDB.
 func Open(ctx context.Context, cfg Config, reg *registry.Registry, rel query.RelationalQuerier, opts ...Option) (*Adapter, error) {
-	client := redis.NewClient(&redis.Options{Addr: cfg.Addr, Username: cfg.Username, Password: cfg.Password})
-	if err := client.Ping(ctx).Err(); err != nil {
+	tlsConfig, err := enginetrust.FalkorTLS(cfg.Addr, cfg.TLSMode, cfg.CACert)
+	if err != nil {
+		return nil, err
+	}
+	redisOpts := &redis.Options{Addr: cfg.Addr, Username: cfg.Username, Password: cfg.Password, TLSConfig: tlsConfig}
+	if tlsConfig != nil {
+		const dialTimeout = 5 * time.Second
+		redisOpts.DialTimeout = dialTimeout
+		// Readiness also uses this dialer, so cancellation can interrupt the TLS handshake.
+		dialer := tls.Dialer{
+			NetDialer: &net.Dialer{Timeout: dialTimeout, KeepAlive: 5 * time.Minute},
+			Config:    tlsConfig,
+		}
+		redisOpts.Dialer = dialer.DialContext
+	}
+	client := redis.NewClient(redisOpts)
+	if pingErr := client.Ping(ctx).Err(); pingErr != nil {
 		_ = client.Close()
-		return nil, fmt.Errorf("fabriq: falkordb ping: %w", err)
+		return nil, fmt.Errorf("fabriq: falkordb ping: %w", pingErr)
 	}
 	readinessCtx, cancelReadiness := context.WithCancel(context.Background())
 	a := &Adapter{

@@ -2,20 +2,28 @@
 package elastic
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
+	"net/http"
 
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	elasticsearch "github.com/elastic/go-elasticsearch/v9"
 
 	"github.com/xraph/fabriq/adapters/search"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/internal/enginetrust"
 )
 
-// Config locates the Elasticsearch cluster.
+// Config locates the Elasticsearch cluster. CACert supplies PEM trust roots
+// for HTTPS endpoints.
 type Config struct {
 	Addrs    []string
 	Username string
 	Password string
+	CACert   []byte
 }
 
 // ModelVersionResolver reports the live search model version for a tenant.
@@ -42,9 +50,28 @@ func WithModelVersionResolver(fn ModelVersionResolver) Option {
 
 // Open connects to Elasticsearch using its native product-checked transport.
 func Open(ctx context.Context, cfg Config, reg *registry.Registry, opts ...Option) (*Adapter, error) {
+	if err := enginetrust.ValidateElasticsearch(cfg.Addrs, cfg.CACert); err != nil {
+		return nil, err
+	}
 	esOpts := []elasticsearch.Option{elasticsearch.WithAddresses(cfg.Addrs...)}
 	if cfg.Username != "" {
 		esOpts = append(esOpts, elasticsearch.WithBasicAuth(cfg.Username, cfg.Password))
+	}
+	if len(cfg.CACert) != 0 {
+		base, ok := http.DefaultTransport.(*http.Transport)
+		if !ok || base == nil {
+			return nil, errors.New("fabriq: elasticsearch inline CA requires an HTTP transport")
+		}
+		transport := base.Clone()
+		// The native option fills RootCAs on this config. Use standard TLS
+		// verification even if the host app configured its own TLS dialer.
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		transport.DialTLSContext = nil
+		transport.DialTLS = nil //nolint:staticcheck // Clear the legacy hook so the native transport verifies certificates.
+		esOpts = append(esOpts,
+			elasticsearch.WithTransportOptions(elastictransport.WithTransport(transport)),
+			elasticsearch.WithCACert(bytes.TrimSpace(cfg.CACert)),
+		)
 	}
 	client, err := elasticsearch.New(esOpts...)
 	if err != nil {

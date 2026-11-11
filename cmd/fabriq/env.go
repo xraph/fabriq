@@ -62,8 +62,9 @@ func registerDomainPack(reg *registry.Registry, pack string) error {
 // getenv, for the operator commands that build their config by hand rather
 // than through forgeext.LoadConfig: FABRIQ_REDIS_ADDR, FABRIQ_REDIS_USERNAME,
 // FABRIQ_REDIS_PASSWORD, FABRIQ_FALKORDB_ADDR, FABRIQ_FALKORDB_USERNAME,
-// FABRIQ_FALKORDB_PASSWORD, FABRIQ_ELASTICSEARCH_ADDRS (comma-separated),
-// FABRIQ_ELASTICSEARCH_USERNAME, FABRIQ_ELASTICSEARCH_PASSWORD,
+// FABRIQ_FALKORDB_PASSWORD, FABRIQ_FALKORDB_TLS_MODE, FABRIQ_FALKORDB_CA_CERT,
+// FABRIQ_ELASTICSEARCH_ADDRS (comma-separated), FABRIQ_ELASTICSEARCH_USERNAME,
+// FABRIQ_ELASTICSEARCH_PASSWORD, FABRIQ_ELASTICSEARCH_CA_CERT,
 // FABRIQ_OPENSEARCH_ADDRS, FABRIQ_OPENSEARCH_USERNAME,
 // FABRIQ_OPENSEARCH_PASSWORD, FABRIQ_OPENSEARCH_CA_FILE, FABRIQ_OPENSEARCH_CA_CERT,
 // FABRIQ_ANALYTICS_DSN and FABRIQ_ANALYTICS_HASH_SALT. Unset
@@ -80,12 +81,15 @@ func storeConfigFromEnv(getenv func(string) string) fabriq.Config {
 			Addr:     getenv("FABRIQ_FALKORDB_ADDR"),
 			Username: getenv("FABRIQ_FALKORDB_USERNAME"),
 			Password: getenv("FABRIQ_FALKORDB_PASSWORD"),
+			TLSMode:  getenv("FABRIQ_FALKORDB_TLS_MODE"),
+			CACert:   getenv("FABRIQ_FALKORDB_CA_CERT"),
 		},
 		OpenSearch: fabriq.OpenSearchConfig{Addrs: splitAddrs(getenv("FABRIQ_OPENSEARCH_ADDRS")), Username: getenv("FABRIQ_OPENSEARCH_USERNAME"), Password: getenv("FABRIQ_OPENSEARCH_PASSWORD"), CAFile: getenv("FABRIQ_OPENSEARCH_CA_FILE"), CACert: getenv("FABRIQ_OPENSEARCH_CA_CERT")},
 		Elasticsearch: fabriq.ElasticsearchConfig{
 			Addrs:    splitAddrs(getenv("FABRIQ_ELASTICSEARCH_ADDRS")),
 			Username: getenv("FABRIQ_ELASTICSEARCH_USERNAME"),
 			Password: getenv("FABRIQ_ELASTICSEARCH_PASSWORD"),
+			CACert:   getenv("FABRIQ_ELASTICSEARCH_CA_CERT"),
 		},
 	}
 }

@@ -244,6 +244,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		// reads projection_state from the tenant's shard too.
 		fk, ferr := falkordb.Open(ctx, falkordb.Config{
 			Addr: cfg.FalkorDB.Addr, Username: cfg.FalkorDB.Username, Password: cfg.FalkorDB.Password,
+			TLSMode: cfg.FalkorDB.TLSMode, CACert: []byte(cfg.FalkorDB.CACert),
 		}, reg, ports.Relational, falkordb.WithLiveTargetResolver(liveGraphResolver(stores.state)))
 		if ferr != nil {
 			_ = stores.Close()
@@ -999,7 +1000,7 @@ func openSearch(ctx context.Context, cfg Config, reg *registry.Registry, stores 
 		}
 		stores.search = a
 	case len(cfg.Elasticsearch.Addrs) > 0:
-		a, err := elastic.Open(ctx, elastic.Config{Addrs: cfg.Elasticsearch.Addrs, Username: cfg.Elasticsearch.Username, Password: cfg.Elasticsearch.Password}, reg, elastic.WithModelVersionResolver(resolver))
+		a, err := elastic.Open(ctx, elastic.Config{Addrs: cfg.Elasticsearch.Addrs, Username: cfg.Elasticsearch.Username, Password: cfg.Elasticsearch.Password, CACert: []byte(cfg.Elasticsearch.CACert)}, reg, elastic.WithModelVersionResolver(resolver))
 		if err != nil {
 			return err
 		}

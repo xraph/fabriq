@@ -239,6 +239,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 	if cfg.FalkorDB.Addr != "" {
 		fk, ferr := falkordb.Open(ctx, falkordb.Config{
 			Addr: cfg.FalkorDB.Addr, Username: cfg.FalkorDB.Username, Password: cfg.FalkorDB.Password,
+			TLSMode: cfg.FalkorDB.TLSMode, CACert: []byte(cfg.FalkorDB.CACert),
 		}, reg, ports.Relational, falkordb.WithLiveTargetResolver(liveGraphResolver(stores.state)))
 		if ferr != nil {
 			_ = stores.Close()
