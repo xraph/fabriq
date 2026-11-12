@@ -12,9 +12,7 @@ package falkordb
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
-	"net"
 	"strings"
 	"sync"
 	"time"
@@ -79,11 +77,7 @@ func Open(ctx context.Context, cfg Config, reg *registry.Registry, rel query.Rel
 		const dialTimeout = 5 * time.Second
 		redisOpts.DialTimeout = dialTimeout
 		// Readiness also uses this dialer, so cancellation can interrupt the TLS handshake.
-		dialer := tls.Dialer{
-			NetDialer: &net.Dialer{Timeout: dialTimeout, KeepAlive: 5 * time.Minute},
-			Config:    tlsConfig,
-		}
-		redisOpts.Dialer = dialer.DialContext
+		redisOpts.Dialer = enginetrust.TLSDialer(tlsConfig, dialTimeout)
 	}
 	client := redis.NewClient(redisOpts)
 	if pingErr := client.Ping(ctx).Err(); pingErr != nil {

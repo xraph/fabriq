@@ -245,12 +245,17 @@ type ShardConfig struct {
 	PoolSize int    `yaml:"pool_size" json:"pool_size"`
 }
 
-// RedisConfig locates the event fan-out / cache store.
+// RedisConfig locates the event fan-out / cache store. Set TLSMode to
+// verify-full for a server that wants TLS (managed Redis and Valkey usually
+// do): it checks the certificate and the endpoint name, against CACert when
+// set and the system roots when not. Empty mode and disable use plaintext.
 type RedisConfig struct {
 	Addr     string `yaml:"addr" json:"addr"`
 	DB       int    `yaml:"db" json:"db"`
 	Username string `yaml:"username" json:"username"`
 	Password string `yaml:"password" json:"password"`
+	TLSMode  string `yaml:"tlsMode" json:"tlsMode"`
+	CACert   string `yaml:"caCert" json:"caCert"`
 }
 
 // FalkorDBConfig locates the graph projection engine. Set TLSMode to
@@ -355,6 +360,9 @@ type DynamicConfig struct {
 
 // Validate checks cross-field consistency. It does not dial anything.
 func (c Config) Validate() error {
+	if _, err := enginetrust.RedisTLS(c.Redis.Addr, c.Redis.TLSMode, []byte(c.Redis.CACert)); err != nil {
+		return err
+	}
 	if _, err := enginetrust.FalkorTLS(c.FalkorDB.Addr, c.FalkorDB.TLSMode, []byte(c.FalkorDB.CACert)); err != nil {
 		return err
 	}

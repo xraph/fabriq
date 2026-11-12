@@ -12,16 +12,24 @@ package redis
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/xraph/fabriq/internal/enginetrust"
 )
 
-// Config locates the Redis instance.
+// Config locates the Redis instance. TLSMode is empty, disable or
+// verify-full. CACert supplies optional PEM trust roots for verify-full;
+// without it the system roots verify the server, which is what managed
+// Redis and Valkey services need.
 type Config struct {
 	Addr     string
 	DB       int
 	Username string
 	Password string
+	TLSMode  string
+	CACert   []byte
 }
 
 // Adapter wraps one Redis client with fabriq's stream/cache/pubsub
@@ -56,15 +64,27 @@ func WithEventsMaxLen(n int64) Option {
 	}
 }
 
-// Open dials Redis and pings it.
+// Open checks the TLS settings, then dials Redis and pings it. Settings
+// that can't be right fail before anything is dialled.
 func Open(ctx context.Context, cfg Config, opts ...Option) (*Adapter, error) {
+	tlsConfig, err := enginetrust.RedisTLS(cfg.Addr, cfg.TLSMode, cfg.CACert)
+	if err != nil {
+		return nil, err
+	}
+	redisOpts := &redis.Options{
+		Addr:      cfg.Addr,
+		DB:        cfg.DB,
+		Username:  cfg.Username,
+		Password:  cfg.Password,
+		TLSConfig: tlsConfig,
+	}
+	if tlsConfig != nil {
+		const dialTimeout = 5 * time.Second
+		redisOpts.DialTimeout = dialTimeout
+		redisOpts.Dialer = enginetrust.TLSDialer(tlsConfig, dialTimeout)
+	}
 	a := &Adapter{
-		client: redis.NewClient(&redis.Options{
-			Addr:     cfg.Addr,
-			DB:       cfg.DB,
-			Username: cfg.Username,
-			Password: cfg.Password,
-		}),
+		client:       redis.NewClient(redisOpts),
 		eventsMaxLen: 1_000_000,
 		chanMaxLen:   500,
 	}

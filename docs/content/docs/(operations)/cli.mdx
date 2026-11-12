@@ -35,6 +35,8 @@ The serve path reads everything from the environment:
 | `FABRIQ_POSTGRES_DSN` | yes (to serve) | Source-of-truth Postgres DSN. |
 | `FABRIQ_REDIS_ADDR` | yes (to serve) | Redis address for the event stream and subscriptions. |
 | `FABRIQ_REDIS_USERNAME`, `FABRIQ_REDIS_PASSWORD` | no | Redis ACL user and password. |
+| `FABRIQ_REDIS_TLS_MODE` | no | `verify-full` for a Redis or Valkey that only takes TLS, which most managed ones do. It checks the certificate and the host name. Empty or `disable` is plaintext. |
+| `FABRIQ_REDIS_CA_CERT` | no | Inline PEM trust roots for `verify-full`, when the server's CA isn't in the system pool. Keep its line breaks. |
 | `FABRIQ_FALKORDB_ADDR` | no | Enables the graph projection consumer. |
 | `FABRIQ_FALKORDB_USERNAME`, `FABRIQ_FALKORDB_PASSWORD` | no | FalkorDB credentials. |
 | `FABRIQ_ELASTICSEARCH_ADDRS` | no | Comma-separated; enables the search projection consumer. |

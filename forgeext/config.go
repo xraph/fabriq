@@ -219,6 +219,8 @@ func overlayStoreCredentialsFromEnv(cfg *fabriq.Config, getenv func(string) stri
 	set(&cfg.Analytics.HashSalt, "FABRIQ_ANALYTICS_HASH_SALT")
 	set(&cfg.Redis.Username, "FABRIQ_REDIS_USERNAME")
 	set(&cfg.Redis.Password, "FABRIQ_REDIS_PASSWORD")
+	set(&cfg.Redis.TLSMode, "FABRIQ_REDIS_TLS_MODE")
+	set(&cfg.Redis.CACert, "FABRIQ_REDIS_CA_CERT")
 	set(&cfg.FalkorDB.Username, "FABRIQ_FALKORDB_USERNAME")
 	set(&cfg.FalkorDB.Password, "FABRIQ_FALKORDB_PASSWORD")
 	set(&cfg.FalkorDB.TLSMode, "FABRIQ_FALKORDB_TLS_MODE")

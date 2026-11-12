@@ -3,16 +3,19 @@ package enginetrust
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -24,12 +27,28 @@ const (
 
 var dnsLabel = regexp.MustCompile(`^[a-zA-Z0-9_](?:[a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?$`)
 
-// FalkorTLS validates the mode, address and optional CA. A nil config uses plaintext.
+// FalkorTLS validates FalkorDB's mode, address and optional CA. A nil
+// config uses plaintext.
 func FalkorTLS(addr, mode string, ca []byte) (*tls.Config, error) {
+	return RESPTLS("falkordb", addr, mode, ca)
+}
+
+// RedisTLS validates the Redis stream transport's mode, address and
+// optional CA. A nil config uses plaintext.
+func RedisTLS(addr, mode string, ca []byte) (*tls.Config, error) {
+	return RESPTLS("redis", addr, mode, ca)
+}
+
+// RESPTLS validates TLS settings for a RESP engine reached through go-redis.
+// engine names it in errors, which never repeat a configured value. mode is
+// empty or disable for plaintext, or verify-full to check the certificate
+// and the endpoint name, against ca when given and the system roots when
+// not. A nil config uses plaintext.
+func RESPTLS(engine, addr, mode string, ca []byte) (*tls.Config, error) {
 	switch mode {
 	case "", "disable":
 		if len(ca) != 0 {
-			return nil, errors.New("fabriq: falkordb CA requires verify-full TLS")
+			return nil, fmt.Errorf("fabriq: %s CA requires verify-full TLS", engine)
 		}
 		if mode == "" {
 			return nil, nil
@@ -40,11 +59,11 @@ func FalkorTLS(addr, mode string, ca []byte) (*tls.Config, error) {
 		}
 	case "verify-full":
 	default:
-		return nil, errors.New("fabriq: falkordb TLS mode must be disable or verify-full")
+		return nil, fmt.Errorf("fabriq: %s TLS mode must be disable or verify-full", engine)
 	}
 	host, valid := socketHost(addr)
 	if !valid {
-		return nil, errors.New("fabriq: falkordb TLS settings require a valid endpoint")
+		return nil, fmt.Errorf("fabriq: %s TLS settings require a valid endpoint", engine)
 	}
 	if mode == "disable" {
 		return nil, nil
@@ -54,7 +73,7 @@ func FalkorTLS(addr, mode string, ca []byte) (*tls.Config, error) {
 	if len(ca) != 0 {
 		certs, ok := parseCertificates(ca)
 		if !ok {
-			return nil, errors.New("fabriq: falkordb CA requires a valid certificate PEM bundle")
+			return nil, fmt.Errorf("fabriq: %s CA requires a valid certificate PEM bundle", engine)
 		}
 		cfg.RootCAs = x509.NewCertPool()
 		for _, cert := range certs {
@@ -62,6 +81,17 @@ func FalkorTLS(addr, mode string, ca []byte) (*tls.Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// TLSDialer returns a go-redis dialer that completes the TLS handshake under
+// the caller's context, so cancelling a probe or closing the client stops a
+// stalled handshake instead of waiting for it.
+func TLSDialer(cfg *tls.Config, timeout time.Duration) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: timeout, KeepAlive: 5 * time.Minute},
+		Config:    cfg,
+	}
+	return dialer.DialContext
 }
 
 // ValidateElasticsearch checks that an inline CA has only HTTPS endpoints and valid PEM.

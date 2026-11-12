@@ -93,6 +93,7 @@ postgres:
   pool_size: 16
 redis:
   addr: redis:6379
+  # tlsMode: verify-full       # for a Redis that only takes TLS
 falkordb:
   addr: falkordb:6379          # enables the graph projection
 elasticsearch:
@@ -107,7 +108,7 @@ subscriptions:
   subscribe_buffer: 64
 ```
 
-The binary reads `postgres`, `shards`, `shardPins`, `redis`, `falkordb`, `elasticsearch`, `projections`, `subscriptions` and `storage`. Catalog mode, analytics, insights, documents, caching and encryption aren't read from the file; set them in code. A starter file ships at [`config.example.yaml`](https://github.com/xraph/fabriq/blob/main/config.example.yaml). The operator commands (`migrate`, `inspect`, `rebuild`, `reconcile`) take their connection from `--dsn` or `FABRIQ_POSTGRES_DSN` rather than the config file; only `serve` reads it.
+Managed Redis and Valkey services usually take TLS connections only. Set `redis.tlsMode` to `verify-full` and Fabriq checks the server's certificate and host name against the system roots, or against the PEM in `redis.caCert` if you set one. The stream transport and the cache both use it. The binary reads `postgres`, `shards`, `shardPins`, `redis`, `falkordb`, `elasticsearch`, `projections`, `subscriptions` and `storage`. Catalog mode, analytics, insights, documents, caching and encryption aren't read from the file; set them in code. A starter file ships at [`config.example.yaml`](https://github.com/xraph/fabriq/blob/main/config.example.yaml). The operator commands (`migrate`, `inspect`, `rebuild`, `reconcile`) take their connection from `--dsn` or `FABRIQ_POSTGRES_DSN` rather than the config file; only `serve` reads it.
 
 </Tab>
 </Tabs>

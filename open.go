@@ -177,6 +177,7 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 		rd, rerr := redis.Open(ctx, redis.Config{
 			Addr: cfg.Redis.Addr, DB: cfg.Redis.DB,
 			Username: cfg.Redis.Username, Password: cfg.Redis.Password,
+			TLSMode: cfg.Redis.TLSMode, CACert: []byte(cfg.Redis.CACert),
 		}, redis.WithChannelMaxLen(cfg.Subscriptions.StreamMaxLen))
 		if rerr != nil {
 			closeDialed()
@@ -193,6 +194,8 @@ func Open(ctx context.Context, reg *registry.Registry, cfg Config, opts ...Optio
 			DB:       cfg.Redis.DB,
 			Username: cfg.Redis.Username,
 			Password: cfg.Redis.Password,
+			TLSMode:  cfg.Redis.TLSMode,
+			CACert:   []byte(cfg.Redis.CACert),
 			Metrics:  groveMetrics,
 		})
 		if cerr != nil {

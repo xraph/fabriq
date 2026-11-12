@@ -7,22 +7,30 @@ package cache
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	gometrics "github.com/xraph/go-utils/metrics"
 	"github.com/xraph/grove/kv"
+	"github.com/xraph/grove/kv/driver"
 	"github.com/xraph/grove/kv/drivers/redisdriver"
 
 	corecache "github.com/xraph/fabriq/core/cache"
+	"github.com/xraph/fabriq/internal/enginetrust"
 )
 
-// Config locates the Redis/Valkey instance backing the cache.
+// Config locates the Redis/Valkey instance backing the cache. TLSMode and
+// CACert work as they do for the stream transport (adapters/redis).
 type Config struct {
 	Addr     string
 	DB       int
 	Username string
 	Password string
+	TLSMode  string
+	CACert   []byte
 	// Metrics, when set, receives grove kv's
 	// db_client_operation_duration_seconds for every command (pass a Forge
 	// app's Metrics()).
@@ -57,9 +65,16 @@ func (a *Adapter) Stats() corecache.Stats {
 
 // Open dials Redis through grove kv and pings it.
 func Open(ctx context.Context, cfg Config) (*Adapter, error) {
+	tlsConfig, err := enginetrust.RedisTLS(cfg.Addr, cfg.TLSMode, cfg.CACert)
+	if err != nil {
+		return nil, err
+	}
+	var driverOpts []driver.Option
+	if tlsConfig != nil {
+		driverOpts = append(driverOpts, driver.WithTLSConfig(tlsConfig), driver.WithDialTimeout(5*time.Second))
+	}
 	rdb := redisdriver.New()
-	dsn := dsnFromConfig(cfg)
-	if err := rdb.Open(ctx, dsn); err != nil {
+	if err = rdb.Open(ctx, dsnFromConfig(cfg), driverOpts...); err != nil {
 		return nil, fmt.Errorf("fabriq/cache: open redis driver: %w", err)
 	}
 	var kvOpts []kv.Option
@@ -85,11 +100,12 @@ func Open(ctx context.Context, cfg Config) (*Adapter, error) {
 func (a *Adapter) Close() error { return a.store.Close() }
 
 func dsnFromConfig(cfg Config) string {
-	auth := ""
+	u := url.URL{Scheme: "redis", Host: cfg.Addr, Path: "/" + strconv.Itoa(cfg.DB)}
 	if cfg.Username != "" || cfg.Password != "" {
-		auth = cfg.Username + ":" + cfg.Password + "@"
+		// Escaped, so a password holding @, / or : stays a password.
+		u.User = url.UserPassword(cfg.Username, cfg.Password)
 	}
-	return fmt.Sprintf("redis://%s%s/%d", auth, cfg.Addr, cfg.DB)
+	return u.String()
 }
 
 var _ corecache.Cache = (*Adapter)(nil)
