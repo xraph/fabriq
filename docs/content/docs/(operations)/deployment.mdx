@@ -361,6 +361,8 @@ If it can't start, it exits 1 with a message naming the cause: an unmigrated dat
 | `FABRIQ_POSTGRES_DSN` | yes | | The serving DSN, for the `fabriq_app` role. |
 | `FABRIQ_REDIS_ADDR` | yes | | `host:port`. |
 | `FABRIQ_REDIS_USERNAME`, `FABRIQ_REDIS_PASSWORD` | no | | Redis ACL user and password. |
+| `FABRIQ_REDIS_TLS_MODE` | no | plaintext | `verify-full` checks the server's certificate and host name. Managed Redis and Valkey usually need it. |
+| `FABRIQ_REDIS_CA_CERT` | no | system roots | Inline PEM trust roots for `verify-full`, up to 64 KiB. Keep its line breaks. |
 | `FABRIQ_FALKORDB_ADDR` | no | | `host:port`. Turns the graph projection on. |
 | `FABRIQ_FALKORDB_USERNAME`, `FABRIQ_FALKORDB_PASSWORD` | no | | FalkorDB credentials. |
 | `FABRIQ_ELASTICSEARCH_ADDRS` | no | | Comma-separated URLs. Turns search on. |

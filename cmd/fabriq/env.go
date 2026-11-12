@@ -61,7 +61,8 @@ func registerDomainPack(reg *registry.Registry, pack string) error {
 // storeConfigFromEnv reads every store setting but the Postgres DSN through
 // getenv, for the operator commands that build their config by hand rather
 // than through forgeext.LoadConfig: FABRIQ_REDIS_ADDR, FABRIQ_REDIS_USERNAME,
-// FABRIQ_REDIS_PASSWORD, FABRIQ_FALKORDB_ADDR, FABRIQ_FALKORDB_USERNAME,
+// FABRIQ_REDIS_PASSWORD, FABRIQ_REDIS_TLS_MODE, FABRIQ_REDIS_CA_CERT,
+// FABRIQ_FALKORDB_ADDR, FABRIQ_FALKORDB_USERNAME,
 // FABRIQ_FALKORDB_PASSWORD, FABRIQ_FALKORDB_TLS_MODE, FABRIQ_FALKORDB_CA_CERT,
 // FABRIQ_ELASTICSEARCH_ADDRS (comma-separated), FABRIQ_ELASTICSEARCH_USERNAME,
 // FABRIQ_ELASTICSEARCH_PASSWORD, FABRIQ_ELASTICSEARCH_CA_CERT,
@@ -76,6 +77,8 @@ func storeConfigFromEnv(getenv func(string) string) fabriq.Config {
 			Addr:     getenv("FABRIQ_REDIS_ADDR"),
 			Username: getenv("FABRIQ_REDIS_USERNAME"),
 			Password: getenv("FABRIQ_REDIS_PASSWORD"),
+			TLSMode:  getenv("FABRIQ_REDIS_TLS_MODE"),
+			CACert:   getenv("FABRIQ_REDIS_CA_CERT"),
 		},
 		FalkorDB: fabriq.FalkorDBConfig{
 			Addr:     getenv("FABRIQ_FALKORDB_ADDR"),

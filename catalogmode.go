@@ -104,6 +104,7 @@ func openCatalogMode(ctx context.Context, reg *registry.Registry, cfg Config, op
 		rd, err = redis.Open(ctx, redis.Config{
 			Addr: cfg.Redis.Addr, DB: cfg.Redis.DB,
 			Username: cfg.Redis.Username, Password: cfg.Redis.Password,
+			TLSMode: cfg.Redis.TLSMode, CACert: []byte(cfg.Redis.CACert),
 		}, redis.WithChannelMaxLen(cfg.Subscriptions.StreamMaxLen))
 		if err != nil {
 			_ = catStore.Close()

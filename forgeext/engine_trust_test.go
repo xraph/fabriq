@@ -92,3 +92,55 @@ func checkEngineTrust(t *testing.T, cfg fabriq.Config, mode, graphCA, searchCA s
 		t.Fatal("engine trust settings did not bind with the expected scope, precedence and PEM bytes")
 	}
 }
+
+// Redis trust binds like FalkorDB's: from the file under either prefix, and
+// from FABRIQ_REDIS_TLS_MODE and FABRIQ_REDIS_CA_CERT for the standalone
+// keys only, multiline PEM intact.
+func TestLoadRedisTrust(t *testing.T) {
+	t.Setenv("FABRIQ_REDIS_TLS_MODE", "")
+	t.Setenv("FABRIQ_REDIS_CA_CERT", "")
+	const fixture = `redis:
+  addr: stream:6380
+  tlsMode: verify-full
+  caCert: |-
+    stream file line one
+    stream file line two
+extensions:
+  fabriq:
+    redis:
+      addr: host-stream:6380
+      tlsMode: verify-full
+      caCert: |-
+        host stream line one
+        host stream line two
+`
+	cm := newEnvConfigApp(t, fixture)
+	checkRedisTrust(t, forgeext.LoadConfig(cm, ""), "verify-full", "stream file line one\nstream file line two")
+	checkRedisTrust(t, forgeext.LoadConfig(cm, "extensions.fabriq."), "verify-full", "host stream line one\nhost stream line two")
+
+	const envCA = "stream env line one\r\nstream env line two\r\n"
+	t.Setenv("FABRIQ_REDIS_TLS_MODE", "disable")
+	t.Setenv("FABRIQ_REDIS_CA_CERT", envCA)
+	checkRedisTrust(t, forgeext.LoadConfig(cm, ""), "disable", envCA)
+	checkRedisTrust(t, forgeext.LoadConfig(cm, "extensions.fabriq."), "verify-full", "host stream line one\nhost stream line two")
+}
+
+func checkRedisTrust(t *testing.T, cfg fabriq.Config, mode, ca string) {
+	t.Helper()
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Redis struct {
+			TLSMode string `json:"tlsMode"`
+			CACert  string `json:"caCert"`
+		} `json:"redis"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings.Redis.TLSMode != mode || settings.Redis.CACert != ca {
+		t.Fatalf("redis trust = %q, %q; want %q, %q", settings.Redis.TLSMode, settings.Redis.CACert, mode, ca)
+	}
+}

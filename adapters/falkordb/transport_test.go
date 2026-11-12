@@ -1,23 +1,13 @@
 package falkordb_test
 
 import (
-	"bufio"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
-	"io"
-	"math/big"
 	"net"
-	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +15,7 @@ import (
 
 	"github.com/xraph/fabriq/adapters/falkordb"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/internal/enginetest"
 )
 
 func TestFalkorTransport(t *testing.T) {
@@ -56,7 +47,7 @@ func TestFalkorTransport(t *testing.T) {
 			endpoint := startFalkorFixture(t, serverTLS, tc.username, password)
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 			defer cancel()
-			addr := endpoint.addr
+			addr := endpoint.Addr
 			if tc.certHost == "localhost" {
 				_, port, err := net.SplitHostPort(addr)
 				if err != nil {
@@ -86,7 +77,7 @@ func TestFalkorTransport(t *testing.T) {
 				if err := a.PingReadiness(ctx); err != nil {
 					t.Fatalf("readiness = %v", err)
 				}
-				if endpoint.pings.Load() != 2 {
+				if endpoint.Pings.Load() != 2 {
 					t.Fatal("Open and readiness did not both reach authenticated PING")
 				}
 				if err := a.Ping(ctx); err != nil {
@@ -104,13 +95,13 @@ func TestFalkorRejectsTrustBeforeDial(t *testing.T) {
 		name, addr, mode string
 		ca               []byte
 	}{
-		{name: "unknown mode", addr: endpoint.addr, mode: "secret-mode"},
-		{name: "CA with implicit plaintext", addr: endpoint.addr, ca: ca},
-		{name: "CA with disabled TLS", addr: endpoint.addr, mode: "disable", ca: ca},
-		{name: "URL in socket address", addr: "rediss://" + endpoint.addr, mode: "verify-full", ca: ca},
+		{name: "unknown mode", addr: endpoint.Addr, mode: "secret-mode"},
+		{name: "CA with implicit plaintext", addr: endpoint.Addr, ca: ca},
+		{name: "CA with disabled TLS", addr: endpoint.Addr, mode: "disable", ca: ca},
+		{name: "URL in socket address", addr: "rediss://" + endpoint.Addr, mode: "verify-full", ca: ca},
 		{name: "empty host", addr: ":6379", mode: "verify-full", ca: ca},
 		{name: "invalid port", addr: "localhost:65536", mode: "verify-full", ca: ca},
-		{name: "malformed skipped prefix", addr: endpoint.addr, mode: "verify-full", ca: append([]byte("-----BEGIN CERTIFICATE-----\nbroken\n"), ca...)},
+		{name: "malformed skipped prefix", addr: endpoint.Addr, mode: "verify-full", ca: append([]byte("-----BEGIN CERTIFICATE-----\nbroken\n"), ca...)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
@@ -127,7 +118,7 @@ func TestFalkorRejectsTrustBeforeDial(t *testing.T) {
 					t.Fatal("public error exposed a config value")
 				}
 			}
-			if endpoint.dials.Load() != 0 {
+			if endpoint.Dials.Load() != 0 {
 				t.Fatal("invalid trust settings reached the socket")
 			}
 		})
@@ -141,12 +132,12 @@ func TestFalkorReadinessCancelsStalledTLS(t *testing.T) {
 			endpoint := startFalkorFixture(t, certificate, "worker", "fixture-password")
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 			defer cancel()
-			a, err := falkordb.Open(ctx, falkorConfig(t, endpoint.addr, "worker", "fixture-password", "verify-full", ca), registry.New(), nil)
+			a, err := falkordb.Open(ctx, falkorConfig(t, endpoint.Addr, "worker", "fixture-password", "verify-full", ca), registry.New(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = a.Close() })
-			endpoint.stall.Store(true)
+			endpoint.Stall.Store(true)
 
 			probeCtx, stopProbe := context.WithCancel(ctx)
 			defer stopProbe()
@@ -158,7 +149,7 @@ func TestFalkorReadinessCancelsStalledTLS(t *testing.T) {
 			probe := make(chan error, 1)
 			go func() { probe <- a.PingReadiness(probeCtx) }()
 			select {
-			case <-endpoint.handshake:
+			case <-endpoint.Handshake:
 			case <-ctx.Done():
 				t.Fatal("readiness did not start its TLS handshake")
 			}
@@ -190,7 +181,7 @@ func TestFalkorReadinessCancelsStalledTLS(t *testing.T) {
 				t.Fatal("readiness waited for the stalled handshake")
 			}
 			select {
-			case <-endpoint.socketClosed:
+			case <-endpoint.SocketClosed:
 			case <-time.After(time.Second):
 				t.Fatal("stalled handshake socket remained open")
 			}
@@ -218,166 +209,12 @@ func falkorConfig(t *testing.T, addr, username, password, mode string, ca []byte
 	return cfg
 }
 
-type falkorFixture struct {
-	addr                    string
-	dials, pings            atomic.Int32
-	stall                   atomic.Bool
-	handshake, socketClosed chan struct{}
-}
-
-func startFalkorFixture(t *testing.T, certificate *tls.Config, username, password string) *falkorFixture {
+func startFalkorFixture(t *testing.T, certificate *tls.Config, username, password string) *enginetest.RESPServer {
 	t.Helper()
-	f := &falkorFixture{handshake: make(chan struct{}, 1), socketClosed: make(chan struct{}, 1)}
-	f.addr = startEngineListener(t, func(conn net.Conn) {
-		f.dials.Add(1)
-		if f.stall.Load() {
-			var recordType [1]byte
-			if _, err := io.ReadFull(conn, recordType[:]); err != nil || recordType[0] != 22 {
-				return
-			}
-			f.handshake <- struct{}{}
-			_, _ = io.Copy(io.Discard, conn)
-			f.socketClosed <- struct{}{}
-			return
-		}
-		if certificate != nil {
-			conn = tls.Server(conn, certificate)
-		}
-		f.serve(conn, username, password)
-	})
-	return f
-}
-
-func startEngineListener(t *testing.T, serve func(net.Conn)) string {
-	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	var workers sync.WaitGroup
-	workers.Go(func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			workers.Go(func() {
-				defer conn.Close()
-				stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-				defer stop()
-				serve(conn)
-			})
-		}
-	})
-	t.Cleanup(func() {
-		cancel()
-		_ = listener.Close()
-		workers.Wait()
-	})
-	return listener.Addr().String()
-}
-
-func (f *falkorFixture) serve(conn net.Conn, username, password string) {
-	reader := bufio.NewReader(conn)
-	authenticated := password == ""
-	for {
-		args := readRESPCommand(reader)
-		if len(args) == 0 {
-			return
-		}
-		var reply string
-		switch strings.ToLower(args[0]) {
-		case "hello":
-			// Use RESP2 fallback so AUTH and the selected ACL user are observable.
-			reply = "-ERR unknown command\r\n"
-		case "auth":
-			if username == "" {
-				authenticated = len(args) == 2 && args[1] == password
-			} else {
-				authenticated = len(args) == 3 && args[1] == username && args[2] == password
-			}
-			reply = "-WRONGPASS invalid credentials\r\n"
-			if authenticated {
-				reply = "+OK\r\n"
-			}
-		case "client":
-			reply = "+OK\r\n"
-		case "ping":
-			reply = "-NOAUTH Authentication required\r\n"
-			if authenticated {
-				f.pings.Add(1)
-				reply = "+PONG\r\n"
-			}
-		default:
-			reply = "-ERR unknown command\r\n"
-		}
-		if _, err := io.WriteString(conn, reply); err != nil {
-			return
-		}
-	}
-}
-
-func readRESPCommand(reader *bufio.Reader) []string {
-	readLength := func(marker byte) (int, bool) {
-		line, err := reader.ReadString('\n')
-		if err != nil || len(line) < 4 || line[0] != marker || !strings.HasSuffix(line, "\r\n") {
-			return 0, false
-		}
-		n, err := strconv.Atoi(line[1 : len(line)-2])
-		return n, err == nil && n >= 0 && n <= 1024
-	}
-	count, ok := readLength('*')
-	if !ok {
-		return nil
-	}
-	args := make([]string, 0, count)
-	for range count {
-		size, ok := readLength('$')
-		if !ok {
-			return nil
-		}
-		arg := make([]byte, size+2)
-		if _, err := io.ReadFull(reader, arg); err != nil || string(arg[size:]) != "\r\n" {
-			return nil
-		}
-		args = append(args, string(arg[:size]))
-	}
-	return args
+	return enginetest.StartRESP(t, certificate, username, password)
 }
 
 func falkorTLS(t *testing.T, host string) (*tls.Config, []byte) {
 	t.Helper()
-	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now()
-	root := &x509.Certificate{
-		SerialNumber: big.NewInt(1), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
-		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
-	}
-	leaf := &x509.Certificate{
-		SerialNumber: big.NewInt(2), NotBefore: root.NotBefore, NotAfter: root.NotAfter,
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		leaf.IPAddresses = []net.IP{ip}
-	} else {
-		leaf.DNSNames = []string{host}
-	}
-	rootDER, err := x509.CreateCertificate(rand.Reader, root, root, &rootKey.PublicKey, rootKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leafDER, err := x509.CreateCertificate(rand.Reader, leaf, root, &leafKey.PublicKey, rootKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootDER})
-	return &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{leafDER}, PrivateKey: leafKey}}, MinVersion: tls.VersionTLS12}, ca
+	return enginetest.TLS(t, host)
 }

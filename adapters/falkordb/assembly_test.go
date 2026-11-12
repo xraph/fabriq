@@ -17,13 +17,16 @@ import (
 
 	"github.com/xraph/fabriq"
 	"github.com/xraph/fabriq/core/registry"
+	"github.com/xraph/fabriq/internal/enginetest"
 )
 
 func TestFabriqEngineTrustAssembly(t *testing.T) {
 	graphTLS, graphCA := falkorTLS(t, "127.0.0.1")
+	streamTLS, streamCA := falkorTLS(t, "127.0.0.1")
 	for _, mode := range []string{"static", "catalog"} {
 		t.Run(mode, func(t *testing.T) {
 			graph := startFalkorFixture(t, graphTLS, "graph-worker", "fixture-password")
+			stream := enginetest.StartRESP(t, streamTLS, "stream-worker", "fixture-password")
 			var searchRequests atomic.Int32
 			search := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if user, pass, ok := r.BasicAuth(); !ok || user != "search-worker" || pass != "fixture-password" {
@@ -37,10 +40,11 @@ func TestFabriqEngineTrustAssembly(t *testing.T) {
 			}))
 			t.Cleanup(search.Close)
 			searchCA := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: search.Certificate().Raw})
-			pg := startEngineListener(t, func(conn net.Conn) { serveCatalogBootstrap(t, conn) })
+			pg := enginetest.Listen(t, func(conn net.Conn) { serveCatalogBootstrap(t, conn) })
 			dsn := "postgres://fixture@" + pg + "/fixture?sslmode=disable&default_query_exec_mode=simple_protocol"
 			cfg := rootEngineConfig(t, map[string]any{
-				"falkordb": map[string]any{"addr": graph.addr, "username": "graph-worker", "password": "fixture-password", "tlsMode": "verify-full", "caCert": string(graphCA)},
+				"redis":    map[string]any{"addr": stream.Addr, "username": "stream-worker", "password": "fixture-password", "tlsMode": "verify-full", "caCert": string(streamCA)},
+				"falkordb": map[string]any{"addr": graph.Addr, "username": "graph-worker", "password": "fixture-password", "tlsMode": "verify-full", "caCert": string(graphCA)},
 				"elasticsearch": map[string]any{
 					"addrs": []string{search.URL}, "username": "search-worker", "password": "fixture-password", "caCert": string(searchCA),
 				},
@@ -66,7 +70,12 @@ func TestFabriqEngineTrustAssembly(t *testing.T) {
 			if err := stores.PingSearch(ctx); err != nil {
 				t.Fatalf("search readiness = %v", err)
 			}
-			if graph.pings.Load() != 2 || searchRequests.Load() != 2 {
+			// The stream transport and, in static mode, the cache both dial
+			// Redis, so it sees at least Open's PING and this one.
+			if err := stores.Redis.Ping(ctx); err != nil {
+				t.Fatalf("stream transport = %v", err)
+			}
+			if graph.Pings.Load() != 2 || searchRequests.Load() != 2 || stream.Pings.Load() < 2 {
 				t.Fatal("Open and readiness must reach both engines over their configured transports")
 			}
 		})
@@ -82,6 +91,9 @@ func TestFabriqEngineTrustValidation(t *testing.T) {
 		{name: "verified Falkor with no endpoint", engine: "falkordb", settings: map[string]any{"tlsMode": "verify-full"}},
 		{name: "explicit plaintext mode with no endpoint", engine: "falkordb", settings: map[string]any{"tlsMode": "disable"}},
 		{name: "Falkor CA with no endpoint", engine: "falkordb", settings: map[string]any{"caCert": string(ca)}},
+		{name: "verified Redis with no endpoint", engine: "redis", settings: map[string]any{"tlsMode": "verify-full"}},
+		{name: "Redis CA over plaintext", engine: "redis", settings: map[string]any{"addr": "stream:6379", "caCert": string(ca)}},
+		{name: "unknown Redis TLS mode", engine: "redis", settings: map[string]any{"addr": "stream:6379", "tlsMode": "require"}},
 		{name: "Elasticsearch CA with no addresses", engine: "elasticsearch", settings: map[string]any{"caCert": string(ca)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
