@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/xraph/fabriq v1.9.0
-	github.com/xraph/grove v1.10.2
+	github.com/xraph/grove v1.10.3
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0
 	google.golang.org/grpc v1.83.2
 )
@@ -30,7 +30,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.47.0
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 )
