@@ -19,3 +19,6 @@ config.local.yaml
 
 # admin-demo compiled binary
 /admin-demo
+
+# fabriqserver compiled binary (go build in remote/grpc/cmd/fabriqserver)
+/remote/grpc/cmd/fabriqserver/fabriqserver
