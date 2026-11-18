@@ -60,7 +60,7 @@ require (
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-	github.com/xraph/fabriq/core v1.10.5
+	github.com/xraph/fabriq/core v1.10.6
 	github.com/xraph/go-utils v1.5.1 // indirect
 	github.com/xraph/grove v1.10.3 // indirect
 	github.com/xraph/grove/drivers/pgdriver v1.10.3 // indirect
