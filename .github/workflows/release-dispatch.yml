@@ -181,6 +181,23 @@ jobs:
             echo "root go.mod now requires github.com/xraph/fabriq/core@v${VERSION}, replace directive kept for local development."
           fi
 
+      # The nested modules reach the root and core through local replaces, so
+      # the root's new core requirement flows into their module graphs. Tidy
+      # them in the same commit, or every release leaves them untidy and the
+      # next dependency cascade sees a change and releases fabriq again.
+      - name: Tidy the nested modules against the new core requirement
+        run: |
+          set -euo pipefail
+          for mod in adapters/wardenauthz remote/grpc remote/grpc/cmd/fabriqserver; do
+            echo "  + (cd $mod && go mod tidy)"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "dry_run: not tidying $mod"
+            else
+              (cd "$mod" && GOWORK=off go mod tidy)
+              git --no-pager diff --stat -- "$mod/go.mod" "$mod/go.sum"
+            fi
+          done
+
       - name: Verify core resolves for a real consumer (no replace in effect)
         run: |
           set -euo pipefail
@@ -218,14 +235,17 @@ jobs:
       - name: Commit the require bump
         run: |
           set -euo pipefail
-          echo "  + git add go.mod go.sum"
+          echo "  + git add go.mod go.sum and the nested modules' go.mod/go.sum"
           echo "  + git commit -m 'chore: bump fabriq/core requirement to v$VERSION'"
           if [ "$DRY_RUN" = "true" ]; then
             echo "dry_run: not committing"
           else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add go.mod go.sum
+            git add go.mod go.sum \
+              adapters/wardenauthz/go.mod adapters/wardenauthz/go.sum \
+              remote/grpc/go.mod remote/grpc/go.sum \
+              remote/grpc/cmd/fabriqserver/go.mod remote/grpc/cmd/fabriqserver/go.sum
             git commit -m "chore: bump fabriq/core requirement to v${VERSION}"
           fi
 
