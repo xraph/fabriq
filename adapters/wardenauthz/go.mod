@@ -107,14 +107,14 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xraph/confy v1.1.0 // indirect
-	github.com/xraph/fabriq/core v1.10.2 // indirect
-	github.com/xraph/go-utils v1.5.0 // indirect
+	github.com/xraph/fabriq/core v1.10.3 // indirect
+	github.com/xraph/go-utils v1.5.1 // indirect
 	github.com/xraph/grove v1.10.2 // indirect
 	github.com/xraph/grove/drivers/pgdriver v1.10.2 // indirect
 	github.com/xraph/grove/kv v1.10.2 // indirect
 	github.com/xraph/grove/kv/drivers/redisdriver v1.10.2 // indirect
 	github.com/xraph/trove v1.8.2 // indirect
-	github.com/xraph/vessel v1.0.5 // indirect
+	github.com/xraph/vessel v1.0.7 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.jetify.com/typeid/v2 v2.0.0-alpha.3 // indirect
@@ -140,7 +140,7 @@ require (
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260924152758-ed294f943157 // indirect
 	golang.org/x/term v0.47.0 // indirect
@@ -169,8 +169,8 @@ require (
 
 require (
 	github.com/xraph/fabriq v1.9.0
-	github.com/xraph/forge v1.13.6
-	github.com/xraph/warden v1.8.1
+	github.com/xraph/forge v1.14.0
+	github.com/xraph/warden v1.8.4
 )
 
 replace github.com/xraph/fabriq => ../..

@@ -18,8 +18,8 @@ github.com/oklog/ulid/v2 v2.1.2/go.mod h1:rcEKHmBBKfef9DhnvX7y1HZBYxjXb0cP5ExxNs
 github.com/pborman/getopt v0.0.0-20170112200414-7148bc3a4c30/go.mod h1:85jBQOZwpVEaDAr341tbn15RS4fCAsIst0qp7i8ex1o=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
-github.com/xraph/go-utils v1.5.0 h1:44pIJooK565ds/Ica0yyPoRNbr0qUTgj1aay8ewad1w=
-github.com/xraph/go-utils v1.5.0/go.mod h1:fMahP6kPUjJP5UmzVje2GSL7OGT9+xpYkukK2dLjSMM=
+github.com/xraph/go-utils v1.5.1 h1:W7i+bOTsEQVP6yMritH5IL5Y188eIUJtPUdSLRvWbzo=
+github.com/xraph/go-utils v1.5.1/go.mod h1:fMahP6kPUjJP5UmzVje2GSL7OGT9+xpYkukK2dLjSMM=
 github.com/xraph/grove v1.10.2 h1:3ZoKJpU21gIv8p98RjQE4wFcAhesXvTqSSqrroNOXaI=
 github.com/xraph/grove v1.10.2/go.mod h1:oQ5d+MiSDkDxiRCKBOlmieJmzFXvanY/kk9VfvQO40w=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=

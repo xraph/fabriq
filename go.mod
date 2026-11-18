@@ -20,15 +20,15 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
 	github.com/xraph/confy v1.1.0
 	github.com/xraph/fabriq/core v1.10.3
-	github.com/xraph/forge v1.13.6
-	github.com/xraph/go-utils v1.5.0
+	github.com/xraph/forge v1.14.0
+	github.com/xraph/go-utils v1.5.1
 	github.com/xraph/grove v1.10.2
 	github.com/xraph/grove/drivers/pgdriver v1.10.2
 	github.com/xraph/grove/kv v1.10.2
 	github.com/xraph/grove/kv/drivers/redisdriver v1.10.2
-	github.com/xraph/shield v1.10.2
+	github.com/xraph/shield v1.10.3
 	github.com/xraph/trove v1.8.2
-	github.com/xraph/vessel v1.0.5
+	github.com/xraph/vessel v1.0.7
 	golang.org/x/crypto v0.58.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )

@@ -204,8 +204,8 @@ github.com/vmihailenco/tagparser/v2 v2.0.0 h1:y09buUbR+b5aycVFQs/g70pqKVZNBmxwAh
 github.com/vmihailenco/tagparser/v2 v2.0.0/go.mod h1:Wri+At7QHww0WTrCBeu4J6bNtoV6mEfg5OIWRZA9qds=
 github.com/wI2L/jsondiff v0.7.1 h1:Fg9+yj+1/x3UtPBJhR91TKEzRkrEEWcAcLbg9dzEaNM=
 github.com/wI2L/jsondiff v0.7.1/go.mod h1:yAt2W7U6Jd4HK0RA8DGSGk0zDtfEtOUUJVnH/xICpjo=
-github.com/xraph/go-utils v1.5.0 h1:44pIJooK565ds/Ica0yyPoRNbr0qUTgj1aay8ewad1w=
-github.com/xraph/go-utils v1.5.0/go.mod h1:fMahP6kPUjJP5UmzVje2GSL7OGT9+xpYkukK2dLjSMM=
+github.com/xraph/go-utils v1.5.1 h1:W7i+bOTsEQVP6yMritH5IL5Y188eIUJtPUdSLRvWbzo=
+github.com/xraph/go-utils v1.5.1/go.mod h1:fMahP6kPUjJP5UmzVje2GSL7OGT9+xpYkukK2dLjSMM=
 github.com/xraph/grove v1.10.2 h1:3ZoKJpU21gIv8p98RjQE4wFcAhesXvTqSSqrroNOXaI=
 github.com/xraph/grove v1.10.2/go.mod h1:oQ5d+MiSDkDxiRCKBOlmieJmzFXvanY/kk9VfvQO40w=
 github.com/xraph/grove/drivers/pgdriver v1.10.2 h1:LMMqPMPtj1OgA1npfqOWsknMQZbJ7kFwMrdrj32Mp3I=
